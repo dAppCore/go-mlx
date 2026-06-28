@@ -158,6 +158,94 @@ func relL2Cos(got, want []float32) (float64, float64) {
 // TestMatRowsBF16 validates the multi-row projection (looped gemv) against a pure-Go fp32 matmul.
 // (Recorded separately: MatRowsBF16 is byte-IDENTICAL to metal.Matmul across the gemv and steel-GEMM
 // regimes — see the 1/n commit; here we keep the durable check self-contained.)
+func matRowsBF16Fixture(L, outDim, inDim int) ([]byte, []byte) {
+	in := toBF16Bytes(syntheticFloat32(L*inDim, inDim+5))
+	w := toBF16Bytes(syntheticFloat32(outDim*inDim, outDim+7))
+	return w, in
+}
+
+func matRowsBF16LoopedMatVecReference(tb testing.TB, w, in []byte, L, outDim, inDim int) []byte {
+	tb.Helper()
+	out := make([]byte, L*outDim*bf16Size)
+	for r := 0; r < L; r++ {
+		row, err := MatVecBF16(w, in[r*inDim*bf16Size:(r+1)*inDim*bf16Size], outDim, inDim)
+		if err != nil {
+			tb.Fatalf("MatVecBF16 row %d: %v", r, err)
+		}
+		copy(out[r*outDim*bf16Size:(r+1)*outDim*bf16Size], row)
+	}
+	return out
+}
+
+func TestMatRowsBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const L, outDim, inDim = 4, 128, 256
+	w, in := matRowsBF16Fixture(L, outDim, inDim)
+	if _, err := MatRowsBF16(w, in, L, outDim, inDim); err != nil {
+		t.Fatalf("MatRowsBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatRowsBF16(w, in, L, outDim, inDim); err != nil {
+			t.Fatalf("MatRowsBF16: %v", err)
+		}
+	})
+	if allocs > 109 {
+		t.Fatalf("MatRowsBF16 allocations = %.0f, want <= 109", allocs)
+	}
+}
+
+func TestMatRowsBF16MatchesLoopedMatVecReference(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const L, outDim, inDim = 5, 96, 256
+	w, in := matRowsBF16Fixture(L, outDim, inDim)
+	got, err := MatRowsBF16(w, in, L, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatRowsBF16: %v", err)
+	}
+	want := matRowsBF16LoopedMatVecReference(t, w, in, L, outDim, inDim)
+	eqBytes(t, "MatRowsBF16 vs looped MatVecBF16", got, want)
+}
+
+func TestMatRowsF32AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const L, outDim, inDim = 4, 128, 256
+	w := syntheticFloat32(outDim*inDim, outDim+7)
+	in := syntheticFloat32(L*inDim, inDim+5)
+	if _, err := matRowsF32(w, in, L, outDim, inDim); err != nil {
+		t.Fatalf("matRowsF32 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := matRowsF32(w, in, L, outDim, inDim); err != nil {
+			t.Fatalf("matRowsF32: %v", err)
+		}
+	})
+	if allocs > 223 {
+		t.Fatalf("matRowsF32 allocations = %.0f, want <= 223", allocs)
+	}
+}
+
+func TestMatRowsF32MatchesReference(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const L, outDim, inDim = 4, 128, 256
+	w := syntheticFloat32(outDim*inDim, outDim+7)
+	in := syntheticFloat32(L*inDim, inDim+5)
+	got, err := matRowsF32(w, in, L, outDim, inDim)
+	if err != nil {
+		t.Fatalf("matRowsF32: %v", err)
+	}
+	want := refMatmul(in, w, L, outDim, inDim)
+	relL2, cos := relL2Cos(got, want)
+	if relL2 > 1e-5 || cos < 0.999999 {
+		t.Fatalf("matRowsF32 vs ref: rel-L2=%.3e cosine=%.6f", relL2, cos)
+	}
+}
+
 func TestMatRowsBF16(t *testing.T) {
 	requireNativeRuntime(t)
 	const L, K, N = 64, 768, 768
@@ -269,6 +357,49 @@ func TestVisionSDPAUsesKernelSoftmax(t *testing.T) {
 	}
 	want := visionSDPAWithKernelSoftmax(t, q, k, v, L, nHeads, nKVHeads, headDim, scale)
 	eqBytes(t, "VisionSDPA kernel-softmax route", got, want)
+}
+
+func TestVisionSDPAScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small := getVisionSDPAScratch(32, 4, 2, 64)
+	putVisionSDPAScratch(small)
+	large := getVisionSDPAScratch(64, 4, 2, 64)
+	putVisionSDPAScratch(large)
+
+	gotSmall := getVisionSDPAScratch(32, 4, 2, 64)
+	defer putVisionSDPAScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("VisionSDPA scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge := getVisionSDPAScratch(64, 4, 2, 64)
+	defer putVisionSDPAScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("VisionSDPA scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestVisionSDPAAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const L, nHeads, nKVHeads, headDim = 64, 4, 2, 64
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	q := toBF16Bytes(bf16Round(syntheticFloat32(nHeads*L*headDim, 31)))
+	k := toBF16Bytes(bf16Round(syntheticFloat32(nKVHeads*L*headDim, 37)))
+	v := toBF16Bytes(bf16Round(syntheticFloat32(nKVHeads*L*headDim, 41)))
+	if _, err := VisionSDPA(q, k, v, L, nHeads, nKVHeads, headDim, scale); err != nil {
+		t.Fatalf("VisionSDPA warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(3, func() {
+		if _, err := VisionSDPA(q, k, v, L, nHeads, nKVHeads, headDim, scale); err != nil {
+			t.Fatalf("VisionSDPA: %v", err)
+		}
+	})
+	if allocs > 1300 {
+		t.Fatalf("VisionSDPA allocations = %.0f, want <= 1300", allocs)
+	}
 }
 
 // TestVisionEncoderLayer validates the full encoder layer vs a pure-Go fp32 reference of metal's

@@ -314,7 +314,7 @@ func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool
 		err     error
 	)
 	withAutoreleasePool(func() {
-		hiddens, ok, err = s.state.stepTokensBatchedDenseResult(embs, s.pos, false)
+		hiddens, ok, err = s.state.stepTokensBatchedDenseResult(embs, s.pos, false, false, nil)
 	})
 	if err != nil || !ok {
 		return nil, ok, err
@@ -334,7 +334,7 @@ func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool
 // advancing pos — the same primitive Generate uses internally (StepWithID), so the resulting hidden
 // is byte-identical to a plain greedy step on this token. PLE models thread the id correctly.
 func (s *ArchSession) stepID(id int32) ([]byte, error) {
-	emb, err := s.embed(id)
+	emb, err := s.embedID(id)
 	if err != nil {
 		return nil, err
 	}

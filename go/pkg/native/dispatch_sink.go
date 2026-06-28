@@ -17,9 +17,8 @@ import (
 // recorder divergence that lived in exactly the gap between the two copies.
 //
 // The asymmetries the sink hides:
-//   - scalars: the encoder binds them inline (SetBytes); an ICB command CANNOT, so it binds a buffer.
-//     setI32/I64/F32 inline on encSink, bind a process-memoised scalar buffer (scalarI32/…) on icbSink.
-//     The emit bodies are generic over the sink (not interface params) so binding adds NO per-call alloc.
+//   - scalars: live encoders bind inline bytes through the raw fast-send path; ICB commands bind
+//     process-memoised scalar buffers (scalarI32/…), because ICB commands cannot set bytes inline.
 //   - dispatch: DispatchThreads* / DispatchThreadgroups* on the encoder vs the ConcurrentDispatch*
 //     variants on the ICB command.
 //
@@ -38,23 +37,47 @@ type dispatchSink interface {
 	dispatchThreadgroups(grid, group metal.MTLSize)
 }
 
-// encSink records into a live compute encoder: scalars inline, plain dispatch.
+// encSink records into a live compute encoder: scalar buffers, plain dispatch.
 type encSink struct {
 	enc metal.MTLComputeCommandEncoder
 }
 
-func (s encSink) setPSO(pso metal.MTLComputePipelineState) { s.enc.SetComputePipelineState(pso) }
+func (s encSink) setPSO(pso metal.MTLComputePipelineState) { setPSO(s.enc, pso) }
 func (s encSink) setBuf(buf metal.MTLBuffer, off, idx uint) {
-	s.enc.SetBufferWithOffsetAtIndex(buf, off, idx)
+	setBuf(s.enc, buf, off, idx)
 }
-func (s encSink) setI32(v int32, idx uint)   { setEncInt32(s.enc, v, idx) }
-func (s encSink) setI64(v int64, idx uint)   { setEncInt64(s.enc, v, idx) }
-func (s encSink) setF32(v float32, idx uint) { setEncFloat32(s.enc, v, idx) }
+func (s encSink) setI32(v int32, idx uint)   { setBytesI32(s.enc, v, idx) }
+func (s encSink) setI64(v int64, idx uint)   { setBytesI64(s.enc, v, idx) }
+func (s encSink) setF32(v float32, idx uint) { setBytesF32(s.enc, v, idx) }
 func (s encSink) dispatchThreads(grid, group metal.MTLSize) {
-	s.enc.DispatchThreadsThreadsPerThreadgroup(grid, group)
+	dispatchThreads(s.enc, grid, group)
 }
 func (s encSink) dispatchThreadgroups(grid, group metal.MTLSize) {
-	s.enc.DispatchThreadgroupsThreadsPerThreadgroup(grid, group)
+	dispatchThreadgroups(s.enc, grid, group)
+}
+
+// encObjectSink is the same live encoder target as encSink, but keeps the
+// generated concrete object type for hot paths that already have it. This avoids
+// allocating when a concrete encoder is converted through the protocol
+// interface just to reach the raw fast-send helpers.
+type encObjectSink struct {
+	enc metal.MTLComputeCommandEncoderObject
+}
+
+func (s encObjectSink) setPSO(pso metal.MTLComputePipelineState) {
+	setPSOObject(s.enc, pso)
+}
+func (s encObjectSink) setBuf(buf metal.MTLBuffer, off, idx uint) {
+	setBufObject(s.enc, buf, off, idx)
+}
+func (s encObjectSink) setI32(v int32, idx uint)   { setBytesI32Object(s.enc, v, idx) }
+func (s encObjectSink) setI64(v int64, idx uint)   { setBytesI64Object(s.enc, v, idx) }
+func (s encObjectSink) setF32(v float32, idx uint) { setBytesF32Object(s.enc, v, idx) }
+func (s encObjectSink) dispatchThreads(grid, group metal.MTLSize) {
+	dispatchThreadsObject(s.enc, grid, group)
+}
+func (s encObjectSink) dispatchThreadgroups(grid, group metal.MTLSize) {
+	dispatchThreadgroupsObject(s.enc, grid, group)
 }
 
 // icbSink records into an ICB command: scalars bound as (process-memoised) buffers — an ICB command
@@ -79,6 +102,30 @@ func (s icbSink) dispatchThreads(grid, group metal.MTLSize) {
 }
 func (s icbSink) dispatchThreadgroups(grid, group metal.MTLSize) {
 	s.cmd.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(grid, group)
+}
+
+type fastICBSink struct {
+	cmd metal.MTLIndirectComputeCommand
+}
+
+func (s fastICBSink) setPSO(pso metal.MTLComputePipelineState) { setICBPSO(s.cmd, pso) }
+func (s fastICBSink) setBuf(buf metal.MTLBuffer, off, idx uint) {
+	setICBKernelBuffer(s.cmd, buf, off, idx)
+}
+func (s fastICBSink) setI32(v int32, idx uint) {
+	setICBKernelBuffer(s.cmd, scalarI32(v), 0, idx)
+}
+func (s fastICBSink) setI64(v int64, idx uint) {
+	setICBKernelBuffer(s.cmd, scalarI64(v), 0, idx)
+}
+func (s fastICBSink) setF32(v float32, idx uint) {
+	setICBKernelBuffer(s.cmd, scalarF32(v), 0, idx)
+}
+func (s fastICBSink) dispatchThreads(grid, group metal.MTLSize) {
+	concurrentDispatchThreads(s.cmd, grid, group)
+}
+func (s fastICBSink) dispatchThreadgroups(grid, group metal.MTLSize) {
+	concurrentDispatchThreadgroups(s.cmd, grid, group)
 }
 
 // emitRMSNorm records a single-row bf16 RMSNorm (out = rmsnorm(x, w@wOff), axisSize ≤ the kernel cap)
@@ -127,6 +174,95 @@ func emitRMSNormResidual[S dispatchSink](sink S, pso metal.MTLComputePipelineSta
 	sink.dispatchThreads(metal.MTLSize{Width: tg, Height: 1, Depth: 1}, metal.MTLSize{Width: tg, Height: 1, Depth: 1})
 }
 
+// emitLayerNorm records per-row LayerNorm over `rows` rows of axisSize each. Binding ABI:
+// x=0, weight=1, bias=2, out=3, eps=4, axisSize=5, weightStride=6, biasStride=7.
+func emitLayerNorm[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, b, out metal.MTLBuffer, axisSize, rows int, eps float32, tg uint) {
+	sink.setPSO(pso)
+	sink.setBuf(x, 0, 0)
+	sink.setBuf(w, 0, 1)
+	sink.setBuf(b, 0, 2)
+	sink.setBuf(out, 0, 3)
+	sink.setF32(eps, 4)
+	sink.setI32(int32(axisSize), 5)
+	sink.setI32(1, 6)
+	sink.setI32(1, 7)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
+		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
+	)
+}
+
+// emitSoftmax records row-wise float32 softmax over `rows` rows of axisSize each. Binding ABI:
+// in=0, out=1, axisSize=2; one threadgroup per row.
+func emitSoftmax[S dispatchSink](sink S, pso metal.MTLComputePipelineState, in, out metal.MTLBuffer, axisSize, rows int, tg uint) {
+	sink.setPSO(pso)
+	sink.setBuf(in, 0, 0)
+	sink.setBuf(out, 0, 1)
+	sink.setI32(int32(axisSize), 2)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
+		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
+	)
+}
+
+// emitSteelGemm records one MLX steel GEMM dispatch. Binding ABI: A=0, B=1, D=3, params=4.
+func emitSteelGemm[S dispatchSink](sink S, pso metal.MTLComputePipelineState, a, b, out, params metal.MTLBuffer, tn, tm int, wn, wm uint) {
+	sink.setPSO(pso)
+	sink.setBuf(a, 0, 0)
+	sink.setBuf(b, 0, 1)
+	sink.setBuf(out, 0, 3)
+	sink.setBuf(params, 0, 4)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(tn), Height: uint(tm), Depth: 1},
+		metal.MTLSize{Width: 32, Height: wn, Depth: wm},
+	)
+}
+
+// emitSteelSplitKGemm records the first MLX split-K steel GEMM pass. Binding ABI:
+// A=0, B=1, C_split=2, params=3.
+func emitSteelSplitKGemm[S dispatchSink](sink S, pso metal.MTLComputePipelineState, a, b, split, params metal.MTLBuffer, tn, tm, partitions int, wn, wm uint) {
+	sink.setPSO(pso)
+	sink.setBuf(a, 0, 0)
+	sink.setBuf(b, 0, 1)
+	sink.setBuf(split, 0, 2)
+	sink.setBuf(params, 0, 3)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(tn), Height: uint(tm), Depth: uint(partitions)},
+		metal.MTLSize{Width: 32, Height: wn, Depth: wm},
+	)
+}
+
+// emitSteelSplitKAccum records the second split-K pass that reduces C_split into the final D buffer.
+// Binding ABI: C_split=0, D=1, partitions=2, stride=3, N=4.
+func emitSteelSplitKAccum[S dispatchSink](sink S, pso metal.MTLComputePipelineState, split, out metal.MTLBuffer, partitions, stride, M, N int, bd0, bd1, bd2 uint) {
+	sink.setPSO(pso)
+	sink.setBuf(split, 0, 0)
+	sink.setBuf(out, 0, 1)
+	sink.setI32(int32(partitions), 2)
+	sink.setI32(int32(stride), 3)
+	sink.setI32(int32(N), 4)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(N), Height: uint(M), Depth: 1},
+		metal.MTLSize{Width: bd0, Height: bd1, Depth: bd2},
+	)
+}
+
+// emitUnary records a contiguous unary op over n elements. Binding ABI: in=0, out=1, count=2.
+func emitUnary[S dispatchSink](sink S, pso metal.MTLComputePipelineState, in, out metal.MTLBuffer, n int) {
+	sink.setPSO(pso)
+	sink.setBuf(in, 0, 0)
+	sink.setBuf(out, 0, 1)
+	sink.setI32(int32(n), 2)
+	group := uint(256)
+	if uint(n) < group {
+		group = uint(n)
+	}
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
+		metal.MTLSize{Width: group, Height: 1, Depth: 1},
+	)
+}
+
 // emitBinary records an element-wise binary op (vv_Add/vv_Multiply…) out = a⊙b over n elements through
 // any sink: a=0, b=1, out=2 (each at its byte offset), count=3, dispatched as n threads in min(n,256)-wide
 // groups. The body behind encBinaryDT (live) and the recorder's setBin. pso caller-provided (the ICB
@@ -151,10 +287,14 @@ func emitBinary[S dispatchSink](sink S, pso metal.MTLComputePipelineState, a met
 // base form). 2D dispatch (rd/2 × nHeads). The body behind encRoPEBF16To / encRoPEFreqsBF16To (live) and
 // the recorder's setRope. pso caller-provided — the ICB variant, and base vs freqs are different pipelines.
 func emitRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, out metal.MTLBuffer, inOff, outOff uint, pos, periods metal.MTLBuffer, nHeads, rd, headDim int, scale, log2base float32) {
+	emitRopeAt(sink, pso, x, out, inOff, outOff, pos, 0, periods, nHeads, rd, headDim, scale, log2base)
+}
+
+func emitRopeAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, out metal.MTLBuffer, inOff, outOff uint, pos metal.MTLBuffer, posOff uint, periods metal.MTLBuffer, nHeads, rd, headDim int, scale, log2base float32) {
 	sink.setPSO(pso)
 	sink.setBuf(x, inOff, 0)
 	sink.setBuf(out, outOff, 1)
-	sink.setBuf(pos, 0, 2)
+	sink.setBuf(pos, posOff, 2)
 	sink.setF32(scale, 3)
 	sink.setI64(int64(headDim), 4)
 	if periods != nil {
@@ -174,6 +314,10 @@ func emitRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, out 
 // caller's bound-but-unread periods buffer for the base form (each path supplies its own — content ignored
 // when useFreqs=0). pso caller-provided (ICB variant).
 func emitQKNormRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, pos, periods, dummy metal.MTLBuffer, nHeads, headDim, rd int, eps, scale, log2base float32) {
+	emitQKNormRopeAt(sink, pso, x, w, out, xOff, wOff, outOff, pos, 0, periods, dummy, nHeads, headDim, rd, eps, scale, log2base)
+}
+
+func emitQKNormRopeAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, pos metal.MTLBuffer, posOff uint, periods, dummy metal.MTLBuffer, nHeads, headDim, rd int, eps, scale, log2base float32) {
 	sink.setPSO(pso)
 	sink.setBuf(x, xOff, 0)
 	sink.setBuf(w, wOff, 1)
@@ -182,7 +326,7 @@ func emitQKNormRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x
 	sink.setI32(int32(headDim), 4)
 	sink.setI32(int32(rd), 5)
 	sink.setF32(scale, 6)
-	sink.setBuf(pos, 0, 7)
+	sink.setBuf(pos, posOff, 7)
 	sink.setF32(log2base, 8)
 	if periods != nil {
 		sink.setBuf(periods, 0, 9)
@@ -223,6 +367,43 @@ func emitSDPA[S dispatchSink](sink S, pso metal.MTLComputePipelineState, q, k, v
 	sink.dispatchThreadgroups(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
 }
 
+// emitSDPA2Pass1 records the first long-context SDPA pass. It writes one partial
+// weighted-V sum plus online-softmax sum/max per (batch, kv-head, block).
+func emitSDPA2Pass1[S dispatchSink](sink S, pso metal.MTLComputePipelineState, q, k, v, partials, sums, maxs metal.MTLBuffer, kvByteOff uint, batch, nHeads, nKVHeads, n, blocks int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) {
+	sink.setPSO(pso)
+	sink.setBuf(q, 0, 0)
+	sink.setBuf(k, kvByteOff, 1)
+	sink.setBuf(v, kvByteOff, 2)
+	sink.setBuf(partials, 0, 3)
+	sink.setBuf(sums, 0, 4)
+	sink.setBuf(maxs, 0, 5)
+	sink.setI32(int32(n), 7)
+	sink.setI64(kHeadStride, 8)
+	sink.setI64(kSeqStride, 9)
+	sink.setI64(vHeadStride, 10)
+	sink.setI64(vSeqStride, 11)
+	sink.setF32(scale, 12)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(nKVHeads), Height: uint(batch), Depth: uint(blocks)},
+		metal.MTLSize{Width: 32, Height: uint(nHeads / nKVHeads), Depth: 1},
+	)
+}
+
+// emitSDPA2Pass2 records the merge pass that combines per-block partials into the
+// final per-head output.
+func emitSDPA2Pass2[S dispatchSink](sink S, pso metal.MTLComputePipelineState, partials, sums, maxs, out metal.MTLBuffer, batch, nHeads, blocks int) {
+	sink.setPSO(pso)
+	sink.setBuf(partials, 0, 0)
+	sink.setBuf(sums, 0, 1)
+	sink.setBuf(maxs, 0, 2)
+	sink.setBuf(out, 0, 3)
+	sink.setI32(int32(blocks), 4)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(batch * nHeads), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
+	)
+}
+
 // emitQMV records a 4-bit affine quantised matvec (out = x @ Wᵀ, affine_qmv kernel) through any sink:
 // wq=0, scales=1, biases=2 (each at its byte offset into the shard mmap), x=3, out=4, K=5, N=6, grid
 // (1, ceil(N/8)) of (32, 2) threads. The body behind encQMVBF16 (live) and the recorder's setQMV — the
@@ -240,6 +421,68 @@ func emitQMV[S dispatchSink](sink S, pso metal.MTLComputePipelineState, wq metal
 	const bn, bk = 8, 32
 	nTgp := uint((outDim + bn - 1) / bn)
 	sink.dispatchThreadgroups(metal.MTLSize{Width: 1, Height: nTgp, Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+}
+
+// emitRMSQMV records the fused BF16 input RMSNorm + quant QMV fast kernel through any sink:
+// wq/scales/biases=0/1/2, x=3, out=4, K=5, N=6, normW=7, eps=8. The kernel uses the same
+// qmv-fast threadgroup geometry as emitQMV, but folds the norm into the projection prologue.
+func emitRMSQMV[S dispatchSink](sink S, pso metal.MTLComputePipelineState, wq metal.MTLBuffer, wqOff uint, scales metal.MTLBuffer, scalesOff uint, biases metal.MTLBuffer, biasesOff uint, x, out metal.MTLBuffer, outOff uint, normW metal.MTLBuffer, normWOff uint, inDim, outDim int, eps float32) {
+	sink.setPSO(pso)
+	sink.setBuf(wq, wqOff, 0)
+	sink.setBuf(scales, scalesOff, 1)
+	sink.setBuf(biases, biasesOff, 2)
+	sink.setBuf(x, 0, 3)
+	sink.setBuf(out, outOff, 4)
+	sink.setI32(int32(inDim), 5)
+	sink.setI32(int32(outDim), 6)
+	sink.setBuf(normW, normWOff, 7)
+	sink.setF32(eps, 8)
+	const bn, bk = 8, 32
+	nTgp := uint((outDim + bn - 1) / bn)
+	sink.dispatchThreadgroups(metal.MTLSize{Width: 1, Height: nTgp, Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+}
+
+// emitVProjHeadRMS records the fused Gemma V path: input RMSNorm + quantised V projection +
+// per-head value RMSNorm. Binding ABI: wq=0, scales=1, biases=2, x=3, normW=4, out=5,
+// inDim=6, eps=8; index 7 is intentionally unused because headDim is the threadgroup width.
+func emitVProjHeadRMS[S dispatchSink](sink S, pso metal.MTLComputePipelineState, wq, scales, biases, x, normW, out metal.MTLBuffer, inDim, nKVHeads, headDim int, eps float32) {
+	sink.setPSO(pso)
+	sink.setBuf(wq, 0, 0)
+	sink.setBuf(scales, 0, 1)
+	sink.setBuf(biases, 0, 2)
+	sink.setBuf(x, 0, 3)
+	sink.setBuf(normW, 0, 4)
+	sink.setBuf(out, 0, 5)
+	sink.setI32(int32(inDim), 6)
+	sink.setF32(eps, 8)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(nKVHeads), Height: 1, Depth: 1},
+		metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
+	)
+}
+
+// emitEmbedGatherQuant records the GPU dequant-gather for a token embedding row. Binding ABI:
+// token=0, packed=1, scales=2, biases=3, out=4, dModel=5, groupSize=6, embedScale=7,
+// rowPacked=8, rowSB=9. The token buffer is intentionally caller-provided so decode can bind the
+// previous GPU argmax output without a host round-trip.
+func emitEmbedGatherQuant[S dispatchSink](sink S, pso metal.MTLComputePipelineState, tokenBuf, packed, scales, biases, out metal.MTLBuffer, packedOff, scalesOff, biasesOff uint, dModel, groupSize, bits int, embedScale float32) {
+	rowPacked := dModel * bits / 8
+	rowSB := dModel / groupSize
+	sink.setPSO(pso)
+	sink.setBuf(tokenBuf, 0, 0)
+	sink.setBuf(packed, packedOff, 1)
+	sink.setBuf(scales, scalesOff, 2)
+	sink.setBuf(biases, biasesOff, 3)
+	sink.setBuf(out, 0, 4)
+	sink.setI32(int32(dModel), 5)
+	sink.setI32(int32(groupSize), 6)
+	sink.setF32(embedScale, 7)
+	sink.setI32(int32(rowPacked), 8)
+	sink.setI32(int32(rowSB), 9)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(dModel), Height: 1, Depth: 1},
+		metal.MTLSize{Width: uint(elemGroupTG(dModel)), Height: 1, Depth: 1},
+	)
 }
 
 // emitGemv records a bf16 tiled gemv (out = mat @ vec, mat row-major outDim×inDim) through any sink:

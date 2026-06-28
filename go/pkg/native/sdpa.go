@@ -17,9 +17,174 @@ import (
 // function constants are fixed to false; if other combinations are added later,
 // fold them into the key.
 var (
-	sdpaPSOMu    sync.Mutex
-	sdpaPSOCache = map[string]metal.MTLComputePipelineState{}
+	sdpaPSOMu                    sync.Mutex
+	sdpaPSOCache                 = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorHeadDimPSOCache    = map[int]metal.MTLComputePipelineState{}
+	sdpaVector2Pass1HeadDimCache = map[sdpa2Pass1Key]metal.MTLComputePipelineState{}
+	sdpaVector2Pass2HeadDimCache = map[int]metal.MTLComputePipelineState{}
+	sdpaBF16ScratchPools         sync.Map
+	errSDPABF16ScratchDim        = core.NewError("native.sdpaBF16Scratch: dimension mismatch")
 )
+
+type sdpa2Pass1Key struct {
+	headDim int
+	blocks  int32
+}
+
+type sdpaBF16Scratch struct {
+	qBytes, kBytes, vBytes, outBytes int
+	q, k, v, out                     *pinnedNoCopyBytes
+	p2PartialBytes, p2SumBytes       int
+	p2Partials, p2Sums, p2Maxs       metal.MTLBuffer
+}
+
+type sdpaBF16ScratchKey struct {
+	qBytes, kBytes, vBytes, outBytes int
+}
+
+func sdpaBF16ScratchPoolFor(key sdpaBF16ScratchKey) *sync.Pool {
+	if v, ok := sdpaBF16ScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := sdpaBF16ScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func sdpaBF16ScratchReady(s *sdpaBF16Scratch, key sdpaBF16ScratchKey) bool {
+	return s != nil &&
+		s.qBytes == key.qBytes && s.kBytes == key.kBytes && s.vBytes == key.vBytes && s.outBytes == key.outBytes &&
+		s.q != nil && s.k != nil && s.v != nil && s.out != nil
+}
+
+func newSDPABF16Scratch(qBytes, kBytes, vBytes, outBytes int) (*sdpaBF16Scratch, error) {
+	if qBytes <= 0 || kBytes <= 0 || vBytes <= 0 || outBytes <= 0 {
+		return nil, core.NewError("native.newSDPABF16Scratch: invalid dimensions")
+	}
+	q, err := newPinnedNoCopyBytes(qBytes)
+	if err != nil {
+		return nil, err
+	}
+	k, err := newPinnedNoCopyBytes(kBytes)
+	if err != nil {
+		q.Close()
+		return nil, err
+	}
+	v, err := newPinnedNoCopyBytes(vBytes)
+	if err != nil {
+		q.Close()
+		k.Close()
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(outBytes)
+	if err != nil {
+		q.Close()
+		k.Close()
+		v.Close()
+		return nil, err
+	}
+	return &sdpaBF16Scratch{
+		qBytes: qBytes, kBytes: kBytes, vBytes: vBytes, outBytes: outBytes,
+		q: q, k: k, v: v, out: out,
+	}, nil
+}
+
+func getSDPABF16Scratch(qBytes, kBytes, vBytes, outBytes int) (*sdpaBF16Scratch, error) {
+	key := sdpaBF16ScratchKey{qBytes: qBytes, kBytes: kBytes, vBytes: vBytes, outBytes: outBytes}
+	pool := sdpaBF16ScratchPoolFor(key)
+	if s, ok := pool.Get().(*sdpaBF16Scratch); ok {
+		if sdpaBF16ScratchReady(s, key) {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newSDPABF16Scratch(qBytes, kBytes, vBytes, outBytes)
+}
+
+func putSDPABF16Scratch(s *sdpaBF16Scratch) {
+	if s == nil {
+		return
+	}
+	key := sdpaBF16ScratchKey{qBytes: s.qBytes, kBytes: s.kBytes, vBytes: s.vBytes, outBytes: s.outBytes}
+	if sdpaBF16ScratchReady(s, key) {
+		sdpaBF16ScratchPoolFor(key).Put(s)
+	}
+}
+
+func (s *sdpaBF16Scratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.q != nil {
+		s.q.Close()
+		s.q = nil
+	}
+	if s.k != nil {
+		s.k.Close()
+		s.k = nil
+	}
+	if s.v != nil {
+		s.v.Close()
+		s.v = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.qBytes, s.kBytes, s.vBytes, s.outBytes = 0, 0, 0, 0
+	s.p2Partials, s.p2Sums, s.p2Maxs = nil, nil, nil
+	s.p2PartialBytes, s.p2SumBytes = 0, 0
+}
+
+func (s *sdpaBF16Scratch) buffers(qb, kb, vb []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.q == nil || s.k == nil || s.v == nil || s.out == nil {
+		return nil, nil, nil, nil, core.NewError("native.sdpaBF16Scratch.buffers: scratch is nil")
+	}
+	if len(qb) != s.qBytes || len(kb) != s.kBytes || len(vb) != s.vBytes || len(s.out.bytes) != s.outBytes {
+		return nil, nil, nil, nil, errSDPABF16ScratchDim
+	}
+	qBuf, err := s.q.copyBuffer(qb)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	kBuf, err := s.k.copyBuffer(kb)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	vBuf, err := s.v.copyBuffer(vb)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return qBuf, kBuf, vBuf, s.out.buf, nil
+}
+
+func (s *sdpaBF16Scratch) twoPassBuffers(nbh int, blocks int32, headDim int) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil {
+		return nil, nil, nil, core.NewError("native.sdpaBF16Scratch.twoPassBuffers: scratch is nil")
+	}
+	if nbh <= 0 || blocks <= 0 || headDim <= 0 {
+		return nil, nil, nil, core.NewError("native.sdpaBF16Scratch.twoPassBuffers: invalid dimensions")
+	}
+	partialBytes := nbh * int(blocks) * headDim * bf16Size
+	sumBytes := nbh * int(blocks) * 4
+	if s.p2Partials != nil && s.p2Sums != nil && s.p2Maxs != nil &&
+		s.p2PartialBytes == partialBytes && s.p2SumBytes == sumBytes {
+		return s.p2Partials, s.p2Sums, s.p2Maxs, nil
+	}
+	s.p2Partials = device.NewBufferWithLengthOptions(uint(partialBytes), metal.MTLResourceStorageModeShared)
+	s.p2Sums = device.NewBufferWithLengthOptions(uint(sumBytes), metal.MTLResourceStorageModeShared)
+	s.p2Maxs = device.NewBufferWithLengthOptions(uint(sumBytes), metal.MTLResourceStorageModeShared)
+	if s.p2Partials == nil || s.p2Sums == nil || s.p2Maxs == nil ||
+		s.p2Partials.GetID() == 0 || s.p2Sums.GetID() == 0 || s.p2Maxs.GetID() == 0 {
+		s.p2Partials, s.p2Sums, s.p2Maxs = nil, nil, nil
+		s.p2PartialBytes, s.p2SumBytes = 0, 0
+		return nil, nil, nil, core.NewError("native.sdpaBF16Scratch.twoPassBuffers: failed to create intermediates")
+	}
+	s.p2PartialBytes, s.p2SumBytes = partialBytes, sumBytes
+	return s.p2Partials, s.p2Sums, s.p2Maxs, nil
+}
 
 // sdpaVectorPipeline builds (and caches) the sdpa_vector kernel with MLX's six
 // attention function constants all false (no mask, query not transposed, not
@@ -52,6 +217,29 @@ func sdpaVectorPipeline(name string) (metal.MTLComputePipelineState, error) {
 		return nil, core.E("native.sdpaVectorPipeline", "pipeline "+name, err)
 	}
 	sdpaPSOCache[name] = pso
+	return pso, nil
+}
+
+func sdpaVectorPipelineForHeadDim(headDim int) (metal.MTLComputePipelineState, error) {
+	sdpaPSOMu.Lock()
+	if pso, ok := sdpaVectorHeadDimPSOCache[headDim]; ok {
+		sdpaPSOMu.Unlock()
+		return pso, nil
+	}
+	sdpaPSOMu.Unlock()
+
+	pso, err := sdpaVectorPipeline(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
+	if err != nil {
+		return nil, err
+	}
+
+	sdpaPSOMu.Lock()
+	if existing, ok := sdpaVectorHeadDimPSOCache[headDim]; ok {
+		sdpaPSOMu.Unlock()
+		return existing, nil
+	}
+	sdpaVectorHeadDimPSOCache[headDim] = pso
+	sdpaPSOMu.Unlock()
 	return pso, nil
 }
 
@@ -116,6 +304,53 @@ func sdpaVector2Pass2Pipeline(name string) (metal.MTLComputePipelineState, error
 	return pso, nil
 }
 
+func sdpaVector2Pass1PipelineForHeadDim(headDim int, blocks int32) (metal.MTLComputePipelineState, error) {
+	key := sdpa2Pass1Key{headDim: headDim, blocks: blocks}
+	sdpaPSOMu.Lock()
+	if pso, ok := sdpaVector2Pass1HeadDimCache[key]; ok {
+		sdpaPSOMu.Unlock()
+		return pso, nil
+	}
+	sdpaPSOMu.Unlock()
+
+	pso, err := sdpaVector2Pass1Pipeline(core.Sprintf("sdpa_vector_2pass_1_bfloat16_t_%d_%d", headDim, headDim), blocks)
+	if err != nil {
+		return nil, err
+	}
+
+	sdpaPSOMu.Lock()
+	if existing, ok := sdpaVector2Pass1HeadDimCache[key]; ok {
+		sdpaPSOMu.Unlock()
+		return existing, nil
+	}
+	sdpaVector2Pass1HeadDimCache[key] = pso
+	sdpaPSOMu.Unlock()
+	return pso, nil
+}
+
+func sdpaVector2Pass2PipelineForHeadDim(headDim int) (metal.MTLComputePipelineState, error) {
+	sdpaPSOMu.Lock()
+	if pso, ok := sdpaVector2Pass2HeadDimCache[headDim]; ok {
+		sdpaPSOMu.Unlock()
+		return pso, nil
+	}
+	sdpaPSOMu.Unlock()
+
+	pso, err := sdpaVector2Pass2Pipeline(core.Sprintf("sdpa_vector_2pass_2_bfloat16_t_%d", headDim))
+	if err != nil {
+		return nil, err
+	}
+
+	sdpaPSOMu.Lock()
+	if existing, ok := sdpaVector2Pass2HeadDimCache[headDim]; ok {
+		sdpaPSOMu.Unlock()
+		return existing, nil
+	}
+	sdpaVector2Pass2HeadDimCache[headDim] = pso
+	sdpaPSOMu.Unlock()
+	return pso, nil
+}
+
 // sdpa2PassDisabledForTest forces the decode SDPA back onto the single-pass kernel
 // even when the 2-pass intermediates are present — a measurement/parity lever so a
 // test can A/B the same live path with and without the long-context kernel.
@@ -164,13 +399,12 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 	if nKVHeads == 0 || nHeads%nKVHeads != 0 {
 		return nil, core.NewError("native.SDPA2Pass: nHeads must be a multiple of nKVHeads")
 	}
-	gqa := nHeads / nKVHeads
 	blocks := sdpa2PassBlocks(kvLen)
-	pso1, err := sdpaVector2Pass1Pipeline(core.Sprintf("sdpa_vector_2pass_1_bfloat16_t_%d_%d", headDim, headDim), blocks)
+	pso1, err := sdpaVector2Pass1PipelineForHeadDim(headDim, blocks)
 	if err != nil {
 		return nil, err
 	}
-	pso2, err := sdpaVector2Pass2Pipeline(core.Sprintf("sdpa_vector_2pass_2_bfloat16_t_%d", headDim))
+	pso2, err := sdpaVector2Pass2PipelineForHeadDim(headDim)
 	if err != nil {
 		return nil, err
 	}
@@ -178,55 +412,41 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 	const bf16Size = 2
 	outLen := b * nHeads * headDim * bf16Size
 	out := make([]byte, outLen)
+	var encErr error
 	withAutoreleasePool(func() {
-		qBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&qb[0]), uint(len(qb)), metal.MTLResourceStorageModeShared)
-		kBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&kb[0]), uint(len(kb)), metal.MTLResourceStorageModeShared)
-		vBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&vb[0]), uint(len(vb)), metal.MTLResourceStorageModeShared)
+		scratch, err := getSDPABF16Scratch(len(qb), len(kb), len(vb), outLen)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putSDPABF16Scratch(scratch)
+		qBuf, kBuf, vBuf, outBuf, err := scratch.buffers(qb, kb, vb)
+		if err != nil {
+			encErr = err
+			return
+		}
 		// intermediates: partials [b·nHeads·blocks·headDim] bf16, sums/maxs [b·nHeads·blocks] float32.
 		nbh := b * nHeads
-		partials := device.NewBufferWithLengthOptions(uint(nbh*int(blocks)*headDim*bf16Size), metal.MTLResourceStorageModeShared)
-		sums := device.NewBufferWithLengthOptions(uint(nbh*int(blocks)*4), metal.MTLResourceStorageModeShared)
-		maxs := device.NewBufferWithLengthOptions(uint(nbh*int(blocks)*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
+		partials, sums, maxs, err := scratch.twoPassBuffers(nbh, blocks, headDim)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder() // serial dispatch: pass 2 sees pass 1's writes
-		// Pass 1: per-block partials. Strides in elements; size_t at 8..11. N int at 7.
-		enc.SetComputePipelineState(pso1)
-		enc.SetBufferWithOffsetAtIndex(qBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(kBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(vBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(partials, 0, 3)
-		enc.SetBufferWithOffsetAtIndex(sums, 0, 4)
-		enc.SetBufferWithOffsetAtIndex(maxs, 0, 5)
-		setEncInt32(enc, int32(kvLen), 7)          // N
-		setEncInt64(enc, int64(kvLen*headDim), 8)  // k_head_stride
-		setEncInt64(enc, int64(headDim), 9)        // k_seq_stride
-		setEncInt64(enc, int64(kvLen*headDim), 10) // v_head_stride
-		setEncInt64(enc, int64(headDim), 11)       // v_seq_stride
-		setEncFloat32(enc, scale, 12)
-		// grid (nKVHeads, b, blocks); group (32, gqa, qseq=1) — each TG spans the gqa query-heads of one kv-head.
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nKVHeads), Height: uint(b), Depth: uint(blocks)},
-			metal.MTLSize{Width: 32, Height: uint(gqa), Depth: 1},
-		)
-		// Pass 2: merge per-block partials into the head output.
-		enc.SetComputePipelineState(pso2)
-		enc.SetBufferWithOffsetAtIndex(partials, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(sums, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(maxs, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncInt32(enc, blocks, 4)
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(b * nHeads), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		sink := encSink{enc}
+		emitSDPA2Pass1(sink, pso1, qBuf, kBuf, vBuf, partials, sums, maxs, 0, b, nHeads, nKVHeads, kvLen, int(blocks), int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+		emitSDPA2Pass2(sink, pso2, partials, sums, maxs, outBuf, b, nHeads, int(blocks))
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
+		copy(out, scratch.out.bytes[:outLen])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -251,8 +471,7 @@ func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale floa
 	if nKVHeads == 0 || nHeads%nKVHeads != 0 {
 		return nil, core.NewError("native.SDPA: nHeads must be a multiple of nKVHeads")
 	}
-	name := core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim)
-	pso, err := sdpaVectorPipeline(name)
+	pso, err := sdpaVectorPipelineForHeadDim(headDim)
 	if err != nil {
 		return nil, err
 	}
@@ -260,38 +479,31 @@ func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale floa
 	const bf16Size = 2
 	outLen := b * nHeads * headDim * bf16Size
 	out := make([]byte, outLen)
+	var encErr error
 	withAutoreleasePool(func() {
-		qBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&qb[0]), uint(len(qb)), metal.MTLResourceStorageModeShared)
-		kBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&kb[0]), uint(len(kb)), metal.MTLResourceStorageModeShared)
-		vBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&vb[0]), uint(len(vb)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
+		scratch, err := getSDPABF16Scratch(len(qb), len(kb), len(vb), outLen)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putSDPABF16Scratch(scratch)
+		qBuf, kBuf, vBuf, outBuf, err := scratch.buffers(qb, kb, vb)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(qBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(kBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(vBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncInt32(enc, int32(nHeads/nKVHeads), 4) // gqa_factor
-		setEncInt32(enc, int32(kvLen), 5)           // N (kv length)
-		setEncInt64(enc, int64(kvLen*headDim), 6)   // k_head_stride (elements)
-		setEncInt64(enc, int64(headDim), 7)         // k_seq_stride
-		setEncInt64(enc, int64(kvLen*headDim), 8)   // v_head_stride
-		setEncInt64(enc, int64(headDim), 9)         // v_seq_stride
-		setEncFloat32(enc, scale, 10)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitSDPA(encSink{enc}, pso, qBuf, kBuf, vBuf, outBuf, 0, nil, b*nHeads, b*nKVHeads, kvLen, int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		// one threadgroup per (batch · query-head); group is a full 1024-wide
-		// simd team as MLX dispatches it.
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(b * nHeads), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
+		copy(out, scratch.out.bytes[:outLen])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

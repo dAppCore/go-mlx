@@ -27,6 +27,10 @@ var (
 	geluPSOOnce sync.Once
 	geluPSO     metal.MTLComputePipelineState
 	geluPSOErr  error
+
+	ffnMegaPSOOnce sync.Once
+	ffnMegaPSO     metal.MTLComputePipelineState
+	ffnMegaPSOErr  error
 )
 
 // geluPipeline builds (once) the fused gelu pipeline from the custom kernels library.
@@ -46,17 +50,43 @@ func geluPipeline() (metal.MTLComputePipelineState, error) {
 	return geluPSO, geluPSOErr
 }
 
+const (
+	ffnMegaNumThreadgroups   = 64
+	ffnMegaThreadsPerGroup   = 128
+	ffnMegaMaxSpinIterations = 1_000_000
+)
+
+func ffnMegaPipeline() (metal.MTLComputePipelineState, error) {
+	ffnMegaPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			ffnMegaPSOErr = core.NewError("native.ffnMegaPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_ffn_megakernel")
+		if fn == nil || fn.GetID() == 0 {
+			ffnMegaPSOErr = core.NewError("native.ffnMegaPipeline: kernel lthn_ffn_megakernel not found")
+			return
+		}
+		ffnMegaPSO, ffnMegaPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return ffnMegaPSO, ffnMegaPSOErr
+}
+
 // encGeluGateMulFused encodes gelu(gate)·up via the fused kernel — one dispatch, fp32-internal, one
 // bf16 rounding (see the kernel comment for why this differs from the composed production path).
 // gate/up/out are contiguous bf16 buffers of n elements. Guard with gpuHasGeluKernel before calling.
 func encGeluGateMulFused(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLBuffer, n int) error {
+	return encGeluGateMulFusedTo(enc, gate, up, out, 0, 0, 0, n)
+}
+
+func encGeluGateMulFusedTo(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLBuffer, gateOff, upOff, outOff uint, n int) error {
 	pso, err := geluPipeline()
 	if err != nil {
 		return err
 	}
 	// the fused gelu(gate)·up shares the binary-op ABI (in0=0, in1=1, out=2, count=3) — one shared
 	// emitBinary body with vv_Add/vv_Multiply and the ICB recorder's gelu op, just a different pipeline.
-	emitBinary(encSink{enc}, pso, gate, 0, up, 0, out, 0, n)
+	emitBinary(encSink{enc}, pso, gate, gateOff, up, upOff, out, outOff, n)
 	return nil
 }
 
@@ -66,19 +96,28 @@ func geluGateMulFused(gate, up []byte, n int) ([]byte, error) {
 	var out []byte
 	var encErr error
 	withAutoreleasePool(func() {
-		gBuf, uBuf := sharedBytes(gate), sharedBytes(up)
-		oBuf := scratchBF16(n)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encGeluGateMulFused(enc, gBuf, uBuf, oBuf, n); encErr != nil {
-			enc.EndEncoding()
+		ioScratch, err := getBinaryByteScratch(n * bf16Size)
+		if err != nil {
+			encErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putBinaryByteScratch(ioScratch)
+		gBuf, uBuf, oBuf, err := ioScratch.buffers(gate, up)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encGeluGateMulFused(enc, gBuf, uBuf, oBuf, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		out = make([]byte, n*bf16Size)
-		copy(out, unsafe.Slice((*byte)(oBuf.Contents()), n*bf16Size))
+		copy(out, ioScratch.out.bytes[:n*bf16Size])
 	})
 	return out, encErr
 }
@@ -116,16 +155,45 @@ func encMulScalarBF16(enc metal.MTLComputeCommandEncoder, in, scalar, out metal.
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(in, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(scalar, scalarOffset, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncInt32(enc, int32(n), 3)
+	sink := encSink{enc}
+	sink.setPSO(pso)
+	sink.setBuf(in, 0, 0)
+	sink.setBuf(scalar, scalarOffset, 1)
+	sink.setBuf(out, 0, 2)
+	sink.setI32(int32(n), 3)
 	group := uint(256)
 	if uint(n) < group {
 		group = uint(n)
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
+		metal.MTLSize{Width: group, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encMulScalarBF16Object(enc metal.MTLComputeCommandEncoderObject, in, scalar, out metal.MTLBuffer, scalarOffset uint, n int) error {
+	if n < 0 {
+		return core.NewError("native.encMulScalarBF16: n must be >= 0")
+	}
+	if n == 0 {
+		return nil
+	}
+	pso, err := bf16MulScalarPipeline()
+	if err != nil {
+		return err
+	}
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(in, 0, 0)
+	sink.setBuf(scalar, scalarOffset, 1)
+	sink.setBuf(out, 0, 2)
+	sink.setI32(int32(n), 3)
+	group := uint(256)
+	if uint(n) < group {
+		group = uint(n)
+	}
+	sink.dispatchThreads(
 		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)
@@ -139,6 +207,13 @@ func bf16ScalarBytes(v float32) [bf16Size]byte {
 
 func encScaleBF16(enc metal.MTLComputeCommandEncoder, in, scalar, out metal.MTLBuffer, scalarOffset uint, scalarBytes []byte, n int) error {
 	if err := encMulScalarBF16(enc, in, scalar, out, scalarOffset, n); err == nil {
+		return nil
+	}
+	return encMulBF16(enc, in, sharedBytes(scalarFillBF16(scalarBytes, n)), out, n)
+}
+
+func encScaleBF16Object(enc metal.MTLComputeCommandEncoderObject, in, scalar, out metal.MTLBuffer, scalarOffset uint, scalarBytes []byte, n int) error {
+	if err := encMulScalarBF16Object(enc, in, scalar, out, scalarOffset, n); err == nil {
 		return nil
 	}
 	return encMulBF16(enc, in, sharedBytes(scalarFillBF16(scalarBytes, n)), out, n)
@@ -165,21 +240,34 @@ func MulScalarBF16(in, scalar []byte) ([]byte, error) {
 		return out, nil
 	}
 	var encErr error
+	var setupErr error
 	withAutoreleasePool(func() {
-		inBuf := sharedBytes(in)
-		scalarBuf := sharedBytes(scalar)
-		outBuf := scratchBF16(n)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encMulScalarBF16(enc, inBuf, scalarBuf, outBuf, 0, n); encErr != nil {
-			enc.EndEncoding()
+		scratch, err := getQMVBF16Scratch(n, n)
+		if err != nil {
+			setupErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		defer putQMVBF16Scratch(scratch)
+		inBuf, outBuf, err := scratch.buffers(in)
+		if err != nil {
+			setupErr = err
+			return
+		}
+		scalarBuf := bf16ConstBuffer(1, bf16ToF32(scalar[0], scalar[1]))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encMulScalarBF16(enc, inBuf, scalarBuf, outBuf, 0, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if setupErr != nil {
+		return nil, setupErr
+	}
 	if encErr == nil {
 		return out, nil
 	}
@@ -225,17 +313,18 @@ func encRouterTopKBF16(enc metal.MTLComputeCommandEncoder, scores, perExpertScal
 	if hasScale {
 		scaleFlag = 1
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(scores, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(perExpertScale, scaleOff, 1)
-	enc.SetBufferWithOffsetAtIndex(topIndices, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(topWeights, 0, 3)
-	setEncInt32(enc, int32(numExperts), 4)
-	setEncInt32(enc, int32(topK), 5)
-	setEncInt32(enc, scaleFlag, 6)
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
-		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	sink := encSink{enc}
+	sink.setPSO(pso)
+	sink.setBuf(scores, 0, 0)
+	sink.setBuf(perExpertScale, scaleOff, 1)
+	sink.setBuf(topIndices, 0, 2)
+	sink.setBuf(topWeights, 0, 3)
+	sink.setI32(int32(numExperts), 4)
+	sink.setI32(int32(topK), 5)
+	sink.setI32(scaleFlag, 6)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
 	)
 	return nil
 }
@@ -284,6 +373,15 @@ func routerTopKBF16(scoresB, perExpertScale []byte, numExperts, topK int) ([]int
 
 const bf16LMHeadArgmaxRowsPerTile = 8
 const bf16LogitsArgmaxRowsPerTile = 256
+const (
+	headSampleTopKMaxK         = 64
+	q4LMHeadTopKBlockSize      = 512
+	q4LMHeadTopKSimdgroups     = 4
+	q4LMHeadTopKSubtiles       = 8
+	q4LMHeadTopKResultsPerSIMD = 4
+	q4LMHeadTopKRowsPerTile    = q4LMHeadTopKSimdgroups * q4LMHeadTopKSubtiles * q4LMHeadTopKResultsPerSIMD
+	q4LMHeadTopKPackedPerInt32 = 8
+)
 
 var (
 	bf16LMHeadArgmaxTilesPSOOnce sync.Once
@@ -295,6 +393,27 @@ var (
 	argmaxMergeF32PSOOnce        sync.Once
 	argmaxMergeF32PSO            metal.MTLComputePipelineState
 	argmaxMergeF32PSOErr         error
+	bf16LMHeadCandidatesPSOOnce  sync.Once
+	bf16LMHeadCandidatesPSO      metal.MTLComputePipelineState
+	bf16LMHeadCandidatesPSOErr   error
+	bf16LogitsCandidatesPSOOnce  sync.Once
+	bf16LogitsCandidatesPSO      metal.MTLComputePipelineState
+	bf16LogitsCandidatesPSOErr   error
+	bf16LogitsTopKTilesPSOOnce   sync.Once
+	bf16LogitsTopKTilesPSO       metal.MTLComputePipelineState
+	bf16LogitsTopKTilesPSOErr    error
+	q4LMHeadTopKTilesPSOOnce     sync.Once
+	q4LMHeadTopKTilesPSO         metal.MTLComputePipelineState
+	q4LMHeadTopKTilesPSOErr      error
+	topKMergeF32PSOOnce          sync.Once
+	topKMergeF32PSO              metal.MTLComputePipelineState
+	topKMergeF32PSOErr           error
+	topKMergeSampleF32PSOOnce    sync.Once
+	topKMergeSampleF32PSO        metal.MTLComputePipelineState
+	topKMergeSampleF32PSOErr     error
+	logitsSampleBF16PSOOnce      sync.Once
+	logitsSampleBF16PSO          metal.MTLComputePipelineState
+	logitsSampleBF16PSOErr       error
 )
 
 func bf16LMHeadArgmaxTilesPipeline() (metal.MTLComputePipelineState, error) {
@@ -345,6 +464,118 @@ func argmaxMergeF32Pipeline() (metal.MTLComputePipelineState, error) {
 	return argmaxMergeF32PSO, argmaxMergeF32PSOErr
 }
 
+func bf16LMHeadCandidatesPipeline() (metal.MTLComputePipelineState, error) {
+	bf16LMHeadCandidatesPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			bf16LMHeadCandidatesPSOErr = core.NewError("native.bf16LMHeadCandidatesPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_bf16_lm_head_candidates_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			bf16LMHeadCandidatesPSOErr = core.NewError("native.bf16LMHeadCandidatesPipeline: kernel lthn_bf16_lm_head_candidates_bf16 not found")
+			return
+		}
+		bf16LMHeadCandidatesPSO, bf16LMHeadCandidatesPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return bf16LMHeadCandidatesPSO, bf16LMHeadCandidatesPSOErr
+}
+
+func bf16LogitsCandidatesPipeline() (metal.MTLComputePipelineState, error) {
+	bf16LogitsCandidatesPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			bf16LogitsCandidatesPSOErr = core.NewError("native.bf16LogitsCandidatesPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_bf16_logits_candidates_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			bf16LogitsCandidatesPSOErr = core.NewError("native.bf16LogitsCandidatesPipeline: kernel lthn_bf16_logits_candidates_bf16 not found")
+			return
+		}
+		bf16LogitsCandidatesPSO, bf16LogitsCandidatesPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return bf16LogitsCandidatesPSO, bf16LogitsCandidatesPSOErr
+}
+
+func bf16LogitsTopKTilesPipeline() (metal.MTLComputePipelineState, error) {
+	bf16LogitsTopKTilesPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			bf16LogitsTopKTilesPSOErr = core.NewError("native.bf16LogitsTopKTilesPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_bf16_logits_topk_tiles_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			bf16LogitsTopKTilesPSOErr = core.NewError("native.bf16LogitsTopKTilesPipeline: kernel lthn_bf16_logits_topk_tiles_bf16 not found")
+			return
+		}
+		bf16LogitsTopKTilesPSO, bf16LogitsTopKTilesPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return bf16LogitsTopKTilesPSO, bf16LogitsTopKTilesPSOErr
+}
+
+func q4LMHeadTopKTilesPipeline() (metal.MTLComputePipelineState, error) {
+	q4LMHeadTopKTilesPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			q4LMHeadTopKTilesPSOErr = core.NewError("native.q4LMHeadTopKTilesPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_q4_lm_head_topk_tiles_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			q4LMHeadTopKTilesPSOErr = core.NewError("native.q4LMHeadTopKTilesPipeline: kernel lthn_q4_lm_head_topk_tiles_bf16 not found")
+			return
+		}
+		q4LMHeadTopKTilesPSO, q4LMHeadTopKTilesPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return q4LMHeadTopKTilesPSO, q4LMHeadTopKTilesPSOErr
+}
+
+func topKMergeF32Pipeline() (metal.MTLComputePipelineState, error) {
+	topKMergeF32PSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			topKMergeF32PSOErr = core.NewError("native.topKMergeF32Pipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_topk_merge_f32")
+		if fn == nil || fn.GetID() == 0 {
+			topKMergeF32PSOErr = core.NewError("native.topKMergeF32Pipeline: kernel lthn_topk_merge_f32 not found")
+			return
+		}
+		topKMergeF32PSO, topKMergeF32PSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return topKMergeF32PSO, topKMergeF32PSOErr
+}
+
+func topKMergeSampleF32Pipeline() (metal.MTLComputePipelineState, error) {
+	topKMergeSampleF32PSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			topKMergeSampleF32PSOErr = core.NewError("native.topKMergeSampleF32Pipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_topk_merge_sample_f32")
+		if fn == nil || fn.GetID() == 0 {
+			topKMergeSampleF32PSOErr = core.NewError("native.topKMergeSampleF32Pipeline: kernel lthn_topk_merge_sample_f32 not found")
+			return
+		}
+		topKMergeSampleF32PSO, topKMergeSampleF32PSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return topKMergeSampleF32PSO, topKMergeSampleF32PSOErr
+}
+
+func logitsSampleBF16Pipeline() (metal.MTLComputePipelineState, error) {
+	logitsSampleBF16PSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			logitsSampleBF16PSOErr = core.NewError("native.logitsSampleBF16Pipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_logits_sample_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			logitsSampleBF16PSOErr = core.NewError("native.logitsSampleBF16Pipeline: kernel lthn_logits_sample_bf16 not found")
+			return
+		}
+		logitsSampleBF16PSO, logitsSampleBF16PSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return logitsSampleBF16PSO, logitsSampleBF16PSOErr
+}
+
 func bf16LMHeadArgmaxUsable(dModel, vocab int) bool {
 	if dModel <= 0 || vocab <= 0 {
 		return false
@@ -378,6 +609,96 @@ func qmvLogitsArgmaxUsable(dModel, vocab, groupSize, bits int) bool {
 		return false
 	}
 	return true
+}
+
+func bf16LMHeadTopKUsable(dModel, vocab, topK int) bool {
+	if dModel <= 0 || vocab <= 0 || topK <= 0 || topK > headSampleTopKMaxK || topK > vocab {
+		return false
+	}
+	if _, err := bf16LMHeadCandidatesPipeline(); err != nil {
+		return false
+	}
+	if _, err := topKMergeF32Pipeline(); err != nil {
+		return false
+	}
+	return true
+}
+
+func qmvLogitsTopKUsable(dModel, vocab, groupSize, bits, topK int) bool {
+	if dModel <= 0 || vocab <= 0 || bits != 4 || topK <= 0 || topK > headSampleTopKMaxK || topK > vocab {
+		return false
+	}
+	if groupSize != 32 && groupSize != 64 && groupSize != 128 {
+		return false
+	}
+	if dModel%groupSize != 0 {
+		return false
+	}
+	if _, err := pipelineFor(qmvBF16KernelName(vocab, dModel, groupSize, bits)); err != nil {
+		return false
+	}
+	if _, err := bf16LogitsTopKTilesPipeline(); err != nil {
+		return false
+	}
+	if _, err := topKMergeF32Pipeline(); err != nil {
+		return false
+	}
+	return true
+}
+
+func q4LMHeadTopKUsable(dModel, vocab, groupSize, bits, topK int) bool {
+	if dModel <= 0 || vocab <= 0 || bits != 4 || topK <= 0 || topK > headSampleTopKMaxK || topK > vocab {
+		return false
+	}
+	if groupSize != 32 && groupSize != 64 && groupSize != 128 {
+		return false
+	}
+	if dModel%groupSize != 0 || dModel%q4LMHeadTopKBlockSize != 0 {
+		return false
+	}
+	if _, err := q4LMHeadTopKTilesPipeline(); err != nil {
+		return false
+	}
+	if _, err := topKMergeF32Pipeline(); err != nil {
+		return false
+	}
+	return true
+}
+
+func topKSampleUsable(topK int) bool {
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return false
+	}
+	if _, err := topKMergeSampleF32Pipeline(); err != nil {
+		return false
+	}
+	return true
+}
+
+func logitsSampleBF16Usable(vocab int) bool {
+	if vocab <= 0 {
+		return false
+	}
+	if _, err := logitsSampleBF16Pipeline(); err != nil {
+		return false
+	}
+	return true
+}
+
+func q4LMHeadTopKCandidateCount(vocab, topK int) int {
+	perTile := topK
+	if q4LMHeadTopKRowsPerTile < perTile {
+		perTile = q4LMHeadTopKRowsPerTile
+	}
+	tileCount := (vocab + q4LMHeadTopKRowsPerTile - 1) / q4LMHeadTopKRowsPerTile
+	return tileCount * perTile
+}
+
+func q4LMHeadTopKCandidatesPerTile(topK int) int {
+	if q4LMHeadTopKRowsPerTile < topK {
+		return q4LMHeadTopKRowsPerTile
+	}
+	return topK
 }
 
 func encBF16LogitsArgmaxTilesBF16(
@@ -459,6 +780,346 @@ func encArgmaxMergeF32(enc metal.MTLComputeCommandEncoder, values, indices, out 
 	enc.DispatchThreadsThreadsPerThreadgroup(
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encBF16LMHeadCandidatesBF16(
+	enc metal.MTLComputeCommandEncoder,
+	x, weight, values, indices, suppress, history metal.MTLBuffer,
+	xOff, weightOff uint,
+	dModel, vocab, suppressCount, historyCount int,
+	repeatPenalty, softCap float32,
+) error {
+	if dModel <= 0 || vocab <= 0 {
+		return core.NewError("native.encBF16LMHeadCandidatesBF16: invalid head geometry")
+	}
+	pso, err := bf16LMHeadCandidatesPipeline()
+	if err != nil {
+		return err
+	}
+	tileCount := (vocab + bf16LMHeadArgmaxRowsPerTile - 1) / bf16LMHeadArgmaxRowsPerTile
+	setPSO(enc, pso)
+	setBuf(enc, x, xOff, 0)
+	setBuf(enc, weight, weightOff, 1)
+	setBuf(enc, values, 0, 2)
+	setBuf(enc, indices, 0, 3)
+	setEncInt32(enc, int32(dModel), 4)
+	setEncInt32(enc, int32(vocab), 5)
+	if suppress == nil {
+		suppress = x
+	}
+	setBuf(enc, suppress, 0, 6)
+	setEncInt32(enc, int32(suppressCount), 7)
+	if history == nil {
+		history = x
+	}
+	setBuf(enc, history, 0, 8)
+	setEncInt32(enc, int32(historyCount), 9)
+	setEncFloat32(enc, repeatPenalty, 10)
+	setEncFloat32(enc, softCap, 11)
+	dispatchThreadgroups(enc,
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: bf16LMHeadArgmaxRowsPerTile, Depth: 1},
+	)
+	return nil
+}
+
+func encBF16LogitsCandidatesBF16(
+	enc metal.MTLComputeCommandEncoder,
+	logits, values, indices, suppress metal.MTLBuffer,
+	vocab, suppressCount int,
+	softCap float32,
+) error {
+	if vocab <= 0 {
+		return core.NewError("native.encBF16LogitsCandidatesBF16: invalid logits geometry")
+	}
+	pso, err := bf16LogitsCandidatesPipeline()
+	if err != nil {
+		return err
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(values, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(indices, 0, 2)
+	setEncInt32(enc, int32(vocab), 3)
+	if suppress == nil {
+		suppress = logits
+	}
+	enc.SetBufferWithOffsetAtIndex(suppress, 0, 4)
+	setEncInt32(enc, int32(suppressCount), 5)
+	setEncFloat32(enc, softCap, 6)
+	group := uint(256)
+	if uint(vocab) < group {
+		group = uint(vocab)
+	}
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(vocab), Height: 1, Depth: 1},
+		metal.MTLSize{Width: group, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encBF16LogitsTopKTilesBF16(
+	enc metal.MTLComputeCommandEncoder,
+	logits, values, indices, suppress, history metal.MTLBuffer,
+	vocab, suppressCount, historyCount, topK int,
+	repeatPenalty, softCap float32,
+) error {
+	if vocab <= 0 {
+		return core.NewError("native.encBF16LogitsTopKTilesBF16: invalid logits geometry")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encBF16LogitsTopKTilesBF16: topK must be in 1..64")
+	}
+	pso, err := bf16LogitsTopKTilesPipeline()
+	if err != nil {
+		return err
+	}
+	tileCount := (vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(values, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(indices, 0, 2)
+	setEncInt32(enc, int32(vocab), 3)
+	if suppress == nil {
+		suppress = logits
+	}
+	enc.SetBufferWithOffsetAtIndex(suppress, 0, 4)
+	setEncInt32(enc, int32(suppressCount), 5)
+	if history == nil {
+		history = logits
+	}
+	enc.SetBufferWithOffsetAtIndex(history, 0, 6)
+	setEncInt32(enc, int32(historyCount), 7)
+	setEncFloat32(enc, repeatPenalty, 8)
+	setEncFloat32(enc, softCap, 9)
+	setEncInt32(enc, int32(topK), 10)
+	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encBF16LogitsTopKTilesBF16Object(
+	enc metal.MTLComputeCommandEncoderObject,
+	logits, values, indices, suppress, history metal.MTLBuffer,
+	vocab, suppressCount, historyCount, topK int,
+	repeatPenalty, softCap float32,
+) error {
+	if vocab <= 0 {
+		return core.NewError("native.encBF16LogitsTopKTilesBF16: invalid logits geometry")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encBF16LogitsTopKTilesBF16: topK must be in 1..64")
+	}
+	pso, err := bf16LogitsTopKTilesPipeline()
+	if err != nil {
+		return err
+	}
+	tileCount := (vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(logits, 0, 0)
+	sink.setBuf(values, 0, 1)
+	sink.setBuf(indices, 0, 2)
+	sink.setI32(int32(vocab), 3)
+	if suppress == nil {
+		suppress = logits
+	}
+	sink.setBuf(suppress, 0, 4)
+	sink.setI32(int32(suppressCount), 5)
+	if history == nil {
+		history = logits
+	}
+	sink.setBuf(history, 0, 6)
+	sink.setI32(int32(historyCount), 7)
+	sink.setF32(repeatPenalty, 8)
+	sink.setF32(softCap, 9)
+	sink.setI32(int32(topK), 10)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encQ4LMHeadTopKTilesBF16(
+	enc metal.MTLComputeCommandEncoder,
+	x, weight, scales, biases, values, indices, suppress, history metal.MTLBuffer,
+	xOff, weightOff, scalesOff, biasesOff uint,
+	dModel, vocab, groupSize, suppressCount, historyCount, topK, candidatesPerTile int,
+	repeatPenalty, softCap float32,
+) error {
+	if dModel <= 0 || vocab <= 0 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: invalid head geometry")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: topK must be in 1..64")
+	}
+	if candidatesPerTile <= 0 || candidatesPerTile > topK || candidatesPerTile > q4LMHeadTopKRowsPerTile {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: invalid candidatesPerTile")
+	}
+	if groupSize != 32 && groupSize != 64 && groupSize != 128 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: groupSize must be 32, 64, or 128")
+	}
+	if dModel%groupSize != 0 || dModel%q4LMHeadTopKBlockSize != 0 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: dModel must be a multiple of groupSize and 512")
+	}
+	pso, err := q4LMHeadTopKTilesPipeline()
+	if err != nil {
+		return err
+	}
+	tileCount := (vocab + q4LMHeadTopKRowsPerTile - 1) / q4LMHeadTopKRowsPerTile
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
+	enc.SetBufferWithOffsetAtIndex(weight, weightOff, 1)
+	enc.SetBufferWithOffsetAtIndex(scales, scalesOff, 2)
+	enc.SetBufferWithOffsetAtIndex(biases, biasesOff, 3)
+	enc.SetBufferWithOffsetAtIndex(values, 0, 4)
+	enc.SetBufferWithOffsetAtIndex(indices, 0, 5)
+	setEncInt32(enc, int32(dModel), 6)
+	setEncInt32(enc, int32(vocab), 7)
+	setEncInt32(enc, int32(groupSize), 8)
+	if suppress == nil {
+		suppress = x
+	}
+	enc.SetBufferWithOffsetAtIndex(suppress, 0, 9)
+	setEncInt32(enc, int32(suppressCount), 10)
+	if history == nil {
+		history = x
+	}
+	enc.SetBufferWithOffsetAtIndex(history, 0, 11)
+	setEncInt32(enc, int32(historyCount), 12)
+	setEncFloat32(enc, repeatPenalty, 13)
+	setEncFloat32(enc, softCap, 14)
+	setEncInt32(enc, int32(topK), 15)
+	setEncInt32(enc, int32(candidatesPerTile), 16)
+	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: q4LMHeadTopKSimdgroups, Depth: 1},
+	)
+	return nil
+}
+
+func encTopKMergeF32(enc metal.MTLComputeCommandEncoder, values, indices, outValues, outIndices metal.MTLBuffer, n, topK int) error {
+	if n <= 0 {
+		return core.NewError("native.encTopKMergeF32: n must be > 0")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encTopKMergeF32: topK must be in 1..64")
+	}
+	pso, err := topKMergeF32Pipeline()
+	if err != nil {
+		return err
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(values, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(indices, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(outValues, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(outIndices, 0, 3)
+	setEncInt32(enc, int32(n), 4)
+	setEncInt32(enc, int32(topK), 5)
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encTopKMergeSampleF32(enc metal.MTLComputeCommandEncoder, values, indices, out, params metal.MTLBuffer) error {
+	if params == nil {
+		return core.NewError("native.encTopKMergeSampleF32: missing params buffer")
+	}
+	pso, err := topKMergeSampleF32Pipeline()
+	if err != nil {
+		return err
+	}
+	setPSO(enc, pso)
+	setBuf(enc, values, 0, 0)
+	setBuf(enc, indices, 0, 1)
+	setBuf(enc, out, 0, 2)
+	setBuf(enc, params, 0, 3)
+	dispatchThreads(enc,
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encTopKMergeSampleF32Object(enc metal.MTLComputeCommandEncoderObject, values, indices, out, params metal.MTLBuffer) error {
+	if params == nil {
+		return core.NewError("native.encTopKMergeSampleF32: missing params buffer")
+	}
+	pso, err := topKMergeSampleF32Pipeline()
+	if err != nil {
+		return err
+	}
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(values, 0, 0)
+	sink.setBuf(indices, 0, 1)
+	sink.setBuf(out, 0, 2)
+	sink.setBuf(params, 0, 3)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encLogitsSampleBF16(enc metal.MTLComputeCommandEncoder, logits, suppress, history, out, params metal.MTLBuffer) error {
+	if params == nil {
+		return core.NewError("native.encLogitsSampleBF16: missing params buffer")
+	}
+	pso, err := logitsSampleBF16Pipeline()
+	if err != nil {
+		return err
+	}
+	if suppress == nil {
+		suppress = logits
+	}
+	if history == nil {
+		history = logits
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(suppress, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(history, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
+	enc.SetBufferWithOffsetAtIndex(params, 0, 4)
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encLogitsSampleBF16Object(enc metal.MTLComputeCommandEncoderObject, logits, suppress, history, out, params metal.MTLBuffer) error {
+	if params == nil {
+		return core.NewError("native.encLogitsSampleBF16: missing params buffer")
+	}
+	pso, err := logitsSampleBF16Pipeline()
+	if err != nil {
+		return err
+	}
+	if suppress == nil {
+		suppress = logits
+	}
+	if history == nil {
+		history = logits
+	}
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(logits, 0, 0)
+	sink.setBuf(suppress, 0, 1)
+	sink.setBuf(history, 0, 2)
+	sink.setBuf(out, 0, 3)
+	sink.setBuf(params, 0, 4)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
 	)
 	return nil
 }

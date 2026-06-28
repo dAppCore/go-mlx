@@ -14,45 +14,38 @@ using namespace metal;
 
 typedef bfloat bf16;
 
-// 4-bit affine dequant gemv for ONE output row over a PLAIN bf16 input (stage 1: x = the hidden state).
-static inline float qgemv_row(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
-                              const device bf16* x, uint inDim, uint groupSize) {
-  const uint groups = inDim / groupSize;
-  float acc = 0.0f;
-  for (uint g = 0; g < groups; g++) {
+// 4-bit affine dequant gemv for ONE output row over a PLAIN bf16 input. One 32-lane simdgroup owns
+// the row; each lane accumulates k=lane,lane+32,... and simd_sum combines the reduction.
+static inline float qgemv_row_simd(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
+                                   const device bf16* x, uint inDim, uint groupSize, uint lane) {
+  float partial = 0.0f;
+  for (uint k = lane; k < inDim; k += 32u) {
+    const uint g = k / groupSize;
     const float s = float(srow[g]);
     const float b = float(brow[g]);
-    const uint base = g * groupSize;
-    for (uint j = 0; j < groupSize; j++) {
-      const uint k = base + j;
-      const uint8_t pb = prow[k >> 1];
-      const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
-      acc += (s * code + b) * float(x[k]);
-    }
+    const uint8_t pb = prow[k >> 1];
+    const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
+    partial += (s * code + b) * float(x[k]);
   }
-  return acc;
+  return simd_sum(partial);
 }
 
 // Same gemv but reading the input through ATOMIC load (stage 2: x = gated, written cross-TG in stage 1).
 // Each gated slot holds one bf16 zero-extended into a uint; the relaxed atomic load is L2-coherent so a
 // distant TG's stage-1 write is seen after the device-scope grid barrier.
-static inline float qgemv_row_atomic_x(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
-                                       const device atomic_uint* x, uint inDim, uint groupSize) {
-  const uint groups = inDim / groupSize;
-  float acc = 0.0f;
-  for (uint g = 0; g < groups; g++) {
+static inline float qgemv_row_atomic_x_simd(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
+                                            const device atomic_uint* x, uint inDim, uint groupSize, uint lane) {
+  float partial = 0.0f;
+  for (uint k = lane; k < inDim; k += 32u) {
+    const uint g = k / groupSize;
     const float s = float(srow[g]);
     const float b = float(brow[g]);
-    const uint base = g * groupSize;
-    for (uint j = 0; j < groupSize; j++) {
-      const uint k = base + j;
-      const uint8_t pb = prow[k >> 1];
-      const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
-      const bf16 xv = as_type<bf16>(ushort(atomic_load_explicit(&x[k], memory_order_relaxed)));
-      acc += (s * code + b) * float(xv);
-    }
+    const uint8_t pb = prow[k >> 1];
+    const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
+    const bf16 xv = as_type<bf16>(ushort(atomic_load_explicit(&x[k], memory_order_relaxed)));
+    partial += (s * code + b) * float(xv);
   }
-  return acc;
+  return simd_sum(partial);
 }
 
 // Device-wide grid barrier: seq_cst device fence releases this TG's stage-1 writes device-wide, the
@@ -94,31 +87,40 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
     const constant uint& groupSize [[buffer(15)]],
     const constant uint& numTG   [[buffer(16)]],
     const constant uint& maxSpin [[buffer(17)]],
-    uint gid [[thread_position_in_grid]],
     uint lid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint tg_pos [[threadgroup_position_in_grid]],
     uint tgSize [[threads_per_threadgroup]]) {
-  const uint stride = numTG * tgSize;
+  const uint simdgroupsPerTG = tgSize / 32u;
+  const uint row0 = tg_pos * simdgroupsPerTG + simd_gid;
+  const uint rowStride = numTG * simdgroupsPerTG;
   const uint rowPackedH = hidden / 2;       // gate/up rows reduce over hidden
   const uint rowSBH = hidden / groupSize;
   const uint rowPackedF = ff / 2;           // down rows reduce over ff
   const uint rowSBF = ff / groupSize;
 
   // Stage 1: gated[i] = gelu(qgemv(Wg,x)_i) · qgemv(Wu,x)_i  (written atomically for the cross-TG handoff)
-  for (uint i = gid; i < ff; i += stride) {
+  for (uint row = row0; row < ff; row += rowStride) {
     // round gate/up to bf16 BEFORE the gelu — the separate-op path writes them as bf16 (qmv output) and the
     // gelu kernel reads bf16, so matching the rounding point keeps the fusion token-identical.
-    const float g = float(bf16(qgemv_row(gateP + (uint)i * rowPackedH, gateS + (uint)i * rowSBH, gateB + (uint)i * rowSBH, x, hidden, groupSize)));
-    const float u = float(bf16(qgemv_row(upP + (uint)i * rowPackedH, upS + (uint)i * rowSBH, upB + (uint)i * rowSBH, x, hidden, groupSize)));
-    const float inner = g + 0.044715f * (g * g * g);
-    const float t = precise::tanh(0.7978845608028654f * inner);
-    const float gelu = 0.5f * g * (1.0f + t);
-    atomic_store_explicit(&gated[i], uint(as_type<ushort>(bf16(gelu * u))), memory_order_relaxed);
+    const float g = float(bf16(qgemv_row_simd(gateP + row * rowPackedH, gateS + row * rowSBH, gateB + row * rowSBH, x, hidden, groupSize, lane)));
+    const float u = float(bf16(qgemv_row_simd(upP + row * rowPackedH, upS + row * rowSBH, upB + row * rowSBH, x, hidden, groupSize, lane)));
+    if (lane == 0u) {
+      const float inner = g + 0.044715f * (g * g * g);
+      const float t = precise::tanh(0.7978845608028654f * inner);
+      const float gelu = 0.5f * g * (1.0f + t);
+      atomic_store_explicit(&gated[row], uint(as_type<ushort>(bf16(gelu * u))), memory_order_relaxed);
+    }
   }
 
   grid_barrier(arrive, numTG, lid, maxSpin);
 
   // Stage 2: out[h] = qgemv(Wd, gated)_h  (gated read atomically — coherent across the device-scope barrier)
-  for (uint h = gid; h < hidden; h += stride) {
-    out[h] = bf16(qgemv_row_atomic_x(downP + (uint)h * rowPackedF, downS + (uint)h * rowSBF, downB + (uint)h * rowSBF, gated, ff, groupSize));
+  for (uint row = row0; row < hidden; row += rowStride) {
+    const float y = qgemv_row_atomic_x_simd(downP + row * rowPackedF, downS + row * rowSBF, downB + row * rowSBF, gated, ff, groupSize, lane);
+    if (lane == 0u) {
+      out[row] = bf16(y);
+    }
   }
 }

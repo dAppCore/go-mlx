@@ -14,6 +14,32 @@ import (
 	"dappco.re/go/mlx/pkg/model"
 )
 
+func TestDecodeForwardArchICBQuantAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const groupSize, bits = 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layer := quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)
+	layers := []QuantizedLayerWeights{layer}
+	specs := model.DeriveLayers([]string{"full_attention"}, 0)
+	if _, err := DecodeForwardArchICBQuant(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, forwardErr = DecodeForwardArchICBQuant(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardArchICBQuant: %v", forwardErr)
+	}
+	if allocs > 1900 {
+		t.Fatalf("DecodeForwardArchICBQuant allocations = %.0f, want <= 1900", allocs)
+	}
+}
+
 // TestDecodeForwardArchICBQuant gates the stacked fast path — 4-bit qmv weights AND the
 // ICB encode-bypass replay, arch-driven. It must equal DecodeForwardArchQuant (the quant
 // re-encode arch path) byte-for-byte across every arch axis: all-owner/global, KV-share,

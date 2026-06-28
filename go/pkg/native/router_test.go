@@ -61,6 +61,62 @@ func TestMoERouterTopKKernelMatchesHostSelection(t *testing.T) {
 	}
 }
 
+func TestMoERouterDeviceTopKAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel = 8, 2, 64
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := toBF16Bytes(syntheticFloat32(numExperts*dModel, 43))
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	for i := 0; i < 2; i++ {
+		if _, _, err := MoERouter(x, normW, routerW, scale, numExperts, topK, dModel, 1e-5); err != nil {
+			t.Fatalf("MoERouter warm %d: %v", i, err)
+		}
+	}
+
+	allocs := testing.AllocsPerRun(50, func() {
+		idx, weights, err := MoERouter(x, normW, routerW, scale, numExperts, topK, dModel, 1e-5)
+		if err != nil {
+			t.Fatalf("MoERouter: %v", err)
+		}
+		if len(idx) != topK || len(weights) != topK*bf16Size {
+			t.Fatalf("MoERouter returned %d idx/%d weight bytes", len(idx), len(weights))
+		}
+	})
+	if allocs > 405 {
+		t.Fatalf("MoERouter warmed device top-k allocations = %.0f, want <= 405", allocs)
+	}
+}
+
+func TestMoERouterQuantDeviceTopKAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel, groupSize, bits = 8, 2, 64, 32, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := quantWeightFixture(t, numExperts, dModel, groupSize, bits, 43)
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	for i := 0; i < 2; i++ {
+		if _, _, err := MoERouterQuant(x, normW, routerW, scale, numExperts, topK, dModel, groupSize, bits, 1e-5); err != nil {
+			t.Fatalf("MoERouterQuant warm %d: %v", i, err)
+		}
+	}
+
+	allocs := testing.AllocsPerRun(50, func() {
+		idx, weights, err := MoERouterQuant(x, normW, routerW, scale, numExperts, topK, dModel, groupSize, bits, 1e-5)
+		if err != nil {
+			t.Fatalf("MoERouterQuant: %v", err)
+		}
+		if len(idx) != topK || len(weights) != topK*bf16Size {
+			t.Fatalf("MoERouterQuant returned %d idx/%d weight bytes", len(idx), len(weights))
+		}
+	})
+	if allocs > 364 {
+		t.Fatalf("MoERouterQuant warmed device top-k allocations = %.0f, want <= 364", allocs)
+	}
+}
+
 // routerRef independently computes the ideal routing decision from the parity-proven
 // ops: scores = MatVecBF16 on the RMS-normed input, the genuine top-k SET found by a
 // repeated max-scan with separate bookkeeping, then a float64 softmax over those
@@ -251,6 +307,89 @@ func TestMoERouterDeviceTopKCachesNormAndScale(t *testing.T) {
 	}
 }
 
+func TestMoERouterHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel = 8, 2, 64
+	const eps = float32(1e-5)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := toBF16Bytes(syntheticFloat32(numExperts*dModel, 43))
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16 reference: %v", err)
+	}
+	scores, err := matVecBF16Resident(routerW, normed, numExperts, dModel)
+	if err != nil {
+		t.Fatalf("matVecBF16Resident reference: %v", err)
+	}
+	wantIdx, wantWeights := routerSelect(scores, scale, numExperts, topK)
+
+	scratch, err := newRouterHostScratch(dModel, numExperts)
+	if err != nil {
+		t.Fatalf("newRouterHostScratch: %v", err)
+	}
+	defer scratch.Close()
+	normPtr := unsafe.Pointer(&scratch.normed.bytes[0])
+	scorePtr := unsafe.Pointer(&scratch.scores.bytes[0])
+
+	for i := 0; i < 2; i++ {
+		gotIdx, gotWeights, err := moeRouterBF16HostSelectWithScratch(x, normWScaled, routerW, scale, numExperts, topK, dModel, eps, scratch)
+		if err != nil {
+			t.Fatalf("moeRouterBF16HostSelectWithScratch %d: %v", i, err)
+		}
+		if unsafe.Pointer(&scratch.normed.bytes[0]) != normPtr || unsafe.Pointer(&scratch.scores.bytes[0]) != scorePtr {
+			t.Fatal("router host scratch did not keep stable norm/score backing")
+		}
+		if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
+			t.Fatalf("router host fallback lengths = %d/%d, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))
+		}
+		for j := range wantIdx {
+			if gotIdx[j] != wantIdx[j] {
+				t.Fatalf("router host fallback idx[%d] = %d, want %d", j, gotIdx[j], wantIdx[j])
+			}
+			if gotWeights[j*bf16Size] != wantWeights[j*bf16Size] || gotWeights[j*bf16Size+1] != wantWeights[j*bf16Size+1] {
+				t.Fatalf("router host fallback weight[%d] = %v, want %v", j, gotWeights, wantWeights)
+			}
+		}
+	}
+}
+
+func TestRouterHostScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getRouterHostScratch(64, 8)
+	if err != nil {
+		t.Fatalf("get small router host scratch: %v", err)
+	}
+	putRouterHostScratch(small)
+
+	large, err := getRouterHostScratch(128, 16)
+	if err != nil {
+		t.Fatalf("get large router host scratch: %v", err)
+	}
+	putRouterHostScratch(large)
+
+	gotSmall, err := getRouterHostScratch(64, 8)
+	if err != nil {
+		t.Fatalf("get small router host scratch again: %v", err)
+	}
+	defer putRouterHostScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("router host scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge, err := getRouterHostScratch(128, 16)
+	if err != nil {
+		t.Fatalf("get large router host scratch again: %v", err)
+	}
+	defer putRouterHostScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("router host scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
 func TestMoERouterQuantCachesProjectionWeight(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -311,6 +450,55 @@ func TestMoERouterQuantHonoursWeightGeometry(t *testing.T) {
 		}
 		if gotWeights[i*bf16Size] != wantWeights[i*bf16Size] || gotWeights[i*bf16Size+1] != wantWeights[i*bf16Size+1] {
 			t.Fatalf("MoERouterQuant weight[%d] = %v, want %v", i, gotWeights, wantWeights)
+		}
+	}
+}
+
+func TestMoERouterQuantHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel, groupSize, bits = 8, 2, 64, 32, 4
+	const eps = float32(1e-5)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	routerW := quantWeightFixture(t, numExperts, dModel, groupSize, bits, 43)
+	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16 reference: %v", err)
+	}
+	scores, err := qmvBF16Resident(normed, routerW, numExperts, dModel, groupSize, bits)
+	if err != nil {
+		t.Fatalf("qmvBF16Resident reference: %v", err)
+	}
+	wantIdx, wantWeights := routerSelect(scores, scale, numExperts, topK)
+
+	scratch, err := newRouterQuantHostScratch(dModel, numExperts)
+	if err != nil {
+		t.Fatalf("newRouterQuantHostScratch: %v", err)
+	}
+	defer scratch.Close()
+	normPtr := unsafe.Pointer(&scratch.normed.bytes[0])
+	scorePtr := unsafe.Pointer(&scratch.scores.bytes[0])
+
+	for i := 0; i < 2; i++ {
+		gotIdx, gotWeights, err := moeRouterQuantHostSelectWithScratch(x, normWScaled, bufView{}, routerW, scale, numExperts, topK, dModel, groupSize, bits, eps, scratch)
+		if err != nil {
+			t.Fatalf("moeRouterQuantHostSelectWithScratch %d: %v", i, err)
+		}
+		if unsafe.Pointer(&scratch.normed.bytes[0]) != normPtr || unsafe.Pointer(&scratch.scores.bytes[0]) != scorePtr {
+			t.Fatal("router quant host scratch did not keep stable norm/score backing")
+		}
+		if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
+			t.Fatalf("router quant host fallback lengths = %d/%d, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))
+		}
+		for j := range wantIdx {
+			if gotIdx[j] != wantIdx[j] {
+				t.Fatalf("router quant host fallback idx[%d] = %d, want %d", j, gotIdx[j], wantIdx[j])
+			}
+			if gotWeights[j*bf16Size] != wantWeights[j*bf16Size] || gotWeights[j*bf16Size+1] != wantWeights[j*bf16Size+1] {
+				t.Fatalf("router quant host fallback weight[%d] = %v, want %v", j, gotWeights, wantWeights)
+			}
 		}
 	}
 }

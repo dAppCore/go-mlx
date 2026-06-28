@@ -39,8 +39,11 @@ type promptCacheTextSession struct {
 	generated          []int32
 	generatedMax       int
 	generatedEOS       int
+	sampledStopTokens  []int32
+	sampledParams      model.SampleParams
 	generateEachCalls  int
 	cachedEachCalls    int
+	cachedSampledCalls int
 	streamedYieldCount int
 	clearCallCount     int
 }
@@ -73,6 +76,27 @@ func (s *promptCacheTextSession) GenerateCachedEach(ids []int32, maxNew, eos int
 	s.generatedEOS = eos
 	s.cachedEachCalls++
 	return s.streamIDs([]int32{7, 8}, yield), nil
+}
+
+func (s *promptCacheTextSession) GenerateCachedSampledEach(ids []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	s.generated = append(s.generated[:0], ids...)
+	s.generatedMax = maxNew
+	s.sampledStopTokens = append(s.sampledStopTokens[:0], stopTokens...)
+	s.sampledParams = params
+	s.cachedSampledCalls++
+	out := []int32{9, 10}
+	gen := make([]int32, 0, len(out))
+	for _, id := range out {
+		if transform != nil {
+			id = transform(id)
+		}
+		gen = append(gen, id)
+		s.streamedYieldCount++
+		if yield != nil && !yield(id) {
+			break
+		}
+	}
+	return gen, nil
 }
 
 func (s *promptCacheTextSession) streamIDs(ids []int32, yield func(int32) bool) []int32 {
@@ -123,6 +147,68 @@ type sampledStopTextSession struct {
 func (s *sampledStopTextSession) Step([]byte) ([]byte, error) {
 	s.stepCalls++
 	return []byte{0}, nil
+}
+
+type sampledFastTextTokenModel struct {
+	session   *sampledFastTextSession
+	headCalls int
+}
+
+func (m *sampledFastTextTokenModel) Embed(id int32) ([]byte, error) { return []byte{byte(id)}, nil }
+
+func (m *sampledFastTextTokenModel) DecodeForward([][]byte) ([][]byte, error) {
+	return [][]byte{{0}}, nil
+}
+
+func (m *sampledFastTextTokenModel) Head([]byte) ([]byte, error) {
+	m.headCalls++
+	return make([]byte, 12*2), nil
+}
+
+func (m *sampledFastTextTokenModel) Vocab() int { return 12 }
+
+func (m *sampledFastTextTokenModel) OpenSession() (model.DecodeStepper, error) {
+	return m.session, nil
+}
+
+type sampledFastTextSession struct {
+	sampledOneShotCalls  int
+	sampledRetainedCalls int
+	seenIDs              []int32
+	seenMax              int
+	seenStops            []int32
+	seenParams           model.SampleParams
+}
+
+func (s *sampledFastTextSession) Step([]byte) ([]byte, error) { return []byte{0}, nil }
+
+func (s *sampledFastTextSession) GenerateSampledOneShotEach(ids []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	s.sampledOneShotCalls++
+	return s.generateSampled(ids, maxNew, stopTokens, params, transform, yield)
+}
+
+func (s *sampledFastTextSession) GenerateSampledEach(ids []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	s.sampledRetainedCalls++
+	return s.generateSampled(ids, maxNew, stopTokens, params, transform, yield)
+}
+
+func (s *sampledFastTextSession) generateSampled(ids []int32, maxNew int, stopTokens []int32, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	s.seenIDs = append(s.seenIDs[:0], ids...)
+	s.seenMax = maxNew
+	s.seenStops = append(s.seenStops[:0], stopTokens...)
+	s.seenParams = params
+	out := []int32{2, 3}
+	gen := make([]int32, 0, len(out))
+	for _, id := range out {
+		if transform != nil {
+			id = transform(id)
+		}
+		gen = append(gen, id)
+		if yield != nil && !yield(id) {
+			break
+		}
+	}
+	return gen, nil
 }
 
 type repeatPenaltyTextTokenModel struct {
@@ -239,6 +325,49 @@ func TestNativeTextModelWarmPromptCacheUsesCachedSession(t *testing.T) {
 	native.ClearPromptCache()
 	if session.clearCallCount != 1 {
 		t.Fatalf("ClearPromptCache calls = %d, want 1", session.clearCallCount)
+	}
+}
+
+func TestNativeTextModelWarmPromptCacheUsesCachedSampledSession(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	session := &promptCacheTextSession{}
+	native := &nativeTextModel{
+		tm:     &promptCacheTextTokenModel{session: session},
+		tok:    tok,
+		maxLen: 32,
+	}
+	promptIDs := tok.Encode("hello")
+	if err := native.WarmPromptCache(context.Background(), "hello"); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+
+	var got []int32
+	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(3), inference.WithTemperature(0.8), inference.WithTopK(5), inference.WithStopTokens(11)) {
+		got = append(got, tok.ID)
+	}
+	if err := native.Err(); err != nil {
+		t.Fatalf("Generate Err: %v", err)
+	}
+	if !reflect.DeepEqual(got, []int32{9, 10}) {
+		t.Fatalf("cached sampled ids = %v, want [9 10]", got)
+	}
+	if session.cachedSampledCalls != 1 {
+		t.Fatalf("GenerateCachedSampledEach calls = %d, want 1", session.cachedSampledCalls)
+	}
+	if session.cachedEachCalls != 0 || session.generateEachCalls != 0 {
+		t.Fatalf("greedy cache calls cached/generate = %d/%d, want 0/0", session.cachedEachCalls, session.generateEachCalls)
+	}
+	if !reflect.DeepEqual(session.generated, promptIDs) {
+		t.Fatalf("cached sampled prompt ids = %v, want %v", session.generated, promptIDs)
+	}
+	if session.generatedMax != 3 || !reflect.DeepEqual(session.sampledStopTokens, []int32{11}) {
+		t.Fatalf("cached sampled max/stops = %d/%v, want 3/[11]", session.generatedMax, session.sampledStopTokens)
+	}
+	if session.sampledParams.Temperature != 0.8 || session.sampledParams.TopK != 5 {
+		t.Fatalf("cached sampled params = temp %.1f topK %d, want 0.8/5", session.sampledParams.Temperature, session.sampledParams.TopK)
 	}
 }
 
@@ -564,6 +693,46 @@ func TestNativeTextModelSampledHonoursMultipleStopTokensBeforeFullDecode(t *test
 	}
 	if tm.headCalls != 1 {
 		t.Fatalf("sampled head calls = %d, want 1 stop-token decode step", tm.headCalls)
+	}
+}
+
+func TestNativeTextModelSampledUsesNativeSessionFastPath(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	session := &sampledFastTextSession{}
+	tm := &sampledFastTextTokenModel{session: session}
+	native := &nativeTextModel{
+		tm:     tm,
+		tok:    tok,
+		maxLen: 32,
+	}
+
+	var got []int32
+	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(4), inference.WithTemperature(0.8), inference.WithTopK(5), inference.WithStopTokens(11)) {
+		got = append(got, tok.ID)
+	}
+	if err := native.Err(); err != nil {
+		t.Fatalf("Generate Err: %v", err)
+	}
+	if !reflect.DeepEqual(got, []int32{2, 3}) {
+		t.Fatalf("sampled fast-path ids = %v, want [2 3]", got)
+	}
+	if session.sampledOneShotCalls != 1 || session.sampledRetainedCalls != 0 {
+		t.Fatalf("sampled calls oneshot/retained = %d/%d, want 1/0", session.sampledOneShotCalls, session.sampledRetainedCalls)
+	}
+	if tm.headCalls != 0 {
+		t.Fatalf("generic Head calls = %d, want 0 when sampled native session path is available", tm.headCalls)
+	}
+	if !reflect.DeepEqual(session.seenIDs, tok.Encode("hello")) {
+		t.Fatalf("sampled fast-path prompt ids = %v, want encoded hello", session.seenIDs)
+	}
+	if session.seenMax != 4 || !reflect.DeepEqual(session.seenStops, []int32{11}) {
+		t.Fatalf("sampled fast-path max/stops = %d/%v, want 4/[11]", session.seenMax, session.seenStops)
+	}
+	if session.seenParams.Temperature != 0.8 || session.seenParams.TopK != 5 {
+		t.Fatalf("sampled params = temp %.1f topK %d, want 0.8/5", session.seenParams.Temperature, session.seenParams.TopK)
 	}
 }
 

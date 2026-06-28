@@ -25,13 +25,34 @@ import (
 var (
 	ropeFreqsPSOBF16Cache = map[string]metal.MTLComputePipelineState{}
 	ropeFreqsPSOBF16Mu    sync.Mutex
+
+	ropePeriodsBufCache = map[ropePeriodsKey][]ropePeriodsCacheEntry{}
+	ropePeriodsBufMu    sync.Mutex
+
+	rawRopePeriodsBufCache = map[ropePeriodsKey][]ropePeriodsCacheEntry{}
+	rawRopePeriodsBufMu    sync.Mutex
 )
+
+const (
+	ropeFreqsBF16Key            = "rope_single_freqs_bfloat16|trad=false"
+	ropeFreqsBF16TraditionalKey = "rope_single_freqs_bfloat16|trad=true"
+)
+
+type ropePeriodsKey struct {
+	n    int
+	hash uint64
+}
+
+type ropePeriodsCacheEntry struct {
+	bits []uint32
+	buf  metal.MTLBuffer
+}
 
 // ropeFreqsPipelineBF16 builds (and caches) the rope_single_freqs_bfloat16 kernel,
 // specialised by the same forward/traditional/transpose function constants as the
 // base rope_single_bfloat16 pipeline (both call rope_single_impl).
 func ropeFreqsPipelineBF16(traditional bool) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("rope_single_freqs_bfloat16|trad=%v", traditional)
+	key := ropeFreqsPipelineBF16Key(traditional)
 	ropeFreqsPSOBF16Mu.Lock()
 	defer ropeFreqsPSOBF16Mu.Unlock()
 	if pso, ok := ropeFreqsPSOBF16Cache[key]; ok {
@@ -61,6 +82,108 @@ func ropeFreqsPipelineBF16(traditional bool) (metal.MTLComputePipelineState, err
 	}
 	ropeFreqsPSOBF16Cache[key] = pso
 	return pso, nil
+}
+
+func ropeFreqsPipelineBF16Key(traditional bool) string {
+	if traditional {
+		return ropeFreqsBF16TraditionalKey
+	}
+	return ropeFreqsBF16Key
+}
+
+func ropePeriodsKeyFor(invFreqs []float32) ropePeriodsKey {
+	const (
+		offset64 = 1469598103934665603
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for _, f := range invFreqs {
+		h ^= uint64(math.Float32bits(f))
+		h *= prime64
+	}
+	return ropePeriodsKey{n: len(invFreqs), hash: h}
+}
+
+func sameFloat32Bits(invFreqs []float32, bits []uint32) bool {
+	if len(invFreqs) != len(bits) {
+		return false
+	}
+	for i, f := range invFreqs {
+		if math.Float32bits(f) != bits[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func cachedRopePeriodsBuffer(invFreqs []float32) metal.MTLBuffer {
+	if len(invFreqs) == 0 {
+		return nil
+	}
+	key := ropePeriodsKeyFor(invFreqs)
+	ropePeriodsBufMu.Lock()
+	for _, entry := range ropePeriodsBufCache[key] {
+		if sameFloat32Bits(invFreqs, entry.bits) {
+			buf := entry.buf
+			ropePeriodsBufMu.Unlock()
+			return buf
+		}
+	}
+	ropePeriodsBufMu.Unlock()
+
+	periods := make([]float32, len(invFreqs))
+	bits := make([]uint32, len(invFreqs))
+	for i, f := range invFreqs {
+		bits[i] = math.Float32bits(f)
+		periods[i] = 1.0 / f
+	}
+
+	ropePeriodsBufMu.Lock()
+	for _, entry := range ropePeriodsBufCache[key] {
+		if sameFloat32Bits(invFreqs, entry.bits) {
+			existing := entry.buf
+			ropePeriodsBufMu.Unlock()
+			return existing
+		}
+	}
+	buf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+	ropePeriodsBufCache[key] = append(ropePeriodsBufCache[key], ropePeriodsCacheEntry{bits: bits, buf: buf})
+	ropePeriodsBufMu.Unlock()
+	return buf
+}
+
+func cachedRawRopePeriodsBuffer(periods []float32) metal.MTLBuffer {
+	if len(periods) == 0 {
+		return nil
+	}
+	key := ropePeriodsKeyFor(periods)
+	rawRopePeriodsBufMu.Lock()
+	for _, entry := range rawRopePeriodsBufCache[key] {
+		if sameFloat32Bits(periods, entry.bits) {
+			buf := entry.buf
+			rawRopePeriodsBufMu.Unlock()
+			return buf
+		}
+	}
+	rawRopePeriodsBufMu.Unlock()
+
+	bits := make([]uint32, len(periods))
+	for i, f := range periods {
+		bits[i] = math.Float32bits(f)
+	}
+
+	rawRopePeriodsBufMu.Lock()
+	for _, entry := range rawRopePeriodsBufCache[key] {
+		if sameFloat32Bits(periods, entry.bits) {
+			existing := entry.buf
+			rawRopePeriodsBufMu.Unlock()
+			return existing
+		}
+	}
+	buf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+	rawRopePeriodsBufCache[key] = append(rawRopePeriodsBufCache[key], ropePeriodsCacheEntry{bits: bits, buf: buf})
+	rawRopePeriodsBufMu.Unlock()
+	return buf
 }
 
 // RoPEFreqsBF16 is the explicit-frequency sibling of RoPEDimsBF16: it applies
@@ -95,49 +218,39 @@ func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float
 		return nil, err
 	}
 
-	// the kernel computes inv_freq = 1/freqs[d]; hand it the reciprocal (periods).
-	periods := make([]float32, len(invFreqs))
-	for i, f := range invFreqs {
-		periods[i] = 1.0 / f
-	}
-
 	out := make([]byte, len(x))
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		var outBuf metal.MTLBuffer
+		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 		if rotaryDim < headDim {
 			// partial: seed out with x so the non-rotated tail passes through.
-			outBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		} else {
-			outBuf = device.NewBufferWithLengthOptions(uint(len(x)), metal.MTLResourceStorageModeShared)
+			copy(scratch.out.bytes[:len(x)], x)
 		}
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		freqsBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
-		matSize := int64(headDim) // out_strides[0] = T*D, T==1 (full head stride; tail lives in this row)
+		offBuf := scalarI32(int32(offset))
+		freqsBuf := cachedRopePeriodsBuffer(invFreqs)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
-		setEncFloat32(enc, scale, 3)
-		setEncInt64(enc, matSize, 4)
-		enc.SetBufferWithOffsetAtIndex(freqsBuf, 0, 10)
-		setEncInt64(enc, 1, 11) // freq_stride = 1 (contiguous, one freq per rotated dim)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRopeAt(encSink{enc}, pso, xBuf, outBuf, 0, 0, offBuf, 0, freqsBuf, nHeads, rotaryDim, headDim, scale, 0)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		dim0 := uint(rotaryDim / 2)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
-			metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(x)))
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -154,6 +267,10 @@ func encRoPEFreqsBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf, period
 // place within the KV cache row. Same buffer ABI as encRoPEBF16To except buffer(10)
 // is the periods array (not the log2 base) and buffer(11) its stride.
 func encRoPEFreqsBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, scale float32) error {
+	return encRoPEFreqsBF16ToAt(enc, x, out, inOff, outOff, offBuf, 0, periods, nHeads, headDim, rotaryDim, scale)
+}
+
+func encRoPEFreqsBF16ToAt(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf metal.MTLBuffer, offOff uint, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, scale float32) error {
 	pso, err := ropeFreqsPipelineBF16(false)
 	if err != nil {
 		return err
@@ -164,7 +281,7 @@ func encRoPEFreqsBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuff
 	}
 	// freqs partial-rotary RoPE through the SHARED emitRope body (with encRoPEBF16To + the ICB setRope);
 	// periods != nil selects the freqs form (periods@10 + stride@11). log2base unused here.
-	emitRope(encSink{enc}, pso, x, out, inOff, outOff, offBuf, periods, nHeads, rd, headDim, scale, 0)
+	emitRopeAt(encSink{enc}, pso, x, out, inOff, outOff, offBuf, offOff, periods, nHeads, rd, headDim, scale, 0)
 	return nil
 }
 
@@ -172,24 +289,21 @@ func encRoPEFreqsBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuff
 // the layer carries a resident periods buffer (YaRN), else the base-derived rope.
 // One branch point so encAttnHalfKV/encAttnHalfShared rope Q and K uniformly.
 func encRopeDecode(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf, ropeFreqs metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
+	return encRopeDecodeAt(enc, x, out, inOff, outOff, offBuf, 0, ropeFreqs, nHeads, headDim, rotaryDim, base, scale)
+}
+
+func encRopeDecodeAt(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf metal.MTLBuffer, offOff uint, ropeFreqs metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
 	if ropeFreqs != nil {
-		return encRoPEFreqsBF16To(enc, x, out, inOff, outOff, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, scale)
+		return encRoPEFreqsBF16ToAt(enc, x, out, inOff, outOff, offBuf, offOff, ropeFreqs, nHeads, headDim, rotaryDim, scale)
 	}
-	return encRoPEBF16To(enc, x, out, inOff, outOff, offBuf, nHeads, headDim, rotaryDim, base, scale)
+	return encRoPEBF16ToAt(enc, x, out, inOff, outOff, offBuf, offOff, nHeads, headDim, rotaryDim, base, scale)
 }
 
 // uploadRopePeriods builds the resident periods buffer (1/inv_freq) for the
 // freqs-rope hot path from the arch's RopeFreqs (inverse frequencies), or returns
 // nil when there are none (the base-rope path). Retained for the session lifetime.
 func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
-	if len(invFreqs) == 0 {
-		return nil
-	}
-	periods := make([]float32, len(invFreqs))
-	for i, f := range invFreqs {
-		periods[i] = 1.0 / f
-	}
-	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+	return cachedRopePeriodsBuffer(invFreqs)
 }
 
 // gemma4ProportionalPeriods builds the rope periods for a gemma4 proportional + partial-rotary

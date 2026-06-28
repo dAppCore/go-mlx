@@ -6,6 +6,50 @@ package native
 
 import "testing"
 
+func TestNormProjectAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dIn, dOut = 128, 256
+	x := syntheticFloat32(dIn, 3)
+	normW := syntheticFloat32(dIn, 5)
+	projW := syntheticFloat32(dOut*dIn, 7)
+	if _, err := NormProject(x, normW, projW, dIn, dOut, 1e-5); err != nil {
+		t.Fatalf("NormProject warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := NormProject(x, normW, projW, dIn, dOut, 1e-5); err != nil {
+			t.Fatalf("NormProject: %v", err)
+		}
+	})
+	if allocs > 303 {
+		t.Fatalf("NormProject allocations = %.0f, want <= 303", allocs)
+	}
+}
+
+func TestMLPBlockAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF = 64, 128
+	x := syntheticFloat32(dModel, 3)
+	normW := syntheticFloat32(dModel, 5)
+	wGate := syntheticFloat32(dFF*dModel, 7)
+	wUp := syntheticFloat32(dFF*dModel, 11)
+	wDown := syntheticFloat32(dModel*dFF, 13)
+	if _, err := MLPBlock(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MLPBlock warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MLPBlock(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+			t.Fatalf("MLPBlock: %v", err)
+		}
+	})
+	if allocs > 1604 {
+		t.Fatalf("MLPBlock allocations = %.0f, want <= 1604", allocs)
+	}
+}
+
 func TestNormProjectMatchesComposedOps(t *testing.T) {
 	requireNativeRuntime(t)
 

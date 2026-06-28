@@ -6,7 +6,9 @@ package native
 
 import (
 	"bytes"
+	"sort"
 	"testing"
+	"unsafe"
 
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -19,6 +21,184 @@ func TestNewHeadEncoderNilShardBuffersFallsBack(t *testing.T) {
 	}
 	if h != nil {
 		t.Fatalf("newHeadEncoder nil shard buffers = %+v, want nil fallback", h)
+	}
+}
+
+func TestHeadScratchCachesSharedContentsPointers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	topK := newHeadTopKScratch(8, 4, 16, 32, false)
+	if topK.sampleParamsPtr == nil {
+		t.Fatal("top-k scratch did not cache sample params contents pointer")
+	}
+	if topK.outTokenPtr == nil {
+		t.Fatal("top-k scratch did not cache output token contents pointer")
+	}
+	if topK.topValuesPtr == nil || topK.topIndicesPtr == nil {
+		t.Fatal("top-k scratch did not cache top-k readback contents pointers")
+	}
+	topKParamsPtr := topK.sampleParamsPtr
+	topK.sampleParamsBuffer(model.SampleParams{Temperature: 0.7, TopK: 4, TopP: 0.9, MinP: 0.01}, 0.25, 8)
+	if topK.sampleParamsPtr != topKParamsPtr {
+		t.Fatal("top-k sample params contents pointer changed after reuse")
+	}
+	gotTopK := *topK.sampleParamsPtr
+	if gotTopK.n != 8 || gotTopK.topK != 4 || gotTopK.temperature != 0.7 || gotTopK.topP != 0.9 || gotTopK.minP != 0.01 || gotTopK.draw != 0.25 {
+		t.Fatalf("top-k sample params = %+v", gotTopK)
+	}
+	topValues := unsafe.Slice(topK.topValuesPtr, 4)
+	topIDs := unsafe.Slice(topK.topIndicesPtr, 4)
+	topValues[0], topValues[1], topValues[2], topValues[3] = 1.5, 0.75, -1, -2
+	topIDs[0], topIDs[1], topIDs[2], topIDs[3] = 3, 4, -1, 99
+	h := &headEncoder{vocab: 8}
+	gotCandidateLogits, gotIDs, ok, err := h.readTopKCandidatesInto(topK, 4, nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("readTopKCandidatesInto cached pointers ok=%v err=%v", ok, err)
+	}
+	if len(gotIDs) != 2 || gotIDs[0] != 3 || gotIDs[1] != 4 || len(gotCandidateLogits) != 2*bf16Size {
+		t.Fatalf("cached top-k readback ids=%v logits=%d, want [3 4]/%d", gotIDs, len(gotCandidateLogits), 2*bf16Size)
+	}
+	topK.suppressBuffer([]int32{4, 5, 6})
+	if topK.suppressPtr == nil {
+		t.Fatal("top-k scratch did not cache suppress contents pointer")
+	}
+	suppressPtr := topK.suppressPtr
+	topK.suppressBuffer([]int32{8, 9})
+	if topK.suppressPtr != suppressPtr {
+		t.Fatal("top-k suppress contents pointer changed without growing buffer")
+	}
+	gotSuppress := unsafe.Slice(topK.suppressPtr, 2)
+	if gotSuppress[0] != 8 || gotSuppress[1] != 9 {
+		t.Fatalf("suppress buffer = %v, want [8 9]", gotSuppress)
+	}
+	topK.historyBuffer([]int32{1, 2, 3})
+	if topK.historyPtr == nil {
+		t.Fatal("top-k scratch did not cache history contents pointer")
+	}
+	historyPtr := topK.historyPtr
+	topK.historyBuffer([]int32{7})
+	if topK.historyPtr != historyPtr {
+		t.Fatal("top-k history contents pointer changed without growing buffer")
+	}
+	gotHistory := unsafe.Slice(topK.historyPtr, 1)
+	if gotHistory[0] != 7 {
+		t.Fatalf("history buffer = %v, want [7]", gotHistory)
+	}
+
+	logits := newHeadGreedyScratch(1, 16, 32, true, false)
+	if logits.sampleParamsPtr == nil {
+		t.Fatal("logits scratch did not cache sample params contents pointer")
+	}
+	if logits.outTokenPtr == nil {
+		t.Fatal("logits scratch did not cache output token contents pointer")
+	}
+	if logits.logitsPtr == nil {
+		t.Fatal("logits scratch did not cache full-logits contents pointer")
+	}
+	logitsBytes := unsafe.Slice(logits.logitsPtr, 4)
+	logitsBytes[0], logitsBytes[1], logitsBytes[2], logitsBytes[3] = 0xaa, 0xbb, 0xcc, 0xdd
+	gotLogitsBytes := unsafe.Slice((*byte)(logits.logits.Contents()), 4)
+	if !bytes.Equal(gotLogitsBytes, logitsBytes) {
+		t.Fatalf("cached full-logits pointer did not write through to Metal buffer: got %v want %v", gotLogitsBytes, logitsBytes)
+	}
+	logitsParamsPtr := logits.sampleParamsPtr
+	logits.logitsSampleParamsBuffer(model.SampleParams{Temperature: 0.8, TopK: 3, TopP: 0.95, MinP: 0.02, RepeatPenalty: 1.2}, 0.5, 32, 2, 4)
+	if logits.sampleParamsPtr != logitsParamsPtr {
+		t.Fatal("logits sample params contents pointer changed after reuse")
+	}
+	gotLogits := *logits.sampleParamsPtr
+	if gotLogits.vocab != 32 || gotLogits.suppressCount != 2 || gotLogits.historyCount != 4 || gotLogits.topK != 3 ||
+		gotLogits.temperature != 0.8 || gotLogits.topP != 0.95 || gotLogits.minP != 0.02 || gotLogits.draw != 0.5 || gotLogits.repeatPenalty != 1.2 {
+		t.Fatalf("logits sample params = %+v", gotLogits)
+	}
+	logits.suppressBuffer([]int32{10, 11, 12})
+	if logits.suppressPtr == nil {
+		t.Fatal("logits scratch did not cache suppress contents pointer")
+	}
+	logitsSuppressPtr := logits.suppressPtr
+	logits.suppressBuffer([]int32{13, 14})
+	if logits.suppressPtr != logitsSuppressPtr {
+		t.Fatal("logits suppress contents pointer changed without growing buffer")
+	}
+	gotLogitsSuppress := unsafe.Slice(logits.suppressPtr, 2)
+	if gotLogitsSuppress[0] != 13 || gotLogitsSuppress[1] != 14 {
+		t.Fatalf("logits suppress buffer = %v, want [13 14]", gotLogitsSuppress)
+	}
+	logits.historyBuffer([]int32{20, 21, 22})
+	if logits.historyPtr == nil {
+		t.Fatal("logits scratch did not cache history contents pointer")
+	}
+	logitsHistoryPtr := logits.historyPtr
+	logits.historyBuffer([]int32{23})
+	if logits.historyPtr != logitsHistoryPtr {
+		t.Fatal("logits history contents pointer changed without growing buffer")
+	}
+	gotLogitsHistory := unsafe.Slice(logits.historyPtr, 1)
+	if gotLogitsHistory[0] != 23 {
+		t.Fatalf("logits history buffer = %v, want [23]", gotLogitsHistory)
+	}
+}
+
+func TestHeadSamplerScratchUsesPinnedNoCopySuppressHistory(t *testing.T) {
+	requireNativeRuntime(t)
+
+	topK := newHeadTopKScratch(8, 4, 16, 32, false)
+	defer func() {
+		if topK.suppressPinned != nil {
+			topK.suppressPinned.Close()
+		}
+		if topK.historyPinned != nil {
+			topK.historyPinned.Close()
+		}
+	}()
+	topKSuppress := topK.suppressBuffer([]int32{1, 2, 3})
+	if topK.suppressPinned == nil || topK.suppressPinned.pinner == nil {
+		t.Fatal("top-k suppress scratch is not pinned no-copy")
+	}
+	if topKSuppress == nil || topKSuppress.Contents() != unsafe.Pointer(&topK.suppressPinned.bytes[0]) {
+		t.Fatal("top-k suppress Metal buffer is not backed by pinned Go bytes")
+	}
+	firstTopKSuppress := topK.suppressPinned
+	topK.suppressBuffer([]int32{4, 5})
+	if topK.suppressPinned != firstTopKSuppress {
+		t.Fatal("top-k suppress pinned scratch changed without growing")
+	}
+	topK.suppressBuffer([]int32{6, 7, 8, 9})
+	if firstTopKSuppress.bytes != nil || firstTopKSuppress.pinner != nil {
+		t.Fatal("top-k suppress pinned scratch was not closed on grow")
+	}
+
+	topKHistory := topK.historyBuffer([]int32{10, 11, 12})
+	if topK.historyPinned == nil || topK.historyPinned.pinner == nil {
+		t.Fatal("top-k history scratch is not pinned no-copy")
+	}
+	if topKHistory == nil || topKHistory.Contents() != unsafe.Pointer(&topK.historyPinned.bytes[0]) {
+		t.Fatal("top-k history Metal buffer is not backed by pinned Go bytes")
+	}
+
+	logits := newHeadGreedyScratch(1, 16, 32, true, false)
+	defer func() {
+		if logits.suppressPinned != nil {
+			logits.suppressPinned.Close()
+		}
+		if logits.historyPinned != nil {
+			logits.historyPinned.Close()
+		}
+	}()
+	logitsSuppress := logits.suppressBuffer([]int32{13, 14})
+	if logits.suppressPinned == nil || logits.suppressPinned.pinner == nil {
+		t.Fatal("logits suppress scratch is not pinned no-copy")
+	}
+	if logitsSuppress == nil || logitsSuppress.Contents() != unsafe.Pointer(&logits.suppressPinned.bytes[0]) {
+		t.Fatal("logits suppress Metal buffer is not backed by pinned Go bytes")
+	}
+
+	logitsHistory := logits.historyBuffer([]int32{15, 16})
+	if logits.historyPinned == nil || logits.historyPinned.pinner == nil {
+		t.Fatal("logits history scratch is not pinned no-copy")
+	}
+	if logitsHistory == nil || logitsHistory.Contents() != unsafe.Pointer(&logits.historyPinned.bytes[0]) {
+		t.Fatal("logits history Metal buffer is not backed by pinned Go bytes")
 	}
 }
 
@@ -59,6 +239,46 @@ func TestNewHeadEncoderNilShardBuffersBuildsOwnedBF16Head(t *testing.T) {
 	}
 }
 
+func TestHeadEncoderEncodeReusesFullLogitsScratch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 19
+	const eps = float32(1e-6)
+	const softCap = float32(2)
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 61))
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 67))
+	head := toBF16Bytes(syntheticFloat32(vocab*dModel, 71))
+
+	h, err := newHeadEncoder(nil, finalNorm, head, nil, nil, dModel, vocab, 0, 0, eps, softCap, false)
+	if err != nil {
+		t.Fatalf("newHeadEncoder owned bf16: %v", err)
+	}
+	if h == nil {
+		t.Fatal("newHeadEncoder owned bf16 returned nil")
+	}
+
+	scratch := newHeadGreedyScratch(1, dModel, vocab, true, true)
+	logitBytes := unsafe.Slice((*byte)(scratch.logits.Contents()), vocab*bf16Size)
+	for i := range logitBytes {
+		logitBytes[i] = 0x7f
+	}
+	h.putGreedyScratch(scratch)
+
+	logits, err := h.encode(hidden, false)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	reused := h.getGreedyScratch(1, true, true)
+	defer h.putGreedyScratch(reused)
+	if reused.logits != scratch.logits {
+		t.Fatal("encode did not return the seeded full-logits scratch to the pool")
+	}
+	got := unsafe.Slice((*byte)(reused.logits.Contents()), len(logits))
+	if !bytes.Equal(got, logits) {
+		t.Fatal("encode did not write returned logits through the pooled full-logits scratch")
+	}
+}
+
 func TestNewHeadEncoderNilShardBuffersBuildsOwnedQuantHead(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -96,6 +316,78 @@ func TestNewHeadEncoderNilShardBuffersBuildsOwnedQuantHead(t *testing.T) {
 	}
 	if !bytes.Equal(logits, want) {
 		t.Fatalf("owned quant head logits diverged from LMHeadQuant")
+	}
+}
+
+func TestOwnedQuantHeadFusedTopKMatchesFullHead(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab, groupSize, bits = 512, 256, 64, 4
+	const topK = 7
+	const eps = float32(1e-6)
+	const softCap = float32(2)
+	if !q4LMHeadTopKUsable(dModel, vocab, groupSize, bits, topK) {
+		t.Skip("fused q4 lm-head top-k custom kernel unavailable")
+	}
+
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 37))
+	packed := make([]byte, vocab*dModel*bits/8)
+	for i := range packed {
+		packed[i] = byte((i*29 + 17) & 0xff)
+	}
+	sidecars := vocab * (dModel / groupSize)
+	scalesF, biasesF := make([]float32, sidecars), make([]float32, sidecars)
+	for i := range scalesF {
+		scalesF[i] = 0.015 + float32((i%7)+1)*0.002
+		biasesF[i] = -0.08 + float32(i%11)*0.01
+	}
+
+	h, err := newHeadEncoder(nil, finalNorm, packed, toBF16Bytes(scalesF), toBF16Bytes(biasesF), dModel, vocab, groupSize, bits, eps, softCap, true)
+	if err != nil {
+		t.Fatalf("newHeadEncoder owned quant: %v", err)
+	}
+	suppress := []int32{2, 7, 19}
+	full, err := h.encode(hidden, false)
+	if err != nil {
+		t.Fatalf("full quant head logits: %v", err)
+	}
+	type candidate struct {
+		id int32
+		v  float32
+	}
+	want := make([]candidate, 0, vocab)
+	for i := 0; i < vocab; i++ {
+		if tokenSuppressed(i, suppress) {
+			continue
+		}
+		want = append(want, candidate{id: int32(i), v: bf16ToF32(full[i*bf16Size], full[i*bf16Size+1])})
+	}
+	sort.SliceStable(want, func(i, j int) bool {
+		if want[i].v == want[j].v {
+			return want[i].id < want[j].id
+		}
+		return want[i].v > want[j].v
+	})
+
+	gotLogits, gotIDs, ok, err := h.sampleTopKCandidatesFusedQ4(hidden, topK, suppress)
+	if err != nil {
+		t.Fatalf("sampleTopKCandidates: %v", err)
+	}
+	if !ok {
+		t.Fatal("sampleTopKCandidates declined fused q4 top-k shape")
+	}
+	if len(gotIDs) != topK || len(gotLogits) != topK*bf16Size {
+		t.Fatalf("candidate lengths: ids=%d logits=%d, want %d/%d", len(gotIDs), len(gotLogits), topK, topK*bf16Size)
+	}
+	for i := 0; i < topK; i++ {
+		if gotIDs[i] != want[i].id {
+			t.Fatalf("topK[%d] id=%d, want %d (got %v want top=%v)", i, gotIDs[i], want[i].id, gotIDs, want[:topK])
+		}
+		gotV := bf16ToF32(gotLogits[i*bf16Size], gotLogits[i*bf16Size+1])
+		if gotV != want[i].v {
+			t.Fatalf("topK[%d] value=%g, want %g", i, gotV, want[i].v)
+		}
 	}
 }
 
@@ -232,10 +524,121 @@ func TestHeadEncoderSoftcapUsesScalarScaleBuffers(t *testing.T) {
 	}
 }
 
+func TestHeadEncoderSoftcapEncodeIntoAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 2048
+	const eps, softCap = float32(1e-6), float32(30)
+	h := &headEncoder{
+		finalNorm: copyView(toBF16Bytes(syntheticFloat32(dModel, 5))),
+		weight:    copyView(toBF16Bytes(syntheticFloat32(vocab*dModel, 7))),
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+		softCap:   softCap,
+	}
+	h.initSoftcapBuffers()
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 3))
+	out := make([]byte, vocab*bf16Size)
+	if _, err := h.encodeInto(hidden, false, out); err != nil {
+		t.Fatalf("headEncoder softcap warmup: %v", err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := h.encodeInto(hidden, false, out); err != nil {
+			t.Fatalf("headEncoder softcap encodeInto: %v", err)
+		}
+	})
+	if allocs > 0 {
+		t.Fatalf("headEncoder softcap encodeInto allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestHeadEncoderTopKTokenBufferAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab, groupSize, bits = 512, 4096, 64, 4
+	const topK = 32
+	h, hidden := quantHeadEncoderBenchFixture(dModel, vocab, groupSize, bits)
+	params := model.SampleParams{Temperature: 1, TopK: topK}
+	hiddenScratch, hiddenBuf, err := h.hiddenBuffer(hidden)
+	if err != nil {
+		t.Fatalf("hiddenBuffer: %v", err)
+	}
+	defer h.putHiddenScratch(hiddenScratch)
+	sampler := model.NewSampler(123)
+	if _, ok, err := h.sampleTopKTokenBufferInPool(hiddenBuf, params, sampler.Draw(), nil); err != nil {
+		t.Fatalf("sampleTopKTokenBufferInPool warmup: %v", err)
+	} else if !ok {
+		t.Fatal("TopK token buffer sampler declined")
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, ok, err := h.sampleTopKTokenBufferInPool(hiddenBuf, params, sampler.Draw(), nil); err != nil {
+			t.Fatalf("sampleTopKTokenBufferInPool: %v", err)
+		} else if !ok {
+			t.Fatal("TopK token buffer sampler declined")
+		}
+	})
+	if allocs > 0 {
+		t.Fatalf("TopK token buffer allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestHeadEncoderSoftcapKeepsScalarBuffersResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	first := &headEncoder{vocab: 8192, softCap: 30}
+	first.initSoftcapBuffers()
+	second := &headEncoder{vocab: 8192, softCap: 30}
+	second.initSoftcapBuffers()
+
+	if first.invSoftCapScale.buf.GetID() != second.invSoftCapScale.buf.GetID() {
+		t.Fatalf("inverse softcap buffer was not resident: first=%d second=%d", first.invSoftCapScale.buf.GetID(), second.invSoftCapScale.buf.GetID())
+	}
+	if first.softCapScale.buf.GetID() != second.softCapScale.buf.GetID() {
+		t.Fatalf("softcap buffer was not resident: first=%d second=%d", first.softCapScale.buf.GetID(), second.softCapScale.buf.GetID())
+	}
+}
+
+func TestHeadEncoderSoftcapEncodeFallbackUsesResidentScalars(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, vocab = 8, 16
+	const eps, softCap = float32(1e-5), float32(30)
+	invKey := bf16ConstKey{n: 1, v: 1 / softCap}
+	capKey := bf16ConstKey{n: 1, v: softCap}
+	bf16ConstMu.Lock()
+	delete(bf16ConstCache, invKey)
+	delete(bf16ConstCache, capKey)
+	bf16ConstMu.Unlock()
+
+	h := &headEncoder{
+		finalNorm: copyView(toBF16Bytes(syntheticFloat32(dModel, 5))),
+		weight:    copyView(toBF16Bytes(syntheticFloat32(vocab*dModel, 7))),
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+		softCap:   softCap,
+	}
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 3))
+	if _, err := h.encode(hidden, false); err != nil {
+		t.Fatalf("headEncoder softcap fallback encode: %v", err)
+	}
+
+	bf16ConstMu.Lock()
+	_, invCached := bf16ConstCache[invKey]
+	_, capCached := bf16ConstCache[capKey]
+	bf16ConstMu.Unlock()
+	if !invCached || !capCached {
+		t.Fatalf("headEncoder softcap fallback did not use resident scalar buffers (inv=%v cap=%v)", invCached, capCached)
+	}
+}
+
 func TestHeadGreedyScratchKeepsPerTokenBuffersResident(t *testing.T) {
 	requireNativeRuntime(t)
 
-	s := newHeadGreedyScratch(3, 64, 17, true)
+	s := newHeadGreedyScratch(3, 64, 17, true, true)
 	if s.normed == nil {
 		t.Fatal("greedy scratch did not retain the normed activation buffer")
 	}
@@ -249,12 +652,85 @@ func TestHeadGreedyScratchKeepsPerTokenBuffersResident(t *testing.T) {
 		t.Fatalf("logits scratch length = %d, want %d", got, 17*bf16Size)
 	}
 
-	bf16 := newHeadGreedyScratch(3, 64, 17, false)
+	bf16 := newHeadGreedyScratch(3, 64, 17, false, false)
 	if bf16.normed == nil {
 		t.Fatal("BF16 greedy scratch did not retain the normed activation buffer")
 	}
 	if bf16.logits != nil {
 		t.Fatal("BF16 greedy scratch allocated a quant logits buffer")
+	}
+}
+
+func TestHeadGreedyScratchSeparatesLogitsAndSoftcapBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	h := &headEncoder{dModel: 64, vocab: 17}
+	greedy := h.getGreedyScratch(3, true, false)
+	if greedy.logits == nil {
+		t.Fatal("quant greedy scratch did not retain logits buffer")
+	}
+	if greedy.softcapA != nil || greedy.softcapB != nil {
+		t.Fatal("quant greedy scratch allocated unused softcap buffers")
+	}
+	h.putGreedyScratch(greedy)
+
+	sampled := h.getGreedyScratch(3, true, true)
+	defer h.putGreedyScratch(sampled)
+	if sampled.logits == nil || sampled.softcapA == nil || sampled.softcapB == nil {
+		t.Fatal("sampled logits scratch did not retain logits and softcap buffers")
+	}
+}
+
+func TestHeadHiddenScratchReusesPinnedNoCopyBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	if _, err := bf16MulScalarPipeline(); err != nil {
+		t.Skipf("custom scalar kernel unavailable: %v", err)
+	}
+
+	h := &headEncoder{}
+	first := toBF16Bytes([]float32{1, 2, 3, 4})
+	second := toBF16Bytes([]float32{5, 6, 7, 8})
+
+	scratch, buf, err := h.hiddenBuffer(first)
+	if err != nil {
+		t.Fatalf("hiddenBuffer first: %v", err)
+	}
+	if scratch == nil || buf == nil {
+		t.Fatal("hiddenBuffer first did not return pinned scratch")
+	}
+	firstID := buf.GetID()
+	h.putHiddenScratch(scratch)
+
+	scratch2, buf2, err := h.hiddenBuffer(second)
+	if err != nil {
+		t.Fatalf("hiddenBuffer second: %v", err)
+	}
+	if scratch2 == nil || buf2 == nil {
+		t.Fatal("hiddenBuffer second did not return pinned scratch")
+	}
+	defer scratch2.Close()
+	if scratch2 != scratch {
+		t.Fatal("hiddenBuffer did not reuse the pooled hidden scratch")
+	}
+	if got := buf2.GetID(); got != firstID {
+		t.Fatalf("hiddenBuffer Metal buffer id = %d, want reused id %d", got, firstID)
+	}
+
+	scalar := bf16ScalarBytes(1)
+	out := scratchBF16(len(second) / bf16Size)
+	cb := queue.CommandBuffer()
+	enc := cb.ComputeCommandEncoder()
+	if err := encMulScalarBF16(enc, buf2, sharedBytes(scalar[:]), out, 0, len(second)/bf16Size); err != nil {
+		enc.EndEncoding()
+		t.Fatalf("encMulScalarBF16: %v", err)
+	}
+	enc.EndEncoding()
+	cb.Commit()
+	cb.WaitUntilCompleted()
+
+	got := append([]byte(nil), unsafe.Slice((*byte)(out.Contents()), len(second))...)
+	if !bytes.Equal(got, second) {
+		t.Fatalf("hiddenBuffer GPU read = %v, want second hidden %v", bf16Floats(got), bf16Floats(second))
 	}
 }
 
@@ -306,6 +782,62 @@ func TestHeadEncoderQuantGreedyMatchesFullLogits(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("headEncoder direct greedy = %d, want full-logits greedy %d", got, want)
+	}
+}
+
+func TestHeadEncoderQuantGreedyInPoolMatchesFullLogits(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab, groupSize, bits = 64, 17, 32, 4
+	const eps = float32(1e-6)
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 131))
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 137))
+
+	packed := make([]byte, vocab*dModel*bits/8)
+	for i := range packed {
+		packed[i] = byte((i*31 + 19) & 0xff)
+	}
+	sidecars := vocab * (dModel / groupSize)
+	scalesF, biasesF := make([]float32, sidecars), make([]float32, sidecars)
+	for i := range scalesF {
+		scalesF[i] = 0.013 + float32((i%5)+1)*0.003
+		biasesF[i] = -0.06 + float32((i%13))*0.008
+	}
+	h := &headEncoder{
+		finalNorm: copyView(finalNorm),
+		weight:    copyView(packed),
+		scales:    copyView(toBF16Bytes(scalesF)),
+		biases:    copyView(toBF16Bytes(biasesF)),
+		quant:     true,
+		groupSize: groupSize,
+		bits:      bits,
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+	}
+
+	logits, err := h.encode(hidden, true)
+	if err != nil {
+		t.Fatalf("headEncoder full logits: %v", err)
+	}
+	want, err := model.Greedy(logits, vocab)
+	if err != nil {
+		t.Fatalf("full-logits greedy: %v", err)
+	}
+	var got int32
+	var ok bool
+	var gotErr error
+	withAutoreleasePool(func() {
+		got, ok, gotErr = h.greedyInPool(hidden, nil)
+	})
+	if gotErr != nil {
+		t.Fatalf("headEncoder direct greedy in pool: %v", gotErr)
+	}
+	if !ok {
+		t.Fatal("headEncoder direct greedy in pool declined quant head")
+	}
+	if got != want {
+		t.Fatalf("headEncoder direct greedy in pool = %d, want full-logits greedy %d", got, want)
 	}
 }
 
@@ -395,6 +927,64 @@ func TestHeadEncoderBF16GreedyMatchesFullLogits(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("headEncoder direct bf16 greedy = %d, want full-logits greedy %d", got, want)
+	}
+}
+
+func TestHeadEncoderBF16GreedyAtOffsetMatchesFullLogits(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 19
+	const eps = float32(1e-6)
+	hidden0 := toBF16Bytes(syntheticFloat32(dModel, 51))
+	hidden1 := toBF16Bytes(syntheticFloat32(dModel, 73))
+	packed := append(append([]byte(nil), hidden0...), hidden1...)
+	h := &headEncoder{
+		finalNorm: copyView(toBF16Bytes(syntheticFloat32(dModel, 53))),
+		weight:    copyView(toBF16Bytes(syntheticFloat32(vocab*dModel, 57))),
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+	}
+
+	logits, err := h.encode(hidden1, true)
+	if err != nil {
+		t.Fatalf("headEncoder full logits: %v", err)
+	}
+	want, err := model.Greedy(logits, vocab)
+	if err != nil {
+		t.Fatalf("full-logits greedy: %v", err)
+	}
+
+	var got int32
+	var ok bool
+	var gotErr error
+	withAutoreleasePool(func() {
+		packedBuf := sharedBytes(packed)
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		var scratch *headGreedyScratch
+		scratch, ok, gotErr = h.encodeGreedyAt(enc, packedBuf, uint(len(hidden0)), nil)
+		if !ok || gotErr != nil {
+			enc.EndEncoding()
+			if scratch != nil {
+				h.putGreedyScratch(scratch)
+			}
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		got = scratch.token()
+		h.putGreedyScratch(scratch)
+	})
+	if gotErr != nil {
+		t.Fatalf("headEncoder direct bf16 greedy at offset: %v", gotErr)
+	}
+	if !ok {
+		t.Fatal("headEncoder direct greedy at offset declined BF16 head")
+	}
+	if got != want {
+		t.Fatalf("headEncoder direct bf16 greedy at offset = %d, want full-logits greedy %d", got, want)
 	}
 }
 

@@ -4,12 +4,7 @@
 
 package native
 
-import (
-	"unsafe"
-
-	core "dappco.re/go"
-	"github.com/tmc/apple/metal"
-)
+import core "dappco.re/go"
 
 // nocopy_matvec.go is the resident-weight sibling of MatVecBF16: the matrix is supplied as a bufView — a
 // no-copy view into a resident shard buffer (from shardBuffers.bufFor) — instead of host bytes, so a
@@ -33,6 +28,9 @@ var icbDisabledForTest bool
 // than one model must reset between loads. Never called in production (a served process loads one model).
 func resetResidentBufsForTest() {
 	residentBufMu.Lock()
+	for _, r := range residentBufs {
+		closeResidentBuf(r)
+	}
 	residentBufs = map[uintptr]residentBuf{}
 	residentBufMu.Unlock()
 }
@@ -41,6 +39,10 @@ func resetResidentBufsForTest() {
 // resident no-copy buffer view (matView) at its offset; vec/out stay per-call (small). A nil matView.buf is
 // an error — the caller falls back to MatVecBF16 when no shard buffer is available.
 func MatVecBF16Buf(matView bufView, vec []byte, outDim, inDim int) ([]byte, error) {
+	return MatVecBF16BufInto(nil, matView, vec, outDim, inDim)
+}
+
+func MatVecBF16BufInto(out []byte, matView bufView, vec []byte, outDim, inDim int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -51,45 +53,59 @@ func MatVecBF16Buf(matView bufView, vec []byte, outDim, inDim int) ([]byte, erro
 		return nil, core.NewError("native.MatVecBF16Buf: len(vec) must equal inDim*2 bytes")
 	}
 	if outDim == 0 || inDim == 0 {
-		return make([]byte, outDim*bf16Size), nil
+		outLen := outDim * bf16Size
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
 	}
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	name := core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn)
+	name := gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn)
 	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 	outLen := outDim * bf16Size
-	out := make([]byte, outLen)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
+	var encErr error
 	withAutoreleasePool(func() {
-		vecBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&vec[0]), uint(len(vec)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		vecBuf, outBuf, err := scratch.buffers(vec)
+		if err != nil {
+			encErr = err
+			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(matView.buf, matView.off, 0) // resident matrix bound at its shard offset
-		enc.SetBufferWithOffsetAtIndex(vecBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncInt32(enc, int32(inDim), 4)
-		setEncInt32(enc, int32(outDim), 5)
-		setEncInt32(enc, int32(inDim), 6)
-		setEncInt32(enc, 1, 9)
-		setEncInt32(enc, 1, 10)
-		setEncInt64(enc, 0, 11)
-		setEncInt64(enc, 0, 12)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitGemv(encSink{enc}, pso, matView.buf, matView.off, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		nOutPerTgp := bm * sm * tm
-		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

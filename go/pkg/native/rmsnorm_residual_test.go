@@ -7,8 +7,65 @@ package native
 import (
 	"bytes"
 	"os"
+	"sync"
 	"testing"
 )
+
+func rmsNormResidualFixture(axisSize int) ([]byte, []byte, []byte) {
+	x := toBF16Bytes(syntheticFloat32(axisSize, axisSize+1))
+	w := toBF16Bytes(syntheticFloat32(axisSize, axisSize+7))
+	res := toBF16Bytes(syntheticFloat32(axisSize, axisSize+13))
+	return x, w, res
+}
+
+func TestRMSNormResidualBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const axisSize = 1536
+	const eps = float32(1e-6)
+	x, w, res := rmsNormResidualFixture(axisSize)
+	if _, err := RMSNormResidualBF16(x, w, res, axisSize, eps); err != nil {
+		t.Fatalf("RMSNormResidualBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := RMSNormResidualBF16(x, w, res, axisSize, eps); err != nil {
+			t.Fatalf("RMSNormResidualBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("RMSNormResidualBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRMSNormResidualScratchPoolKeepsDimensionsResident(t *testing.T) {
+	rmsResidualScratchPools = sync.Map{}
+	t.Cleanup(func() { rmsResidualScratchPools = sync.Map{} })
+
+	small := &rmsNormResidualBF16Scratch{axisSize: 512}
+	large := &rmsNormResidualBF16Scratch{axisSize: 1536}
+	smallPool := rmsResidualScratchPoolFor(small.axisSize)
+	largePool := rmsResidualScratchPoolFor(large.axisSize)
+	if smallPool == largePool {
+		t.Fatal("RMS residual scratch pool reused one pool for distinct axis sizes")
+	}
+
+	putRMSNormResidualBF16Scratch(small)
+	putRMSNormResidualBF16Scratch(large)
+
+	gotSmall := smallPool.Get()
+	if gotSmall != small {
+		t.Fatal("RMS residual scratch pool evicted the head-size scratch after using the model-width scratch")
+	}
+
+	gotLarge := largePool.Get()
+	if gotLarge != large {
+		t.Fatal("RMS residual scratch pool evicted the model-width scratch after reusing the head-size scratch")
+	}
+}
 
 // TestRMSNormResidualBF16ParityComposed is the BYTE-IDENTITY gate for the fused rms-norm+residual
 // kernel: out = res + RMSNorm(x, w) computed in one dispatch must equal AddBF16(res, RMSNormBF16(x, w))
@@ -26,9 +83,7 @@ func TestRMSNormResidualBF16ParityComposed(t *testing.T) {
 	}
 	const eps = float32(1e-6)
 	for _, axisSize := range []int{256, 512, 1536, 2048} { // gemma head_dim (256/512) + E2B dModel (1536) + a 2048
-		x := toBF16Bytes(syntheticFloat32(axisSize, axisSize+1))
-		w := toBF16Bytes(syntheticFloat32(axisSize, axisSize+7))
-		res := toBF16Bytes(syntheticFloat32(axisSize, axisSize+13))
+		x, w, res := rmsNormResidualFixture(axisSize)
 
 		normed, err := RMSNormBF16(x, w, 1, axisSize, eps)
 		if err != nil {

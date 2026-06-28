@@ -192,6 +192,69 @@ func TestPipelinedGPUDecodeMatchesChained(t *testing.T) {
 	}
 }
 
+func TestGPUTailPLScratchReusesSessionSlots(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen = 24
+	prompt := []int32{1, 5, 3, 2}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	chainedGPUInputsDisabled = false
+
+	pipelinedGPUDecodeEnabled = false
+	sessC, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("chained session: %v", err)
+	}
+	if _, err := sessC.Generate(prompt, 5, -1); err != nil {
+		t.Fatalf("chained first turn: %v", err)
+	}
+	if sessC.gpuTailPLScratch[0] == nil {
+		t.Fatal("chained GPU tail did not use session PLE scratch slot 0")
+	}
+	chainScratch := sessC.gpuTailPLScratch[0]
+	if sessC.gpuTailPLScratch[1] != nil {
+		t.Fatal("chained GPU tail unexpectedly used pipelined PLE scratch slot 1")
+	}
+	if _, err := sessC.GenerateFromCache(3, -1); err != nil {
+		t.Fatalf("chained second turn: %v", err)
+	}
+	if sessC.gpuTailPLScratch[0] != chainScratch {
+		t.Fatal("chained GPU tail did not reuse session PLE scratch slot 0")
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	sessP, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	if sessP.recordPeerICB == nil {
+		t.Skip("peer ICB recorder unavailable")
+	}
+	if _, err := sessP.Generate(prompt, 5, -1); err != nil {
+		t.Fatalf("pipelined first turn: %v", err)
+	}
+	if sessP.gpuTailPLScratch[0] == nil || sessP.gpuTailPLScratch[1] == nil {
+		t.Fatal("pipelined GPU tail did not use both session PLE scratch slots")
+	}
+	pipeScratch0, pipeScratch1 := sessP.gpuTailPLScratch[0], sessP.gpuTailPLScratch[1]
+	if pipeScratch0 == pipeScratch1 {
+		t.Fatal("pipelined GPU tail scratch slots alias")
+	}
+	if _, err := sessP.GenerateFromCache(3, -1); err != nil {
+		t.Fatalf("pipelined second turn: %v", err)
+	}
+	if sessP.gpuTailPLScratch[0] != pipeScratch0 || sessP.gpuTailPLScratch[1] != pipeScratch1 {
+		t.Fatal("pipelined GPU tail did not reuse both session PLE scratch slots")
+	}
+}
+
 // TestPipelinedGPUDecodeSecondTurn pins the cache/pos byte-identity across REUSE: two back-to-back
 // GenerateFromCache turns on a session must produce the same tokens pipelined as chained-GPU. The second
 // turn only matches if the first turn left the KV cache, pos, and retained hidden exactly as the serial

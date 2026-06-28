@@ -6,7 +6,6 @@ package native
 
 import (
 	"sync"
-	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -80,36 +79,32 @@ func RunUnaryInto(name string, in, out []float32) error {
 		return nil
 	}
 
+	var encErr error
 	withAutoreleasePool(func() {
-		inBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&in[0]), uint(n*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(n*4), metal.MTLResourceStorageModeShared)
-		count := uint32(n)
-		countBytes := unsafe.Slice((*byte)(unsafe.Pointer(&count)), 4)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(inBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		enc.SetBytesLengthAtIndex(countBytes, 4, 2)
-
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		ioScratch, err := getQMVFloatScratch(n, n)
+		if err != nil {
+			encErr = err
+			return
 		}
-		// dispatchThreads (not threadgroups): grid is the total thread count, one
-		// per element — Metal splits it into groups and handles the non-uniform
-		// tail. Mirrors MLX's own dispatch for this kernel family.
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putQMVFloatScratch(ioScratch)
+		inBuf, outBuf, err := ioScratch.buffers(in)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), n))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitUnary(encSink{enc}, pso, inBuf, outBuf, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+
+		copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
 	})
+	if encErr != nil {
+		return encErr
+	}
 	return nil
 }
 
@@ -134,29 +129,30 @@ func RunUnaryBF16(name string, in []byte) ([]byte, error) {
 	if n == 0 {
 		return out, nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		inBuf := sharedBytes(in)
-		outBuf := scratchBF16(n)
-		count := uint32(n)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(inBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&count)), 4), 4, 2)
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		scratch, err := getQMVBF16Scratch(n, n)
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(in)))
+		defer putQMVBF16Scratch(scratch)
+		inBuf, outBuf, err := scratch.buffers(in)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitUnary(encSink{enc}, pso, inBuf, outBuf, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(in)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 

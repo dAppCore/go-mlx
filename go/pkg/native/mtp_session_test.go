@@ -51,6 +51,23 @@ func newMTPDecodeFixture(t testing.TB) func() *ArchSession {
 		if err != nil {
 			t.Fatalf("NewArchSession: %v", err)
 		}
+		head := &headEncoder{
+			finalNorm: copyView(g.FinalNorm),
+			weight:    copyView(g.LMHead),
+			dModel:    arch.Hidden,
+			vocab:     arch.Vocab,
+			eps:       arch.Eps,
+			softCap:   arch.SoftCap,
+		}
+		s.headEnc = head
+		s.head = func(hidden []byte, skipSoftcap bool) ([]byte, error) {
+			return head.encode(hidden, skipSoftcap)
+		}
+		s.greedy = func(hidden []byte, suppress []int32) (int32, bool, error) {
+			return head.greedyInPool(hidden, suppress)
+		}
+		s.markDefaultHeadFunc()
+		s.markDefaultGreedyFunc()
 		return s
 	}
 }
@@ -251,6 +268,39 @@ func TestMTPVerifyBatchedWrapperAndFallback(t *testing.T) {
 		t.Fatal("verifyBatched empty error = nil")
 	} else if ok {
 		t.Fatal("verifyBatched empty ok = true")
+	}
+}
+
+func TestMTPVerifyBatchedDirectHeadAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	dense := mk()
+	for _, id := range []int32{1, 2, 3} {
+		if _, err := dense.stepID(id); err != nil {
+			t.Fatalf("prefill dense stepID(%d): %v", id, err)
+		}
+	}
+	ids := []int32{4, 5, 6, 7}
+	greedys := make([]int32, len(ids))
+	if _, ok, err := dense.verifyBatchedInto(ids, greedys); err != nil {
+		t.Fatalf("verifyBatched warmup: %v", err)
+	} else if !ok {
+		t.Fatal("verifyBatched warmup ok = false")
+	}
+
+	var verifyErr error
+	var verifyOK bool
+	allocs := testing.AllocsPerRun(5, func() {
+		_, verifyOK, verifyErr = dense.verifyBatchedInto(ids, greedys)
+	})
+	if verifyErr != nil {
+		t.Fatalf("verifyBatched: %v", verifyErr)
+	}
+	if !verifyOK {
+		t.Fatal("verifyBatched ok = false")
+	}
+	if allocs > 24000 {
+		t.Fatalf("verifyBatched allocations = %.0f, want <= 24000", allocs)
 	}
 }
 

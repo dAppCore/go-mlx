@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"unsafe"
@@ -143,4 +144,236 @@ func TestPerLayerInputGateQuantCachesWeights(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("PerLayerInputGateQuant did not keep fixed quant weights resident (missing %v resident=%d want>=6)", missing, got)
 	}
+}
+
+func TestPerLayerInputGateAllocationBudgets(t *testing.T) {
+	requireNativeRuntime(t)
+
+	t.Run("bf16", func(t *testing.T) {
+		const dModel, pliDim = 64, 32
+		const eps = float32(1e-6)
+		hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+		gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 17))
+		perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+		projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 23))
+		postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+		if _, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps); err != nil {
+			t.Fatalf("PerLayerInputGateBF16 warmup: %v", err)
+		}
+		allocs := testing.AllocsPerRun(5, func() {
+			if _, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps); err != nil {
+				t.Fatalf("PerLayerInputGateBF16: %v", err)
+			}
+		})
+		if allocs > 20 {
+			t.Fatalf("PerLayerInputGateBF16 allocations = %.0f, want <= 20", allocs)
+		}
+	})
+
+	t.Run("quant", func(t *testing.T) {
+		const dModel, pliDim, groupSize, bits = 64, 32, 32, 4
+		const eps = float32(1e-6)
+		hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+		gate := quantWeightFixture(t, pliDim, dModel, groupSize, bits, 17)
+		perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+		proj := quantWeightFixture(t, dModel, pliDim, groupSize, bits, 23)
+		postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+		if _, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, eps); err != nil {
+			t.Fatalf("PerLayerInputGateQuant warmup: %v", err)
+		}
+		allocs := testing.AllocsPerRun(5, func() {
+			if _, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, eps); err != nil {
+				t.Fatalf("PerLayerInputGateQuant: %v", err)
+			}
+		})
+		if allocs > 20 {
+			t.Fatalf("PerLayerInputGateQuant allocations = %.0f, want <= 20", allocs)
+		}
+	})
+}
+
+func TestPerLayerInputGateScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small := getPerLayerInputGateScratch(64, 32)
+	putPerLayerInputGateScratch(small)
+	large := getPerLayerInputGateScratch(128, 64)
+	putPerLayerInputGateScratch(large)
+	gotSmall := getPerLayerInputGateScratch(64, 32)
+	defer putPerLayerInputGateScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("gate scratch pool evicted the 64x32 scratch after using a 128x64 scratch")
+	}
+	gotLarge := getPerLayerInputGateScratch(128, 64)
+	defer putPerLayerInputGateScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("gate scratch pool evicted the 128x64 scratch after reusing the 64x32 scratch")
+	}
+}
+
+func TestPerLayerInputGateBF16EncodedWritesDirectlyToOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, pliDim = 64, 32
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 17))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 23))
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	scratch := getPerLayerInputGateScratch(dModel, pliDim)
+	defer putPerLayerInputGateScratch(scratch)
+	hBuf, perLayerBuf, err := scratch.inputBuffers(hNext, perLayerInput)
+	if err != nil {
+		t.Fatalf("scratch.inputBuffers: %v", err)
+	}
+	scratchOut := unsafe.Slice((*byte)(scratch.out.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratchOut))
+	copy(scratchOut, sentinel)
+
+	out := make([]byte, dModel*bf16Size)
+	err = perLayerInputGateBF16EncodedInto(
+		scratch, out, hBuf, residentBytes(gateW), perLayerBuf, residentBytes(projW), residentBytes(postNormW),
+		dModel, pliDim, eps,
+	)
+	if err != nil {
+		t.Fatalf("perLayerInputGateBF16Encoded: %v", err)
+	}
+	want := perLayerInputGateRef(t, hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps)
+	eqBytes(t, "perLayerInputGateBF16Encoded direct output", out, want)
+	if !bytes.Equal(scratchOut, sentinel) {
+		t.Fatal("perLayerInputGateBF16Encoded wrote through pooled scratch output instead of caller output")
+	}
+}
+
+func TestPerLayerInputGateQuantEncodedWritesDirectlyToOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, pliDim, groupSize, bits = 64, 32, 32, 4
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gate := quantWeightFixture(t, pliDim, dModel, groupSize, bits, 17)
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	proj := quantWeightFixture(t, dModel, pliDim, groupSize, bits, 23)
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	scratch := getPerLayerInputGateScratch(dModel, pliDim)
+	defer putPerLayerInputGateScratch(scratch)
+	hBuf, perLayerBuf, err := scratch.inputBuffers(hNext, perLayerInput)
+	if err != nil {
+		t.Fatalf("scratch.inputBuffers: %v", err)
+	}
+	scratchOut := unsafe.Slice((*byte)(scratch.out.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x5a}, len(scratchOut))
+	copy(scratchOut, sentinel)
+	gatePacked, gateScales, gateBiases := quantWeightViews(gate)
+	projPacked, projScales, projBiases := quantWeightViews(proj)
+
+	out := make([]byte, dModel*bf16Size)
+	err = perLayerInputGateQuantEncodedInto(
+		scratch, out, hBuf, gatePacked, gateScales, gateBiases, perLayerBuf, projPacked, projScales, projBiases,
+		residentBytes(postNormW), dModel, pliDim, groupSize, bits, groupSize, bits, eps,
+	)
+	if err != nil {
+		t.Fatalf("perLayerInputGateQuantEncoded: %v", err)
+	}
+	if len(out) != dModel*bf16Size {
+		t.Fatalf("perLayerInputGateQuantEncoded length = %d, want %d", len(out), dModel*bf16Size)
+	}
+	if !bytes.Equal(scratchOut, sentinel) {
+		t.Fatal("perLayerInputGateQuantEncoded wrote through pooled scratch output instead of caller output")
+	}
+}
+
+func TestPerLayerInputGateBF16IntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, pliDim = 64, 32
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 17))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 23))
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := perLayerInputGateBF16Into(out, hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps)
+	if err != nil {
+		t.Fatalf("perLayerInputGateBF16Into: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("perLayerInputGateBF16Into did not reuse caller-owned output backing")
+	}
+	want, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps)
+	if err != nil {
+		t.Fatalf("PerLayerInputGateBF16 reference: %v", err)
+	}
+	eqBytes(t, "perLayerInputGateBF16Into", got, want)
+}
+
+func TestPerLayerInputGateQuantIntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, pliDim, groupSize, bits = 64, 32, 32, 4
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gate := quantWeightFixture(t, pliDim, dModel, groupSize, bits, 17)
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	proj := quantWeightFixture(t, dModel, pliDim, groupSize, bits, 23)
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := perLayerInputGateQuantInto(out, hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("perLayerInputGateQuantInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("perLayerInputGateQuantInto did not reuse caller-owned output backing")
+	}
+	want, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("PerLayerInputGateQuant reference: %v", err)
+	}
+	eqBytes(t, "perLayerInputGateQuantInto", got, want)
+}
+
+func TestPerLayerInputGateIntoEdgeCases(t *testing.T) {
+	requireNativeRuntime(t)
+
+	t.Run("bf16 zero PLI copies hNext into caller output", func(t *testing.T) {
+		const dModel, pliDim = 16, 0
+		hNext := toBF16Bytes(syntheticFloat32(dModel, 41))
+		out := make([]byte, dModel*bf16Size)
+		got, err := perLayerInputGateBF16Into(out, hNext, nil, nil, nil, make([]byte, dModel*bf16Size), dModel, pliDim, 1e-6)
+		if err != nil {
+			t.Fatalf("perLayerInputGateBF16Into: %v", err)
+		}
+		if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+			t.Fatal("zero-PLI BF16 gate did not reuse caller output")
+		}
+		eqBytes(t, "zero-PLI BF16 gate", got, hNext)
+	})
+
+	t.Run("quant zero PLI copies hNext into caller output", func(t *testing.T) {
+		const dModel, pliDim, groupSize, bits = 16, 0, 32, 4
+		hNext := toBF16Bytes(syntheticFloat32(dModel, 43))
+		out := make([]byte, dModel*bf16Size)
+		got, err := perLayerInputGateQuantInto(out, hNext, QuantWeight{}, nil, QuantWeight{}, make([]byte, dModel*bf16Size), dModel, pliDim, groupSize, bits, 1e-6)
+		if err != nil {
+			t.Fatalf("perLayerInputGateQuantInto: %v", err)
+		}
+		if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+			t.Fatal("zero-PLI quant gate did not reuse caller output")
+		}
+		eqBytes(t, "zero-PLI quant gate", got, hNext)
+	})
+
+	t.Run("bf16 rejects bad hNext length", func(t *testing.T) {
+		if _, err := perLayerInputGateBF16Into(nil, []byte{1}, nil, nil, nil, nil, 16, 0, 1e-6); err == nil {
+			t.Fatal("perLayerInputGateBF16Into accepted bad hNext length")
+		}
+	})
+
+	t.Run("quant rejects bad hNext length", func(t *testing.T) {
+		if _, err := perLayerInputGateQuantInto(nil, []byte{1}, QuantWeight{}, nil, QuantWeight{}, nil, 16, 0, 32, 4, 1e-6); err == nil {
+			t.Fatal("perLayerInputGateQuantInto accepted bad hNext length")
+		}
+	})
 }

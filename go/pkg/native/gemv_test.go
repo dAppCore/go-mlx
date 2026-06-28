@@ -6,6 +6,26 @@ package native
 
 import "testing"
 
+func TestMatVecAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 128, 256
+	mat := syntheticFloat32(outDim*inDim, 3)
+	vec := syntheticFloat32(inDim, 5)
+	if _, err := MatVec(mat, vec, outDim, inDim); err != nil {
+		t.Fatalf("MatVec warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatVec(mat, vec, outDim, inDim); err != nil {
+			t.Fatalf("MatVec: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatVec allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 func TestMatVecComputesRowMajorProjection(t *testing.T) {
 	requireNativeRuntime(t)
 

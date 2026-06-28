@@ -6,7 +6,6 @@ package native
 
 import (
 	"math"
-	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -28,16 +27,9 @@ func EmbedTokensBF16(table []byte, tokenIDs []int32, vocab, dModel int, scale fl
 	rowBytes := dModel * bf16Size
 	out := make([][]byte, len(tokenIDs))
 	for i, tok := range tokenIDs {
-		if tok < 0 || int(tok) >= vocab {
-			return nil, core.NewError("native.EmbedTokensBF16: token id out of range")
-		}
-		row := table[int(tok)*rowBytes : (int(tok)+1)*rowBytes]
 		emb := make([]byte, rowBytes)
-		for j := 0; j < dModel; j++ {
-			v := bf16ToF32(row[j*bf16Size], row[j*bf16Size+1]) * scale
-			h := f32ToBF16(v)
-			emb[j*bf16Size] = byte(h)
-			emb[j*bf16Size+1] = byte(h >> 8)
+		if _, err := embedTokenBF16Into(emb, table, tok, vocab, dModel, scale); err != nil {
+			return nil, err
 		}
 		out[i] = emb
 	}
@@ -45,22 +37,29 @@ func EmbedTokensBF16(table []byte, tokenIDs []int32, vocab, dModel int, scale fl
 }
 
 func embedTokenBF16(table []byte, tok int32, vocab, dModel int, scale float32) ([]byte, error) {
+	emb := make([]byte, dModel*bf16Size)
+	return embedTokenBF16Into(emb, table, tok, vocab, dModel, scale)
+}
+
+func embedTokenBF16Into(dst, table []byte, tok int32, vocab, dModel int, scale float32) ([]byte, error) {
 	if len(table) != vocab*dModel*bf16Size {
 		return nil, core.NewError("native.EmbedTokensBF16: table must be vocab*dModel bf16 bytes")
+	}
+	rowBytes := dModel * bf16Size
+	if len(dst) != rowBytes {
+		return nil, core.NewError("native.EmbedTokensBF16: dst must be dModel bf16 bytes")
 	}
 	if tok < 0 || int(tok) >= vocab {
 		return nil, core.NewError("native.EmbedTokensBF16: token id out of range")
 	}
-	rowBytes := dModel * bf16Size
 	row := table[int(tok)*rowBytes : (int(tok)+1)*rowBytes]
-	emb := make([]byte, rowBytes)
 	for j := 0; j < dModel; j++ {
 		v := bf16ToF32(row[j*bf16Size], row[j*bf16Size+1]) * scale
 		h := f32ToBF16(v)
-		emb[j*bf16Size] = byte(h)
-		emb[j*bf16Size+1] = byte(h >> 8)
+		dst[j*bf16Size] = byte(h)
+		dst[j*bf16Size+1] = byte(h >> 8)
 	}
-	return emb, nil
+	return dst, nil
 }
 
 // LMHeadBF16 is the gemma4 output head on a single hidden state: final RMSNorm, the
@@ -89,11 +88,20 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 	}
 	var encErr error
 	withAutoreleasePool(func() {
-		hiddenBuf := sharedBytes(hidden)
+		ioScratch, err := getQMVBF16Scratch(vocab, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		hiddenBuf, logitsBuf, err := ioScratch.buffers(hidden)
+		if err != nil {
+			encErr = err
+			return
+		}
 		finalNormBuf := residentBytes(finalNormW)
 		outWeightBuf := residentBytes(outWeight)
 		normedBuf := scratchBF16(dModel)
-		logitsBuf := scratchBF16(vocab)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -108,7 +116,7 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(logits, unsafe.Slice((*byte)(logitsBuf.Contents()), len(logits)))
+		copy(logits, ioScratch.out.bytes[:len(logits)])
 	})
 	if encErr != nil {
 		return nil, encErr

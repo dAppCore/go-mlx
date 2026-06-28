@@ -5,6 +5,7 @@
 package native
 
 import (
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -60,6 +61,60 @@ type shardBuffers struct {
 	ends  []uintptr
 }
 
+type mappedShardRange struct {
+	start uintptr
+	end   uintptr
+}
+
+var (
+	mappedShardRangeMu sync.Mutex
+	mappedShardRanges  []mappedShardRange
+)
+
+func registerMappedShardRanges(bases, ends []uintptr) {
+	mappedShardRangeMu.Lock()
+	defer mappedShardRangeMu.Unlock()
+	for i := range bases {
+		if bases[i] != 0 && ends[i] > bases[i] {
+			mappedShardRanges = append(mappedShardRanges, mappedShardRange{start: bases[i], end: ends[i]})
+		}
+	}
+}
+
+func unregisterMappedShardRanges(bases, ends []uintptr) {
+	mappedShardRangeMu.Lock()
+	defer mappedShardRangeMu.Unlock()
+	for i := range bases {
+		start, end := bases[i], ends[i]
+		if start == 0 || end <= start {
+			continue
+		}
+		out := mappedShardRanges[:0]
+		for _, r := range mappedShardRanges {
+			if r.start == start && r.end == end {
+				continue
+			}
+			out = append(out, r)
+		}
+		mappedShardRanges = out
+	}
+}
+
+func isMappedShardBytes(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	p := uintptr(unsafe.Pointer(&b[0]))
+	mappedShardRangeMu.Lock()
+	defer mappedShardRangeMu.Unlock()
+	for _, r := range mappedShardRanges {
+		if p >= r.start && p < r.end {
+			return true
+		}
+	}
+	return false
+}
+
 // newShardBuffers wraps each shard's page-aligned mmap in a no-copy Metal buffer, the validated
 // pattern from TestNoCopyMmapGPURead: NewBufferWithBytesNoCopyLengthOptionsDeallocator over
 // &Data[0] with a non-nil no-op deallocator (the binding always invokes it; the mmap's lifetime
@@ -95,6 +150,7 @@ func newShardBuffers(dm *safetensors.DirMapping) (*shardBuffers, error) {
 		sb.bases[i] = uintptr(base)
 		sb.ends[i] = uintptr(base) + uintptr(len(m.Data))
 	}
+	registerMappedShardRanges(sb.bases, sb.ends)
 	return sb, nil
 }
 
@@ -162,6 +218,8 @@ func (s *shardBuffers) Close() error {
 	if s == nil || s.dm == nil {
 		return nil
 	}
+	evictResidentBufsForRanges(s.bases, s.ends)
+	unregisterMappedShardRanges(s.bases, s.ends)
 	err := s.dm.Close()
 	s.dm = nil
 	s.bufs = nil

@@ -21,12 +21,30 @@ var (
 	ropePSOCache = map[string]metal.MTLComputePipelineState{}
 )
 
+const (
+	ropeSingleFloat32Key            = "rope_single_float32|trad=false"
+	ropeSingleFloat32TraditionalKey = "rope_single_float32|trad=true"
+)
+
+func ropePipelineKey(name string, traditional bool) string {
+	if name == "rope_single_float32" {
+		if traditional {
+			return ropeSingleFloat32TraditionalKey
+		}
+		return ropeSingleFloat32Key
+	}
+	if traditional {
+		return name + "|trad=true"
+	}
+	return name + "|trad=false"
+}
+
 // ropePipeline builds (and caches) a rope kernel specialised by MLX's function
 // constants: forward (id 1), traditional (id 2), head_seq_transpose (id 3) —
 // set at pipeline-build time via MTLFunctionConstantValues, not as buffers. This
 // is the first native kernel to use function constants; the plumbing is reusable.
 func ropePipeline(name string, traditional bool) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("%s|trad=%v", name, traditional)
+	key := ropePipelineKey(name, traditional)
 	ropePSOMu.Lock()
 	defer ropePSOMu.Unlock()
 	if pso, ok := ropePSOCache[key]; ok {
@@ -83,36 +101,33 @@ func RoPE(x []float32, b, nHeads, headDim int, base, scale float32, offset int, 
 	}
 
 	out := make([]float32, len(x))
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(x)*4), metal.MTLResourceStorageModeShared)
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		ioScratch, err := getQMVFloatScratch(len(x), len(x))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		offBuf := scalarI32(int32(offset))
 		logBase := float32(math.Log2(float64(base)))
-		matSize := int64(headDim) // out_strides[0] = T*D, T==1
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
-		setEncFloat32(enc, scale, 3)
-		setEncInt64(enc, matSize, 4)
-		setEncFloat32(enc, logBase, 10)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRopeAt(encSink{enc}, pso, xBuf, outBuf, 0, 0, offBuf, 0, nil, nHeads, headDim, headDim, scale, logBase)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		// grid (dims/2, N, 1); rope has no cross-thread reduction so the result is
-		// threadgroup-invariant — any covering group works (a 1-D group of dim0).
-		dim0 := uint(headDim / 2)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
-			metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(x)))
+		copy(float32Bytes(out), ioScratch.out.bytes[:len(x)*4])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

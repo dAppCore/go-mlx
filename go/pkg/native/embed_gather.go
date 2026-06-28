@@ -17,7 +17,99 @@ var (
 	embedGatherPSO   metal.MTLComputePipelineState
 	embedGatherErr   error
 	embedGatherOnce  sync.Once
+
+	embedGatherScratchPools sync.Map
 )
+
+type embedGatherScratch struct {
+	dModel     int
+	token, out *pinnedNoCopyBytes
+}
+
+func embedGatherScratchPoolFor(dModel int) *sync.Pool {
+	if v, ok := embedGatherScratchPools.Load(dModel); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := embedGatherScratchPools.LoadOrStore(dModel, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func embedGatherScratchReady(s *embedGatherScratch, dModel int) bool {
+	return s != nil &&
+		s.dModel == dModel &&
+		s.token != nil &&
+		s.token.buf != nil &&
+		len(s.token.bytes) == 4 &&
+		s.out != nil &&
+		s.out.buf != nil &&
+		len(s.out.bytes) == dModel*bf16Size
+}
+
+func newEmbedGatherScratch(dModel int) (*embedGatherScratch, error) {
+	if dModel <= 0 {
+		return nil, core.NewError("native.newEmbedGatherScratch: dModel must be > 0")
+	}
+	token, err := newPinnedNoCopyBytes(4)
+	if err != nil {
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		token.Close()
+		return nil, err
+	}
+	return &embedGatherScratch{dModel: dModel, token: token, out: out}, nil
+}
+
+func getEmbedGatherScratch(dModel int) (*embedGatherScratch, error) {
+	pool := embedGatherScratchPoolFor(dModel)
+	if v := pool.Get(); v != nil {
+		s := v.(*embedGatherScratch)
+		if embedGatherScratchReady(s, dModel) {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newEmbedGatherScratch(dModel)
+}
+
+func putEmbedGatherScratch(s *embedGatherScratch) {
+	if s == nil {
+		return
+	}
+	if embedGatherScratchReady(s, s.dModel) {
+		embedGatherScratchPoolFor(s.dModel).Put(s)
+	}
+}
+
+func (s *embedGatherScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.token != nil {
+		s.token.Close()
+		s.token = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.dModel = 0
+}
+
+func (s *embedGatherScratch) buffers(tokenID int32, dModel int) (metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.token == nil || s.out == nil {
+		return nil, nil, core.NewError("native.embedGatherScratch.buffers: scratch is nil")
+	}
+	if s.dModel != dModel || len(s.token.bytes) != 4 || len(s.out.bytes) != dModel*bf16Size {
+		return nil, nil, core.NewError("native.embedGatherScratch.buffers: dimension mismatch")
+	}
+	*(*int32)(unsafe.Pointer(&s.token.bytes[0])) = tokenID
+	return s.token.buf, s.out.buf, nil
+}
 
 func embedGatherPipeline() (metal.MTLComputePipelineState, error) {
 	embedGatherOnce.Do(func() {
@@ -41,23 +133,7 @@ func embedGatherPipeline() (metal.MTLComputePipelineState, error) {
 // LM-head argmax output) into `out` (dModel bf16): the 4-bit affine embedding row × embedScale. Lets the
 // chained decode step compute the NEXT step's input embedding without a host round-trip. 4-bit only.
 func encEmbedGatherQuant(enc metal.MTLComputeCommandEncoder, pso metal.MTLComputePipelineState, tokenBuf, packed, scales, biases, out metal.MTLBuffer, packedOff, scalesOff, biasesOff uint, dModel, groupSize, bits int, embedScale float32) {
-	rowPacked := dModel * bits / 8
-	rowSB := dModel / groupSize
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(tokenBuf, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(packed, packedOff, 1)
-	enc.SetBufferWithOffsetAtIndex(scales, scalesOff, 2)
-	enc.SetBufferWithOffsetAtIndex(biases, biasesOff, 3)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 4)
-	setEncInt32(enc, int32(dModel), 5)
-	setEncInt32(enc, int32(groupSize), 6)
-	setEncFloat32(enc, embedScale, 7)
-	setEncInt32(enc, int32(rowPacked), 8)
-	setEncInt32(enc, int32(rowSB), 9)
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(dModel), Height: 1, Depth: 1},
-		metal.MTLSize{Width: uint(elemGroupTG(dModel)), Height: 1, Depth: 1},
-	)
+	emitEmbedGatherQuant(encSink{enc}, pso, tokenBuf, packed, scales, biases, out, packedOff, scalesOff, biasesOff, dModel, groupSize, bits, embedScale)
 }
 
 func elemGroupTG(n int) int {
@@ -81,18 +157,33 @@ func EmbedGatherQuantBF16(tokenID int32, packed, scales, biases []byte, dModel, 
 		return nil, err
 	}
 	out := make([]byte, dModel*bf16Size)
+	if dModel == 0 {
+		return out, nil
+	}
+	var encErr error
 	withAutoreleasePool(func() {
-		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
-		*(*int32)(tokBuf.Contents()) = tokenID
-		pBuf, sBuf, bBuf := sharedBytes(packed), sharedBytes(scales), sharedBytes(biases)
-		outBuf := device.NewBufferWithLengthOptions(uint(dModel*bf16Size), metal.MTLResourceStorageModeShared)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		scratch, err := getEmbedGatherScratch(dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putEmbedGatherScratch(scratch)
+		tokBuf, outBuf, err := scratch.buffers(tokenID, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		pBuf, sBuf, bBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		encEmbedGatherQuant(enc, pso, tokBuf, pBuf, sBuf, bBuf, outBuf, 0, 0, 0, dModel, groupSize, bits, embedScale)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), dModel*bf16Size))
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

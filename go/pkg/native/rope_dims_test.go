@@ -10,6 +10,27 @@ import (
 	"testing"
 )
 
+func TestRoPEDimsBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, headDim, rotaryDim = 1, 8, 64, 32
+	x := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 5))
+	if _, err := RoPEDimsBF16(x, batch, nHeads, headDim, rotaryDim, 10000, 1, 7, false); err != nil {
+		t.Fatalf("RoPEDimsBF16 warmup: %v", err)
+	}
+
+	var ropeErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, ropeErr = RoPEDimsBF16(x, batch, nHeads, headDim, rotaryDim, 10000, 1, 7, false)
+	})
+	if ropeErr != nil {
+		t.Fatalf("RoPEDimsBF16: %v", ropeErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("RoPEDimsBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestRoPEDimsPartial gates partial rotary: rotaryDim == headDim is byte-identical to RoPEBF16,
 // and rotaryDim < headDim rotates only the first rotaryDim (its block ≡ a full RoPE of that
 // sub-vector — kernel vs kernel, so byte-exact) while the tail [rotaryDim:headDim] passes

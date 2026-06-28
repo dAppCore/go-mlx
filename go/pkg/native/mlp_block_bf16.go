@@ -5,9 +5,8 @@
 package native
 
 import (
-	"unsafe"
-
 	core "dappco.re/go"
+	"github.com/tmc/apple/metal"
 )
 
 // MLPBlockBF16 runs a full gemma feed-forward block on-device in one command
@@ -21,11 +20,12 @@ import (
 //	out    = x + down           (residual)
 //
 // Every intermediate stays resident; one commit. Wgate/Wup are row-major
-// (dFF × dModel), Wdown is (dModel × dFF). The gelu scalar operands are dense
-// bf16 constant buffers built once via bf16ConstBytes, so the in-line gelu
-// matches GeluGateMulBF16 byte-for-byte. All inputs/outputs are raw bf16 bytes;
-// the result equals the same native bf16 ops run separately — proven in the
-// tests. This is a real decode sub-block on the no-cgo path.
+// (dFF × dModel), Wdown is (dModel × dFF). The composed-fallback gelu scalar
+// operands are resident bf16 constant buffers, so the in-line gelu matches
+// GeluGateMulBF16 byte-for-byte without re-uploading them per call. All
+// inputs/outputs are raw bf16 bytes; the result equals the same native bf16 ops
+// run separately — proven in the tests. This is a real decode sub-block on the
+// no-cgo path.
 func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -41,70 +41,75 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 	}
 
 	out := make([]byte, dModel*bf16Size)
+	if dModel == 0 || dFF == 0 {
+		return out, nil
+	}
+	rmsPSO, err := pipelineFor(rmsKernelBF16(dModel))
+	if err != nil {
+		return nil, err
+	}
+	rmsTG := rmsThreadgroup(dModel, rmsPSO)
+	inBM, inBN, inSM, inSN, inTM, inTN := gemvTiles(dModel, dFF)
+	inPSO, err := pipelineFor(gemvKernelName("bfloat16", inBM, inBN, inSM, inSN, inTM, inTN))
+	if err != nil {
+		return nil, err
+	}
+	downBM, downBN, downSM, downSN, downTM, downTN := gemvTiles(dFF, dModel)
+	downPSO, err := pipelineFor(gemvKernelName("bfloat16", downBM, downBN, downSM, downSN, downTM, downTN))
+	if err != nil {
+		return nil, err
+	}
+	addPSO, err := pipelineFor("vv_Addbfloat16")
+	if err != nil {
+		return nil, err
+	}
+	var geluPSO metal.MTLComputePipelineState
+	useFusedGelu := gpuHasGeluKernel()
+	if useFusedGelu {
+		geluPSO, err = geluPipeline()
+		if err != nil {
+			return nil, err
+		}
+	}
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := sharedBytes(x)
+		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 		nwBuf := residentBytes(normWeight)
 		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
-		// intermediates (resident)
-		normed := scratchBF16(dModel)
-		gate, up := scratchBF16(dFF), scratchBF16(dFF)
-		gated := scratchBF16(dFF)
-		down := scratchBF16(dModel)
-		outBuf := scratchBF16(dModel)
+		mlp := getMLPScratch(dModel, dFF)
+		defer putMLPScratch(mlp)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps); encErr != nil {
-			enc.EndEncoding()
-			return
-		}
-		if encErr = encGemvBF16(enc, wgBuf, normed, gate, dFF, dModel); encErr != nil {
-			enc.EndEncoding()
-			return
-		}
-		if encErr = encGemvBF16(enc, wuBuf, normed, up, dFF, dModel); encErr != nil {
-			enc.EndEncoding()
-			return
-		}
-		if gpuHasGeluKernel() {
-			encErr = encGeluGateMulFused(enc, gate, up, gated, dFF)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		sink := encSink{enc}
+		emitRMSNorm(sink, rmsPSO, xBuf, nwBuf, mlp.mlpNormed, 0, dModel, eps, rmsTG)
+		emitGemv(sink, inPSO, wgBuf, 0, mlp.mlpNormed, mlp.gate, 0, dModel, dFF, inBM, inBN, inSM, inTM)
+		emitGemv(sink, inPSO, wuBuf, 0, mlp.mlpNormed, mlp.up, 0, dModel, dFF, inBM, inBN, inSM, inTM)
+		if useFusedGelu {
+			emitBinary(sink, geluPSO, mlp.gate, 0, mlp.up, 0, mlp.gated, 0, dFF)
 		} else {
-			// Gelu scalar operands and scratch buffers are needed only on the composed fallback.
-			c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
-			c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
-			c1 := sharedBytes(bf16ConstBytes(dFF, 1.0))
-			c05 := sharedBytes(bf16ConstBytes(dFF, 0.5))
-			x2, x3, x3s, inner := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-			scaled, t, onePlus, halfG := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-			gelu := scratchBF16(dFF)
-			_ = encMulBF16(enc, gate, gate, x2, dFF)
-			_ = encMulBF16(enc, x2, gate, x3, dFF)
-			_ = encMulBF16(enc, x3, c044, x3s, dFF)
-			_ = encAddBF16(enc, gate, x3s, inner, dFF)
-			_ = encMulBF16(enc, inner, c079, scaled, dFF)
-			_ = encTanhBF16(enc, scaled, t, dFF)
-			_ = encAddBF16(enc, t, c1, onePlus, dFF)
-			_ = encMulBF16(enc, gate, c05, halfG, dFF)
-			_ = encMulBF16(enc, halfG, onePlus, gelu, dFF)
-			encErr = encMulBF16(enc, gelu, up, gated, dFF)
+			encErr = encGeluGateMul(enc, mlp.gate, mlp.up, mlp.gated, *mlp, dFF)
 		}
 		if encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		if encErr = encGemvBF16(enc, wdBuf, gated, down, dModel, dFF); encErr != nil {
-			enc.EndEncoding()
-			return
-		}
-		if encErr = encAddBF16(enc, xBuf, down, outBuf, dModel); encErr != nil {
-			enc.EndEncoding()
-			return
-		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		emitGemv(sink, downPSO, wdBuf, 0, mlp.gated, mlp.down, 0, dFF, dModel, downBM, downBN, downSM, downTM)
+		emitBinary(sink, addPSO, xBuf, 0, mlp.down, 0, outBuf, 0, dModel)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, ioScratch.out.bytes[:len(out)])
 	})
 	return out, encErr
 }

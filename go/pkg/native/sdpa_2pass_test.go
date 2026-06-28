@@ -86,6 +86,29 @@ func TestSDPA2PassMatchesReference(t *testing.T) {
 	}
 }
 
+func TestSDPA2PassAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, nKV, headDim, kvLen = 1, 4, 2, 64, 2048
+	q := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 3))
+	k := toBF16Bytes(syntheticFloat32(batch*nKV*kvLen*headDim, 5))
+	v := toBF16Bytes(syntheticFloat32(batch*nKV*kvLen*headDim, 7))
+	if _, err := SDPA2Pass(q, k, v, batch, nHeads, nKV, headDim, kvLen, 0.125); err != nil {
+		t.Fatalf("SDPA2Pass warmup: %v", err)
+	}
+
+	var sdpaErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, sdpaErr = SDPA2Pass(q, k, v, batch, nHeads, nKV, headDim, kvLen, 0.125)
+	})
+	if sdpaErr != nil {
+		t.Fatalf("SDPA2Pass: %v", sdpaErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("SDPA2Pass allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestEncSDPA2PassSeqMajorMatchesSinglePass validates the LIVE decode wiring: the
 // encoder-level encSDPA2PassStrided against encSDPAStrided with the exact SEQ-MAJOR
 // cache layout the decode path passes ([seq, nKVHeads, headDim] ⇒ kHeadStride=headDim,

@@ -5,9 +5,93 @@
 package native
 
 import (
+	"sync"
+
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+type decodeForwardICBQuantPSOKey struct{ outDim, inDim, groupSize, bits int }
+
+type decodeForwardICBQuantProjCheck struct {
+	w           QuantWeight
+	outDim, inD int
+}
+
+type decodeForwardICBQuantLayerProjBuffers struct {
+	q, k, v, o, g, u, d qmvWeight
+}
+
+type decodeForwardICBQuantSetupScratch struct {
+	anwBufs, mnwBufs []metal.MTLBuffer
+	kCaches, vCaches []metal.MTLBuffer
+	lb               []decodeForwardICBQuantLayerProjBuffers
+	projResident     []metal.MTLBuffer
+	projChecks       []decodeForwardICBQuantProjCheck
+	psoByKey         map[decodeForwardICBQuantPSOKey]metal.MTLComputePipelineState
+}
+
+var decodeForwardICBQuantSetupScratchPool sync.Pool
+
+func newDecodeForwardICBQuantSetupScratch(nLayers int) *decodeForwardICBQuantSetupScratch {
+	return &decodeForwardICBQuantSetupScratch{
+		anwBufs:      make([]metal.MTLBuffer, nLayers),
+		mnwBufs:      make([]metal.MTLBuffer, nLayers),
+		kCaches:      make([]metal.MTLBuffer, nLayers),
+		vCaches:      make([]metal.MTLBuffer, nLayers),
+		lb:           make([]decodeForwardICBQuantLayerProjBuffers, nLayers),
+		projResident: make([]metal.MTLBuffer, 0, nLayers*7*3+7),
+		projChecks:   make([]decodeForwardICBQuantProjCheck, 0, 7),
+		psoByKey:     make(map[decodeForwardICBQuantPSOKey]metal.MTLComputePipelineState, nLayers*7),
+	}
+}
+
+func (s *decodeForwardICBQuantSetupScratch) fits(nLayers int) bool {
+	return s != nil &&
+		cap(s.anwBufs) >= nLayers &&
+		cap(s.mnwBufs) >= nLayers &&
+		cap(s.kCaches) >= nLayers &&
+		cap(s.vCaches) >= nLayers &&
+		cap(s.lb) >= nLayers &&
+		cap(s.projResident) >= nLayers*7*3+7 &&
+		cap(s.projChecks) >= 7 &&
+		s.psoByKey != nil
+}
+
+func (s *decodeForwardICBQuantSetupScratch) reset(nLayers int) *decodeForwardICBQuantSetupScratch {
+	clear(s.anwBufs)
+	clear(s.mnwBufs)
+	clear(s.kCaches)
+	clear(s.vCaches)
+	clear(s.lb)
+	clear(s.projResident)
+	clear(s.projChecks)
+	clear(s.psoByKey)
+	s.anwBufs = s.anwBufs[:nLayers]
+	s.mnwBufs = s.mnwBufs[:nLayers]
+	s.kCaches = s.kCaches[:nLayers]
+	s.vCaches = s.vCaches[:nLayers]
+	s.lb = s.lb[:nLayers]
+	s.projResident = s.projResident[:0]
+	s.projChecks = s.projChecks[:0]
+	return s
+}
+
+func getDecodeForwardICBQuantSetupScratch(nLayers int) *decodeForwardICBQuantSetupScratch {
+	if v := decodeForwardICBQuantSetupScratchPool.Get(); v != nil {
+		s := v.(*decodeForwardICBQuantSetupScratch)
+		if s.fits(nLayers) {
+			return s.reset(nLayers)
+		}
+	}
+	return newDecodeForwardICBQuantSetupScratch(nLayers)
+}
+
+func putDecodeForwardICBQuantSetupScratch(s *decodeForwardICBQuantSetupScratch) {
+	if s != nil {
+		decodeForwardICBQuantSetupScratchPool.Put(s.reset(0))
+	}
+}
 
 // DecodeForwardICBQuant is the 4-bit cache-grow ICB — both levers stacked: 4-bit
 // weights (qmv) cut the GPU, ICB replay cuts the per-token host re-encode. It is
@@ -33,14 +117,12 @@ func DecodeForwardICBQuant(
 		return nil, core.NewError("native.DecodeForwardICBQuant: more tokens than maxLen cache rows")
 	}
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	setup := getDecodeForwardICBQuantSetupScratch(nLayers)
+	defer putDecodeForwardICBQuantSetupScratch(setup)
 	for i := range inputs {
 		if len(inputs[i]) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardICBQuant: each input must be dModel bf16 bytes")
 		}
-	}
-	type pj struct {
-		w           QuantWeight
-		outDim, inD int
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
@@ -50,10 +132,14 @@ func DecodeForwardICBQuant(
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardICBQuant: norm weight size mismatch")
 		}
-		for _, p := range []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.V, kvDim, dModel}, {ql.O, dModel, qDim},
-			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
-		} {
+		projChecks := setup.projChecks[:0]
+		projChecks = append(projChecks,
+			decodeForwardICBQuantProjCheck{ql.Q, qDim, dModel}, decodeForwardICBQuantProjCheck{ql.K, kvDim, dModel},
+			decodeForwardICBQuantProjCheck{ql.V, kvDim, dModel}, decodeForwardICBQuantProjCheck{ql.O, dModel, qDim},
+			decodeForwardICBQuantProjCheck{ql.Gate, dFF, dModel}, decodeForwardICBQuantProjCheck{ql.Up, dFF, dModel},
+			decodeForwardICBQuantProjCheck{ql.Down, dModel, dFF},
+		)
+		for _, p := range projChecks {
 			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
 				return nil, core.NewError("native.DecodeForwardICBQuant: quantised weight size mismatch")
 			}
@@ -63,18 +149,13 @@ func DecodeForwardICBQuant(
 	// qmv ICB pipelines, one per distinct (outDim,inDim,groupSize,bits) shape (built
 	// before the pool so errors return cleanly). Mixed-precision packs (for example
 	// 8-bit MLP beside 4-bit attention) need distinct recorded pipeline states.
-	type qmvPSOKey struct{ outDim, inDim, groupSize, bits int }
-	psoByKey := map[qmvPSOKey]metal.MTLComputePipelineState{}
+	psoByKey := setup.psoByKey
 	qmvPSO := func(outDim, inDim, groupSize, bits int) (metal.MTLComputePipelineState, error) {
-		key := qmvPSOKey{outDim: outDim, inDim: inDim, groupSize: groupSize, bits: bits}
+		key := decodeForwardICBQuantPSOKey{outDim: outDim, inDim: inDim, groupSize: groupSize, bits: bits}
 		if pso, ok := psoByKey[key]; ok {
 			return pso, nil
 		}
-		variant := "_qmv_"
-		if outDim%8 == 0 && inDim%512 == 0 {
-			variant = "_qmv_fast_"
-		}
-		pso, err := pipelineForICB(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+		pso, err := pipelineForICB(qmvBF16KernelName(outDim, inDim, groupSize, bits))
 		if err != nil {
 			return nil, err
 		}
@@ -88,10 +169,14 @@ func DecodeForwardICBQuant(
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
-		for _, p := range []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.V, kvDim, dModel}, {ql.O, dModel, qDim},
-			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
-		} {
+		projChecks := setup.projChecks[:0]
+		projChecks = append(projChecks,
+			decodeForwardICBQuantProjCheck{ql.Q, qDim, dModel}, decodeForwardICBQuantProjCheck{ql.K, kvDim, dModel},
+			decodeForwardICBQuantProjCheck{ql.V, kvDim, dModel}, decodeForwardICBQuantProjCheck{ql.O, dModel, qDim},
+			decodeForwardICBQuantProjCheck{ql.Gate, dFF, dModel}, decodeForwardICBQuantProjCheck{ql.Up, dFF, dModel},
+			decodeForwardICBQuantProjCheck{ql.Down, dModel, dFF},
+		)
+		for _, p := range projChecks {
 			if err := ensureQMVPSO(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits); err != nil {
 				return nil, err
 			}
@@ -101,12 +186,11 @@ func DecodeForwardICBQuant(
 	var outputs [][]byte
 	var coreErr error
 	withAutoreleasePool(func() {
-		anwBufs := make([]metal.MTLBuffer, nLayers)
-		mnwBufs := make([]metal.MTLBuffer, nLayers)
-		kCaches := make([]metal.MTLBuffer, nLayers)
-		vCaches := make([]metal.MTLBuffer, nLayers)
-		type lw struct{ q, k, v, o, g, u, d qmvWeight }
-		lb := make([]lw, nLayers)
+		anwBufs := setup.anwBufs
+		mnwBufs := setup.mnwBufs
+		kCaches := setup.kCaches
+		vCaches := setup.vCaches
+		lb := setup.lb
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		residentView := func(b []byte) bufView { return bufView{buf: residentBytes(b)} }
 		mkW := func(w QuantWeight, groupSize, bits int) qmvWeight {
@@ -114,27 +198,34 @@ func DecodeForwardICBQuant(
 			return qmvWeight{wq: residentView(w.Packed), scales: residentView(w.Scales), biases: residentView(w.Biases), gs: groupSize, bits: bits}
 		}
 		psoFor := func(w qmvWeight, outDim, inDim int) metal.MTLComputePipelineState {
-			return psoByKey[qmvPSOKey{outDim: outDim, inDim: inDim, groupSize: w.gs, bits: w.bits}]
+			return psoByKey[decodeForwardICBQuantPSOKey{outDim: outDim, inDim: inDim, groupSize: w.gs, bits: w.bits}]
 		}
 		// presized to the upper bound (every layer's 7 projections × wq/scales/biases, plus the
 		// 7 trailing scalar buffers) so the per-forward build never geometrically regrows its
 		// backing array. Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7*3+7)
+		projResident := setup.projResident
 		for li := range qlayers {
 			ql := qlayers[li]
 			anwBufs[li] = residentBytes(ql.AttnNormW)
 			mnwBufs[li] = residentBytes(ql.MLPNormW)
 			kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-			lb[li] = lw{
+			lb[li] = decodeForwardICBQuantLayerProjBuffers{
 				mkW(ql.Q, ql.GroupSize, ql.Bits), mkW(ql.K, ql.GroupSize, ql.Bits),
 				mkW(ql.V, ql.GroupSize, ql.Bits), mkW(ql.O, ql.GroupSize, ql.Bits),
 				mkW(ql.Gate, ql.GroupSize, ql.Bits), mkW(ql.Up, ql.GroupSize, ql.Bits),
 				mkW(ql.Down, ql.GroupSize, ql.Bits),
 			}
-			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
-				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
-			}
+			l := lb[li]
+			projResident = append(projResident,
+				l.q.wq.buf, l.q.scales.buf, l.q.biases.buf,
+				l.k.wq.buf, l.k.scales.buf, l.k.biases.buf,
+				l.v.wq.buf, l.v.scales.buf, l.v.biases.buf,
+				l.o.wq.buf, l.o.scales.buf, l.o.biases.buf,
+				l.g.wq.buf, l.g.scales.buf, l.g.biases.buf,
+				l.u.wq.buf, l.u.scales.buf, l.u.biases.buf,
+				l.d.wq.buf, l.d.scales.buf, l.d.biases.buf,
+			)
 		}
 		// qmv K(=inDim) / N(=outDim) scalar params per shape (shared across layers)
 		kDModel, kQDim, kDFF := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dFF))
@@ -143,7 +234,7 @@ func DecodeForwardICBQuant(
 
 		// 4-bit qmv through the SHARED emitQMV body (with encQMVBF16); K/N bind the memoised count scalars.
 		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, inDim, outDim int) {
-			emitQMV(icbSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
+			emitQMV(fastICBSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]

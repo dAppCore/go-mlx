@@ -39,6 +39,10 @@ const bf16Size = 2
 //
 //	out, err := native.RMSNormBF16(xBytes, wBytes, 4, 512, 1e-5)
 func RMSNormBF16(x, weight []byte, rows, axisSize int, eps float32) ([]byte, error) {
+	return RMSNormBF16Into(nil, x, weight, rows, axisSize, eps)
+}
+
+func RMSNormBF16Into(out []byte, x, weight []byte, rows, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -49,7 +53,10 @@ func RMSNormBF16(x, weight []byte, rows, axisSize int, eps float32) ([]byte, err
 		return nil, core.NewError("native.RMSNormBF16: len(weight) must equal axisSize*2 bytes")
 	}
 	if rows == 0 || axisSize == 0 {
-		return make([]byte, len(x)), nil
+		if cap(out) < len(x) {
+			return make([]byte, len(x)), nil
+		}
+		return out[:len(x)], nil
 	}
 	pso, err := pipelineFor(rmsKernelBF16(axisSize))
 	if err != nil {
@@ -57,35 +64,51 @@ func RMSNormBF16(x, weight []byte, rows, axisSize int, eps float32) ([]byte, err
 	}
 
 	outLen := rows * axisSize * bf16Size
-	out := make([]byte, outLen)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		wBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&weight[0]), uint(len(weight)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
+		scratch, err := getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		wBuf := residentBytes(weight)
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		// single-row up to the limit, else the looped kernel (it grid-strides the axis).
 		tgSize := rmsThreadgroup(axisSize, pso)
-		nThreads := uint(rows) * tgSize
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 2)
-		setEncFloat32(enc, eps, 3)
-		setEncInt32(enc, int32(axisSize), 4) // axis_size
-		setEncInt32(enc, 1, 5)               // w_stride = 1 for a contiguous 1-D weight
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: nThreads, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRMSNormRows(encSink{enc}, pso, xBuf, wBuf, outBuf, 0, 0, 0, axisSize, eps, rows, tgSize)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -115,8 +138,7 @@ func MatVecBF16(mat, vec []byte, outDim, inDim int) ([]byte, error) {
 	}
 
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	name := core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0",
-		bm, bn, sm, sn, tm, tn)
+	name := gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn)
 	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
@@ -124,37 +146,33 @@ func MatVecBF16(mat, vec []byte, outDim, inDim int) ([]byte, error) {
 
 	outLen := outDim * bf16Size
 	out := make([]byte, outLen)
+	var encErr error
 	withAutoreleasePool(func() {
-		matBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&mat[0]), uint(len(mat)), metal.MTLResourceStorageModeShared)
-		vecBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&vec[0]), uint(len(vec)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
+		matBuf := residentBytes(mat)
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		vecBuf, outBuf, err := scratch.buffers(vec)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(matBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(vecBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncInt32(enc, int32(inDim), 4)  // in_vec_size = K
-		setEncInt32(enc, int32(outDim), 5) // out_vec_size = N (output rows)
-		setEncInt32(enc, int32(inDim), 6)  // matrix_ld = K (row-major mat)
-		setEncInt32(enc, 1, 9)             // batch_ndim
-		setEncInt32(enc, 1, 10)            // batch_shape = {1}
-		setEncInt64(enc, 0, 11)            // vector_batch_stride = {0}
-		setEncInt64(enc, 0, 12)            // matrix_batch_stride = {0}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitGemv(encSink{enc}, pso, matBuf, 0, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		nOutPerTgp := bm * sm * tm
-		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
+		copy(out, scratch.out.bytes[:outLen])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -167,13 +185,25 @@ var (
 	ropePSOBF16Cache = map[string]metal.MTLComputePipelineState{}
 )
 
+const (
+	ropeBF16Key            = "rope_single_bfloat16|trad=false"
+	ropeBF16TraditionalKey = "rope_single_bfloat16|trad=true"
+)
+
+func ropePipelineBF16Key(traditional bool) string {
+	if traditional {
+		return ropeBF16TraditionalKey
+	}
+	return ropeBF16Key
+}
+
 // ropePipelineBF16 is the bfloat16 sibling of ropePipeline: it builds (and
 // caches) the rope_single_bfloat16 kernel specialised by MLX's function
 // constants — forward (id 1), traditional (id 2), head_seq_transpose (id 3),
 // set at pipeline-build time via MTLFunctionConstantValues, identical to the
 // float32 path (only the kernel name differs).
 func ropePipelineBF16(traditional bool) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("rope_single_bfloat16|trad=%v", traditional)
+	key := ropePipelineBF16Key(traditional)
 	ropePSOBF16Mu.Lock()
 	defer ropePSOBF16Mu.Unlock()
 	if pso, ok := ropePSOBF16Cache[key]; ok {
@@ -251,44 +281,39 @@ func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float
 	}
 
 	out := make([]byte, len(x))
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		var outBuf metal.MTLBuffer
+		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 		if rotaryDim < headDim {
 			// partial: seed out with x so the non-rotated tail [rotaryDim:headDim] passes through
 			// (the kernel writes only the rotated dims).
-			outBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		} else {
-			outBuf = device.NewBufferWithLengthOptions(uint(len(x)), metal.MTLResourceStorageModeShared)
+			copy(scratch.out.bytes[:len(x)], x)
 		}
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		offBuf := scalarI32(int32(offset))
 		logBase := float32(math.Log2(float64(base)))
-		matSize := int64(headDim) // out_strides[0] = T*D, T==1 — FULL head stride (the tail lives in this row)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
-		setEncFloat32(enc, scale, 3)
-		setEncInt64(enc, matSize, 4)
-		setEncFloat32(enc, logBase, 10)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRopeAt(encSink{enc}, pso, xBuf, outBuf, 0, 0, offBuf, 0, nil, nHeads, rotaryDim, headDim, scale, logBase)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		// grid.x = rotaryDim/2 → the kernel pairs dim i with i+rotaryDim/2 and normalises the
-		// frequency over rotaryDim; rope has no cross-thread reduction so any covering group works.
-		dim0 := uint(rotaryDim / 2)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
-			metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(x)))
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -321,32 +346,31 @@ func AddBF16(a, b []byte) ([]byte, error) {
 		return out, nil
 	}
 
+	var encErr error
 	withAutoreleasePool(func() {
-		aBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&a[0]), uint(len(a)), metal.MTLResourceStorageModeShared)
-		bBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(len(b)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(a)), metal.MTLResourceStorageModeShared)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(aBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 2)
-		setEncInt32(enc, int32(n), 3) // element count
-
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		ioScratch, err := getBinaryByteScratch(len(a))
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putBinaryByteScratch(ioScratch)
+		aBuf, bBuf, outBuf, err := ioScratch.buffers(a, b)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(a)))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitBinary(encSink{enc}, pso, aBuf, 0, bBuf, 0, outBuf, 0, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+
+		copy(out, ioScratch.out.bytes[:len(a)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

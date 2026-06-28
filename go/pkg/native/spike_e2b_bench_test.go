@@ -91,11 +91,13 @@ func spikeE2BFixture(tb testing.TB) (inputs [][]byte, layers []QuantizedLayerWei
 	return inputs, layers, arch
 }
 
-// TestSpikeFineGrainedReplayMatchesCoarse — the fine-grained replay (encoder memory barriers) must
-// produce byte-identical output to the coarse-barrier ICB replay (same recorded ops, same deps, just a
-// different barrier mechanism). Gates correctness before trusting the perf number.
+// TestSpikeFineGrainedReplayMatchesCoarse documents an invalid R&D path: splitting ICB replay into
+// fine-grained ExecuteCommandsInBufferWithRange calls plus encoder memory barriers does not preserve the
+// dependency ordering provided by per-command ICB barriers. Keep production on coarse ICB barriers or the
+// pipelined batch path; keep the benchmark below timing-only while this experiment remains archived.
 func TestSpikeFineGrainedReplayMatchesCoarse(t *testing.T) {
 	requireNativeRuntime(t)
+	t.Skip("fine-grained ICB replay is an invalid R&D spike: encoder memory barriers between ICB ranges do not enforce command dependencies")
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 1536, 8, 1, 256, 6144, 128
 	inputs, layers, arch := spikeE2BFixture(t)
 
@@ -118,8 +120,8 @@ func TestSpikeFineGrainedReplayMatchesCoarse(t *testing.T) {
 	t.Logf("fine-grained replay matches coarse across %d tokens", len(coarse))
 }
 
-// BenchmarkSpikeE2BDecodeFineGrained — fine-grained (encoder memory-barrier) replay vs the coarse
-// BenchmarkSpikeE2BDecode. If faster, the memory barrier pipelines where the coarse SetBarrier drains.
+// BenchmarkSpikeE2BDecodeFineGrained records the archived fine-grained replay timing only. It is not a
+// correctness-backed production candidate unless the skipped diagnostic above starts matching coarse replay.
 func BenchmarkSpikeE2BDecodeFineGrained(b *testing.B) {
 	fineGrainedReplay = true
 	defer func() { fineGrainedReplay = false }()

@@ -6,9 +6,33 @@ package native
 
 import "testing"
 
-// TestMatMulBF16NT pins MatMulBF16NT (fused steel GEMM, weight streamed once) BYTE-IDENTICAL to
-// MatRowsBF16 (per-row gemv) across MTP projection shapes — the byte-identity that lets the batched
-// verify use the GEMM for speed without changing output.
+func matMulBF16NTFixture(M, K, N int) ([]byte, []byte) {
+	w := toBF16Bytes(syntheticFloat32(N*K, N+3))
+	in := toBF16Bytes(syntheticFloat32(M*K, K+5))
+	return in, w
+}
+
+func TestMatMulBF16NTAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 4, 256, 128
+	in, w := matMulBF16NTFixture(M, K, N)
+	if _, err := MatMulBF16NT(in, w, M, K, N); err != nil {
+		t.Fatalf("MatMulBF16NT warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatMulBF16NT(in, w, M, K, N); err != nil {
+			t.Fatalf("MatMulBF16NT: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatMulBF16NT allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+// TestMatMulBF16NT pins MatMulBF16NT (fused steel GEMM, weight streamed once) byte-identical to the
+// old looped MatVecBF16 row reference across MTP projection shapes.
 func TestMatMulBF16NT(t *testing.T) {
 	requireNativeRuntime(t)
 	for _, c := range []struct{ M, inDim, outDim int }{
@@ -20,15 +44,12 @@ func TestMatMulBF16NT(t *testing.T) {
 	} {
 		w := toBF16Bytes(syntheticFloat32(c.outDim*c.inDim, 3))
 		in := toBF16Bytes(syntheticFloat32(c.M*c.inDim, 5))
-		gemv, err := MatRowsBF16(w, in, c.M, c.outDim, c.inDim)
-		if err != nil {
-			t.Fatalf("MatRowsBF16 M%d: %v", c.M, err)
-		}
+		gemv := matRowsBF16LoopedMatVecReference(t, w, in, c.M, c.outDim, c.inDim)
 		gemm, err := MatMulBF16NT(in, w, c.M, c.inDim, c.outDim)
 		if err != nil {
 			t.Fatalf("MatMulBF16NT M%d: %v", c.M, err)
 		}
-		eqBytes(t, "MatMulBF16NT vs MatRowsBF16", gemm, gemv)
+		eqBytes(t, "MatMulBF16NT vs looped MatVecBF16", gemm, gemv)
 	}
 }
 
@@ -42,9 +63,7 @@ func BenchmarkMatMulBF16NTvsRows(b *testing.B) {
 	in := toBF16Bytes(syntheticFloat32(M*inDim, 5))
 	b.Run("gemv-rows", func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
-			if _, err := MatRowsBF16(w, in, M, outDim, inDim); err != nil {
-				b.Fatal(err)
-			}
+			_ = matRowsBF16LoopedMatVecReference(b, w, in, M, outDim, inDim)
 		}
 	})
 	b.Run("steel-gemm", func(b *testing.B) {
@@ -54,4 +73,18 @@ func BenchmarkMatMulBF16NTvsRows(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkMatMulBF16NT_4x128x256(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 4, 256, 128
+	in, w := matMulBF16NTFixture(M, K, N)
+	b.SetBytes(int64(len(in) + len(w)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MatMulBF16NT(in, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

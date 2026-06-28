@@ -73,6 +73,9 @@ func resetNativePipelineCachesForCoverage() {
 
 	sdpaPSOMu.Lock()
 	sdpaPSOCache = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
+	sdpaVector2Pass1HeadDimCache = map[sdpa2Pass1Key]metal.MTLComputePipelineState{}
+	sdpaVector2Pass2HeadDimCache = map[int]metal.MTLComputePipelineState{}
 	sdpaPSOMu.Unlock()
 
 	steelPSOMu.Lock()
@@ -81,11 +84,16 @@ func resetNativePipelineCachesForCoverage() {
 
 	icbPSOMu.Lock()
 	icbPSOCache = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorICBHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
 	icbPSOMu.Unlock()
 
 	geluPSOOnce = sync.Once{}
 	geluPSO = nil
 	geluPSOErr = nil
+
+	ffnMegaPSOOnce = sync.Once{}
+	ffnMegaPSO = nil
+	ffnMegaPSOErr = nil
 }
 
 type failingProjector struct {

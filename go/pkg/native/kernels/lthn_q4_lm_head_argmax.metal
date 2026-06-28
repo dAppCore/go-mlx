@@ -6,6 +6,16 @@ using namespace metal;
 
 constant constexpr uint lthn_bf16_lm_head_rows_per_tile = 8;
 constant constexpr uint lthn_bf16_logits_argmax_rows_per_tile = 256;
+constant constexpr uint lthn_topk_max_k = 64;
+constant constexpr uint lthn_q4_lm_head_topk_simdgroups = 4;
+constant constexpr uint lthn_q4_lm_head_topk_subtiles = 8;
+constant constexpr uint lthn_q4_lm_head_results_per_simdgroup = 4;
+constant constexpr uint lthn_q4_lm_head_topk_rows_per_tile =
+    lthn_q4_lm_head_topk_simdgroups * lthn_q4_lm_head_results_per_simdgroup * lthn_q4_lm_head_topk_subtiles;
+constant constexpr uint lthn_q4_lm_head_values_per_thread = 16;
+constant constexpr uint lthn_q4_lm_head_block_size = lthn_q4_lm_head_values_per_thread * 32;
+constant constexpr uint lthn_logits_sample_lanes = 256;
+constant constexpr uint lthn_logits_topk_lanes = 32;
 
 static inline bool lthn_lm_head_row_suppressed(uint row, device const int* suppress, int suppress_count) {
   for (int i = 0; i < suppress_count; i++) {
@@ -14,6 +24,112 @@ static inline bool lthn_lm_head_row_suppressed(uint row, device const int* suppr
     }
   }
   return false;
+}
+
+static inline float lthn_sample_softcap(float score, float soft_cap) {
+  score = float(bfloat(score));
+  if (soft_cap > 0.0f) {
+    score = float(bfloat(score / soft_cap));
+    score = float(bfloat(tanh(score)));
+    score = float(bfloat(score * soft_cap));
+  }
+  return score;
+}
+
+static inline bool lthn_row_in_history(uint row, device const int* history, int history_count) {
+  for (int i = 0; i < history_count; ++i) {
+    if (history[i] == int(row)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static inline float lthn_repeat_penalized_logit(uint row, float value, device const int* history, int history_count, float penalty) {
+  if (penalty <= 1.0f || history_count <= 0 || !lthn_row_in_history(row, history, history_count)) {
+    return value;
+  }
+  if (value > 0.0f) {
+    return value / penalty;
+  }
+  return value * penalty;
+}
+
+static inline void lthn_insert_topk(
+    thread float* values,
+    thread int* indices,
+    int top_k,
+    float value,
+    int index) {
+  if (index < 0) {
+    return;
+  }
+  for (int pos = 0; pos < top_k; ++pos) {
+    int current = indices[pos];
+    if (value > values[pos] || (value == values[pos] && (current < 0 || index < current))) {
+      for (int shift = top_k - 1; shift > pos; --shift) {
+        values[shift] = values[shift - 1];
+        indices[shift] = indices[shift - 1];
+      }
+      values[pos] = value;
+      indices[pos] = index;
+      return;
+    }
+  }
+}
+
+static inline void lthn_insert_topk_threadgroup(
+    threadgroup float* values,
+    threadgroup int* indices,
+    int top_k,
+    float value,
+    int index) {
+  if (index < 0) {
+    return;
+  }
+  for (int pos = 0; pos < top_k; ++pos) {
+    int current = indices[pos];
+    if (value > values[pos] || (value == values[pos] && (current < 0 || index < current))) {
+      for (int shift = top_k - 1; shift > pos; --shift) {
+        values[shift] = values[shift - 1];
+        indices[shift] = indices[shift - 1];
+      }
+      values[pos] = value;
+      indices[pos] = index;
+      return;
+    }
+  }
+}
+
+static inline float lthn_q4_lm_head_load_vector4(const device bfloat* x, thread float* x_thread) {
+  float sum = 0.0f;
+  for (uint i = 0; i < lthn_q4_lm_head_values_per_thread; i += 4u) {
+    sum += float(x[i]) + float(x[i + 1u]) + float(x[i + 2u]) + float(x[i + 3u]);
+    x_thread[i] = float(x[i]);
+    x_thread[i + 1u] = float(x[i + 1u]) / 16.0f;
+    x_thread[i + 2u] = float(x[i + 2u]) / 256.0f;
+    x_thread[i + 3u] = float(x[i + 3u]) / 4096.0f;
+  }
+  return sum;
+}
+
+static inline float lthn_q4_lm_head_qdot4(
+    const device uint8_t* w,
+    const thread float* x_thread,
+    float scale,
+    float bias,
+    float sum) {
+  const device uint16_t* ws = reinterpret_cast<const device uint16_t*>(w);
+  float accum = 0.0f;
+  for (uint i = 0; i < (lthn_q4_lm_head_values_per_thread / 4u); ++i) {
+    uint16_t packed = ws[i];
+    accum +=
+        x_thread[4u * i] * float(packed & 0x000f) +
+        x_thread[4u * i + 1u] * float(packed & 0x00f0) +
+        x_thread[4u * i + 2u] * float(packed & 0x0f00) +
+        x_thread[4u * i + 3u] * float(packed & 0xf000);
+  }
+  return scale * accum + sum * bias;
 }
 
 // BF16 direct greedy path. It scores up to eight vocab rows per tile against
@@ -161,4 +277,679 @@ kernel void lthn_argmax_merge_f32(
     }
   }
   out[0] = best_idx;
+}
+
+// Sampling top-k stage for a BF16 resident head. It emits one candidate per
+// vocab row (kept on GPU) after final RMSNorm + optional sampling soft-cap.
+// The generic lthn_topk_merge_f32 stage then keeps only K values for the host.
+kernel void lthn_bf16_lm_head_candidates_bf16(
+    device const bfloat* x       [[buffer(0)]],
+    device const bfloat* weight  [[buffer(1)]],
+    device float*        values  [[buffer(2)]],
+    device int*          indices [[buffer(3)]],
+    constant int&        d_model [[buffer(4)]],
+    constant int&        vocab   [[buffer(5)]],
+    device const int*    suppress [[buffer(6)]],
+    constant int&        suppress_count [[buffer(7)]],
+    device const int*    history [[buffer(8)]],
+    constant int&        history_count [[buffer(9)]],
+    constant float&      repeat_penalty [[buffer(10)]],
+    constant float&      soft_cap [[buffer(11)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint row_in_tile [[simdgroup_index_in_threadgroup]]) {
+  uint slot = tile * lthn_bf16_lm_head_rows_per_tile + row_in_tile;
+  if (d_model <= 0 || vocab <= 0) {
+    if (lane == 0u) {
+      values[slot] = -INFINITY;
+      indices[slot] = -1;
+    }
+    return;
+  }
+
+  uint row = slot;
+  float partial = 0.0f;
+  if (row < uint(vocab)) {
+    for (uint col = lane; col < uint(d_model); col += 32u) {
+      partial += float(x[col]) * float(weight[row * uint(d_model) + col]);
+    }
+  }
+
+  float score = simd_sum(partial);
+  if (lane == 0u) {
+    bool masked = row >= uint(vocab) || lthn_lm_head_row_suppressed(row, suppress, suppress_count);
+    float sampled = lthn_sample_softcap(score, soft_cap);
+    values[slot] = !masked ? lthn_repeat_penalized_logit(row, sampled, history, history_count, repeat_penalty) : -INFINITY;
+    indices[slot] = !masked ? int(row) : -1;
+  }
+}
+
+// Sampling top-k stage for already materialised BF16 logits. Quant heads use
+// the proven qmv kernel into scratch, then this row candidate pass, so the full
+// vocab row still never crosses to the host.
+kernel void lthn_bf16_logits_candidates_bf16(
+    device const bfloat* logits [[buffer(0)]],
+    device float*        values [[buffer(1)]],
+    device int*          indices [[buffer(2)]],
+    constant int&        vocab [[buffer(3)]],
+    device const int*    suppress [[buffer(4)]],
+    constant int&        suppress_count [[buffer(5)]],
+    constant float&      soft_cap [[buffer(6)]],
+    uint row [[thread_position_in_grid]]) {
+  if (row >= uint(vocab)) {
+    return;
+  }
+  bool masked = lthn_lm_head_row_suppressed(row, suppress, suppress_count);
+  values[row] = !masked ? lthn_sample_softcap(float(logits[row]), soft_cap) : -INFINITY;
+  indices[row] = !masked ? int(row) : -1;
+}
+
+// Quant sampled path: after qmv writes BF16 logits to scratch, reduce each
+// 256-row tile to top-k candidates before the global merge. This keeps the
+// expensive merge over tile_count*K instead of the full vocab.
+kernel void lthn_bf16_logits_topk_tiles_bf16(
+    device const bfloat* logits [[buffer(0)]],
+    device float*        values [[buffer(1)]],
+    device int*          indices [[buffer(2)]],
+    constant int&        vocab [[buffer(3)]],
+    device const int*    suppress [[buffer(4)]],
+    constant int&        suppress_count [[buffer(5)]],
+    device const int*    history [[buffer(6)]],
+    constant int&        history_count [[buffer(7)]],
+    constant float&      repeat_penalty [[buffer(8)]],
+    constant float&      soft_cap [[buffer(9)]],
+    constant int&        top_k [[buffer(10)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  if (lane >= 32u || vocab <= 0 || top_k <= 0 || top_k > int(lthn_topk_max_k)) {
+    return;
+  }
+
+  uint start = tile * lthn_bf16_logits_argmax_rows_per_tile;
+  uint end = min(start + lthn_bf16_logits_argmax_rows_per_tile, uint(vocab));
+  float local_values[lthn_topk_max_k];
+  int local_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    local_values[i] = -INFINITY;
+    local_indices[i] = -1;
+  }
+
+  for (uint row = start + lane; row < end; row += 32u) {
+    if (lthn_lm_head_row_suppressed(row, suppress, suppress_count)) {
+      continue;
+    }
+    float sampled = lthn_sample_softcap(float(logits[row]), soft_cap);
+    sampled = lthn_repeat_penalized_logit(row, sampled, history, history_count, repeat_penalty);
+    lthn_insert_topk(local_values, local_indices, top_k, sampled, int(row));
+  }
+
+  threadgroup float group_values[32 * lthn_topk_max_k];
+  threadgroup int group_indices[32 * lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    uint off = lane * lthn_topk_max_k + uint(i);
+    group_values[off] = local_values[i];
+    group_indices[off] = local_indices[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (lane != 0u) {
+    return;
+  }
+
+  float merged_values[lthn_topk_max_k];
+  int merged_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    merged_values[i] = -INFINITY;
+    merged_indices[i] = -1;
+  }
+  for (int lane_i = 0; lane_i < 32; ++lane_i) {
+    for (int pos = 0; pos < top_k; ++pos) {
+      int off = lane_i * int(lthn_topk_max_k) + pos;
+      lthn_insert_topk(merged_values, merged_indices, top_k, group_values[off], group_indices[off]);
+    }
+  }
+  for (int i = 0; i < top_k; ++i) {
+    uint out = tile * uint(top_k) + uint(i);
+    values[out] = merged_values[i];
+    indices[out] = merged_indices[i];
+  }
+}
+
+// Fused quant LM-head sampled path copied from pkg/metal's q4 top-k bridge,
+// adapted to native buffers and the existing native merge stage. It computes a
+// tile-local TopK straight from packed q4 weights, so eligible quant heads avoid
+// materialising a full BF16 vocab row before sampling.
+kernel void lthn_q4_lm_head_topk_tiles_bf16(
+    device const bfloat* x [[buffer(0)]],
+    device const uint8_t* w [[buffer(1)]],
+    device const bfloat* scales [[buffer(2)]],
+    device const bfloat* biases [[buffer(3)]],
+    device float* values [[buffer(4)]],
+    device int* indices [[buffer(5)]],
+    constant int& d_model [[buffer(6)]],
+    constant int& vocab [[buffer(7)]],
+    constant int& group_size [[buffer(8)]],
+    device const int* suppress [[buffer(9)]],
+    constant int& suppress_count [[buffer(10)]],
+    device const int* history [[buffer(11)]],
+    constant int& history_count [[buffer(12)]],
+    constant float& repeat_penalty [[buffer(13)]],
+    constant float& soft_cap [[buffer(14)]],
+    constant int& top_k [[buffer(15)]],
+    constant int& candidate_count [[buffer(16)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  if (d_model <= 0 || vocab <= 0 || top_k <= 0 || top_k > int(lthn_topk_max_k)) {
+    return;
+  }
+  if (candidate_count <= 0 || candidate_count > top_k) {
+    return;
+  }
+  if (group_size != 32 && group_size != 64 && group_size != 128) {
+    return;
+  }
+  if ((d_model % int(lthn_q4_lm_head_block_size)) != 0 || (d_model % group_size) != 0) {
+    return;
+  }
+
+  const int row_packed = d_model / 2;
+  const int row_sb = d_model / group_size;
+  const int scale_step_per_thread = group_size / int(lthn_q4_lm_head_values_per_thread);
+  const int tile_base = int(tile) * int(lthn_q4_lm_head_topk_rows_per_tile);
+
+  threadgroup float top_values[lthn_topk_max_k];
+  threadgroup int top_indices[lthn_topk_max_k];
+  threadgroup float cand_values[lthn_q4_lm_head_topk_simdgroups * lthn_q4_lm_head_results_per_simdgroup];
+  threadgroup int cand_indices[lthn_q4_lm_head_topk_simdgroups * lthn_q4_lm_head_results_per_simdgroup];
+
+  if (simd_gid == 0u && simd_lid == 0u) {
+    for (int i = 0; i < top_k; ++i) {
+      top_values[i] = -INFINITY;
+      top_indices[i] = -1;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  float x_thread[lthn_q4_lm_head_values_per_thread];
+  for (uint subtile = 0; subtile < lthn_q4_lm_head_topk_subtiles; ++subtile) {
+    int out_row = tile_base + int(subtile) *
+        int(lthn_q4_lm_head_topk_simdgroups * lthn_q4_lm_head_results_per_simdgroup) +
+        int(simd_gid) * int(lthn_q4_lm_head_results_per_simdgroup);
+    float result[lthn_q4_lm_head_results_per_simdgroup] = {0.0f};
+
+    const device uint8_t* w_base = w + out_row * row_packed + int(simd_lid) * 8;
+    const device bfloat* scales_base = scales + out_row * row_sb + int(simd_lid) / scale_step_per_thread;
+    const device bfloat* biases_base = biases + out_row * row_sb + int(simd_lid) / scale_step_per_thread;
+
+    for (int k_block = 0; k_block < d_model; k_block += int(lthn_q4_lm_head_block_size)) {
+      const device bfloat* x_ptr = x + k_block + int(simd_lid) * int(lthn_q4_lm_head_values_per_thread);
+      float x_sum = lthn_q4_lm_head_load_vector4(x_ptr, x_thread);
+      const device uint8_t* w_block = w_base + k_block / 2;
+      const device bfloat* scales_block = scales_base + k_block / group_size;
+      const device bfloat* biases_block = biases_base + k_block / group_size;
+
+      for (uint row = 0; row < lthn_q4_lm_head_results_per_simdgroup; ++row) {
+        int n = out_row + int(row);
+        if (n < vocab) {
+          const device uint8_t* wl = w_block + int(row) * row_packed;
+          const device bfloat* sl = scales_block + int(row) * row_sb;
+          const device bfloat* bl = biases_block + int(row) * row_sb;
+          result[row] += lthn_q4_lm_head_qdot4(wl, x_thread, float(sl[0]), float(bl[0]), x_sum);
+        }
+      }
+    }
+
+    float summed[lthn_q4_lm_head_results_per_simdgroup];
+    for (uint row = 0; row < lthn_q4_lm_head_results_per_simdgroup; ++row) {
+      summed[row] = simd_sum(result[row]);
+    }
+    if (simd_lid == 0u) {
+      for (uint row = 0; row < lthn_q4_lm_head_results_per_simdgroup; ++row) {
+        int cand = int(simd_gid) * int(lthn_q4_lm_head_results_per_simdgroup) + int(row);
+        int n = out_row + int(row);
+        bool valid = n < vocab && !lthn_lm_head_row_suppressed(uint(n), suppress, suppress_count);
+        float sampled = lthn_sample_softcap(summed[row], soft_cap);
+        sampled = lthn_repeat_penalized_logit(uint(n), sampled, history, history_count, repeat_penalty);
+        cand_values[cand] = valid ? sampled : -INFINITY;
+        cand_indices[cand] = valid ? n : -1;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_gid == 0u && simd_lid == 0u) {
+      for (uint cand = 0; cand < lthn_q4_lm_head_topk_simdgroups * lthn_q4_lm_head_results_per_simdgroup; ++cand) {
+        lthn_insert_topk_threadgroup(top_values, top_indices, top_k, cand_values[cand], cand_indices[cand]);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (simd_gid == 0u && simd_lid == 0u) {
+    for (int i = 0; i < candidate_count; ++i) {
+      uint out = tile * uint(candidate_count) + uint(i);
+      values[out] = top_values[i];
+      indices[out] = top_indices[i];
+    }
+  }
+}
+
+// Merge an on-GPU candidate vector down to sorted top-k values/indices. One
+// threadgroup scans the candidate row with 32 lanes, each lane holding a local
+// top-k, then lane 0 merges the 32 local windows. K is capped at 64 to match
+// pkg/metal's q4 lm-head top-k contract.
+kernel void lthn_topk_merge_f32(
+    device const float* values [[buffer(0)]],
+    device const int*   indices [[buffer(1)]],
+    device float*       out_values [[buffer(2)]],
+    device int*         out_indices [[buffer(3)]],
+    constant int&       n [[buffer(4)]],
+    constant int&       top_k [[buffer(5)]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  if (lane >= 32u || n <= 0 || top_k <= 0 || top_k > int(lthn_topk_max_k)) {
+    return;
+  }
+
+  float local_values[lthn_topk_max_k];
+  int local_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    local_values[i] = -INFINITY;
+    local_indices[i] = -1;
+  }
+
+  for (uint i = lane; i < uint(n); i += 32u) {
+    lthn_insert_topk(local_values, local_indices, top_k, values[i], indices[i]);
+  }
+
+  threadgroup float group_values[32 * lthn_topk_max_k];
+  threadgroup int group_indices[32 * lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    uint off = lane * lthn_topk_max_k + uint(i);
+    group_values[off] = local_values[i];
+    group_indices[off] = local_indices[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (lane != 0u) {
+    return;
+  }
+
+  float merged_values[lthn_topk_max_k];
+  int merged_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    merged_values[i] = -INFINITY;
+    merged_indices[i] = -1;
+  }
+  for (int lane_i = 0; lane_i < 32; ++lane_i) {
+    for (int pos = 0; pos < top_k; ++pos) {
+      int off = lane_i * int(lthn_topk_max_k) + pos;
+      lthn_insert_topk(merged_values, merged_indices, top_k, group_values[off], group_indices[off]);
+    }
+  }
+  for (int i = 0; i < top_k; ++i) {
+    out_values[i] = merged_values[i];
+    out_indices[i] = merged_indices[i];
+  }
+}
+
+struct lthn_topk_sample_params {
+  int n;
+  int top_k;
+  float temperature;
+  float top_p;
+  float min_p;
+  float draw;
+};
+
+struct lthn_logits_sample_params {
+  int vocab;
+  int suppress_count;
+  int history_count;
+  int top_k;
+  float temperature;
+  float top_p;
+  float min_p;
+  float draw;
+  float repeat_penalty;
+};
+
+static inline int lthn_sample_topk_window_raw(
+    thread const float* values,
+    thread const int* indices,
+    int top_k,
+    float temperature,
+    float top_p,
+    float min_p,
+    float draw) {
+  if (top_k <= 0 || top_k > int(lthn_topk_max_k) || temperature <= 0.0f) {
+    return -1;
+  }
+
+  float scaled[lthn_topk_max_k];
+  float probs[lthn_topk_max_k];
+  float max_v = -INFINITY;
+  int valid = 0;
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    scaled[i] = -INFINITY;
+    probs[i] = 0.0f;
+  }
+  for (int i = 0; i < top_k; ++i) {
+    int id = indices[i];
+    if (id < 0) {
+      continue;
+    }
+    float v = values[i] / temperature;
+    scaled[i] = v;
+    max_v = max(max_v, v);
+    valid++;
+  }
+  if (valid == 0) {
+    return -1;
+  }
+
+  float total = 0.0f;
+  for (int i = 0; i < top_k; ++i) {
+    if (indices[i] < 0) {
+      continue;
+    }
+    float p = exp(scaled[i] - max_v);
+    probs[i] = p;
+    total += p;
+  }
+
+  int keep = top_k;
+  if (top_p > 0.0f && top_p < 1.0f) {
+    float cum = 0.0f;
+    int n = 0;
+    for (n = 0; n < keep; ++n) {
+      if (indices[n] < 0) {
+        break;
+      }
+      cum += probs[n];
+      if (cum >= top_p * total) {
+        n++;
+        break;
+      }
+    }
+    keep = max(n, 1);
+  }
+  if (min_p > 0.0f && keep > 0) {
+    float threshold = probs[0] * min_p;
+    int n = 0;
+    while (n < keep && indices[n] >= 0 && probs[n] >= threshold) {
+      n++;
+    }
+    if (n > 0) {
+      keep = n;
+    }
+  }
+
+  float kept_sum = 0.0f;
+  for (int i = 0; i < keep; ++i) {
+    if (indices[i] >= 0) {
+      kept_sum += probs[i];
+    }
+  }
+  if (kept_sum <= 0.0f) {
+    return indices[0];
+  }
+
+  float target = clamp(draw, 0.0f, 0.99999994f) * kept_sum;
+  float acc = 0.0f;
+  int fallback = indices[0];
+  for (int i = 0; i < keep; ++i) {
+    int id = indices[i];
+    if (id < 0) {
+      continue;
+    }
+    fallback = id;
+    acc += probs[i];
+    if (acc >= target) {
+      return id;
+    }
+  }
+  return fallback;
+}
+
+static inline int lthn_sample_topk_window(
+    thread const float* values,
+    thread const int* indices,
+    constant lthn_topk_sample_params& params) {
+  return lthn_sample_topk_window_raw(
+      values, indices, params.top_k, params.temperature, params.top_p, params.min_p, params.draw);
+}
+
+// Merge candidate rows down to TopK and sample that window in one dispatch.
+// This is the sampled native-session route: it preserves the device-only TopK
+// reduction while avoiding a second sampler dispatch and the K-logit host readback.
+kernel void lthn_topk_merge_sample_f32(
+    device const float* values [[buffer(0)]],
+    device const int*   indices [[buffer(1)]],
+    device int*         out [[buffer(2)]],
+    constant lthn_topk_sample_params& params [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  const int n = params.n;
+  const int top_k = params.top_k;
+  if (lane >= 32u || n <= 0 || top_k <= 0 || top_k > int(lthn_topk_max_k)) {
+    if (lane == 0u) {
+      out[0] = -1;
+    }
+    return;
+  }
+
+  float local_values[lthn_topk_max_k];
+  int local_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    local_values[i] = -INFINITY;
+    local_indices[i] = -1;
+  }
+
+  for (uint i = lane; i < uint(n); i += 32u) {
+    lthn_insert_topk(local_values, local_indices, top_k, values[i], indices[i]);
+  }
+
+  threadgroup float group_values[32 * lthn_topk_max_k];
+  threadgroup int group_indices[32 * lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    uint off = lane * lthn_topk_max_k + uint(i);
+    group_values[off] = local_values[i];
+    group_indices[off] = local_indices[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (lane != 0u) {
+    return;
+  }
+
+  float merged_values[lthn_topk_max_k];
+  int merged_indices[lthn_topk_max_k];
+  for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+    merged_values[i] = -INFINITY;
+    merged_indices[i] = -1;
+  }
+  for (int lane_i = 0; lane_i < 32; ++lane_i) {
+    for (int pos = 0; pos < top_k; ++pos) {
+      int off = lane_i * int(lthn_topk_max_k) + pos;
+      lthn_insert_topk(merged_values, merged_indices, top_k, group_values[off], group_indices[off]);
+    }
+  }
+  out[0] = lthn_sample_topk_window(merged_values, merged_indices, params);
+}
+
+// Device categorical over a full BF16 vocab row. This is the no-TopK sampled
+// native-session route: the resident head materialises logits in shared GPU
+// memory, this kernel consumes them in-place, and the host reads one int token.
+// TopP is intentionally not handled here because it needs rank ordering over
+// the distribution; the TopK path uses lthn_topk_merge_sample_f32 for that.
+kernel void lthn_logits_sample_bf16(
+    device const bfloat* logits [[buffer(0)]],
+    device const int* suppress [[buffer(1)]],
+    device const int* history [[buffer(2)]],
+    device int* out [[buffer(3)]],
+    constant lthn_logits_sample_params& params [[buffer(4)]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  const int vocab = params.vocab;
+  if (lane >= lthn_logits_sample_lanes || vocab <= 0 || params.temperature <= 0.0f) {
+    if (lane == 0u) {
+      out[0] = -1;
+    }
+    return;
+  }
+
+  threadgroup float block_values[lthn_logits_sample_lanes];
+  threadgroup float group_top_values[lthn_logits_topk_lanes * lthn_topk_max_k];
+  threadgroup int group_top_indices[lthn_logits_topk_lanes * lthn_topk_max_k];
+  threadgroup float shared_max;
+  threadgroup float shared_target;
+  threadgroup int chosen_lane;
+  if (lane == 0u) {
+    shared_max = -INFINITY;
+    shared_target = 0.0f;
+    chosen_lane = -1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  const int chunk = (vocab + int(lthn_logits_sample_lanes) - 1) / int(lthn_logits_sample_lanes);
+  const int start = int(lane) * chunk;
+  const int end = min(start + chunk, vocab);
+
+  const int top_k = params.top_k;
+  if (top_k > 0) {
+    if (top_k > int(lthn_topk_max_k) || top_k > vocab) {
+      if (lane == 0u) {
+        out[0] = -1;
+      }
+      return;
+    }
+    if (lane < lthn_logits_topk_lanes) {
+      const int topk_chunk = (vocab + int(lthn_logits_topk_lanes) - 1) / int(lthn_logits_topk_lanes);
+      const int topk_start = int(lane) * topk_chunk;
+      const int topk_end = min(topk_start + topk_chunk, vocab);
+      float local_values[lthn_topk_max_k];
+      int local_indices[lthn_topk_max_k];
+      for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+        local_values[i] = -INFINITY;
+        local_indices[i] = -1;
+      }
+      for (int i = topk_start; i < topk_end; ++i) {
+        if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+          continue;
+        }
+        float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+        lthn_insert_topk(local_values, local_indices, top_k, raw, i);
+      }
+      for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+        uint off = lane * lthn_topk_max_k + uint(i);
+        group_top_values[off] = local_values[i];
+        group_top_indices[off] = local_indices[i];
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lane != 0u) {
+      return;
+    }
+    float merged_values[lthn_topk_max_k];
+    int merged_indices[lthn_topk_max_k];
+    for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+      merged_values[i] = -INFINITY;
+      merged_indices[i] = -1;
+    }
+    for (uint lane_i = 0u; lane_i < lthn_logits_topk_lanes; ++lane_i) {
+      for (int pos = 0; pos < top_k; ++pos) {
+        uint off = lane_i * lthn_topk_max_k + uint(pos);
+        lthn_insert_topk(merged_values, merged_indices, top_k, group_top_values[off], group_top_indices[off]);
+      }
+    }
+    out[0] = lthn_sample_topk_window_raw(
+        merged_values, merged_indices, top_k, params.temperature, params.top_p, params.min_p, params.draw);
+    return;
+  }
+
+  float local_max = -INFINITY;
+  for (int i = start; i < end; ++i) {
+    if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+      continue;
+    }
+    float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+    float v = raw / params.temperature;
+    local_max = max(local_max, v);
+  }
+  block_values[lane] = local_max;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (lane == 0u) {
+    float max_v = -INFINITY;
+    for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
+      max_v = max(max_v, block_values[i]);
+    }
+    shared_max = max_v;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  float local_sum = 0.0f;
+  for (int i = start; i < end; ++i) {
+    if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+      continue;
+    }
+    float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+    float p = exp(raw / params.temperature - shared_max);
+    if (params.min_p > 0.0f && p < params.min_p) {
+      continue;
+    }
+    local_sum += p;
+  }
+  block_values[lane] = local_sum;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (lane == 0u) {
+    float total = 0.0f;
+    for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
+      total += block_values[i];
+    }
+    if (total <= 0.0f) {
+      out[0] = -1;
+      chosen_lane = -1;
+      shared_target = 0.0f;
+    } else {
+      float target = clamp(params.draw, 0.0f, 0.99999994f) * total;
+      float prefix = 0.0f;
+      int pick_lane = int(lthn_logits_sample_lanes) - 1;
+      for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
+        float next = prefix + block_values[i];
+        if (next >= target) {
+          pick_lane = int(i);
+          shared_target = target - prefix;
+          break;
+        }
+        prefix = next;
+      }
+      chosen_lane = pick_lane;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (int(lane) != chosen_lane || chosen_lane < 0) {
+    return;
+  }
+
+  float acc = 0.0f;
+  int fallback = -1;
+  for (int i = start; i < end; ++i) {
+    if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+      continue;
+    }
+    float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+    float p = exp(raw / params.temperature - shared_max);
+    if (params.min_p > 0.0f && p < params.min_p) {
+      continue;
+    }
+    fallback = i;
+    acc += p;
+    if (acc >= shared_target) {
+      out[0] = i;
+      return;
+    }
+  }
+  out[0] = fallback;
 }

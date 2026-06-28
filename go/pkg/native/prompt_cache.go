@@ -4,7 +4,10 @@
 
 package native
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
+)
 
 // prompt_cache.go is native automatic prompt caching (12-14): the metal serve path reuses a warm KV
 // cache when a new request shares a prefix with the last one (generate.go PromptCache); the no-cgo path
@@ -52,6 +55,14 @@ func (s *ArchSession) GenerateCachedEachWithSuppressionAndTransform(promptIDs []
 	return s.generateCached(promptIDs, maxNew, eosID, suppress, transform, yield)
 }
 
+// GenerateCachedSampledEach is GenerateSampledEach with automatic prompt-cache
+// prefix reuse. Exact prompt hits replay the cached prompt-boundary hidden
+// state and enter the normal sampled decoder, so sampling semantics stay
+// identical to a cold GenerateSampledEach while prompt prefill is skipped.
+func (s *ArchSession) GenerateCachedSampledEach(promptIDs []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	return s.generateCachedSampled(promptIDs, maxNew, stopTokens, sampler, params, transform, yield, true)
+}
+
 func (s *ArchSession) generateCached(promptIDs []int32, maxNew, eosID int, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
 	if len(promptIDs) == 0 {
 		return nil, core.NewError("native.GenerateCached: empty prompt")
@@ -89,6 +100,69 @@ func (s *ArchSession) generateCached(promptIDs []int32, maxNew, eosID int, suppr
 		s.cachedIDs = nil // a failed run leaves the cache in an unknown state; force a cold next call
 		s.clearCachedPromptHidden()
 		return nil, err
+	}
+	resident := s.cachedIDs[:0]
+	resident = append(resident, promptIDs...)
+	resident = append(resident, gen...)
+	s.cachedIDs = resident
+	return gen, nil
+}
+
+func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, transform model.TokenTransform, yield func(int32) bool, cacheFinal bool) ([]int32, error) {
+	if sampler == nil {
+		return nil, core.NewError("native.GenerateCachedSampledEach: nil sampler")
+	}
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("native.GenerateCachedSampledEach: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("native.GenerateCachedSampledEach: maxNew must be > 0")
+	}
+	if len(promptIDs)+maxNew > s.maxLen {
+		return nil, core.NewError("native.GenerateCachedSampledEach: sequence would exceed maxLen cache rows")
+	}
+	lcp := 0
+	for lcp < len(promptIDs) && lcp < len(s.cachedIDs) && promptIDs[lcp] == s.cachedIDs[lcp] {
+		lcp++
+	}
+	if lcp == len(promptIDs) {
+		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
+			s.pos = lcp
+			var gen []int32
+			var err error
+			withAutoreleasePool(func() {
+				gen, err = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
+			})
+			if err != nil {
+				s.cachedIDs = nil
+				s.clearCachedPromptHidden()
+				return nil, err
+			}
+			resident := s.cachedIDs[:0]
+			resident = append(resident, promptIDs...)
+			resident = append(resident, gen...)
+			s.cachedIDs = resident
+			return gen, nil
+		}
+		lcp = len(promptIDs) - 1
+	}
+	s.pos = lcp
+	var gen []int32
+	var genErr error
+	withAutoreleasePool(func() {
+		var hidden []byte
+		for _, id := range promptIDs[lcp:] {
+			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
+				return
+			}
+		}
+		s.rememberCachedPromptEntry(promptIDs, hidden, nil)
+		gen, genErr = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
+	})
+	if genErr != nil {
+		s.cachedIDs = nil
+		s.clearCachedPromptHidden()
+		return nil, genErr
 	}
 	resident := s.cachedIDs[:0]
 	resident = append(resident, promptIDs...)
@@ -216,7 +290,7 @@ func (s *ArchSession) prefillCachedIDs(ids []int32) error {
 	withAutoreleasePool(func() {
 		for _, id := range ids {
 			var emb []byte
-			emb, err = s.embed(id)
+			emb, err = s.embedID(id)
 			if err != nil {
 				return
 			}

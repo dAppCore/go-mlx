@@ -5,11 +5,127 @@
 package native
 
 import (
-	"unsafe"
+	"sync"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+var (
+	binaryByteScratchPools  sync.Map
+	errBinaryByteScratchDim = core.NewError("native.binaryByteScratch: dimension mismatch")
+)
+
+type binaryByteScratch struct {
+	byteLen int
+	a, b    *pinnedNoCopyBytes
+	out     *pinnedNoCopyBytes
+}
+
+func binaryByteScratchPoolFor(byteLen int) *sync.Pool {
+	if v, ok := binaryByteScratchPools.Load(byteLen); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := binaryByteScratchPools.LoadOrStore(byteLen, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func binaryByteScratchReady(s *binaryByteScratch, byteLen int) bool {
+	return s != nil &&
+		s.byteLen == byteLen &&
+		s.a != nil &&
+		s.a.buf != nil &&
+		len(s.a.bytes) == byteLen &&
+		s.b != nil &&
+		s.b.buf != nil &&
+		len(s.b.bytes) == byteLen &&
+		s.out != nil &&
+		s.out.buf != nil &&
+		len(s.out.bytes) == byteLen
+}
+
+func newBinaryByteScratch(byteLen int) (*binaryByteScratch, error) {
+	if byteLen <= 0 {
+		return nil, core.NewError("native.newBinaryByteScratch: invalid byte length")
+	}
+	a, err := newPinnedNoCopyBytes(byteLen)
+	if err != nil {
+		return nil, err
+	}
+	b, err := newPinnedNoCopyBytes(byteLen)
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(byteLen)
+	if err != nil {
+		a.Close()
+		b.Close()
+		return nil, err
+	}
+	return &binaryByteScratch{byteLen: byteLen, a: a, b: b, out: out}, nil
+}
+
+func getBinaryByteScratch(byteLen int) (*binaryByteScratch, error) {
+	pool := binaryByteScratchPoolFor(byteLen)
+	if v := pool.Get(); v != nil {
+		s := v.(*binaryByteScratch)
+		if binaryByteScratchReady(s, byteLen) {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newBinaryByteScratch(byteLen)
+}
+
+func putBinaryByteScratch(s *binaryByteScratch) {
+	if s == nil {
+		return
+	}
+	if binaryByteScratchReady(s, s.byteLen) {
+		binaryByteScratchPoolFor(s.byteLen).Put(s)
+	}
+}
+
+func (s *binaryByteScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.a != nil {
+		s.a.Close()
+		s.a = nil
+	}
+	if s.b != nil {
+		s.b.Close()
+		s.b = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.byteLen = 0
+}
+
+func (s *binaryByteScratch) buffers(a, b []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.a == nil || s.b == nil || s.out == nil {
+		return nil, nil, nil, core.NewError("native.binaryByteScratch.buffers: scratch is nil")
+	}
+	if len(a) != s.byteLen || len(b) != s.byteLen || len(s.out.bytes) != s.byteLen {
+		return nil, nil, nil, errBinaryByteScratchDim
+	}
+	aBuf, err := s.a.copyBuffer(a)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	bBuf, err := s.b.copyBuffer(b)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return aBuf, bBuf, s.out.buf, nil
+}
 
 // RunBinary drives a contiguous binary MLX kernel over two equal-length inputs
 // and returns a fresh result slice. It targets the vv_<Op>float32 family, whose
@@ -51,33 +167,32 @@ func RunBinaryInto(name string, a, b, out []float32) error {
 		return nil
 	}
 
+	var encErr error
 	withAutoreleasePool(func() {
-		aBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&a[0]), uint(n*4), metal.MTLResourceStorageModeShared)
-		bBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(n*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(n*4), metal.MTLResourceStorageModeShared)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(aBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 2)
-		setEncInt32(enc, int32(n), 3) // element count
-
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		ioScratch, err := getBinaryByteScratch(n * 4)
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putBinaryByteScratch(ioScratch)
+		aBuf, bBuf, outBuf, err := ioScratch.buffers(float32Bytes(a), float32Bytes(b))
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), n))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitBinary(encSink{enc}, pso, aBuf, 0, bBuf, 0, outBuf, 0, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+
+		copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
 	})
+	if encErr != nil {
+		return encErr
+	}
 	return nil
 }
 

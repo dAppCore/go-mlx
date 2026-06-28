@@ -13,9 +13,11 @@ import (
 )
 
 // archDenseNormRef is an all-owner, all-global dense forward that applies the gemma4
-// post-attention and post-feed-forward norms — built from the parity-proven ops, the
-// oracle for the post-norm wiring in encAttnHalfKV/encMLPHalfBF16. (QK-norm is a later
-// slice; this gates the two dModel post-norms only.)
+// post-attention and post-feed-forward norms. Its post-norm residual helper mirrors
+// encResidualMaybeNorm: when the fused custom kernel is available, production uses the
+// fused RMS+Residual numerics to stay byte-equal with ICB replay; otherwise it uses
+// the composed RMSNormBF16 then AddBF16 path. (QK-norm is a later slice; this gates
+// the two dModel post-norms only.)
 func archDenseNormRef(t *testing.T, layers []DecodeLayerWeights, inputs [][]byte, dModel, nHeads, nKV, headDim, dFF, maxLen int, base, scale, eps float32) [][]byte {
 	t.Helper()
 	qDim, kvDim := nHeads*headDim, nKV*headDim
@@ -26,6 +28,15 @@ func archDenseNormRef(t *testing.T, layers []DecodeLayerWeights, inputs [][]byte
 			t.Fatalf("archDenseNormRef op: %v", err)
 		}
 		return b
+	}
+	residualMaybeNorm := func(res, branch, norm []byte) []byte {
+		if norm == nil {
+			return must(AddBF16(res, branch))
+		}
+		if gpuHasGeluKernel() {
+			return must(RMSNormResidualBF16(branch, norm, res, dModel, eps))
+		}
+		return must(AddBF16(res, must(RMSNormBF16(branch, norm, 1, dModel, eps))))
 	}
 	kC := make([][]byte, nL)
 	vC := make([][]byte, nL)
@@ -55,16 +66,10 @@ func archDenseNormRef(t *testing.T, layers []DecodeLayerWeights, inputs [][]byte
 			n := tok + 1
 			attn := must(SDPA(qr, seqToHeadMajor(kC[li], nKV, headDim, n), seqToHeadMajor(vC[li], nKV, headDim, n), 1, nHeads, nKV, headDim, n, scale))
 			wo := must(MatVecBF16(w.WO, attn, dModel, qDim))
-			if w.PostAttnNormW != nil { // gemma4 post-attention norm before the residual
-				wo = must(RMSNormBF16(wo, w.PostAttnNormW, 1, dModel, eps))
-			}
-			h := must(AddBF16(x, wo))
+			h := residualMaybeNorm(x, wo, w.PostAttnNormW)
 			mlpNormed := must(RMSNormBF16(h, w.MLPNormW, 1, dModel, eps))
 			ff := must(mlpTransformBF16(mlpNormed, w.WGate, w.WUp, w.WDown, dModel, dFF))
-			if w.PostFFNormW != nil { // gemma4 post-feed-forward norm before the residual
-				ff = must(RMSNormBF16(ff, w.PostFFNormW, 1, dModel, eps))
-			}
-			x = must(AddBF16(h, ff))
+			x = residualMaybeNorm(h, ff, w.PostFFNormW)
 		}
 		out[tok] = x
 	}
@@ -73,8 +78,8 @@ func archDenseNormRef(t *testing.T, layers []DecodeLayerWeights, inputs [][]byte
 
 // TestGemma4PostNorms gates the gemma4 post-attention + post-feed-forward norm wiring:
 // a re-encode arch forward with the two norms set is byte-for-byte the reference that
-// applies them, AND differs from the same forward with the norms dropped (the norms are
-// genuinely live, not ignored).
+// applies them under the production fused/composed residual-norm semantics, AND differs
+// from the same forward with the norms dropped (the norms are genuinely live, not ignored).
 func TestGemma4PostNorms(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

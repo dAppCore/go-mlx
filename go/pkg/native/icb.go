@@ -31,8 +31,9 @@ import (
 // icbPSOCache memoises ICB-capable pipelines (built with
 // supportIndirectCommandBuffers=true, required for a kernel to run inside an ICB).
 var (
-	icbPSOMu    sync.Mutex
-	icbPSOCache = map[string]metal.MTLComputePipelineState{}
+	icbPSOMu                     sync.Mutex
+	icbPSOCache                  = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorICBHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
 )
 
 // pipelineForICB builds (and caches) an ICB-capable pipeline for a metallib
@@ -173,28 +174,16 @@ func squareICB(in []float32) ([]float32, error) {
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
 
 		c0 := icb.IndirectComputeCommandAtIndex(0)
-		c0.SetComputePipelineState(pso)
-		c0.SetKernelBufferOffsetAtIndex(inBuf, 0, 0)
-		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 1)
-		c0.SetKernelBufferOffsetAtIndex(sizeBuf, 0, 2)
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
-		}
-		c0.ConcurrentDispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
+		emitUnary(fastICBSink{c0}, pso, inBuf, outBuf, n)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.UseResourceUsage(inBuf, metal.MTLResourceUsageRead)
-		enc.UseResourceUsage(outBuf, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-		enc.UseResourceUsage(sizeBuf, metal.MTLResourceUsageRead)
+		resident := []metal.MTLResource{inBuf, outBuf, sizeBuf}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 		enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), n))
 	})
 	return out, nil
@@ -208,7 +197,7 @@ func gemvICB(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 		return nil, err
 	}
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	pso, err := pipelineForICB(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	pso, err := pipelineForICB(gemvKernelName("float32", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return nil, err
 	}
@@ -227,33 +216,16 @@ func gemvICB(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
 
 		c0 := icb.IndirectComputeCommandAtIndex(0)
-		c0.SetComputePipelineState(pso)
-		c0.SetKernelBufferOffsetAtIndex(matBuf, 0, 0)
-		c0.SetKernelBufferOffsetAtIndex(vecBuf, 0, 1)
-		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 3)
-		c0.SetKernelBufferOffsetAtIndex(inB, 0, 4)
-		c0.SetKernelBufferOffsetAtIndex(outB, 0, 5)
-		c0.SetKernelBufferOffsetAtIndex(ldB, 0, 6)
-		c0.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-		c0.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-		c0.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-		c0.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-		nOutPerTgp := bm * sm * tm
-		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-		c0.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-		)
+		emitGemv(fastICBSink{c0}, pso, matBuf, 0, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		for _, b := range []metal.MTLBuffer{matBuf, vecBuf, outBuf, inB, outB, ldB, bndB, bshB, vsB, msB} {
-			enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-		}
+		resident := []metal.MTLResource{matBuf, vecBuf, outBuf, inB, outB, ldB, bndB, bshB, vsB, msB}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 		enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), outDim))
 	})
 	return out, nil
@@ -272,7 +244,7 @@ func rebindProbeICB(mat, vec []float32, outDim, inDim, nRows int) ([]float32, er
 		return nil, err
 	}
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	pso, err := pipelineForICB(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	pso, err := pipelineForICB(gemvKernelName("float32", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return nil, err
 	}
@@ -291,36 +263,19 @@ func rebindProbeICB(mat, vec []float32, outDim, inDim, nRows int) ([]float32, er
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
 
 		c0 := icb.IndirectComputeCommandAtIndex(0)
-		c0.SetComputePipelineState(pso)
-		c0.SetKernelBufferOffsetAtIndex(matBuf, 0, 0)
-		c0.SetKernelBufferOffsetAtIndex(vecBuf, 0, 1)
-		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 3) // offset re-set per replay below
-		c0.SetKernelBufferOffsetAtIndex(inB, 0, 4)
-		c0.SetKernelBufferOffsetAtIndex(outDimB, 0, 5)
-		c0.SetKernelBufferOffsetAtIndex(ldB, 0, 6)
-		c0.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-		c0.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-		c0.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-		c0.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-		nOutPerTgp := bm * sm * tm
-		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
+		emitGemv(fastICBSink{c0}, pso, matBuf, 0, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
 
+		resident := []metal.MTLResource{matBuf, vecBuf, outBuf, inB, outDimB, ldB, bndB, bshB, vsB, msB}
 		for r := 0; r < nRows; r++ {
 			// the only per-replay change: advance the output row (4 bytes/f32)
-			c0.SetKernelBufferOffsetAtIndex(outBuf, uint(r*outDim*4), 3)
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			for _, b := range []metal.MTLBuffer{matBuf, vecBuf, outBuf, inB, outDimB, ldB, bndB, bshB, vsB, msB} {
-				enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			}
-			c0.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
-				metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-				metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-			)
+			setICBKernelBuffer(c0, outBuf, uint(r*outDim*4), 3)
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 		}
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), nRows*outDim))
 	})
@@ -337,17 +292,13 @@ func qmvICB(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
-	variant := "_qmv_"
-	if outDim%8 == 0 && inDim%512 == 0 {
-		variant = "_qmv_fast_"
-	}
-	pso, err := pipelineForICB(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+	pso, err := pipelineForICB(qmvBF16KernelName(outDim, inDim, groupSize, bits))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]byte, outDim*bf16Size)
 	withAutoreleasePool(func() {
-		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
+		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
 		xBuf := sharedBytes(x)
 		outBuf := scratchBF16(outDim)
 		kB, nB := scalarI32(int32(inDim)), scalarI32(int32(outDim))
@@ -360,30 +311,16 @@ func qmvICB(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
 
 		c0 := icb.IndirectComputeCommandAtIndex(0)
-		c0.SetComputePipelineState(pso)
-		c0.SetKernelBufferOffsetAtIndex(wBuf, 0, 0)
-		c0.SetKernelBufferOffsetAtIndex(sBuf, 0, 1)
-		c0.SetKernelBufferOffsetAtIndex(bBuf, 0, 2)
-		c0.SetKernelBufferOffsetAtIndex(xBuf, 0, 3)
-		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 4)
-		c0.SetKernelBufferOffsetAtIndex(kB, 0, 5)
-		c0.SetKernelBufferOffsetAtIndex(nB, 0, 6)
-		const bn, bk = 8, 32
-		nTgp := (outDim + bn - 1) / bn
-		c0.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
-			metal.MTLSize{Width: bk, Height: 2, Depth: 1},
-		)
+		emitQMV(fastICBSink{c0}, pso, wBuf, 0, sBuf, 0, bBuf, 0, xBuf, outBuf, 0, inDim, outDim)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		for _, b := range []metal.MTLBuffer{wBuf, sBuf, bBuf, xBuf, outBuf, kB, nB} {
-			enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-		}
+		resident := []metal.MTLResource{wBuf, sBuf, bBuf, xBuf, outBuf, kB, nB}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 		enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
 	})
 	return out, nil
@@ -392,8 +329,29 @@ func qmvICB(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([
 // ropePipelineICB / sdpaVectorPipelineICB are the ICB-capable, function-constant
 // pipelines — the new wrinkle for the attention ICB: combine the specialised
 // function (func consts) with the ICB descriptor (supportIndirectCommandBuffers).
+const (
+	ropeICBKey                 = "rope_single_bfloat16|icb|trad=false"
+	ropeICBTraditionalKey      = "rope_single_bfloat16|icb|trad=true"
+	ropeFreqsICBKey            = "rope_single_freqs_bfloat16|icb|trad=false"
+	ropeFreqsICBTraditionalKey = "rope_single_freqs_bfloat16|icb|trad=true"
+)
+
+func ropePipelineICBKey(traditional bool) string {
+	if traditional {
+		return ropeICBTraditionalKey
+	}
+	return ropeICBKey
+}
+
+func ropeFreqsPipelineICBKey(traditional bool) string {
+	if traditional {
+		return ropeFreqsICBTraditionalKey
+	}
+	return ropeFreqsICBKey
+}
+
 func ropePipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("rope_single_bfloat16|icb|trad=%v", traditional)
+	key := ropePipelineICBKey(traditional)
 	icbPSOMu.Lock()
 	defer icbPSOMu.Unlock()
 	if pso, ok := icbPSOCache[key]; ok {
@@ -432,7 +390,7 @@ func ropePipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
 // — the kernel the host's encRopeDecode uses when a layer carries a periods spectrum (gemma4
 // proportional-global or YaRN). Same fwd/trad/transpose constants as the base rope; ICB-replayable.
 func ropeFreqsPipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("rope_single_freqs_bfloat16|icb|trad=%v", traditional)
+	key := ropeFreqsPipelineICBKey(traditional)
 	icbPSOMu.Lock()
 	defer icbPSOMu.Unlock()
 	if pso, ok := icbPSOCache[key]; ok {
@@ -500,6 +458,351 @@ func sdpaVectorPipelineICB(name string) (metal.MTLComputePipelineState, error) {
 	return pso, nil
 }
 
+func sdpaVectorPipelineICBForHeadDim(headDim int) (metal.MTLComputePipelineState, error) {
+	icbPSOMu.Lock()
+	if pso, ok := sdpaVectorICBHeadDimPSOCache[headDim]; ok {
+		icbPSOMu.Unlock()
+		return pso, nil
+	}
+	icbPSOMu.Unlock()
+
+	pso, err := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
+	if err != nil {
+		return nil, err
+	}
+
+	icbPSOMu.Lock()
+	if existing, ok := sdpaVectorICBHeadDimPSOCache[headDim]; ok {
+		icbPSOMu.Unlock()
+		return existing, nil
+	}
+	sdpaVectorICBHeadDimPSOCache[headDim] = pso
+	icbPSOMu.Unlock()
+	return pso, nil
+}
+
+type attentionBlockICBScratch struct {
+	dModel, qDim, nHeads, nKVHeads, headDim, kvLen  int
+	x, k, v, out                                    *pinnedNoCopyBytes
+	normed, q, qr, attn, attnOut                    metal.MTLBuffer
+	offBuf                                          metal.MTLBuffer
+	epsBuf, ropeScaleBuf, ropeBaseBuf, sdpaScaleBuf metal.MTLBuffer
+	offPtr                                          *int32
+	epsPtr, ropeScalePtr, ropeBasePtr, sdpaScalePtr *float32
+	icb                                             metal.MTLIndirectCommandBuffer
+	rng                                             foundation.NSRange
+	residentRes                                     []metal.MTLResource
+	normID, wqID, woID                              uintptr
+}
+
+type attentionBlockICBScratchKey struct {
+	dModel, qDim, nHeads, nKVHeads, headDim, kvLen int
+}
+
+var attentionBlockICBScratchPools sync.Map
+
+func newICBI32Storage(v int32) (metal.MTLBuffer, *int32, error) {
+	buf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
+	if buf == nil || buf.GetID() == 0 {
+		return nil, nil, core.NewError("native.newICBI32Storage: failed to create scalar buffer")
+	}
+	ptr := (*int32)(buf.Contents())
+	*ptr = v
+	return buf, ptr, nil
+}
+
+func newICBF32Storage(v float32) (metal.MTLBuffer, *float32, error) {
+	buf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
+	if buf == nil || buf.GetID() == 0 {
+		return nil, nil, core.NewError("native.newICBF32Storage: failed to create scalar buffer")
+	}
+	ptr := (*float32)(buf.Contents())
+	*ptr = v
+	return buf, ptr, nil
+}
+
+func newAttentionBlockICBScratch(dModel, qDim, nHeads, nKVHeads, headDim, kvLen int, base, scale float32, offset int, eps float32) (*attentionBlockICBScratch, error) {
+	x, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		return nil, err
+	}
+	k, err := newPinnedNoCopyBytes(nKVHeads * kvLen * headDim * bf16Size)
+	if err != nil {
+		x.Close()
+		return nil, err
+	}
+	v, err := newPinnedNoCopyBytes(nKVHeads * kvLen * headDim * bf16Size)
+	if err != nil {
+		x.Close()
+		k.Close()
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		return nil, err
+	}
+	offBuf, offPtr, err := newICBI32Storage(int32(offset))
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		out.Close()
+		return nil, err
+	}
+	epsBuf, epsPtr, err := newICBF32Storage(eps)
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		out.Close()
+		return nil, err
+	}
+	ropeScaleBuf, ropeScalePtr, err := newICBF32Storage(scale)
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		out.Close()
+		return nil, err
+	}
+	ropeBaseBuf, ropeBasePtr, err := newICBF32Storage(float32(math.Log2(float64(base))))
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		out.Close()
+		return nil, err
+	}
+	sdpaScaleBuf, sdpaScalePtr, err := newICBF32Storage(scale)
+	if err != nil {
+		x.Close()
+		k.Close()
+		v.Close()
+		out.Close()
+		return nil, err
+	}
+	return &attentionBlockICBScratch{
+		dModel: dModel, qDim: qDim, nHeads: nHeads, nKVHeads: nKVHeads, headDim: headDim, kvLen: kvLen,
+		x: x, k: k, v: v, out: out,
+		normed: scratchBF16(dModel), q: scratchBF16(qDim), qr: scratchBF16(qDim), attn: scratchBF16(qDim), attnOut: scratchBF16(dModel),
+		offBuf: offBuf, epsBuf: epsBuf, ropeScaleBuf: ropeScaleBuf, ropeBaseBuf: ropeBaseBuf, sdpaScaleBuf: sdpaScaleBuf,
+		offPtr: offPtr, epsPtr: epsPtr, ropeScalePtr: ropeScalePtr, ropeBasePtr: ropeBasePtr, sdpaScalePtr: sdpaScalePtr,
+		rng:         foundation.NSRange{Location: 0, Length: 6},
+		residentRes: make([]metal.MTLResource, 0, 37),
+	}, nil
+}
+
+func (s *attentionBlockICBScratch) matches(dModel, qDim, nHeads, nKVHeads, headDim, kvLen int) bool {
+	return s != nil &&
+		s.dModel == dModel && s.qDim == qDim && s.nHeads == nHeads && s.nKVHeads == nKVHeads && s.headDim == headDim && s.kvLen == kvLen &&
+		s.x != nil && s.k != nil && s.v != nil && s.out != nil &&
+		s.normed != nil && s.q != nil && s.qr != nil && s.attn != nil && s.attnOut != nil &&
+		s.offBuf != nil && s.epsBuf != nil && s.ropeScaleBuf != nil && s.ropeBaseBuf != nil && s.sdpaScaleBuf != nil &&
+		s.offPtr != nil && s.epsPtr != nil && s.ropeScalePtr != nil && s.ropeBasePtr != nil && s.sdpaScalePtr != nil
+}
+
+func attentionBlockICBScratchPoolFor(dModel, qDim, nHeads, nKVHeads, headDim, kvLen int) *sync.Pool {
+	key := attentionBlockICBScratchKey{dModel: dModel, qDim: qDim, nHeads: nHeads, nKVHeads: nKVHeads, headDim: headDim, kvLen: kvLen}
+	if v, ok := attentionBlockICBScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	actual, _ := attentionBlockICBScratchPools.LoadOrStore(key, pool)
+	return actual.(*sync.Pool)
+}
+
+func getAttentionBlockICBScratch(dModel, qDim, nHeads, nKVHeads, headDim, kvLen int, base, scale float32, offset int, eps float32) (*attentionBlockICBScratch, error) {
+	if v := attentionBlockICBScratchPoolFor(dModel, qDim, nHeads, nKVHeads, headDim, kvLen).Get(); v != nil {
+		s := v.(*attentionBlockICBScratch)
+		if s.matches(dModel, qDim, nHeads, nKVHeads, headDim, kvLen) {
+			s.updateScalars(base, scale, offset, eps)
+			return s, nil
+		}
+		s.Close()
+	}
+	return newAttentionBlockICBScratch(dModel, qDim, nHeads, nKVHeads, headDim, kvLen, base, scale, offset, eps)
+}
+
+func putAttentionBlockICBScratch(s *attentionBlockICBScratch) {
+	if s != nil {
+		attentionBlockICBScratchPoolFor(s.dModel, s.qDim, s.nHeads, s.nKVHeads, s.headDim, s.kvLen).Put(s)
+	}
+}
+
+func (s *attentionBlockICBScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.x != nil {
+		s.x.Close()
+		s.x = nil
+	}
+	if s.k != nil {
+		s.k.Close()
+		s.k = nil
+	}
+	if s.v != nil {
+		s.v.Close()
+		s.v = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.normed, s.q, s.qr, s.attn, s.attnOut = nil, nil, nil, nil, nil
+	s.icb = nil
+	s.residentRes = nil
+}
+
+func (s *attentionBlockICBScratch) updateScalars(base, scale float32, offset int, eps float32) {
+	*s.offPtr = int32(offset)
+	*s.epsPtr = eps
+	*s.ropeScalePtr = scale
+	*s.ropeBasePtr = float32(math.Log2(float64(base)))
+	*s.sdpaScalePtr = scale
+}
+
+func (s *attentionBlockICBScratch) buffers(x, kCache, vCache []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
+	xBuf, err := s.x.copyBuffer(x)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	kBuf, err := s.k.copyBuffer(kCache)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	vBuf, err := s.v.copyBuffer(vCache)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return xBuf, kBuf, vBuf, s.out.buf, nil
+}
+
+func (s *attentionBlockICBScratch) record(
+	rmsPSO, gemvQPSO, gemvOPSO, ropePSO, sdpaPSO, addPSO metal.MTLComputePipelineState,
+	nwBuf, wqBuf, woBuf metal.MTLBuffer,
+	bmQ, bnQ, smQ, tmQ, bmO, bnO, smO, tmO int,
+) {
+	normID, wqID, woID := uintptr(nwBuf.GetID()), uintptr(wqBuf.GetID()), uintptr(woBuf.GetID())
+	if s.icb != nil && s.normID == normID && s.wqID == wqID && s.woID == woID {
+		return
+	}
+	qDim := s.qDim
+	icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
+	icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
+	icbDesc.SetInheritBuffers(false)
+	icbDesc.SetInheritPipelineState(false)
+	icbDesc.SetMaxKernelBufferBindCount(16)
+	s.icb = device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 6, metal.MTLResourceStorageModeShared)
+
+	epsBuf, axisBuf, wsBuf := s.epsBuf, scalarI32(int32(s.dModel)), scalarI32(1)
+	qInB, qOutB, qLdB := scalarI32(int32(s.dModel)), scalarI32(int32(qDim)), scalarI32(int32(s.dModel))
+	oInB, oOutB, oLdB := scalarI32(int32(qDim)), scalarI32(int32(s.dModel)), scalarI32(int32(qDim))
+	bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
+	ropeMatB := scalarI64(int64(s.headDim))
+	gqaB, nB := scalarI32(int32(s.nHeads/s.nKVHeads)), scalarI32(int32(s.kvLen))
+	khsB, kssB := scalarI64(int64(s.kvLen*s.headDim)), scalarI64(int64(s.headDim))
+	vhsB, vssB := scalarI64(int64(s.kvLen*s.headDim)), scalarI64(int64(s.headDim))
+	addCntB := scalarI32(int32(s.dModel))
+
+	resident := s.residentRes[:0]
+	resident = append(resident,
+		s.x.buf, nwBuf, wqBuf, woBuf, s.k.buf, s.v.buf, s.normed, s.q, s.qr, s.attn, s.attnOut, s.out.buf,
+		s.offBuf, epsBuf, axisBuf, wsBuf, qInB, qOutB, qLdB, oInB, oOutB, oLdB, bndB, bshB, vsB, msB,
+		s.ropeScaleBuf, ropeMatB, s.ropeBaseBuf, gqaB, nB, khsB, kssB, vhsB, vssB, s.sdpaScaleBuf, addCntB,
+	)
+	s.residentRes = resident
+
+	rmsTG := uint(rmsSimdSize * ((((s.dModel + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+	gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
+
+	c := s.icb.IndirectComputeCommandAtIndex(0)
+	c.SetComputePipelineState(rmsPSO)
+	c.SetKernelBufferOffsetAtIndex(s.x.buf, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(nwBuf, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.normed, 0, 2)
+	c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
+	c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
+	c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
+	c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
+
+	c = s.icb.IndirectComputeCommandAtIndex(1)
+	c.SetBarrier()
+	c.SetComputePipelineState(gemvQPSO)
+	c.SetKernelBufferOffsetAtIndex(wqBuf, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(s.normed, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.q, 0, 3)
+	c.SetKernelBufferOffsetAtIndex(qInB, 0, 4)
+	c.SetKernelBufferOffsetAtIndex(qOutB, 0, 5)
+	c.SetKernelBufferOffsetAtIndex(qLdB, 0, 6)
+	c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
+	c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
+	c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
+	c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
+	c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(qDim, bmQ, smQ, tmQ), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bnQ), Depth: uint(bmQ)})
+
+	c = s.icb.IndirectComputeCommandAtIndex(2)
+	c.SetBarrier()
+	c.SetComputePipelineState(ropePSO)
+	c.SetKernelBufferOffsetAtIndex(s.q, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(s.qr, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.offBuf, 0, 2)
+	c.SetKernelBufferOffsetAtIndex(s.ropeScaleBuf, 0, 3)
+	c.SetKernelBufferOffsetAtIndex(ropeMatB, 0, 4)
+	c.SetKernelBufferOffsetAtIndex(s.ropeBaseBuf, 0, 10)
+	ropeDim0 := uint(s.headDim / 2)
+	c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: ropeDim0, Height: uint(s.nHeads), Depth: 1}, metal.MTLSize{Width: ropeDim0, Height: 1, Depth: 1})
+
+	c = s.icb.IndirectComputeCommandAtIndex(3)
+	c.SetBarrier()
+	c.SetComputePipelineState(sdpaPSO)
+	c.SetKernelBufferOffsetAtIndex(s.qr, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(s.k.buf, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.v.buf, 0, 2)
+	c.SetKernelBufferOffsetAtIndex(s.attn, 0, 3)
+	c.SetKernelBufferOffsetAtIndex(gqaB, 0, 4)
+	c.SetKernelBufferOffsetAtIndex(nB, 0, 5)
+	c.SetKernelBufferOffsetAtIndex(khsB, 0, 6)
+	c.SetKernelBufferOffsetAtIndex(kssB, 0, 7)
+	c.SetKernelBufferOffsetAtIndex(vhsB, 0, 8)
+	c.SetKernelBufferOffsetAtIndex(vssB, 0, 9)
+	c.SetKernelBufferOffsetAtIndex(s.sdpaScaleBuf, 0, 10)
+	c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(s.nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
+
+	c = s.icb.IndirectComputeCommandAtIndex(4)
+	c.SetBarrier()
+	c.SetComputePipelineState(gemvOPSO)
+	c.SetKernelBufferOffsetAtIndex(woBuf, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(s.attn, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.attnOut, 0, 3)
+	c.SetKernelBufferOffsetAtIndex(oInB, 0, 4)
+	c.SetKernelBufferOffsetAtIndex(oOutB, 0, 5)
+	c.SetKernelBufferOffsetAtIndex(oLdB, 0, 6)
+	c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
+	c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
+	c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
+	c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
+	c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(s.dModel, bmO, smO, tmO), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bnO), Depth: uint(bmO)})
+
+	c = s.icb.IndirectComputeCommandAtIndex(5)
+	c.SetBarrier()
+	c.SetComputePipelineState(addPSO)
+	c.SetKernelBufferOffsetAtIndex(s.x.buf, 0, 0)
+	c.SetKernelBufferOffsetAtIndex(s.attnOut, 0, 1)
+	c.SetKernelBufferOffsetAtIndex(s.out.buf, 0, 2)
+	c.SetKernelBufferOffsetAtIndex(addCntB, 0, 3)
+	addGroup := uint(256)
+	if uint(s.dModel) < addGroup {
+		addGroup = uint(s.dModel)
+	}
+	c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(s.dModel), Height: 1, Depth: 1}, metal.MTLSize{Width: addGroup, Height: 1, Depth: 1})
+
+	s.normID, s.wqID, s.woID = normID, wqID, woID
+}
+
 // AttentionBlockICB records the bf16 attention block once into an ICB and replays
 // it `replays` times — proving ICB replay across a real func-const multi-op chain
 // (rms→gemv→rope→sdpa→gemv→add), every scalar a buffer, a barrier on each
@@ -519,12 +822,12 @@ func AttentionBlockICB(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 		return nil, err
 	}
 	bmQ, bnQ, smQ, snQ, tmQ, tnQ := gemvTiles(dModel, qDim)
-	gemvQPSO, err := pipelineForICB(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bmQ, bnQ, smQ, snQ, tmQ, tnQ))
+	gemvQPSO, err := pipelineForICB(gemvKernelName("bfloat16", bmQ, bnQ, smQ, snQ, tmQ, tnQ))
 	if err != nil {
 		return nil, err
 	}
 	bmO, bnO, smO, snO, tmO, tnO := gemvTiles(qDim, dModel)
-	gemvOPSO, err := pipelineForICB(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bmO, bnO, smO, snO, tmO, tnO))
+	gemvOPSO, err := pipelineForICB(gemvKernelName("bfloat16", bmO, bnO, smO, snO, tmO, tnO))
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +835,7 @@ func AttentionBlockICB(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 	if err != nil {
 		return nil, err
 	}
-	sdpaPSO, err := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
+	sdpaPSO, err := sdpaVectorPipelineICBForHeadDim(headDim)
 	if err != nil {
 		return nil, err
 	}
@@ -542,152 +845,35 @@ func AttentionBlockICB(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 	}
 
 	out := make([]byte, dModel*bf16Size)
+	var encErr error
 	withAutoreleasePool(func() {
-		// data buffers
-		xBuf, nwBuf := sharedBytes(x), residentBytes(normWeight)
+		sc, err := getAttentionBlockICBScratch(dModel, qDim, nHeads, nKVHeads, headDim, kvLen, base, scale, offset, eps)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockICBScratch(sc)
+		if _, _, _, _, err := sc.buffers(x, kCache, vCache); err != nil {
+			encErr = err
+			return
+		}
+		nwBuf := residentBytes(normWeight)
 		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		normed := scratchBF16(dModel)
-		q, qr, attn := scratchBF16(qDim), scratchBF16(qDim), scratchBF16(qDim)
-		attnOut, outBuf := scratchBF16(dModel), scratchBF16(dModel)
-		// scalar buffers
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
-		// gemv Q scalars
-		qInB, qOutB, qLdB := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dModel))
-		// gemv O scalars
-		oInB, oOutB, oLdB := scalarI32(int32(qDim)), scalarI32(int32(dModel)), scalarI32(int32(qDim))
-		bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
-		// rope scalars
-		ropeScaleB := scalarF32(scale)
-		ropeMatB := scalarI64(int64(headDim))
-		ropeBaseB := scalarF32(float32(math.Log2(float64(base))))
-		// sdpa scalars
-		gqaB, nB := scalarI32(int32(nHeads/nKVHeads)), scalarI32(int32(kvLen))
-		khsB, kssB := scalarI64(int64(kvLen*headDim)), scalarI64(int64(headDim))
-		vhsB, vssB := scalarI64(int64(kvLen*headDim)), scalarI64(int64(headDim))
-		sdpaScaleB := scalarF32(scale)
-		// add scalar
-		addCntB := scalarI32(int32(dModel))
-
-		resident := []metal.MTLBuffer{
-			xBuf, nwBuf, wqBuf, woBuf, kBuf, vBuf, normed, q, qr, attn, attnOut, outBuf,
-			offBuf, epsBuf, axisBuf, wsBuf, qInB, qOutB, qLdB, oInB, oOutB, oLdB, bndB, bshB, vsB, msB,
-			ropeScaleB, ropeMatB, ropeBaseB, gqaB, nB, khsB, kssB, vhsB, vssB, sdpaScaleB, addCntB,
-		}
-
-		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
-		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
-		icbDesc.SetInheritBuffers(false)
-		icbDesc.SetInheritPipelineState(false)
-		icbDesc.SetMaxKernelBufferBindCount(16)
-		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 6, metal.MTLResourceStorageModeShared)
-
-		rmsTG := uint(rmsSimdSize * ((((dModel + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
-		gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
-
-		// 0: rms x -> normed
-		c := icb.IndirectComputeCommandAtIndex(0)
-		c.SetComputePipelineState(rmsPSO)
-		c.SetKernelBufferOffsetAtIndex(xBuf, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(nwBuf, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(normed, 0, 2)
-		c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-		c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
-		c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
-		c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
-
-		// 1: gemv Wq @ normed -> q
-		c = icb.IndirectComputeCommandAtIndex(1)
-		c.SetBarrier()
-		c.SetComputePipelineState(gemvQPSO)
-		c.SetKernelBufferOffsetAtIndex(wqBuf, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(normed, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(q, 0, 3)
-		c.SetKernelBufferOffsetAtIndex(qInB, 0, 4)
-		c.SetKernelBufferOffsetAtIndex(qOutB, 0, 5)
-		c.SetKernelBufferOffsetAtIndex(qLdB, 0, 6)
-		c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-		c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-		c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-		c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-		c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(qDim, bmQ, smQ, tmQ), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bnQ), Depth: uint(bmQ)})
-
-		// 2: rope q -> qr
-		c = icb.IndirectComputeCommandAtIndex(2)
-		c.SetBarrier()
-		c.SetComputePipelineState(ropePSO)
-		c.SetKernelBufferOffsetAtIndex(q, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(qr, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(offBuf, 0, 2)
-		c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 3)
-		c.SetKernelBufferOffsetAtIndex(ropeMatB, 0, 4)
-		c.SetKernelBufferOffsetAtIndex(ropeBaseB, 0, 10)
-		ropeDim0 := uint(headDim / 2)
-		c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: ropeDim0, Height: uint(nHeads), Depth: 1}, metal.MTLSize{Width: ropeDim0, Height: 1, Depth: 1})
-
-		// 3: sdpa qr, k, v -> attn
-		c = icb.IndirectComputeCommandAtIndex(3)
-		c.SetBarrier()
-		c.SetComputePipelineState(sdpaPSO)
-		c.SetKernelBufferOffsetAtIndex(qr, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(kBuf, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(vBuf, 0, 2)
-		c.SetKernelBufferOffsetAtIndex(attn, 0, 3)
-		c.SetKernelBufferOffsetAtIndex(gqaB, 0, 4)
-		c.SetKernelBufferOffsetAtIndex(nB, 0, 5)
-		c.SetKernelBufferOffsetAtIndex(khsB, 0, 6)
-		c.SetKernelBufferOffsetAtIndex(kssB, 0, 7)
-		c.SetKernelBufferOffsetAtIndex(vhsB, 0, 8)
-		c.SetKernelBufferOffsetAtIndex(vssB, 0, 9)
-		c.SetKernelBufferOffsetAtIndex(sdpaScaleB, 0, 10)
-		c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
-
-		// 4: gemv Wo @ attn -> attnOut
-		c = icb.IndirectComputeCommandAtIndex(4)
-		c.SetBarrier()
-		c.SetComputePipelineState(gemvOPSO)
-		c.SetKernelBufferOffsetAtIndex(woBuf, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(attn, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(attnOut, 0, 3)
-		c.SetKernelBufferOffsetAtIndex(oInB, 0, 4)
-		c.SetKernelBufferOffsetAtIndex(oOutB, 0, 5)
-		c.SetKernelBufferOffsetAtIndex(oLdB, 0, 6)
-		c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-		c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-		c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-		c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-		c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(dModel, bmO, smO, tmO), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bnO), Depth: uint(bmO)})
-
-		// 5: add x + attnOut -> out
-		c = icb.IndirectComputeCommandAtIndex(5)
-		c.SetBarrier()
-		c.SetComputePipelineState(addPSO)
-		c.SetKernelBufferOffsetAtIndex(xBuf, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(attnOut, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(outBuf, 0, 2)
-		c.SetKernelBufferOffsetAtIndex(addCntB, 0, 3)
-		addGroup := uint(256)
-		if uint(dModel) < addGroup {
-			addGroup = uint(dModel)
-		}
-		c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dModel), Height: 1, Depth: 1}, metal.MTLSize{Width: addGroup, Height: 1, Depth: 1})
-
-		rng := foundation.NSRange{Location: 0, Length: 6}
+		sc.record(rmsPSO, gemvQPSO, gemvOPSO, ropePSO, sdpaPSO, addPSO, nwBuf, wqBuf, woBuf, bmQ, bnQ, smQ, tmQ, bmO, bnO, smO, tmO)
 		for r := 0; r < replays; r++ {
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			for _, b := range resident {
-				enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			}
-			enc.ExecuteCommandsInBufferWithRange(icb, rng)
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			enc.UseResourcesCountUsage(sc.residentRes, uint(len(sc.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			enc.ExecuteCommandsInBufferWithRange(sc.icb, sc.rng)
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 		}
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		copy(out, sc.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -706,34 +892,37 @@ var (
 
 func scalarI32(v int32) metal.MTLBuffer {
 	scalarBufMu.Lock()
-	defer scalarBufMu.Unlock()
 	if b, ok := scalarI32Buf[v]; ok {
+		scalarBufMu.Unlock()
 		return b
 	}
 	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
 	scalarI32Buf[v] = b
+	scalarBufMu.Unlock()
 	return b
 }
 
 func scalarI64(v int64) metal.MTLBuffer {
 	scalarBufMu.Lock()
-	defer scalarBufMu.Unlock()
 	if b, ok := scalarI64Buf[v]; ok {
+		scalarBufMu.Unlock()
 		return b
 	}
 	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 8, metal.MTLResourceStorageModeShared)
 	scalarI64Buf[v] = b
+	scalarBufMu.Unlock()
 	return b
 }
 
 func scalarF32(v float32) metal.MTLBuffer {
 	scalarBufMu.Lock()
-	defer scalarBufMu.Unlock()
 	if b, ok := scalarF32Buf[v]; ok {
+		scalarBufMu.Unlock()
 		return b
 	}
 	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
 	scalarF32Buf[v] = b
+	scalarBufMu.Unlock()
 	return b
 }
 
@@ -759,7 +948,7 @@ func NormProjectICB(x, normWeight, projWeight []float32, dIn, dOut int, eps floa
 		return nil, err
 	}
 	bm, bn, sm, sn, tm, tn := gemvTiles(dIn, dOut)
-	gemvPSO, err := pipelineForICB(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	gemvPSO, err := pipelineForICB(gemvKernelName("float32", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return nil, err
 	}
@@ -767,13 +956,15 @@ func NormProjectICB(x, normWeight, projWeight []float32, dIn, dOut int, eps floa
 	out := make([]float32, dOut)
 	withAutoreleasePool(func() {
 		// persistent data buffers
-		xBuf, nwBuf, pwBuf := shared(x), shared(normWeight), shared(projWeight)
+		xBuf := shared(x)
+		nwBuf := residentFloat32(normWeight)
+		pwBuf := residentFloat32(projWeight)
 		tmpBuf, outBuf := scratch(dIn), scratch(dOut)
 		// scalar params as buffers (ICB can't setBytes inline)
 		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dIn)), scalarI32(1)
 		inBuf, outdimBuf, ldBuf := scalarI32(int32(dIn)), scalarI32(int32(dOut)), scalarI32(int32(dIn))
 		bndBuf, bshBuf, vsBuf, msBuf := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
-		resident := []metal.MTLBuffer{xBuf, nwBuf, pwBuf, tmpBuf, outBuf, epsBuf, axisBuf, wsBuf, inBuf, outdimBuf, ldBuf, bndBuf, bshBuf, vsBuf, msBuf}
+		resident := []metal.MTLResource{xBuf, nwBuf, pwBuf, tmpBuf, outBuf, epsBuf, axisBuf, wsBuf, inBuf, outdimBuf, ldBuf, bndBuf, bshBuf, vsBuf, msBuf}
 
 		// record the 2-op sequence once
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
@@ -785,52 +976,24 @@ func NormProjectICB(x, normWeight, projWeight []float32, dIn, dOut int, eps floa
 
 		// cmd 0: rmsnorm  x -> tmp
 		c0 := icb.IndirectComputeCommandAtIndex(0)
-		c0.SetComputePipelineState(rmsPSO)
-		c0.SetKernelBufferOffsetAtIndex(xBuf, 0, 0)
-		c0.SetKernelBufferOffsetAtIndex(nwBuf, 0, 1)
-		c0.SetKernelBufferOffsetAtIndex(tmpBuf, 0, 2)
-		c0.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-		c0.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
-		c0.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
 		tg := uint(rmsSimdSize * ((((dIn + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
-		c0.ConcurrentDispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-		)
+		emitRMSNorm(fastICBSink{c0}, rmsPSO, xBuf, nwBuf, tmpBuf, 0, dIn, eps, tg)
 
 		// cmd 1: gemv  projW @ tmp -> out
 		c1 := icb.IndirectComputeCommandAtIndex(1)
 		c1.SetBarrier() // wait for c0's tmp write to be visible before reading it
-		c1.SetComputePipelineState(gemvPSO)
-		c1.SetKernelBufferOffsetAtIndex(pwBuf, 0, 0)
-		c1.SetKernelBufferOffsetAtIndex(tmpBuf, 0, 1)
-		c1.SetKernelBufferOffsetAtIndex(outBuf, 0, 3)
-		c1.SetKernelBufferOffsetAtIndex(inBuf, 0, 4)
-		c1.SetKernelBufferOffsetAtIndex(outdimBuf, 0, 5)
-		c1.SetKernelBufferOffsetAtIndex(ldBuf, 0, 6)
-		c1.SetKernelBufferOffsetAtIndex(bndBuf, 0, 9)
-		c1.SetKernelBufferOffsetAtIndex(bshBuf, 0, 10)
-		c1.SetKernelBufferOffsetAtIndex(vsBuf, 0, 11)
-		c1.SetKernelBufferOffsetAtIndex(msBuf, 0, 12)
-		nOutPerTgp := bm * sm * tm
-		nTgp := (dOut + nOutPerTgp - 1) / nOutPerTgp
-		c1.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-		)
+		emitGemv(fastICBSink{c1}, gemvPSO, pwBuf, 0, tmpBuf, outBuf, 0, dIn, dOut, bm, bn, sm, tm)
 
 		// replay the recorded sequence
 		rng := foundation.NSRange{Location: 0, Length: 2}
 		for r := 0; r < replays; r++ {
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			for _, b := range resident {
-				enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			}
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			enc.ExecuteCommandsInBufferWithRange(icb, rng)
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 		}
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), dOut))
 	})

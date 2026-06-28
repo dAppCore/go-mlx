@@ -22,6 +22,15 @@ func TestPromptCacheInputGuards(t *testing.T) {
 	if _, err := sess.GenerateCached([]int32{1}, 0, -1); err == nil {
 		t.Fatal("GenerateCached(maxNew=0) error = nil")
 	}
+	if _, err := sess.GenerateCachedSampledEach([]int32{1}, 1, nil, nil, model.SampleParams{}, nil, nil); err == nil {
+		t.Fatal("GenerateCachedSampledEach(nil sampler) error = nil")
+	}
+	if _, err := sess.GenerateCachedSampledEach(nil, 1, nil, model.NewSampler(1), model.SampleParams{}, nil, nil); err == nil {
+		t.Fatal("GenerateCachedSampledEach(nil prompt) error = nil")
+	}
+	if _, err := sess.GenerateCachedSampledEach([]int32{1}, 0, nil, model.NewSampler(1), model.SampleParams{}, nil, nil); err == nil {
+		t.Fatal("GenerateCachedSampledEach(maxNew=0) error = nil")
+	}
 	if err := sess.WarmPromptCache(nil); err == nil {
 		t.Fatal("WarmPromptCache(nil prompt) error = nil")
 	}
@@ -62,6 +71,12 @@ func TestPromptCacheInputGuards(t *testing.T) {
 	}
 	if sess.cachedIDs != nil {
 		t.Fatalf("GenerateCached failed run cachedIDs = %v, want nil", sess.cachedIDs)
+	}
+	sess.maxLen = 1
+	sess.pos = 1
+	sess.cachedIDs = []int32{1}
+	if _, err := sess.GenerateCachedSampledEach([]int32{1, 2}, 1, nil, model.NewSampler(1), model.SampleParams{}, nil, nil); err == nil {
+		t.Fatal("GenerateCachedSampledEach(over maxLen) error = nil")
 	}
 	sess.cachedIDs = []int32{1, 2, 3}
 	if hit := sess.CachedPrefixLen([]int32{1, 2, 3}); hit != 2 {
@@ -241,6 +256,47 @@ func TestGenerateCachedExactPromptUsesCachedLogits(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("token %d after exact prompt cached logits = %d, want %d", i, got[i], want[i])
 		}
+	}
+}
+
+func TestGenerateCachedSampledEachExactPromptSkipsPromptReencode(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{Temperature: 0.8, TopK: 5, TopP: 0.75}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if hit := warm.CachedPrefixLen(prompt); hit != len(prompt) {
+		t.Fatalf("exact prompt-cache hit = %d, want %d", hit, len(prompt))
+	}
+
+	embed := warm.embed
+	embedCalls := 0
+	warm.embed = func(id int32) ([]byte, error) {
+		embedCalls++
+		return embed(id)
+	}
+
+	got, err := warm.GenerateCachedSampledEach(prompt, 3, nil, model.NewSampler(123), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateCachedSampledEach: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.GenerateSampledEach(prompt, 3, nil, model.NewSampler(123), params, nil, nil)
+	if err != nil {
+		t.Fatalf("cold GenerateSampledEach: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("sampled cached tokens = %v, want cold tokens %v", got, want)
+	}
+	if embedCalls > len(got) {
+		t.Fatalf("cached sampled exact prompt embed calls = %d, want <= generated tokens %d", embedCalls, len(got))
+	}
+	wantResident := append(append([]int32(nil), prompt...), got...)
+	if !idsEqual(warm.cachedIDs, wantResident) {
+		t.Fatalf("cachedIDs after sampled exact prompt = %v, want %v", warm.cachedIDs, wantResident)
 	}
 }
 

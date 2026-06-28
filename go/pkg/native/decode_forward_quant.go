@@ -5,8 +5,6 @@
 package native
 
 import (
-	"unsafe"
-
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
@@ -141,25 +139,21 @@ func DecodeForwardQuant(
 
 		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		msc := newMLPScratch(dModel, dFF)
-		hBuf := scratchBF16(dModel)
-		xA, xB := scratchBF16(dModel), scratchBF16(dModel)
-		off := int32(0)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		sc := newDecodeForwardStepScratch(dModel)
 
 		for t := 0; t < T; t++ {
-			*(*int32)(offBuf.Contents()) = int32(t)
-			copy(unsafe.Slice((*byte)(xA.Contents()), dModel*bf16Size), inputs[t])
+			sc.seed(t, inputs[t])
 
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			in, out := xA, xB
+			in, out := sc.xA, sc.xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, offBuf, hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, sc.offBuf, sc.hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
+				if encErr = encMLPHalfBF16(enc, sc.hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
@@ -168,7 +162,7 @@ func DecodeForwardQuant(
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
-			copy(outputs[t], unsafe.Slice((*byte)(in.Contents()), dModel*bf16Size))
+			sc.copyBuffer(outputs[t], in)
 		}
 	})
 	return outputs, encErr

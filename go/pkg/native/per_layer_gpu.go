@@ -6,17 +6,53 @@ package native
 
 import (
 	"math"
+	"runtime"
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
 
+type perLayerInputsGPUScratchKey struct {
+	plDim, dModel int
+	projScale     [2]byte
+}
+
+var perLayerInputsGPUScratchPools sync.Map
+
+func perLayerInputsGPUScratchPoolFor(plDim, dModel int, projScale float32) *sync.Pool {
+	key := perLayerInputsGPUScratchKey{plDim: plDim, dModel: dModel, projScale: bf16ScalarBytes(projScale)}
+	if v, ok := perLayerInputsGPUScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := &sync.Pool{}
+	if v, loaded := perLayerInputsGPUScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
 // plGPUScratch is the device-buffer scratch for the on-GPU PLE (one set per in-flight pipeline slot).
 type plGPUScratch struct {
 	perLayer, projected, scaled, projNormed, combined, out metal.MTLBuffer
 	projScaleBuf, combineScaleBuf                          metal.MTLBuffer
 	projScaleBytes, combineScaleBytes                      [2]byte
+	outPtr                                                 *byte
+	outPinned                                              *pinnedNoCopyBytes
+}
+
+func (s *plGPUScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.outPinned != nil {
+		s.outPinned.Close()
+		s.outPinned = nil
+	}
+	s.perLayer, s.projected, s.scaled, s.projNormed, s.combined, s.out = nil, nil, nil, nil, nil, nil
+	s.projScaleBuf, s.combineScaleBuf = nil, nil
+	s.outPtr = nil
 }
 
 func newPLGPUScratch(plDim int, projScale float32) *plGPUScratch {
@@ -24,13 +60,144 @@ func newPLGPUScratch(plDim int, projScale float32) *plGPUScratch {
 		return device.NewBufferWithLengthOptions(uint(plDim*bf16Size), metal.MTLResourceStorageModeShared)
 	}
 	s := &plGPUScratch{
-		perLayer: nb(), projected: nb(), scaled: nb(), projNormed: nb(), combined: nb(), out: nb(),
+		perLayer: nb(), projected: nb(), scaled: nb(), projNormed: nb(), combined: nb(),
+	}
+	if pinned, err := newPinnedNoCopyBytes(plDim * bf16Size); err == nil {
+		s.outPinned = pinned
+		s.out = pinned.buf
+		s.outPtr = (*byte)(unsafe.Pointer(&pinned.bytes[0]))
+	} else {
+		s.out = nb()
+		s.outPtr = (*byte)(s.out.Contents())
 	}
 	s.projScaleBytes = bf16ScalarBytes(projScale)
 	s.combineScaleBytes = bf16ScalarBytes(gemma4PerLayerCombineScale)
-	s.projScaleBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&s.projScaleBytes[0]), 2, metal.MTLResourceStorageModeShared)
-	s.combineScaleBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&s.combineScaleBytes[0]), 2, metal.MTLResourceStorageModeShared)
+	s.projScaleBuf = bf16ConstBuffer(1, projScale)
+	s.combineScaleBuf = bf16ConstBuffer(1, gemma4PerLayerCombineScale)
 	return s
+}
+
+type perLayerInputsGPUScratch struct {
+	plDim, dModel int
+	projScale     float32
+	token, emb    *pinnedNoCopyBytes
+	pl            *plGPUScratch
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
+}
+
+func newPerLayerInputsGPUScratch(plDim, dModel int, projScale float32) (*perLayerInputsGPUScratch, error) {
+	token, err := newPinnedNoCopyBytes(4)
+	if err != nil {
+		return nil, err
+	}
+	emb, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		token.Close()
+		return nil, err
+	}
+	return &perLayerInputsGPUScratch{
+		plDim:     plDim,
+		dModel:    dModel,
+		projScale: projScale,
+		token:     token,
+		emb:       emb,
+		pl:        newPLGPUScratch(plDim, projScale),
+	}, nil
+}
+
+func getPerLayerInputsGPUScratch(plDim, dModel int, projScale float32) (*perLayerInputsGPUScratch, error) {
+	pool := perLayerInputsGPUScratchPoolFor(plDim, dModel, projScale)
+	if v := pool.Get(); v != nil {
+		s := v.(*perLayerInputsGPUScratch)
+		if s.plDim == plDim && s.dModel == dModel && s.projScale == projScale && s.token != nil && s.emb != nil && s.pl != nil && s.pl.out != nil {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newPerLayerInputsGPUScratch(plDim, dModel, projScale)
+}
+
+func putPerLayerInputsGPUScratch(s *perLayerInputsGPUScratch) {
+	if s != nil && s.plDim > 0 && s.dModel > 0 && s.token != nil && s.emb != nil && s.pl != nil && s.pl.out != nil {
+		perLayerInputsGPUScratchPoolFor(s.plDim, s.dModel, s.projScale).Put(s)
+	}
+}
+
+func (s *perLayerInputsGPUScratch) Close() {
+	if s == nil {
+		return
+	}
+	s.closeOutputView()
+	if s.token != nil {
+		s.token.Close()
+		s.token = nil
+	}
+	if s.emb != nil {
+		s.emb.Close()
+		s.emb = nil
+	}
+	if s.pl != nil {
+		s.pl.Close()
+		s.pl = nil
+	}
+	s.plDim, s.dModel = 0, 0
+	s.projScale = 0
+}
+
+func (s *perLayerInputsGPUScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *perLayerInputsGPUScratch) outputView(out []byte) (metal.MTLBuffer, *byte, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, (*byte)(unsafe.Pointer(&out[0])), true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, (*byte)(unsafe.Pointer(&out[0])), true
+}
+
+func (s *perLayerInputsGPUScratch) buffers(tokenID int32, emb []byte) (metal.MTLBuffer, metal.MTLBuffer, *plGPUScratch, error) {
+	if s == nil || s.token == nil || s.emb == nil || s.pl == nil {
+		return nil, nil, nil, core.NewError("native.perLayerInputsGPUScratch.buffers: scratch is nil")
+	}
+	if len(emb) != s.dModel*bf16Size || len(s.token.bytes) != 4 || len(s.emb.bytes) != s.dModel*bf16Size {
+		return nil, nil, nil, core.NewError("native.perLayerInputsGPUScratch.buffers: dimension mismatch")
+	}
+	*(*int32)(unsafe.Pointer(&s.token.bytes[0])) = tokenID
+	embBuf, err := s.emb.copyBuffer(emb)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return s.token.buf, embBuf, s.pl, nil
 }
 
 // encPerLayerInputsGPU encodes the WHOLE gemma4 PLE for one token into `enc` (no commit): the per-layer
@@ -74,24 +241,27 @@ func (s *ArchSession) nextInputsGPU(tokenID int32) (emb, pli []byte, ok bool, er
 	}
 	dModel := s.arch.Hidden
 	plDim := len(s.arch.Layer) * s.arch.PerLayerInputHidden
-	emb = make([]byte, dModel*bf16Size)
-	pli = make([]byte, plDim*bf16Size)
 	withAutoreleasePool(func() {
-		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
-		*(*int32)(tokBuf.Contents()) = tokenID
-		embBuf := device.NewBufferWithLengthOptions(uint(dModel*bf16Size), metal.MTLResourceStorageModeShared)
-		sc := s.plScratchNew()
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		tokBuf := s.nextInputTokenBuffer(tokenID)
+		embBuf := s.nextInputEmbBuffer(dModel)
+		sc := s.nextInputPLScratchBuffer()
+		emb = s.nextInputEmbReadback(dModel)
+		pli = s.nextInputPLEReadback(plDim)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if err = s.encNextInputsGPU(enc, tokBuf, embBuf, sc); err != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(emb, unsafe.Slice((*byte)(embBuf.Contents()), dModel*bf16Size))
-		copy(pli, unsafe.Slice((*byte)(sc.out.Contents()), plDim*bf16Size))
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		if len(emb) > 0 && unsafe.Pointer(&emb[0]) != unsafe.Pointer(s.nextInputEmbPtr) {
+			copy(emb, unsafe.Slice(s.nextInputEmbPtr, dModel*bf16Size))
+		}
+		if len(pli) > 0 && unsafe.Pointer(&pli[0]) != unsafe.Pointer(sc.outPtr) {
+			copy(pli, unsafe.Slice(sc.outPtr, plDim*bf16Size))
+		}
 	})
 	if err != nil {
 		return nil, nil, false, err
@@ -103,6 +273,10 @@ func (s *ArchSession) nextInputsGPU(tokenID int32) (emb, pli []byte, ok bool, er
 // tensor fully on the GPU (token id + main embedding in, [numLayers·pliDim] bf16 out). bf16 projection
 // (e2b). Byte/cosine-tracks the host PerLayerInputs.
 func PerLayerInputsGPU(tokenID int32, emb []byte, embedPacked, embedScales, embedBiases, projW, projNormW []byte, vocabPLI, numLayers, pliDim, dModel, embGS, embBits int, eps float32) ([]byte, error) {
+	return perLayerInputsGPUInto(nil, tokenID, emb, embedPacked, embedScales, embedBiases, projW, projNormW, vocabPLI, numLayers, pliDim, dModel, embGS, embBits, eps)
+}
+
+func perLayerInputsGPUInto(out []byte, tokenID int32, emb []byte, embedPacked, embedScales, embedBiases, projW, projNormW []byte, vocabPLI, numLayers, pliDim, dModel, embGS, embBits int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -116,25 +290,52 @@ func PerLayerInputsGPU(tokenID int32, emb []byte, embedPacked, embedScales, embe
 	}
 	embScale := float32(math.Sqrt(float64(pliDim)))
 	projScale := float32(1.0 / math.Sqrt(float64(dModel)))
-	out := make([]byte, plDim*bf16Size)
+	outBytes := plDim * bf16Size
+	callerOut := cap(out) >= outBytes
+	if !callerOut {
+		out = make([]byte, outBytes)
+	} else {
+		out = out[:outBytes]
+	}
 	var ferr error
 	withAutoreleasePool(func() {
-		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
-		*(*int32)(tokBuf.Contents()) = tokenID
-		embBuf := sharedBytes(emb)
-		ePacked, eScales, eBiases := sharedBytes(embedPacked), sharedBytes(embedScales), sharedBytes(embedBiases)
-		projWBuf, projNormWBuf := sharedBytes(projW), sharedBytes(projNormW)
-		sc := newPLGPUScratch(plDim, projScale)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if ferr = encPerLayerInputsGPU(enc, gpso, tokBuf, embBuf, ePacked, eScales, eBiases, 0, 0, 0, projWBuf, 0, projNormWBuf, sc, numLayers, pliDim, dModel, embGS, embBits, embScale, eps); ferr != nil {
-			enc.EndEncoding()
+		scratch, err := getPerLayerInputsGPUScratch(plDim, dModel, projScale)
+		if err != nil {
+			ferr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(sc.out.Contents()), plDim*bf16Size))
+		defer putPerLayerInputsGPUScratch(scratch)
+		tokBuf, embBuf, sc, err := scratch.buffers(tokenID, emb)
+		if err != nil {
+			ferr = err
+			return
+		}
+		ePacked, eScales, eBiases := residentBytes(embedPacked), residentBytes(embedScales), residentBytes(embedBiases)
+		projWBuf, projNormWBuf := residentBytes(projW), residentBytes(projNormW)
+		scForCall := sc
+		directOut := false
+		if callerOut {
+			outBuf, outPtr, ok := scratch.outputView(out)
+			directOut = ok
+			if ok {
+				tmp := *sc
+				tmp.out = outBuf
+				tmp.outPtr = outPtr
+				scForCall = &tmp
+			}
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if ferr = encPerLayerInputsGPU(enc, gpso, tokBuf, embBuf, ePacked, eScales, eBiases, 0, 0, 0, projWBuf, 0, projNormWBuf, scForCall, numLayers, pliDim, dModel, embGS, embBits, embScale, eps); ferr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		if !directOut {
+			copy(out, unsafe.Slice(sc.outPtr, plDim*bf16Size))
+		}
 	})
 	return out, ferr
 }

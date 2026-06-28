@@ -134,6 +134,78 @@ func TestAttentionStepKV(t *testing.T) {
 	t.Logf("AttentionStepKV(pos=%d, GQA %d/%d): cache append + grown-window attention byte-identical to proven ops", pos, nHeads, nKV)
 }
 
+func TestAttentionStepKVAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+	kWarm := append([]byte(nil), kCache...)
+	vWarm := append([]byte(nil), vCache...)
+	if _, err := AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kWarm, vWarm, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps); err != nil {
+		t.Fatalf("AttentionStepKV warmup: %v", err)
+	}
+
+	var stepErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		kc := append([]byte(nil), kCache...)
+		vc := append([]byte(nil), vCache...)
+		_, stepErr = AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps)
+	})
+	if stepErr != nil {
+		t.Fatalf("AttentionStepKV: %v", stepErr)
+	}
+	if allocs > 45 {
+		t.Fatalf("AttentionStepKV allocations = %.0f, want <= 45", allocs)
+	}
+}
+
+func TestDecodeStepAttentionScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small := getAttnScratch(96, 96, 48, 3, 6)
+	putAttnScratch(small)
+	large := getAttnScratch(160, 160, 80, 5, 10)
+	putAttnScratch(large)
+
+	gotSmall := getAttnScratch(96, 96, 48, 3, 6)
+	defer putAttnScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("decode-step attention scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge := getAttnScratch(160, 160, 80, 5, 10)
+	defer putAttnScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("decode-step attention scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestDecodeStepMLPScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small := getMLPScratch(96, 192)
+	putMLPScratch(small)
+	large := getMLPScratch(160, 320)
+	putMLPScratch(large)
+
+	gotSmall := getMLPScratch(96, 192)
+	defer putMLPScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("decode-step MLP scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge := getMLPScratch(160, 320)
+	defer putMLPScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("decode-step MLP scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
 // TestDecodeStepKV gates the full real decode step: out == the proven MLP block
 // fed the attention-half output, and the grown caches match. AttentionStepKV is
 // already gated against proven ops above, MLPBlockBF16 is parity-proven, so this
@@ -168,4 +240,34 @@ func TestDecodeStepKV(t *testing.T) {
 	eqBytes(t, "DecodeStepKV kCache", kGot, kRef)
 	eqBytes(t, "DecodeStepKV vCache", vGot, vRef)
 	t.Logf("DecodeStepKV(pos=%d): full real layer == AttentionStepKV ▸ proven MLPBlockBF16 (byte-identical), cache grown", pos)
+}
+
+func TestDecodeStepKVAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+	kWarm := append([]byte(nil), kCache...)
+	vWarm := append([]byte(nil), vCache...)
+	if _, err := DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kWarm, vWarm, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err != nil {
+		t.Fatalf("DecodeStepKV warmup: %v", err)
+	}
+
+	var stepErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		kc := append([]byte(nil), kCache...)
+		vc := append([]byte(nil), vCache...)
+		_, stepErr = DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps)
+	})
+	if stepErr != nil {
+		t.Fatalf("DecodeStepKV: %v", stepErr)
+	}
+	if allocs > 45 {
+		t.Fatalf("DecodeStepKV allocations = %.0f, want <= 45", allocs)
+	}
 }

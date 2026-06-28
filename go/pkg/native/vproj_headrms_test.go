@@ -7,7 +7,71 @@ package native
 import (
 	"os"
 	"testing"
+	"unsafe"
 )
+
+type vProjHeadRMSFixture struct {
+	x       []byte
+	inNormW []byte
+	wq      []byte
+	scales  []byte
+	biases  []byte
+}
+
+func newVProjHeadRMSFixture(nKVHeads, headDim, inDim, groupSize, bits int) vProjHeadRMSFixture {
+	outDim := nKVHeads * headDim
+	x := toBF16Bytes(syntheticFloat32(inDim, inDim+1))
+	inNormW := toBF16Bytes(syntheticFloat32(inDim, inDim+7))
+	wq := make([]byte, outDim*inDim*bits/8)
+	for i := range wq {
+		wq[i] = byte((i*131 + 17) % 256)
+	}
+	nSB := outDim * (inDim / groupSize)
+	return vProjHeadRMSFixture{
+		x:       x,
+		inNormW: inNormW,
+		wq:      wq,
+		scales:  toBF16Bytes(syntheticFloat32(nSB, groupSize+3)),
+		biases:  toBF16Bytes(syntheticFloat32(nSB, groupSize+5)),
+	}
+}
+
+func TestVProjHeadRMSKernelNameCachesGeometryString(t *testing.T) {
+	names := []string{
+		vprojHeadRMSKernelName(64, 4),
+		vprojHeadRMSKernelName(64, 4),
+	}
+	if names[0] != names[1] {
+		t.Fatalf("vproj head rms kernel names differ: %q vs %q", names[0], names[1])
+	}
+	if unsafe.StringData(names[0]) != unsafe.StringData(names[1]) {
+		t.Fatalf("vproj head rms kernel name backing was not cached for repeated geometry")
+	}
+}
+
+func TestVProjHeadRMSBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library not loaded — run `task build:kernels`")
+	}
+	const nKVHeads, headDim, inDim, groupSize, bits = 1, 256, 1536, 64, 4
+	const eps = float32(1e-6)
+	fx := newVProjHeadRMSFixture(nKVHeads, headDim, inDim, groupSize, bits)
+	if _, err := VProjHeadRMSBF16(fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps); err != nil {
+		t.Fatalf("VProjHeadRMSBF16 warmup: %v", err)
+	}
+
+	var vprojErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, vprojErr = VProjHeadRMSBF16(fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps)
+	})
+	if vprojErr != nil {
+		t.Fatalf("VProjHeadRMSBF16: %v", vprojErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("VProjHeadRMSBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
 
 // TestVProjHeadRMSBF16ParityComposed gates the fused V-path kernel (input-rms → V-proj → value-norm)
 // against the composed RMSNormBF16(QMVBF16(RMSNormBF16(x, inNormW)), ones, nKVHeads, headDim). Cosine
@@ -32,26 +96,18 @@ func TestVProjHeadRMSBF16ParityComposed(t *testing.T) {
 	}
 	for _, c := range cases {
 		outDim := c.nKVHeads * c.headDim
-		x := toBF16Bytes(syntheticFloat32(c.inDim, c.inDim+1))
-		inNormW := toBF16Bytes(syntheticFloat32(c.inDim, c.inDim+7))
-		wq := make([]byte, outDim*c.inDim*bits/8)
-		for i := range wq {
-			wq[i] = byte((i*131 + 17) % 256)
-		}
-		nSB := outDim * (c.inDim / c.gs)
-		scales := toBF16Bytes(syntheticFloat32(nSB, c.gs+3))
-		biases := toBF16Bytes(syntheticFloat32(nSB, c.gs+5))
+		fx := newVProjHeadRMSFixture(c.nKVHeads, c.headDim, c.inDim, c.gs, bits)
 		onesF := make([]float32, c.headDim)
 		for i := range onesF {
 			onesF[i] = 1
 		}
 		ones := toBF16Bytes(onesF)
 
-		normed, err := RMSNormBF16(x, inNormW, 1, c.inDim, eps)
+		normed, err := RMSNormBF16(fx.x, fx.inNormW, 1, c.inDim, eps)
 		if err != nil {
 			t.Fatalf("nkv=%d hd=%d: input RMSNorm: %v", c.nKVHeads, c.headDim, err)
 		}
-		vproj, err := QMVBF16(normed, wq, scales, biases, outDim, c.inDim, c.gs, bits)
+		vproj, err := QMVBF16(normed, fx.wq, fx.scales, fx.biases, outDim, c.inDim, c.gs, bits)
 		if err != nil {
 			t.Fatalf("nkv=%d hd=%d: QMV: %v", c.nKVHeads, c.headDim, err)
 		}
@@ -59,7 +115,7 @@ func TestVProjHeadRMSBF16ParityComposed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("nkv=%d hd=%d: value-norm: %v", c.nKVHeads, c.headDim, err)
 		}
-		got, err := VProjHeadRMSBF16(x, inNormW, wq, scales, biases, c.nKVHeads, c.headDim, c.inDim, c.gs, bits, eps)
+		got, err := VProjHeadRMSBF16(fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, c.nKVHeads, c.headDim, c.inDim, c.gs, bits, eps)
 		if err != nil {
 			t.Fatalf("nkv=%d hd=%d: VProjHeadRMSBF16: %v", c.nKVHeads, c.headDim, err)
 		}

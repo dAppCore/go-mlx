@@ -43,7 +43,7 @@ func (s *ArchSession) SerializeState() ([]byte, error) {
 		if !s.state.specs[li].OwnsCache() {
 			continue
 		}
-		k, _, err := s.snapshotCacheBuffers(li)
+		k, _, _, _, err := s.snapshotCacheViews(li)
 		if err != nil {
 			return nil, err
 		}
@@ -60,16 +60,16 @@ func (s *ArchSession) SerializeState() ([]byte, error) {
 		if !s.state.specs[li].OwnsCache() {
 			continue // shared-KV layers reference an owner's cache; only owners carry bytes
 		}
-		k, v, err := s.snapshotCacheBuffers(li)
+		_, _, kPtr, vPtr, err := s.snapshotCacheViews(li)
 		if err != nil {
 			return nil, err
 		}
 		n := lengths[li]
 		binary.LittleEndian.PutUint32(out[off:], uint32(n))
 		off += 4
-		copy(out[off:off+n], unsafe.Slice((*byte)(k.Contents()), n))
+		copy(out[off:off+n], unsafe.Slice(kPtr, n))
 		off += n
-		copy(out[off:off+n], unsafe.Slice((*byte)(v.Contents()), n))
+		copy(out[off:off+n], unsafe.Slice(vPtr, n))
 		off += n
 	}
 	binary.LittleEndian.PutUint32(out[off:], uint32(len(s.cachedIDs)))
@@ -109,7 +109,7 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		}
 		n := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
-		k, v, err := s.snapshotCacheBuffers(li)
+		k, _, kPtr, vPtr, err := s.snapshotCacheViews(li)
 		if err != nil {
 			return err
 		}
@@ -119,9 +119,9 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		if off+2*n > len(data) {
 			return core.NewError("native.RestoreState: truncated snapshot")
 		}
-		copy(unsafe.Slice((*byte)(k.Contents()), n), data[off:off+n])
+		copy(unsafe.Slice(kPtr, n), data[off:off+n])
 		off += n
-		copy(unsafe.Slice((*byte)(v.Contents()), n), data[off:off+n])
+		copy(unsafe.Slice(vPtr, n), data[off:off+n])
 		off += n
 	}
 	s.pos = pos
@@ -272,23 +272,51 @@ func readPromptEntryBytes(data []byte, off, want int, label string) ([]byte, int
 	return buf, off + n, nil
 }
 
-func (s *ArchSession) snapshotCacheBuffers(li int) (metal.MTLBuffer, metal.MTLBuffer, error) {
+func (s *ArchSession) snapshotCacheViews(li int) (metal.MTLBuffer, metal.MTLBuffer, *byte, *byte, error) {
 	if s.state.icb != nil {
 		if li >= len(s.state.icb.kCaches) || li >= len(s.state.icb.vCaches) {
-			return nil, nil, core.NewError("native.sessionState: ICB cache index out of range")
+			return nil, nil, nil, nil, core.NewError("native.sessionState: ICB cache index out of range")
 		}
 		k, v := s.state.icb.kCaches[li], s.state.icb.vCaches[li]
 		if k == nil || v == nil {
-			return nil, nil, core.NewError("native.sessionState: missing ICB cache buffer")
+			return nil, nil, nil, nil, core.NewError("native.sessionState: missing ICB cache buffer")
 		}
-		return k, v, nil
+		if len(s.state.icb.kCachePtrs) != len(s.state.icb.kCaches) || len(s.state.icb.vCachePtrs) != len(s.state.icb.vCaches) {
+			s.state.icb.cacheKVContents()
+		}
+		var kPtr, vPtr *byte
+		if li < len(s.state.icb.kCachePtrs) {
+			kPtr = s.state.icb.kCachePtrs[li]
+		}
+		if li < len(s.state.icb.vCachePtrs) {
+			vPtr = s.state.icb.vCachePtrs[li]
+		}
+		if kPtr == nil {
+			kPtr = (*byte)(k.Contents())
+			s.state.icb.kCachePtrs[li] = kPtr
+		}
+		if vPtr == nil {
+			vPtr = (*byte)(v.Contents())
+			s.state.icb.vCachePtrs[li] = vPtr
+		}
+		return k, v, kPtr, vPtr, nil
 	}
 	if li >= len(s.state.lb) {
-		return nil, nil, core.NewError("native.sessionState: cache index out of range")
+		return nil, nil, nil, nil, core.NewError("native.sessionState: cache index out of range")
 	}
-	k, v := s.state.lb[li].kCache, s.state.lb[li].vCache
+	lb := &s.state.lb[li]
+	k, v := lb.kCache, lb.vCache
 	if k == nil || v == nil {
-		return nil, nil, core.NewError("native.sessionState: missing cache buffer")
+		return nil, nil, nil, nil, core.NewError("native.sessionState: missing cache buffer")
 	}
-	return k, v, nil
+	kPtr, vPtr := lb.kCachePtr, lb.vCachePtr
+	if kPtr == nil {
+		lb.kCachePtr = (*byte)(k.Contents())
+		kPtr = lb.kCachePtr
+	}
+	if vPtr == nil {
+		lb.vCachePtr = (*byte)(v.Contents())
+		vPtr = lb.vCachePtr
+	}
+	return k, v, kPtr, vPtr, nil
 }

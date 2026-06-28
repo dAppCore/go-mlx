@@ -11,6 +11,69 @@ import (
 	mc "dappco.re/go/mlx/pkg/metal"
 )
 
+func matMulF32NTFixture(M, K, N int) ([]float32, []float32) {
+	a := syntheticFloat32(M*K, M+3)
+	b := syntheticFloat32(N*K, N+5)
+	return a, b
+}
+
+func TestMatMulF32NTAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 16, 64, 137
+	a, b := matMulF32NTFixture(M, K, N)
+	if _, err := MatMulF32NT(a, b, M, K, N); err != nil {
+		t.Fatalf("MatMulF32NT warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatMulF32NT(a, b, M, K, N); err != nil {
+			t.Fatalf("MatMulF32NT: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatMulF32NT allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestSteelGemmPipelineWarmedLookupAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	if _, err := steelGemmPipeline(steelNT.name, false, false, false, false, false, true); err != nil {
+		t.Fatalf("steelGemmPipeline warmup: %v", err)
+	}
+
+	var pipeErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, pipeErr = steelGemmPipeline(steelNT.name, false, false, false, false, false, true)
+	})
+	if pipeErr != nil {
+		t.Fatalf("steelGemmPipeline: %v", pipeErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("steelGemmPipeline warmed lookup allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestMatMulF32NTSplitKAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 3, 128, 128
+	a, b := matMulF32NTFixture(M, K, N)
+	if _, err := MatMulF32NT(a, b, M, K, N); err != nil {
+		t.Fatalf("MatMulF32NT split-K warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatMulF32NT(a, b, M, K, N); err != nil {
+			t.Fatalf("MatMulF32NT split-K: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatMulF32NT split-K allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestMatMulF32 asserts native.MatMulF32 (the fused steel GEMM wrapper) is BYTE-IDENTICAL to
 // pkg/metal.Matmul on float32 arrays across shapes — the parity_test.go pattern. This is the f32
 // matmul the Conformer audio attention needs (the bf16 gemv-loop matches metal for bf16 but NOT for
@@ -34,6 +97,34 @@ func TestMatMulF32(t *testing.T) {
 			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 				t.Fatalf("MatMulF32 [%d,%d,%d] differs at %d: %v vs %v (not byte-identical)", d.M, d.K, d.N, i, got[i], want[i])
 			}
+		}
+	}
+}
+
+func BenchmarkMatMulF32NTSplitK3x128x128(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 3, 128, 128
+	a, w := matMulF32NTFixture(M, K, N)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MatMulF32NT(a, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulF32NT16x64x137(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 16, 64, 137
+	a, w := matMulF32NTFixture(M, K, N)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MatMulF32NT(a, w, M, K, N); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

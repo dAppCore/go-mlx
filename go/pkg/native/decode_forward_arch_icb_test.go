@@ -5,12 +5,114 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/metal"
 )
+
+func TestArchICBReplayCachesLastOutContentsPointer(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	if err := ensureInit(); err != nil {
+		t.Skipf("native init unavailable: %v", err)
+	}
+	buf := scratchBF16(4)
+	first := toBF16Bytes([]float32{1, 2, 3, 4})
+	copy(unsafe.Slice((*byte)(buf.Contents()), len(first)), first)
+
+	r := &archICBReplay{lastOut: buf, dModel: 4}
+	r.cacheLastOutContents()
+	if r.lastOutPtr == nil {
+		t.Fatal("lastOut contents pointer was not cached")
+	}
+	got := make([]byte, len(first))
+	r.copyLastOutInto(got)
+	if !bytes.Equal(got, first) {
+		t.Fatalf("first cached lastOut copy = %v, want %v", got, first)
+	}
+
+	second := toBF16Bytes([]float32{5, 6, 7, 8})
+	copy(unsafe.Slice((*byte)(buf.Contents()), len(second)), second)
+	r.copyLastOutInto(got)
+	if !bytes.Equal(got, second) {
+		t.Fatalf("second cached lastOut copy = %v, want %v", got, second)
+	}
+}
+
+func TestArchICBReplayCachesStepContentsPointers(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	if err := ensureInit(); err != nil {
+		t.Skipf("native init unavailable: %v", err)
+	}
+	input := toBF16Bytes([]float32{1, 2, 3, 4})
+	pli := toBF16Bytes([]float32{5, 6, 7, 8})
+	r := &archICBReplay{
+		offBuf:        device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		nGlobalBuf:    device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		nSlidingBuf:   device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		ping0:         scratchBF16(4),
+		pleInput:      scratchBF16(4),
+		specs:         []model.LayerSpec{{CacheIndex: -1}},
+		hasPLE:        true,
+		nLayers:       1,
+		plePliDim:     4,
+		slidingWindow: 3,
+		dModel:        4,
+	}
+	r.cacheStepContents()
+	if r.offPtr == nil || r.nGlobalPtr == nil || r.nSlidingPtr == nil || r.ping0Ptr == nil || r.pleInputPtr == nil {
+		t.Fatal("step contents pointers were not cached")
+	}
+	r.prepareStep(input, 5, pli)
+	if got := *(*int32)(r.offBuf.Contents()); got != 5 {
+		t.Fatalf("offBuf = %d, want 5", got)
+	}
+	if got := *(*int32)(r.nGlobalBuf.Contents()); got != 6 {
+		t.Fatalf("nGlobalBuf = %d, want 6", got)
+	}
+	if got := *(*int32)(r.nSlidingBuf.Contents()); got != 3 {
+		t.Fatalf("nSlidingBuf = %d, want 3", got)
+	}
+	gotInput := unsafe.Slice((*byte)(r.ping0.Contents()), len(input))
+	if !bytes.Equal(gotInput, input) {
+		t.Fatalf("ping0 input = %v, want %v", gotInput, input)
+	}
+	gotPLE := unsafe.Slice((*byte)(r.pleInput.Contents()), len(pli))
+	if !bytes.Equal(gotPLE, pli) {
+		t.Fatalf("ple input = %v, want %v", gotPLE, pli)
+	}
+}
+
+func TestDecodeForwardArchICBAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	if _, err := DecodeForwardArchICB(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+		t.Fatalf("DecodeForwardArchICB warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, forwardErr = DecodeForwardArchICB(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardArchICB: %v", forwardErr)
+	}
+	if allocs > 1620 {
+		t.Fatalf("DecodeForwardArchICB allocations = %.0f, want <= 1620", allocs)
+	}
+}
 
 // TestDecodeForwardArchICB gates the arch-driven cache-grow ICB (the encode-bypass
 // replay) against the proven re-encode arch forward DecodeForwardArch — byte-for-byte

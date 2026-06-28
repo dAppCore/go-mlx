@@ -9,6 +9,31 @@ import (
 	"testing"
 )
 
+func rmsNormFixture(rows, axisSize int) ([]float32, []float32) {
+	x := syntheticFloat32(rows*axisSize, axisSize+1)
+	w := syntheticFloat32(axisSize, axisSize+7)
+	return x, w
+}
+
+func TestRMSNormAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 1024
+	x, w := rmsNormFixture(rows, axisSize)
+	if _, err := RMSNorm(x, w, rows, axisSize, 1e-5); err != nil {
+		t.Fatalf("RMSNorm warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := RMSNorm(x, w, rows, axisSize, 1e-5); err != nil {
+			t.Fatalf("RMSNorm: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("RMSNorm allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 func TestRMSNormComputesScaledRows(t *testing.T) {
 	requireNativeRuntime(t)
 

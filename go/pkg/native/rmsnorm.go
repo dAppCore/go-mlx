@@ -5,8 +5,6 @@
 package native
 
 import (
-	"unsafe"
-
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
@@ -78,46 +76,39 @@ func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, e
 	}
 
 	out := make([]float32, rows*axisSize)
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)*4), metal.MTLResourceStorageModeShared)
-		wBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&weight[0]), uint(len(weight)*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(x)*4), metal.MTLResourceStorageModeShared)
-
-		var tgSize uint
-		if looped {
-			tgSize = pso.MaxTotalThreadsPerThreadgroup()
-		} else {
-			tgNeeded := (axisSize + rmsNReads - 1) / rmsNReads
-			simdsNeeded := (tgNeeded + rmsSimdSize - 1) / rmsSimdSize
-			tgSize = uint(rmsSimdSize * simdsNeeded)
+		scratch, err := getQMVFloatScratch(len(x), len(x))
+		if err != nil {
+			encErr = err
+			return
 		}
-		nThreads := uint(rows) * tgSize
+		defer putQMVFloatScratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		wBuf := residentBytes(float32Bytes(weight))
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		setPSO(enc, pso)
-		setBuf(enc, xBuf, 0, 0)
-		setBuf(enc, wBuf, 0, 1)
-		setBuf(enc, outBuf, 0, 2)
-		setEncFloat32(enc, eps, 3)
-		setEncInt32(enc, int32(axisSize), 4) // axis_size (uint; positive bits identical)
-		setEncInt32(enc, 1, 5)               // w_stride = 1 for a contiguous 1-D weight
-		// dispatchThreads: one threadgroup per row, threadgroup_size threads each.
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: nThreads, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		tgSize := rmsThreadgroup(axisSize, pso)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRMSNormRows(encSink{enc}, pso, xBuf, wBuf, outBuf, 0, 0, 0, axisSize, eps, rows, tgSize)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(x)))
+		copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
 // setEncFloat32 binds a single float32 as an inline constant at a buffer index
 // (the rms epsilon).
 func setEncFloat32(enc metal.MTLComputeCommandEncoder, v float32, idx uint) {
-	enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&v)), 4), 4, idx)
+	setBytesF32(enc, v, idx)
 }

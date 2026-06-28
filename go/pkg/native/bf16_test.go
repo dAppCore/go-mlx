@@ -7,7 +7,178 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
+
+func rmsNormBF16Fixture(rows, axisSize int) ([]byte, []byte) {
+	x := toBF16Bytes(syntheticFloat32(rows*axisSize, axisSize+1))
+	w := toBF16Bytes(syntheticFloat32(axisSize, axisSize+7))
+	return x, w
+}
+
+func matVecBF16Fixture(outDim, inDim int) ([]byte, []byte) {
+	mat := toBF16Bytes(syntheticFloat32(outDim*inDim, outDim+3))
+	vec := toBF16Bytes(syntheticFloat32(inDim, inDim+5))
+	return mat, vec
+}
+
+func TestMatVecBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 128, 256
+	mat, vec := matVecBF16Fixture(outDim, inDim)
+	if _, err := MatVecBF16(mat, vec, outDim, inDim); err != nil {
+		t.Fatalf("MatVecBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatVecBF16(mat, vec, outDim, inDim); err != nil {
+			t.Fatalf("MatVecBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatVecBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRMSNormBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-6)
+	x, w := rmsNormBF16Fixture(rows, axisSize)
+	if _, err := RMSNormBF16(x, w, rows, axisSize, eps); err != nil {
+		t.Fatalf("RMSNormBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := RMSNormBF16(x, w, rows, axisSize, eps); err != nil {
+			t.Fatalf("RMSNormBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("RMSNormBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRMSNormBF16IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-6)
+	x, w := rmsNormBF16Fixture(rows, axisSize)
+	want, err := RMSNormBF16(x, w, rows, axisSize, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16 reference: %v", err)
+	}
+	out := make([]byte, len(want))
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x6d}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := RMSNormBF16Into(out, x, w, rows, axisSize, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16Into: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("RMSNormBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "RMSNormBF16Into", got, want)
+
+	scratch, err = getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("RMSNormBF16Into wrote through pooled scratch output instead of caller output")
+	}
+}
+
+func TestRMSNormBF16ViewAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-6)
+	x, w := rmsNormBF16Fixture(rows, axisSize)
+	view := bufView{buf: residentBytes(w)}
+	if _, err := rmsNormBF16View(x, w, view, rows, axisSize, eps); err != nil {
+		t.Fatalf("rmsNormBF16View warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := rmsNormBF16View(x, w, view, rows, axisSize, eps); err != nil {
+			t.Fatalf("rmsNormBF16View: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("rmsNormBF16View allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRMSNormBF16ViewIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-6)
+	x, w := rmsNormBF16Fixture(rows, axisSize)
+	view := bufView{buf: residentBytes(w)}
+	want, err := rmsNormBF16View(x, w, view, rows, axisSize, eps)
+	if err != nil {
+		t.Fatalf("rmsNormBF16View reference: %v", err)
+	}
+	out := make([]byte, len(want))
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x9b}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := rmsNormBF16ViewInto(out, x, w, view, rows, axisSize, eps)
+	if err != nil {
+		t.Fatalf("rmsNormBF16ViewInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("rmsNormBF16ViewInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "rmsNormBF16ViewInto", got, want)
+
+	scratch, err = getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("rmsNormBF16ViewInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
+func TestAddBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	a := toBF16Bytes(syntheticFloat32(1024, 3))
+	b := toBF16Bytes(syntheticFloat32(1024, 5))
+	if _, err := AddBF16(a, b); err != nil {
+		t.Fatalf("AddBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := AddBF16(a, b); err != nil {
+			t.Fatalf("AddBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("AddBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
 
 func TestAddBF16ComputesResidualBytes(t *testing.T) {
 	requireNativeRuntime(t)

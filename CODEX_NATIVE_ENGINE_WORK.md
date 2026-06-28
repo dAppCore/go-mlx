@@ -2,12 +2,24 @@
 
 # Codex Native Engine Work
 
-Created 2026-06-22; compacted 2026-06-23. Live ledger; `GOAL.md` holds contract.
+Compact ledger for the active `pkg/native` replacement goal. Keep only the current slice, proof, and next handoff.
 
-Done: kernels/resources; resident heads/scratch; BF16/qmv greedy; MTP direct greedy; softcap; whole-tensor/fused MoE; MoE quant per-weight geometry; mmap MoE quant triple views; ICB/cache replay; prompt cache.
+Current slice completed 2026-06-28:
+- DecodeLayerBatchedKV scratch is keyed by `(dModel, qDim, kvDim, nHeads, dFF, K)`, so alternating MTP verify batch shapes keep pinned row/output scratch separate; no gate or setting was added.
 
-Proof: MoE router mixed-geometry red→green; router/load guards 0.724s; coverage 40.687s at 91.5%.
+Verification:
+- Focused batched decode scratch/correctness/allocation tests passed; benchmarks: fixed `488.3-525.0 us/op`, `21114-21172 B/op`, `41 allocs/op`; alternating `452.9-466.1 us/op`, `13726-13743 B/op`, `36 allocs/op`.
+- Full native coverage passed at `81.4%`; root `1.170s`; model `0.328s`.
 
-Resource: router quant top2 19,540 B/op; MTP direct loop 10,972,933 B/op, 251,720 allocs; prompt cache ~33% faster/~29% fewer bytes+allocs; MoE combine 611,060 -> 484,152 ns/op; head BF16 16,008 vs 23,168 B/op, quant 19,937 vs 21,433.
+Retained wins:
+- Dense PLE fallback `901-1003 us/op`, `855-867 B/op`, `12 allocs/op` -> `229-272 us/op`, `178-180 B/op`, `8 allocs/op`.
+- Quant PLE fallback `267-292 us/op`, `180-181 B/op`, `8 allocs/op`.
+- Gate scratch and GPU PLE scratch are dimension-keyed; alternating `Into` paths stay at `1 allocs/op`.
+- Attention, AttentionBlock ICB, DecodeForward ICB core, DecodeLayerBatched, DecodeStep, and DecodeLayer scratch pools are dimension-keyed; alternating paths stay at `3`, `34`, `505-506`, `36`, `48-49`, and `4 allocs/op` respectively.
+- SDPA and VisionSDPA scratch pools are dimension-keyed; fixed/alternating residency is covered by benchmarks.
+- Router host scratch is dimension-keyed; fixed and alternating pooled paths stay at `5-6 allocs/op`.
+- RMS residual, binary float32, and embed-gather scratch are dimension-keyed; fixed and alternating RMS/Add/gather stay at `2 allocs/op`.
 
-Rejected: direct q4 top-1 until fused-equivalent qmv proof handles near ties.
+Next handoff:
+- Continue replacing per-op submit/readback session hot paths with fused no-copy/replay routes.
+- Exact large-vocab TopP still needs a full-vocab ranked-prefix/top-mass device design.

@@ -11,6 +11,19 @@ import (
 	"unsafe"
 )
 
+func quantMoEExpertsFixture(tb testing.TB, numExperts, dModel, dFF, groupSize, bits int) (QuantWeight, QuantWeight, QuantWeight) {
+	tb.Helper()
+	buildBatched := func(outDim, inDim, saltBase int) QuantWeight {
+		var packed, scales, biases []byte
+		for e := 0; e < numExperts; e++ {
+			p, s, b := quantizeProj(tb, outDim, inDim, groupSize, bits, saltBase+e*7)
+			packed, scales, biases = append(packed, p...), append(scales, s...), append(biases, b...)
+		}
+		return QuantWeight{Packed: packed, Scales: scales, Biases: biases, GroupSize: groupSize, Bits: bits}
+	}
+	return buildBatched(dFF, dModel, 3), buildBatched(dFF, dModel, 51), buildBatched(dModel, dFF, 91)
+}
+
 // TestMoEExpertsQuant gates the 4-bit batched experts: MoEExpertsQuant over a SwitchGLU-style
 // batched quant tensor must equal a composed reference (per selected expert: QMVBF16 gate/up →
 // GeluGateMulBF16 → QMVBF16 down, weighted-summed) byte-for-byte, and differ for a different
@@ -158,6 +171,32 @@ func TestMoEExpertsQuantBindsWholeBatchedExpertTensors(t *testing.T) {
 	}
 }
 
+func TestMoEExpertsQuantAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, groupSize, bits = 4, 2, 64, 128, 32, 4
+	gate, up, down := quantMoEExpertsFixture(t, numExperts, dModel, dFF, groupSize, bits)
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	if _, err := MoEExpertsQuant(x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits); err != nil {
+		t.Fatalf("MoEExpertsQuant warmup: %v", err)
+	}
+
+	var expertsErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, expertsErr = MoEExpertsQuant(x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	})
+	if expertsErr != nil {
+		t.Fatalf("MoEExpertsQuant: %v", expertsErr)
+	}
+	if allocs > 30 {
+		t.Fatalf("MoEExpertsQuant allocations = %.0f, want <= 30", allocs)
+	}
+}
+
 func TestMoEExpertsQuantFusedGateUpMatchesSplitExperts(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -216,6 +255,340 @@ func TestMoEExpertsQuantFusedGateUpMatchesSplitExperts(t *testing.T) {
 	if gotResident > len(whole) {
 		t.Fatalf("resident fused expert buffers = %d, want at most %d whole tensors", gotResident, len(whole))
 	}
+}
+
+func TestMoEExpertsQuantFusedGateUpAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, groupSize, bits = 4, 2, 64, 128, 32, 4
+	gate, up, down := quantMoEExpertsFixture(t, numExperts, dModel, dFF, groupSize, bits)
+	gateUp := fusedGateUpQuantForBench(gate, up, numExperts, dFF, dModel, groupSize, bits)
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	if _, err := MoEExpertsQuantFusedGateUp(x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits); err != nil {
+		t.Fatalf("MoEExpertsQuantFusedGateUp warmup: %v", err)
+	}
+
+	var expertsErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, expertsErr = MoEExpertsQuantFusedGateUp(x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	})
+	if expertsErr != nil {
+		t.Fatalf("MoEExpertsQuantFusedGateUp: %v", expertsErr)
+	}
+	if allocs > 30 {
+		t.Fatalf("MoEExpertsQuantFusedGateUp allocations = %.0f, want <= 30", allocs)
+	}
+}
+
+func TestMLPTransformQuantAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, groupSize, bits = 64, 128, 32, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+	if _, err := mlpTransformQuant(x, gate, up, down, dModel, dFF, groupSize, bits); err != nil {
+		t.Fatalf("mlpTransformQuant warmup: %v", err)
+	}
+
+	var transformErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, transformErr = mlpTransformQuant(x, gate, up, down, dModel, dFF, groupSize, bits)
+	})
+	if transformErr != nil {
+		t.Fatalf("mlpTransformQuant: %v", transformErr)
+	}
+	if allocs > 17 {
+		t.Fatalf("mlpTransformQuant allocations = %.0f, want <= 17", allocs)
+	}
+}
+
+func TestMLPTransformQuantMegaMatchesTransform(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := ffnMegaPipeline(); err != nil {
+		t.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, groupSize, bits = 256, 512, 64, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+
+	want, err := mlpTransformQuantComposed(x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantComposed: %v", err)
+	}
+	got, err := mlpTransformQuantMega(x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantMega: %v", err)
+	}
+	if cosineBF16(got, want) < 0.9999 {
+		t.Fatalf("mlpTransformQuantMega != composed quant path: cosine %.6f", cosineBF16(got, want))
+	}
+}
+
+func TestMLPTransformQuantMegaAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := ffnMegaPipeline(); err != nil {
+		t.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, groupSize, bits = 256, 512, 64, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+	if _, err := mlpTransformQuantMega(x, gate, up, down, dModel, dFF, groupSize, bits); err != nil {
+		t.Fatalf("mlpTransformQuantMega warmup: %v", err)
+	}
+
+	var transformErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, transformErr = mlpTransformQuantMega(x, gate, up, down, dModel, dFF, groupSize, bits)
+	})
+	if transformErr != nil {
+		t.Fatalf("mlpTransformQuantMega: %v", transformErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("mlpTransformQuantMega allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMLPTransformQuantLargeAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := ffnMegaPipeline(); err != nil {
+		t.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, groupSize, bits = 256, 512, 64, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+	if _, err := mlpTransformQuant(x, gate, up, down, dModel, dFF, groupSize, bits); err != nil {
+		t.Fatalf("mlpTransformQuant warmup: %v", err)
+	}
+
+	var transformErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, transformErr = mlpTransformQuant(x, gate, up, down, dModel, dFF, groupSize, bits)
+	})
+	if transformErr != nil {
+		t.Fatalf("mlpTransformQuant: %v", transformErr)
+	}
+	if allocs > 8 {
+		t.Fatalf("mlpTransformQuant large allocations = %.0f, want <= 8", allocs)
+	}
+}
+
+func TestMLPTransformQuantRejectsInvalidInputs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, groupSize, bits = 64, 128, 32, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+
+	if _, err := mlpTransformQuant(x[:len(x)-bf16Size], gate, up, down, dModel, dFF, groupSize, bits); err == nil {
+		t.Fatal("expected mlpTransformQuant to reject short input")
+	}
+	badGate := gate
+	badGate.Packed = badGate.Packed[:len(badGate.Packed)-1]
+	if _, err := mlpTransformQuant(x, badGate, up, down, dModel, dFF, groupSize, bits); err == nil {
+		t.Fatal("expected mlpTransformQuant to reject mismatched gate weight")
+	}
+	if _, _, _, _, _, err := quantWeightViewsForShape("test.quant", QuantWeight{}, dFF, dModel, 0, bits); err == nil {
+		t.Fatal("expected quantWeightViewsForShape to reject invalid geometry")
+	}
+	zero, err := mlpTransformQuant(nil, QuantWeight{}, QuantWeight{}, QuantWeight{}, 0, 0, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuant zero dimensions: %v", err)
+	}
+	if len(zero) != 0 {
+		t.Fatalf("mlpTransformQuant zero dimensions len = %d, want 0", len(zero))
+	}
+}
+
+func TestMLPTransformScratchClose(t *testing.T) {
+	requireNativeRuntime(t)
+
+	s, err := newMLPTransformScratch(64, 128)
+	if err != nil {
+		t.Fatalf("newMLPTransformScratch: %v", err)
+	}
+	if s.x == nil || s.x.buf == nil {
+		t.Fatal("newMLPTransformScratch did not allocate pinned input")
+	}
+	s.Close()
+	if s.x != nil || s.dModel != 0 || s.dFF != 0 {
+		t.Fatal("Close did not clear pinned input and dimensions")
+	}
+	s.Close()
+}
+
+func TestMoEBlockQuantAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	if _, err := MoEBlockQuant(h, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("MoEBlockQuant warmup: %v", err)
+	}
+
+	var blockErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		_, blockErr = MoEBlockQuant(h, w, dModel, dFF, eps)
+	})
+	if blockErr != nil {
+		t.Fatalf("MoEBlockQuant: %v", blockErr)
+	}
+	if allocs > 2552 {
+		t.Fatalf("MoEBlockQuant allocations = %.0f, want <= 2552", allocs)
+	}
+}
+
+func TestMoEBlockQuantAfterRouterLargeLocalAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 256, 512, 128, 2, 1, 64, 4
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0}
+	weights := toBF16Bytes([]float32{1})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	if _, err := moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter warmup: %v", err)
+	}
+
+	var blockErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		_, blockErr = moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps)
+	})
+	if blockErr != nil {
+		t.Fatalf("moeBlockQuantAfterRouter: %v", blockErr)
+	}
+	if allocs > 8 {
+		t.Fatalf("moeBlockQuantAfterRouter large local allocations = %.0f, want <= 8", allocs)
+	}
+}
+
+func TestMoEBlockQuantAfterRouterLargeLocalMatchesComposed(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := ffnMegaPipeline(); err != nil {
+		t.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 256, 512, 128, 2, 1, 64, 4
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0}
+	weights := toBF16Bytes([]float32{1})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+
+	got, err := moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter: %v", err)
+	}
+	must := func(b []byte, err error) []byte {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("reference op: %v", err)
+		}
+		return b
+	}
+	local := must(mlpTransformQuantComposed(
+		must(RMSNormBF16(h, w.PreFFNormW, 1, dModel, eps)),
+		w.LocalGate, w.LocalUp, w.LocalDown, dModel, dFF, groupSize, bits,
+	))
+	expert := must(MoEExpertsQuant(
+		must(RMSNormBF16(h, w.PreFFNorm2W, 1, dModel, eps)),
+		idx, weights, w.ExpGate, w.ExpUp, w.ExpDown, numExperts, topK, dModel, expertDFF, groupSize, bits,
+	))
+	combined := must(AddBF16(
+		must(RMSNormBF16(local, w.PostFFNorm1W, 1, dModel, eps)),
+		must(RMSNormBF16(expert, w.PostFFNorm2W, 1, dModel, eps)),
+	))
+	want := must(AddBF16(h, must(RMSNormBF16(combined, w.PostFFNormW, 1, dModel, eps))))
+	if cosineBF16(got, want) < 0.9999 {
+		t.Fatalf("moeBlockQuantAfterRouter large local != composed reference: cosine %.6f", cosineBF16(got, want))
+	}
+	if bytes.Equal(got, h) {
+		t.Fatal("moeBlockQuantAfterRouter large local did not transform the residual")
+	}
+}
+
+func TestMoEBlockQuantAfterRouterRejectsInvalidInputs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0, 1}
+	weights := toBF16Bytes([]float32{0.75, 0.25})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	if _, err := moeBlockQuantAfterRouter(h[:len(h)-bf16Size], idx, weights, nil, w, dModel, dFF, eps); err == nil {
+		t.Fatal("expected moeBlockQuantAfterRouter to reject short residual")
+	}
+	bad := w
+	bad.LocalGate.Packed = bad.LocalGate.Packed[:len(bad.LocalGate.Packed)-1]
+	if _, err := moeBlockQuantAfterRouter(h, idx, weights, nil, bad, dModel, dFF, eps); err == nil {
+		t.Fatal("expected moeBlockQuantAfterRouter to reject short local gate weight")
+	}
+}
+
+func TestMoEBlockQuantAfterRouterUsesProvidedHiddenBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	hostH := toBF16Bytes(syntheticFloat32(dModel, 7))
+	bufferH := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0, 1}
+	weights := toBF16Bytes([]float32{0.75, 0.25})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+
+	pinned, err := newPinnedNoCopyBytes(len(bufferH))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+	hBuf, err := pinned.copyBuffer(bufferH)
+	if err != nil {
+		t.Fatalf("copyBuffer: %v", err)
+	}
+
+	want, err := moeBlockQuantAfterRouter(bufferH, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter: %v", err)
+	}
+	got, err := moeBlockQuantAfterRouterWithBuffer(hostH, hBuf, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouterWithBuffer: %v", err)
+	}
+	eqBytes(t, "MoEBlockQuant provided hidden buffer", got, want)
 }
 
 // TestMoERouterQuant gates the 4-bit router: MoERouterQuant ≡ the manual RMSNorm → QMVBF16 →

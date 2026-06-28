@@ -23,6 +23,10 @@ func shared(data []float32) metal.MTLBuffer {
 	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&data[0]), uint(len(data)*4), metal.MTLResourceStorageModeShared)
 }
 
+func residentFloat32(data []float32) metal.MTLBuffer {
+	return residentBytes(unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)*4))
+}
+
 // scratch makes an uninitialised host-visible GPU buffer of n float32.
 func scratch(n int) metal.MTLBuffer {
 	return device.NewBufferWithLengthOptions(uint(n*4), metal.MTLResourceStorageModeShared)
@@ -56,7 +60,7 @@ func encodeRMSNorm(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer
 // into enc. Mirrors MatVec's binding (single size-1 batch).
 func encodeGemv(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	pso, err := pipelineFor(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	pso, err := pipelineFor(gemvKernelName("float32", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return err
 	}
@@ -140,8 +144,20 @@ func NormProject(x, normWeight, projWeight []float32, dIn, dOut int, eps float32
 	out := make([]float32, dOut)
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, nwBuf, pwBuf := shared(x), shared(normWeight), shared(projWeight)
-		tmpBuf, outBuf := scratch(dIn), scratch(dOut)
+		ioScratch, err := getQMVFloatScratch(dOut, dIn)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		nwBuf := residentFloat32(normWeight)
+		pwBuf := residentFloat32(projWeight)
+		tmpBuf := scratch(dIn)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -156,7 +172,7 @@ func NormProject(x, normWeight, projWeight []float32, dIn, dOut int, eps float32
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), dOut))
+		copy(float32Bytes(out), ioScratch.out.bytes[:dOut*4])
 	})
 	return out, encErr
 }
@@ -187,21 +203,31 @@ func MLPBlock(x, normWeight, wGate, wUp, wDown []float32, dModel, dFF int, eps f
 	out := make([]float32, dModel)
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := shared(x)
-		nwBuf := shared(normWeight)
-		wgBuf, wuBuf, wdBuf := shared(wGate), shared(wUp), shared(wDown)
+		ioScratch, err := getQMVFloatScratch(dModel, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		nwBuf := residentFloat32(normWeight)
+		wgBuf, wuBuf, wdBuf := residentFloat32(wGate), residentFloat32(wUp), residentFloat32(wDown)
+		constBuf := func(v float32) metal.MTLBuffer { return residentFloat32(fillConst(dFF, v)) }
 		// gelu scalar operands as dense dFF-length constant buffers.
-		c044 := shared(fillConst(dFF, 0.044715))
-		c079 := shared(fillConst(dFF, 0.7978845608028654))
-		c1 := shared(fillConst(dFF, 1.0))
-		c05 := shared(fillConst(dFF, 0.5))
+		c044 := constBuf(0.044715)
+		c079 := constBuf(0.7978845608028654)
+		c1 := constBuf(1.0)
+		c05 := constBuf(0.5)
 		// intermediates (resident)
 		normed := scratch(dModel)
 		gate, up := scratch(dFF), scratch(dFF)
 		x2, x3, x3s, inner, scaled, t, onePlus, halfG := scratch(dFF), scratch(dFF), scratch(dFF), scratch(dFF), scratch(dFF), scratch(dFF), scratch(dFF), scratch(dFF)
 		gelu, gated := scratch(dFF), scratch(dFF)
 		down := scratch(dModel)
-		outBuf := scratch(dModel)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -235,7 +261,7 @@ func MLPBlock(x, normWeight, wGate, wUp, wDown []float32, dModel, dFF int, eps f
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), dModel))
+		copy(float32Bytes(out), ioScratch.out.bytes[:dModel*4])
 	})
 	return out, encErr
 }

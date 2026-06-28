@@ -5,11 +5,245 @@
 package native
 
 import (
+	"runtime"
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+type qmvKernelNameKey struct {
+	groupSize, bits int
+	fast            bool
+}
+
+type qmvScratchKey struct {
+	outDim, inDim int
+}
+
+var (
+	qmvKernelNames        sync.Map
+	qmvFloatScratchPools  sync.Map
+	qmvBF16ScratchPools   sync.Map
+	errQMVFloatScratchDim = core.NewError("native.qmvFloatScratch: dimension mismatch")
+	errQMVBF16ScratchDim  = core.NewError("native.qmvBF16Scratch: dimension mismatch")
+)
+
+func qmvScratchPoolFor(pools *sync.Map, outDim, inDim int) *sync.Pool {
+	key := qmvScratchKey{outDim: outDim, inDim: inDim}
+	if v, ok := pools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := &sync.Pool{}
+	if v, loaded := pools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+type qmvFloatScratch struct {
+	inDim, outDim int
+	x, out        *pinnedNoCopyBytes
+}
+
+func newQMVFloatScratch(outDim, inDim int) (*qmvFloatScratch, error) {
+	if outDim <= 0 || inDim <= 0 {
+		return nil, core.NewError("native.newQMVFloatScratch: invalid dimensions")
+	}
+	x, err := newPinnedNoCopyBytes(inDim * 4)
+	if err != nil {
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(outDim * 4)
+	if err != nil {
+		x.Close()
+		return nil, err
+	}
+	return &qmvFloatScratch{inDim: inDim, outDim: outDim, x: x, out: out}, nil
+}
+
+func getQMVFloatScratch(outDim, inDim int) (*qmvFloatScratch, error) {
+	pool := qmvScratchPoolFor(&qmvFloatScratchPools, outDim, inDim)
+	if v := pool.Get(); v != nil {
+		s := v.(*qmvFloatScratch)
+		if s.inDim == inDim && s.outDim == outDim && s.x != nil && s.out != nil {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newQMVFloatScratch(outDim, inDim)
+}
+
+func putQMVFloatScratch(s *qmvFloatScratch) {
+	if s != nil && s.inDim > 0 && s.outDim > 0 && s.x != nil && s.out != nil {
+		qmvScratchPoolFor(&qmvFloatScratchPools, s.outDim, s.inDim).Put(s)
+	}
+}
+
+func (s *qmvFloatScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.x != nil {
+		s.x.Close()
+		s.x = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.inDim, s.outDim = 0, 0
+}
+
+func (s *qmvFloatScratch) buffers(x []float32) (metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.x == nil || s.out == nil {
+		return nil, nil, core.NewError("native.qmvFloatScratch.buffers: scratch is nil")
+	}
+	if len(x) != s.inDim || len(s.out.bytes) != s.outDim*4 {
+		return nil, nil, errQMVFloatScratchDim
+	}
+	xBuf, err := s.x.copyBuffer(float32Bytes(x))
+	if err != nil {
+		return nil, nil, err
+	}
+	return xBuf, s.out.buf, nil
+}
+
+func float32Bytes(x []float32) []byte {
+	if len(x) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(&x[0])), len(x)*4)
+}
+
+type qmvBF16Scratch struct {
+	inDim, outDim int
+	x, out        *pinnedNoCopyBytes
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
+}
+
+func newQMVBF16Scratch(outDim, inDim int) (*qmvBF16Scratch, error) {
+	if outDim <= 0 || inDim <= 0 {
+		return nil, core.NewError("native.newQMVBF16Scratch: invalid dimensions")
+	}
+	x, err := newPinnedNoCopyBytes(inDim * bf16Size)
+	if err != nil {
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(outDim * bf16Size)
+	if err != nil {
+		x.Close()
+		return nil, err
+	}
+	return &qmvBF16Scratch{inDim: inDim, outDim: outDim, x: x, out: out}, nil
+}
+
+func getQMVBF16Scratch(outDim, inDim int) (*qmvBF16Scratch, error) {
+	pool := qmvScratchPoolFor(&qmvBF16ScratchPools, outDim, inDim)
+	if v := pool.Get(); v != nil {
+		s := v.(*qmvBF16Scratch)
+		if s.inDim == inDim && s.outDim == outDim && s.x != nil && s.out != nil {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newQMVBF16Scratch(outDim, inDim)
+}
+
+func putQMVBF16Scratch(s *qmvBF16Scratch) {
+	if s != nil && s.inDim > 0 && s.outDim > 0 && s.x != nil && s.out != nil {
+		qmvScratchPoolFor(&qmvBF16ScratchPools, s.outDim, s.inDim).Put(s)
+	}
+}
+
+func (s *qmvBF16Scratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.x != nil {
+		s.x.Close()
+		s.x = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.closeOutputView()
+	s.inDim, s.outDim = 0, 0
+}
+
+func (s *qmvBF16Scratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *qmvBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
+}
+
+func (s *qmvBF16Scratch) buffers(x []byte) (metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.x == nil || s.out == nil {
+		return nil, nil, core.NewError("native.qmvBF16Scratch.buffers: scratch is nil")
+	}
+	if len(x) != s.inDim*bf16Size || len(s.out.bytes) != s.outDim*bf16Size {
+		return nil, nil, errQMVBF16ScratchDim
+	}
+	xBuf, err := s.x.copyBuffer(x)
+	if err != nil {
+		return nil, nil, err
+	}
+	return xBuf, s.out.buf, nil
+}
+
+func qmvKernelName(outDim, inDim, groupSize, bits int) string {
+	fast := outDim%8 == 0 && inDim%512 == 0
+	key := qmvKernelNameKey{groupSize: groupSize, bits: bits, fast: fast}
+	if v, ok := qmvKernelNames.Load(key); ok {
+		return v.(string)
+	}
+	variant := "_qmv_"
+	if fast {
+		variant = "_qmv_fast_"
+	}
+	name := core.Sprintf("affine%sfloat_gs_%d_b_%d_batch_0", variant, groupSize, bits)
+	if v, loaded := qmvKernelNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
+}
 
 // QMV computes out = x @ Wᵀ for a 4-bit (affine) quantised weight matrix — the
 // 4-bit decode hot path. wq/scales/biases are the raw packed bytes MLX's
@@ -33,48 +267,42 @@ func QMV(x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits 
 		return make([]float32, outDim), nil
 	}
 
-	// fast variant when the matrix tiles cleanly (mlx: N%bn==0 && K%512==0, bn=8).
-	variant := "_qmv_"
-	if outDim%8 == 0 && inDim%512 == 0 {
-		variant = "_qmv_fast_"
-	}
-	name := core.Sprintf("affine%sfloat_gs_%d_b_%d_batch_0", variant, groupSize, bits)
+	name := qmvKernelName(outDim, inDim, groupSize, bits)
 	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]float32, outDim)
+	var encErr error
 	withAutoreleasePool(func() {
-		wBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&wq[0]), uint(len(wq)), metal.MTLResourceStorageModeShared)
-		sBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&scales[0]), uint(len(scales)), metal.MTLResourceStorageModeShared)
-		bBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&biases[0]), uint(len(biases)), metal.MTLResourceStorageModeShared)
-		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*4), metal.MTLResourceStorageModeShared)
+		wBuf := residentBytes(wq)
+		sBuf := residentBytes(scales)
+		bBuf := residentBytes(biases)
+		scratch, err := getQMVFloatScratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(sBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 3)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 4)
-		setEncInt32(enc, int32(inDim), 5)  // K = in_vector_len
-		setEncInt32(enc, int32(outDim), 6) // N = out_vector_len
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitQMV(encSink{enc}, pso, wBuf, 0, sBuf, 0, bBuf, 0, xBuf, outBuf, 0, inDim, outDim)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		const bn, bk = 8, 32
-		nTgp := (outDim + bn - 1) / bn
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1}, // grid (M, ceil(N/bn), B)
-			metal.MTLSize{Width: bk, Height: 2, Depth: 1},         // group (bk, 2, 1)
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), outDim))
+		copy(float32Bytes(out), scratch.out.bytes[:outDim*4])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -91,6 +319,10 @@ func QMV(x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits 
 // type token is bfloat16_t. Byte-for-byte parity with pkg/metal.QuantizedMatmul
 // (transpose=true) on bf16 inputs + the same packed bytes is gated in parity_test.go.
 func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([]byte, error) {
+	return QMVBF16Into(nil, x, wq, scales, biases, outDim, inDim, groupSize, bits)
+}
+
+func QMVBF16Into(out []byte, x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -98,27 +330,56 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 		return nil, core.NewError("native.QMVBF16: len(x) must equal inDim bf16 bytes")
 	}
 	if outDim == 0 || inDim == 0 {
-		return make([]byte, outDim*bf16Size), nil
+		outLen := outDim * bf16Size
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
+	}
+	pso, err := pipelineFor(qmvBF16KernelName(outDim, inDim, groupSize, bits))
+	if err != nil {
+		return nil, err
 	}
 
-	out := make([]byte, outDim*bf16Size)
+	outLen := outDim * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
-		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
-		xBuf := sharedBytes(x)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*bf16Size), metal.MTLResourceStorageModeShared)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encQMVBF16(enc, wBuf, sBuf, bBuf, xBuf, outBuf, 0, 0, 0, 0, outDim, inDim, groupSize, bits); encErr != nil {
-			enc.EndEncoding()
+		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitQMV(encSink{enc}, pso, wBuf, 0, sBuf, 0, bBuf, 0, xBuf, outBuf, 0, inDim, outDim)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
@@ -127,6 +388,10 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 }
 
 func qmvBF16Resident(x []byte, w QuantWeight, outDim, inDim, groupSize, bits int) ([]byte, error) {
+	return qmvBF16ResidentInto(nil, x, w, outDim, inDim, groupSize, bits)
+}
+
+func qmvBF16ResidentInto(out []byte, x []byte, w QuantWeight, outDim, inDim, groupSize, bits int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -134,7 +399,11 @@ func qmvBF16Resident(x []byte, w QuantWeight, outDim, inDim, groupSize, bits int
 		return nil, core.NewError("native.qmvBF16Resident: len(x) must equal inDim bf16 bytes")
 	}
 	if outDim == 0 || inDim == 0 {
-		return make([]byte, outDim*bf16Size), nil
+		outLen := outDim * bf16Size
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
 	}
 	groupSize, bits = quantWeightGeometryForShape(w, outDim, inDim, groupSize, bits)
 	if groupSize <= 0 || bits <= 0 || inDim%groupSize != 0 {
@@ -145,25 +414,50 @@ func qmvBF16Resident(x []byte, w QuantWeight, outDim, inDim, groupSize, bits int
 	if len(w.Packed) != wantPacked || len(w.Scales) != wantSB || len(w.Biases) != wantSB {
 		return nil, core.NewError("native.qmvBF16Resident: quant weight size mismatch")
 	}
+	pso, err := pipelineFor(qmvBF16KernelName(outDim, inDim, groupSize, bits))
+	if err != nil {
+		return nil, err
+	}
 
-	out := make([]byte, outDim*bf16Size)
+	outLen := outDim * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		wBuf, sBuf, bBuf := quantWeightViews(w)
-		xBuf := sharedBytes(x)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*bf16Size), metal.MTLResourceStorageModeShared)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encQMVBF16(enc, wBuf.buf, sBuf.buf, bBuf.buf, xBuf, outBuf, wBuf.off, sBuf.off, bBuf.off, 0, outDim, inDim, groupSize, bits); encErr != nil {
-			enc.EndEncoding()
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitQMV(encSink{enc}, pso, wBuf.buf, wBuf.off, sBuf.buf, sBuf.off, bBuf.buf, bBuf.off, xBuf, outBuf, 0, inDim, outDim)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
@@ -186,6 +480,10 @@ func bf16WeightView(weight []byte, view bufView) bufView {
 }
 
 func rmsNormBF16View(x, weight []byte, weightView bufView, rows, axisSize int, eps float32) ([]byte, error) {
+	return rmsNormBF16ViewInto(nil, x, weight, weightView, rows, axisSize, eps)
+}
+
+func rmsNormBF16ViewInto(out []byte, x, weight []byte, weightView bufView, rows, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -196,26 +494,53 @@ func rmsNormBF16View(x, weight []byte, weightView bufView, rows, axisSize int, e
 		return nil, core.NewError("native.rmsNormBF16View: len(weight) must equal axisSize*2 bytes")
 	}
 	if rows == 0 || axisSize == 0 {
-		return make([]byte, len(x)), nil
+		if cap(out) < len(x) {
+			return make([]byte, len(x)), nil
+		}
+		return out[:len(x)], nil
 	}
 
-	out := make([]byte, len(x))
+	outLen := len(x)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := sharedBytes(x)
 		w := bf16WeightView(weight, weightView)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(out)), metal.MTLResourceStorageModeShared)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encRMSNormRowsBF16(enc, xBuf, w.buf, outBuf, 0, w.off, 0, rows, axisSize, eps); encErr != nil {
-			enc.EndEncoding()
+		scratch, err := getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+		if err != nil {
+			encErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
+
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encRMSNormRowsBF16(enc, xBuf, w.buf, outBuf, 0, w.off, 0, rows, axisSize, eps); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

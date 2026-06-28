@@ -42,3 +42,24 @@ func BenchmarkLMHeadBF16_64x128(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkLMHeadQuant64x128(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, vocab, groupSize, bits = 64, 128, 32, 4
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 7))
+	qw := quantWeightFixture(b, vocab, dModel, groupSize, bits, 53)
+	b.SetBytes(int64(len(hidden) + len(finalNorm) + len(qw.Packed) + len(qw.Scales) + len(qw.Biases)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := LMHeadQuant(hidden, finalNorm, qw.Packed, qw.Scales, qw.Biases, dModel, vocab, groupSize, bits, 1e-6, 0); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := LMHeadQuant(hidden, finalNorm, qw.Packed, qw.Scales, qw.Biases, dModel, vocab, groupSize, bits, 1e-6, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

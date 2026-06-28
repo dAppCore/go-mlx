@@ -152,6 +152,170 @@ func TestMoEBlock(t *testing.T) {
 	t.Logf("MoEBlock (%d experts, top-%d, dFF %d / expertDFF %d): dual-branch ≡ composed reference and differs from dense-only FFN", numExperts, topK, dFF, expertDFF)
 }
 
+func TestMLPTransformBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 17))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 19))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 23))
+	if _, err := mlpTransformBF16(x, wGate, wUp, wDown, dModel, dFF); err != nil {
+		t.Fatalf("mlpTransformBF16 warmup: %v", err)
+	}
+
+	var transformErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, transformErr = mlpTransformBF16(x, wGate, wUp, wDown, dModel, dFF)
+	})
+	if transformErr != nil {
+		t.Fatalf("mlpTransformBF16: %v", transformErr)
+	}
+	if allocs > 582 {
+		t.Fatalf("mlpTransformBF16 allocations = %.0f, want <= 582", allocs)
+	}
+}
+
+func TestMoEBlockBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := *buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 3)
+	if _, err := MoEBlockBF16(h, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("MoEBlockBF16 warmup: %v", err)
+	}
+
+	var blockErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		_, blockErr = MoEBlockBF16(h, w, dModel, dFF, eps)
+	})
+	if blockErr != nil {
+		t.Fatalf("MoEBlockBF16: %v", blockErr)
+	}
+	if allocs > 2950 {
+		t.Fatalf("MoEBlockBF16 allocations = %.0f, want <= 2950", allocs)
+	}
+}
+
+func TestMoEBlockBF16AfterRouterRejectsInvalidInputs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0, 1}
+	weights := toBF16Bytes([]float32{0.75, 0.25})
+	w := *buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 3)
+	if _, err := moeBlockBF16AfterRouter(h[:len(h)-bf16Size], idx, weights, nil, w, dModel, dFF, eps); err == nil {
+		t.Fatal("expected moeBlockBF16AfterRouter to reject short residual")
+	}
+	bad := w
+	bad.ExpGateW = bad.ExpGateW[:len(bad.ExpGateW)-bf16Size]
+	if _, err := moeBlockBF16AfterRouter(h, idx, weights, nil, bad, dModel, dFF, eps); err == nil {
+		t.Fatal("expected moeBlockBF16AfterRouter to reject short expert gate weight")
+	}
+	if _, err := moeBlockBF16AfterRouter(nil, nil, nil, nil, MoELayerWeights{}, 0, 0, eps); err != nil {
+		t.Fatalf("moeBlockBF16AfterRouter zero dimensions: %v", err)
+	}
+}
+
+func TestMoEBlockBF16AfterRouterUsesProvidedHiddenBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	const eps = float32(1e-5)
+	hostH := toBF16Bytes(syntheticFloat32(dModel, 7))
+	bufferH := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{0, 1}
+	weights := toBF16Bytes([]float32{0.75, 0.25})
+	w := *buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 3)
+
+	pinned, err := newPinnedNoCopyBytes(len(bufferH))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+	hBuf, err := pinned.copyBuffer(bufferH)
+	if err != nil {
+		t.Fatalf("copyBuffer: %v", err)
+	}
+
+	want, err := moeBlockBF16AfterRouter(bufferH, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockBF16AfterRouter: %v", err)
+	}
+	got, err := moeBlockBF16AfterRouterWithBuffer(hostH, hBuf, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockBF16AfterRouterWithBuffer: %v", err)
+	}
+	eqBytes(t, "MoEBlockBF16 provided hidden buffer", got, want)
+}
+
+func TestMoEBlockBF16ScratchClose(t *testing.T) {
+	requireNativeRuntime(t)
+
+	s, err := newMoEBlockBF16Scratch(64, 128, 96, 2)
+	if err != nil {
+		t.Fatalf("newMoEBlockBF16Scratch: %v", err)
+	}
+	if s.h == nil || s.h.buf == nil || s.weights == nil || s.weights.buf == nil || s.out == nil || s.out.buf == nil {
+		t.Fatal("newMoEBlockBF16Scratch did not allocate pinned buffers")
+	}
+	s.Close()
+	if s.h != nil || s.weights != nil || s.out != nil || s.dModel != 0 || s.dFF != 0 || s.expertDFF != 0 || s.topK != 0 {
+		t.Fatal("Close did not clear pinned buffers and dimensions")
+	}
+	s.Close()
+}
+
+func TestMoEBlockPostCombineRejectsInvalidInputs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel = 64
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	h1 := toBF16Bytes(syntheticFloat32(dModel, 31))
+	h2 := toBF16Bytes(syntheticFloat32(dModel, 37))
+	post1 := toBF16Bytes(syntheticFloat32(dModel, 41))
+	post2 := toBF16Bytes(syntheticFloat32(dModel, 43))
+	post := toBF16Bytes(syntheticFloat32(dModel, 47))
+	if _, err := moeBlockPostCombineBF16(h[:len(h)-bf16Size], h1, h2, post1, bufView{}, post2, bufView{}, post, bufView{}, dModel, 1e-5); err == nil {
+		t.Fatal("expected moeBlockPostCombineBF16 to reject short residual")
+	}
+	if _, err := moeBlockPostCombineBF16(h, h1, h2, post1[:len(post1)-bf16Size], bufView{}, post2, bufView{}, post, bufView{}, dModel, 1e-5); err == nil {
+		t.Fatal("expected moeBlockPostCombineBF16 to reject short post norm")
+	}
+	zero, err := moeBlockPostCombineBF16(nil, nil, nil, nil, bufView{}, nil, bufView{}, nil, bufView{}, 0, 1e-5)
+	if err != nil {
+		t.Fatalf("moeBlockPostCombineBF16 zero dimensions: %v", err)
+	}
+	if len(zero) != 0 {
+		t.Fatalf("moeBlockPostCombineBF16 zero dimensions len = %d, want 0", len(zero))
+	}
+}
+
+func TestMoEBlockPostCombineScratchClose(t *testing.T) {
+	requireNativeRuntime(t)
+
+	s, err := newMoEBlockPostCombineScratch(64)
+	if err != nil {
+		t.Fatalf("newMoEBlockPostCombineScratch: %v", err)
+	}
+	if s.h == nil || s.h1 == nil || s.h2 == nil || s.out == nil {
+		t.Fatal("newMoEBlockPostCombineScratch did not allocate pinned buffers")
+	}
+	s.Close()
+	if s.h != nil || s.h1 != nil || s.h2 != nil || s.out != nil || s.dModel != 0 {
+		t.Fatal("Close did not clear pinned buffers and dimensions")
+	}
+	s.Close()
+}
+
 func TestMoEBlockBF16CachesLocalDenseWeightsWithExperts(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

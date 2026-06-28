@@ -103,6 +103,57 @@ func TestStepGreedyMatchesSerial(t *testing.T) {
 	t.Logf("chained stepGreedy matches serial: %v", serial)
 }
 
+func TestStepGreedyICBAllocationBudget(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	const maxLen = 32
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 256, RMSNormEps: 1e-6,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	sess, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession: %v", err)
+	}
+	if sess.state.icb == nil {
+		t.Skip("ICB replay unavailable for greedy chain")
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	if _, _, ok, err := sess.stepGreedyInPool(9, nil, nil); err != nil {
+		t.Fatalf("stepGreedyInPool warmup: %v", err)
+	} else if !ok {
+		t.Skip("head has no GPU argmax path on this fixture")
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, _, ok, err := sess.stepGreedyInPool(9, nil, nil); err != nil {
+			t.Fatalf("stepGreedyInPool: %v", err)
+		} else if !ok {
+			t.Fatal("stepGreedyInPool declined after warmup")
+		}
+	})
+	if allocs > 305 {
+		t.Fatalf("ICB greedy allocations = %.0f, want <= 305", allocs)
+	}
+}
+
 func benchQuantDecode(b *testing.B, chained bool) {
 	requireNativeRuntime(b)
 	const gs, bits = 64, 4

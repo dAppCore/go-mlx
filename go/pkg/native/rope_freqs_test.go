@@ -42,6 +42,28 @@ func plainRopeInvFreqs(base float64, rotaryDim int) []float32 {
 	return f
 }
 
+func TestRoPEFreqsBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, headDim, rotaryDim = 1, 8, 64, 64
+	x := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 5))
+	invFreqs := plainRopeInvFreqs(10000, rotaryDim)
+	if _, err := RoPEFreqsBF16(x, batch, nHeads, headDim, rotaryDim, invFreqs, 1, 7, false); err != nil {
+		t.Fatalf("RoPEFreqsBF16 warmup: %v", err)
+	}
+
+	var ropeErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, ropeErr = RoPEFreqsBF16(x, batch, nHeads, headDim, rotaryDim, invFreqs, 1, 7, false)
+	})
+	if ropeErr != nil {
+		t.Fatalf("RoPEFreqsBF16: %v", ropeErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("RoPEFreqsBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestRoPEFreqsBF16_EqualsBase_Good proves the freqs path is correct: handed the
 // plain-rope spectrum, rope_single_freqs reproduces rope_single — full rotary and
 // partial — so the freqs ABI + the inv_freq=1/period reciprocal are right.

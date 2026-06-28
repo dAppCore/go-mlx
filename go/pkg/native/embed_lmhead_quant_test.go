@@ -122,3 +122,24 @@ func TestEmbedLMHeadQuant(t *testing.T) {
 	}
 	t.Logf("quant bookends: host dequant ≡ metal.Dequantize byte-for-byte; scaled embed ≡ bf16-on-dequant; LMHeadQuant argmax=%d ≡ ref, max logit diff %.4f", qa, maxDiff)
 }
+
+func TestLMHeadQuantAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab, groupSize, bits = 64, 128, 32, 4
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNormW := toBF16Bytes(syntheticFloat32(dModel, 7))
+	qw := quantWeightFixture(t, vocab, dModel, groupSize, bits, 53)
+	if _, err := LMHeadQuant(hidden, finalNormW, qw.Packed, qw.Scales, qw.Biases, dModel, vocab, groupSize, bits, 1e-6, 0); err != nil {
+		t.Fatalf("LMHeadQuant warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := LMHeadQuant(hidden, finalNormW, qw.Packed, qw.Scales, qw.Biases, dModel, vocab, groupSize, bits, 1e-6, 0); err != nil {
+			t.Fatalf("LMHeadQuant: %v", err)
+		}
+	})
+	if allocs > 261 {
+		t.Fatalf("LMHeadQuant allocations = %.0f, want <= 261", allocs)
+	}
+}

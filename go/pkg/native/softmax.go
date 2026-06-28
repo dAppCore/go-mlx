@@ -5,8 +5,6 @@
 package native
 
 import (
-	"unsafe"
-
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
@@ -24,11 +22,22 @@ const (
 // over the context axis goes through this. ABI (mlx softmax.cpp): in→0, out→1, axis_size→2; one
 // threadgroup per row. Axes up to 4096 use the block kernel; longer axes use the looped kernel.
 func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]float32, len(in))
+	if err := softmaxF32Into(out, in, axisSize); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func softmaxF32Into(out, in []float32, axisSize int) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if axisSize == 0 || len(in)%axisSize != 0 {
-		return nil, core.NewError("native.SoftmaxF32: len(in) must be a multiple of axisSize")
+		return core.NewError("native.SoftmaxF32: len(in) must be a multiple of axisSize")
+	}
+	if len(out) != len(in) {
+		return core.NewError("native.SoftmaxF32: len(out) must equal len(in)")
 	}
 	name := "block_softmax_float32"
 	if axisSize > softmaxLoopedLimit {
@@ -37,34 +46,39 @@ func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
 	nRows := len(in) / axisSize
 	pso, err := pipelineFor(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	tg := softmaxThreadgroup(axisSize, pso)
 
-	out := make([]float32, len(in))
 	if nRows == 0 {
-		return out, nil
+		return nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		inBuf := shared(in)
-		outBuf := scratch(len(in))
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(inBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		setEncInt32(enc, int32(axisSize), 2)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nRows) * tg, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(in)))
+		scratch, err := getQMVFloatScratch(len(in), len(in))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(scratch)
+		inBuf, outBuf, err := scratch.buffers(in)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitSoftmax(encSink{enc}, pso, inBuf, outBuf, axisSize, nRows, tg)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(float32Bytes(out), scratch.out.bytes[:len(in)*4])
 	})
-	return out, nil
+	if encErr != nil {
+		return encErr
+	}
+	return nil
 }
 
 func softmaxThreadgroup(axisSize int, pso metal.MTLComputePipelineState) uint {

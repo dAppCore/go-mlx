@@ -6,7 +6,6 @@ package native
 
 import (
 	"sync"
-	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -18,13 +17,44 @@ var (
 
 	rmsQMVICBPSOMu    sync.Mutex
 	rmsQMVICBPSOCache = map[string]metal.MTLComputePipelineState{}
+
+	rmsQMVKernelNames    sync.Map
+	rmsQMVICBKernelNames sync.Map
 )
+
+type rmsQMVKernelNameKey struct {
+	groupSize, bits int
+}
+
+func rmsQMVKernelName(groupSize, bits int) string {
+	key := rmsQMVKernelNameKey{groupSize: groupSize, bits: bits}
+	if v, ok := rmsQMVKernelNames.Load(key); ok {
+		return v.(string)
+	}
+	name := core.Sprintf("lthn_rms_affine_qmv_fast_bfloat16_t_gs_%d_b_%d", groupSize, bits)
+	if v, loaded := rmsQMVKernelNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
+}
+
+func rmsQMVICBKernelKey(groupSize, bits int) string {
+	key := rmsQMVKernelNameKey{groupSize: groupSize, bits: bits}
+	if v, ok := rmsQMVICBKernelNames.Load(key); ok {
+		return v.(string)
+	}
+	name := rmsQMVKernelName(groupSize, bits) + "|icb"
+	if v, loaded := rmsQMVICBKernelNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
+}
 
 // rmsQMVPipelineICB is rmsQMVFastPipeline with indirect-command-buffer support — the variant the
 // decode ICB records (and replays per token). Same fused kernel; the descriptor just opts into ICB.
 func rmsQMVPipelineICB(groupSize, bits int) (metal.MTLComputePipelineState, error) {
-	name := core.Sprintf("lthn_rms_affine_qmv_fast_bfloat16_t_gs_%d_b_%d", groupSize, bits)
-	key := name + "|icb"
+	name := rmsQMVKernelName(groupSize, bits)
+	key := rmsQMVICBKernelKey(groupSize, bits)
 	rmsQMVICBPSOMu.Lock()
 	defer rmsQMVICBPSOMu.Unlock()
 	if pso, ok := rmsQMVICBPSOCache[key]; ok {
@@ -51,7 +81,7 @@ func rmsQMVPipelineICB(groupSize, bits int) (metal.MTLComputePipelineState, erro
 // rmsQMVFastPipeline builds (and caches) the fused rms-norm + affine_qmv_fast pipeline for a group
 // size / bits from the custom kernels library. Shares the customLibraryLoaded gate with gelu.
 func rmsQMVFastPipeline(groupSize, bits int) (metal.MTLComputePipelineState, error) {
-	key := core.Sprintf("lthn_rms_affine_qmv_fast_bfloat16_t_gs_%d_b_%d", groupSize, bits)
+	key := rmsQMVKernelName(groupSize, bits)
 	rmsQMVPSOMu.Lock()
 	defer rmsQMVPSOMu.Unlock()
 	if pso, ok := rmsQMVPSOCache[key]; ok {
@@ -94,33 +124,32 @@ func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSiz
 	}
 
 	out := make([]byte, outDim*bf16Size)
+	var encErr error
 	withAutoreleasePool(func() {
-		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
-		xBuf, nwBuf := sharedBytes(x), sharedBytes(normW)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*bf16Size), metal.MTLResourceStorageModeShared)
+		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
+		nwBuf := residentBytes(normW)
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(sBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 3)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 4)
-		setEncInt32(enc, int32(inDim), 5)  // K
-		setEncInt32(enc, int32(outDim), 6) // N
-		enc.SetBufferWithOffsetAtIndex(nwBuf, 0, 7)
-		setEncFloat32(enc, eps, 8)
-		const bn, bk = 8, 32
-		nTgp := (outDim + bn - 1) / bn
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
-			metal.MTLSize{Width: bk, Height: 2, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRMSQMV(encSink{enc}, pso, wBuf, 0, sBuf, 0, bBuf, 0, xBuf, outBuf, 0, nwBuf, 0, inDim, outDim, eps)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:outDim*bf16Size])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

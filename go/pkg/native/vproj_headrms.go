@@ -6,7 +6,6 @@ package native
 
 import (
 	"sync"
-	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -15,14 +14,44 @@ import (
 var (
 	vprojHeadRMSPSOMu    sync.Mutex
 	vprojHeadRMSPSOCache = map[string]metal.MTLComputePipelineState{}
+	vprojHeadRMSNames    sync.Map
+	vprojHeadRMSICBNames sync.Map
 )
 
-func vprojHeadRMSPipeline(groupSize, bits int, icb bool) (metal.MTLComputePipelineState, error) {
-	name := core.Sprintf("lthn_vproj_headrms_bfloat16_t_gs_%d_b_%d", groupSize, bits)
-	key := name
-	if icb {
-		key += "|icb"
+type vprojHeadRMSKernelNameKey struct {
+	groupSize, bits int
+}
+
+func vprojHeadRMSKernelName(groupSize, bits int) string {
+	key := vprojHeadRMSKernelNameKey{groupSize: groupSize, bits: bits}
+	if v, ok := vprojHeadRMSNames.Load(key); ok {
+		return v.(string)
 	}
+	name := core.Sprintf("lthn_vproj_headrms_bfloat16_t_gs_%d_b_%d", groupSize, bits)
+	if v, loaded := vprojHeadRMSNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
+}
+
+func vprojHeadRMSPipelineKey(groupSize, bits int, icb bool) string {
+	if !icb {
+		return vprojHeadRMSKernelName(groupSize, bits)
+	}
+	key := vprojHeadRMSKernelNameKey{groupSize: groupSize, bits: bits}
+	if v, ok := vprojHeadRMSICBNames.Load(key); ok {
+		return v.(string)
+	}
+	name := vprojHeadRMSKernelName(groupSize, bits) + "|icb"
+	if v, loaded := vprojHeadRMSICBNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
+}
+
+func vprojHeadRMSPipeline(groupSize, bits int, icb bool) (metal.MTLComputePipelineState, error) {
+	name := vprojHeadRMSKernelName(groupSize, bits)
+	key := vprojHeadRMSPipelineKey(groupSize, bits, icb)
 	vprojHeadRMSPSOMu.Lock()
 	defer vprojHeadRMSPSOMu.Unlock()
 	if pso, ok := vprojHeadRMSPSOCache[key]; ok {
@@ -76,30 +105,32 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 
 	outDim := nKVHeads * headDim
 	out := make([]byte, outDim*bf16Size)
+	var encErr error
 	withAutoreleasePool(func() {
-		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
-		xBuf, nwBuf := sharedBytes(x), sharedBytes(inNormW)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*bf16Size), metal.MTLResourceStorageModeShared)
+		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
+		nwBuf := residentBytes(inNormW)
+		scratch, err := getQMVBF16Scratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(sBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 3)
-		enc.SetBufferWithOffsetAtIndex(nwBuf, 0, 4)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 5)
-		setEncInt32(enc, int32(inDim), 6)
-		setEncFloat32(enc, eps, 8) // buffer 7 (head_dim) is implicit = threads-per-threadgroup
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nKVHeads), Height: 1, Depth: 1},
-			metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitVProjHeadRMS(encSink{enc}, pso, wBuf, sBuf, bBuf, xBuf, nwBuf, outBuf, inDim, nKVHeads, headDim, eps)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:outDim*bf16Size])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

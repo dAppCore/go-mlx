@@ -7,7 +7,6 @@ package native
 import (
 	"math"
 	"sync"
-	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -70,6 +69,14 @@ func bf16ConstBytes(n int, v float32) []byte {
 	return out
 }
 
+func bf16ConstBuffer(n int, v float32) metal.MTLBuffer {
+	b := bf16ConstBytes(n, v)
+	if len(b) == 0 {
+		return nil
+	}
+	return residentBytes(b)
+}
+
 // runBinaryBF16 drives a contiguous bf16 binary kernel (vv_<Op>bfloat16) over two
 // equal-length bf16 byte buffers. name e.g. "vv_Multiplybfloat16".
 func runBinaryBF16(name string, a, b []byte) ([]byte, error) {
@@ -78,6 +85,66 @@ func runBinaryBF16(name string, a, b []byte) ([]byte, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func mulBF16Const(a []byte, n int, v float32) ([]byte, error) {
+	out := make([]byte, len(a))
+	if err := mulBF16ConstInto(a, n, v, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func mulBF16ConstInto(a []byte, n int, v float32, out []byte) error {
+	return binaryBF16ConstInto("mulBF16ConstInto", encMulBF16, a, n, v, out)
+}
+
+func addBF16ConstInto(a []byte, n int, v float32, out []byte) error {
+	return binaryBF16ConstInto("addBF16ConstInto", encAddBF16, a, n, v, out)
+}
+
+func binaryBF16ConstInto(name string, encFn func(metal.MTLComputeCommandEncoder, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, int) error, a []byte, n int, v float32, out []byte) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	if n < 0 {
+		return core.NewError("native." + name + ": n must be >= 0")
+	}
+	if len(a) != n*bf16Size {
+		return core.NewError("native." + name + ": a must be n bf16 values")
+	}
+	if len(out) != len(a) {
+		return core.NewError("native." + name + ": out must be the same length as a")
+	}
+	if n == 0 {
+		return nil
+	}
+	var encErr error
+	withAutoreleasePool(func() {
+		scratch, err := getQMVBF16Scratch(n, n)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		aBuf, outBuf, err := scratch.buffers(a)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cBuf := bf16ConstBuffer(n, v)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encFn(enc, aBuf, cBuf, outBuf, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
+	})
+	return encErr
 }
 
 // runBinaryBF16Into is runBinaryBF16 writing into the caller-supplied out
@@ -105,31 +172,28 @@ func runBinaryBF16Into(name string, a, b, out []byte) error {
 	if n == 0 {
 		return nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		aBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&a[0]), uint(len(a)), metal.MTLResourceStorageModeShared)
-		bBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(len(b)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(a)), metal.MTLResourceStorageModeShared)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(aBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 2)
-		setEncInt32(enc, int32(n), 3)
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		ioScratch, err := getBinaryByteScratch(len(a))
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(a)))
+		defer putBinaryByteScratch(ioScratch)
+		aBuf, bBuf, outBuf, err := ioScratch.buffers(a, b)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitBinary(encSink{enc}, pso, aBuf, 0, bBuf, 0, outBuf, 0, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, ioScratch.out.bytes[:len(a)])
 	})
-	return nil
+	return encErr
 }
 
 // MulBF16 is the bf16 sibling of Mul: element-wise a[i]*b[i] over bf16 bytes
@@ -167,30 +231,65 @@ func tanhBF16Into(x, out []byte) error {
 	if n == 0 {
 		return nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		inBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(x)), metal.MTLResourceStorageModeShared)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(inBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
-		cnt := uint32(n)
-		enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&cnt)), 4), 4, 2)
-		group := uint(256)
-		if uint(n) < group {
-			group = uint(n)
+		scratch, err := getQMVBF16Scratch(n, n)
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-			metal.MTLSize{Width: group, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(x)))
+		defer putQMVBF16Scratch(scratch)
+		inBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitUnary(encSink{enc}, pso, inBuf, outBuf, n)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(x)])
 	})
-	return nil
+	return encErr
+}
+
+func encGeluBF16Composed(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, n int) error {
+	c044 := bf16ConstBuffer(n, 0.044715)
+	c079 := bf16ConstBuffer(n, 0.7978845608028654)
+	c1 := bf16ConstBuffer(n, 1.0)
+	c05 := bf16ConstBuffer(n, 0.5)
+	a, b := scratchBF16(n), scratchBF16(n)
+
+	// x2=x*x->a; x3=a*x->b; x3s=b*c044->a; inner=x+a->b;
+	// scaled=b*c079->a; t=tanh(a)->b; onePlus=b+c1->a;
+	// halfX=x*c05->b; gelu=b*a->out.
+	if err := encMulBF16(enc, x, x, a, n); err != nil {
+		return err
+	}
+	if err := encMulBF16(enc, a, x, b, n); err != nil {
+		return err
+	}
+	if err := encMulBF16(enc, b, c044, a, n); err != nil {
+		return err
+	}
+	if err := encAddBF16(enc, x, a, b, n); err != nil {
+		return err
+	}
+	if err := encMulBF16(enc, b, c079, a, n); err != nil {
+		return err
+	}
+	if err := encTanhBF16(enc, a, b, n); err != nil {
+		return err
+	}
+	if err := encAddBF16(enc, b, c1, a, n); err != nil {
+		return err
+	}
+	if err := encMulBF16(enc, x, c05, b, n); err != nil {
+		return err
+	}
+	return encMulBF16(enc, b, a, out, n)
 }
 
 // GeluBF16 is the bf16 sibling of Gelu: the tanh-approximation GELU composed from
@@ -211,50 +310,70 @@ func GeluBF16(x []byte) ([]byte, error) {
 	if n == 0 {
 		return out, nil
 	}
-	// Two reusable bf16 scratch buffers ping-pong the chain exactly as the
-	// float32 Gelu does: each step reads the previous output (in the other
-	// buffer) plus x or a cached const, so two buffers carry the whole graph and
-	// onePlus/halfX land in the two different buffers for the final multiply.
-	// Reusing scratch instead of a fresh buffer per primitive removes the
-	// dominant B/op; kernels and inputs are unchanged, so output is identical.
-	a, b := make([]byte, len(x)), make([]byte, len(x))
-	const (
-		mul = "vv_Multiplybfloat16"
-		add = "vv_Addbfloat16"
-	)
-	c044 := bf16ConstBytes(n, 0.044715)
-	c079 := bf16ConstBytes(n, 0.7978845608028654)
-	c1 := bf16ConstBytes(n, 1.0)
-	c05 := bf16ConstBytes(n, 0.5)
-	// x2=x·x→a; x3=a·x→b; x3s=b·c044→a; inner=x+a→b; scaled=b·c079→a;
-	// t=tanh(a)→b; onePlus=b+c1→a; halfX=x·c05→b; gelu=b·a→out
-	for _, step := range []struct {
-		name    string
-		x, y, z []byte
-	}{
-		{mul, x, x, a},
-		{mul, a, x, b},
-		{mul, b, c044, a},
-		{add, x, a, b},
-		{mul, b, c079, a},
-	} {
-		if err := runBinaryBF16Into(step.name, step.x, step.y, step.z); err != nil {
-			return nil, err
+	var encErr error
+	withAutoreleasePool(func() {
+		scratch, err := getQMVBF16Scratch(n, n)
+		if err != nil {
+			encErr = err
+			return
 		}
-	}
-	if err := tanhBF16Into(a, b); err != nil { // t = tanh(scaled)
-		return nil, err
-	}
-	if err := runBinaryBF16Into(add, b, c1, a); err != nil { // onePlus = t + 1
-		return nil, err
-	}
-	if err := runBinaryBF16Into(mul, x, c05, b); err != nil { // halfX = 0.5·x
-		return nil, err
-	}
-	if err := runBinaryBF16Into(mul, b, a, out); err != nil { // gelu = halfX·onePlus
-		return nil, err
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encGeluBF16Composed(enc, xBuf, outBuf, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
+	})
+	if encErr != nil {
+		return nil, encErr
 	}
 	return out, nil
+}
+
+func geluGateMulComposed(gate, up []byte, n int) ([]byte, error) {
+	out := make([]byte, n*bf16Size)
+	var encErr error
+	withAutoreleasePool(func() {
+		ioScratch, err := getBinaryByteScratch(n * bf16Size)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putBinaryByteScratch(ioScratch)
+		gBuf, uBuf, outBuf, err := ioScratch.buffers(gate, up)
+		if err != nil {
+			encErr = err
+			return
+		}
+		gelu := scratchBF16(n)
+
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encGeluBF16Composed(enc, gBuf, gelu, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encMulBF16(enc, gelu, uBuf, outBuf, n); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, ioScratch.out.bytes[:len(out)])
+	})
+	return out, encErr
 }
 
 // GeluGateMulBF16 computes gelu(gate)·up in bf16 — gemma's MLP gate in the decode
@@ -267,12 +386,14 @@ func GeluGateMulBF16(gate, up []byte) ([]byte, error) {
 	if len(up) != len(gate) {
 		return nil, core.NewError("native.GeluGateMulBF16: gate/up length mismatch")
 	}
+	if len(gate)%bf16Size != 0 {
+		return nil, core.NewError("native.GeluGateMulBF16: byte length must be a multiple of 2")
+	}
+	if len(gate) == 0 {
+		return []byte{}, nil
+	}
 	if gpuHasGeluKernel() {
 		return geluGateMulFused(gate, up, len(gate)/bf16Size)
 	}
-	g, err := GeluBF16(gate)
-	if err != nil {
-		return nil, err
-	}
-	return MulBF16(g, up)
+	return geluGateMulComposed(gate, up, len(gate)/bf16Size)
 }

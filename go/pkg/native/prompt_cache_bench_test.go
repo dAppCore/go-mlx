@@ -4,7 +4,11 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
+)
 
 func BenchmarkWarmPromptCacheRetainedIDs(b *testing.B) {
 	requireNativeRuntime(b)
@@ -58,6 +62,45 @@ func BenchmarkGenerateCachedAfterWarmPromptCacheExactReplay(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := s.GenerateCached(prompt, 2, -1); err != nil {
 			b.Fatalf("GenerateCached exact after warm: %v", err)
+		}
+	}
+}
+
+func BenchmarkGenerateSampledPromptReplayNoCache(b *testing.B) {
+	requireNativeRuntime(b)
+	s := newSessionStateFixture(b)
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{Temperature: 0.8, TopK: 5, TopP: 0.75}
+	sampler := model.NewSampler(1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.pos = 0
+		if _, err := s.GenerateSampledEach(prompt, 2, nil, sampler, params, nil, nil); err != nil {
+			b.Fatalf("GenerateSampledEach prompt replay: %v", err)
+		}
+	}
+}
+
+func BenchmarkGenerateCachedSampledExactPromptReplay(b *testing.B) {
+	requireNativeRuntime(b)
+	s := newSessionStateFixture(b)
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{Temperature: 0.8, TopK: 5, TopP: 0.75}
+	if err := s.WarmPromptCache(prompt); err != nil {
+		b.Fatalf("WarmPromptCache: %v", err)
+	}
+	if hit := s.CachedPrefixLen(prompt); hit != len(prompt) {
+		b.Fatalf("exact prompt-cache hit after warm = %d, want %d", hit, len(prompt))
+	}
+	sampler := model.NewSampler(1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.GenerateCachedSampledEach(prompt, 2, nil, sampler, params, nil, nil); err != nil {
+			b.Fatalf("GenerateCachedSampledEach exact after warm: %v", err)
 		}
 	}
 }

@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"testing"
 	"unsafe"
 
@@ -59,5 +60,70 @@ func TestResetResidentBufsForTestClearsCache(t *testing.T) {
 	defer residentBufMu.Unlock()
 	if len(residentBufs) != 0 {
 		t.Fatalf("residentBufs len after reset = %d, want 0", len(residentBufs))
+	}
+}
+
+func TestMatVecBF16BufAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const outDim, inDim = 128, 256
+	mat := toBF16Bytes(syntheticFloat32(outDim*inDim, 3))
+	vec := toBF16Bytes(syntheticFloat32(inDim, 5))
+	matView := bufView{buf: residentBytes(mat), off: 0}
+	if _, err := MatVecBF16Buf(matView, vec, outDim, inDim); err != nil {
+		t.Fatalf("MatVecBF16Buf warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MatVecBF16Buf(matView, vec, outDim, inDim); err != nil {
+			t.Fatalf("MatVecBF16Buf: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MatVecBF16Buf allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMatVecBF16BufIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const outDim, inDim = 128, 256
+	mat := toBF16Bytes(syntheticFloat32(outDim*inDim, 3))
+	vec := toBF16Bytes(syntheticFloat32(inDim, 5))
+	matView := bufView{buf: residentBytes(mat), off: 0}
+	want, err := MatVecBF16Buf(matView, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVecBF16Buf reference: %v", err)
+	}
+	out := make([]byte, outDim*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x71}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := MatVecBF16BufInto(out, matView, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVecBF16BufInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatVecBF16BufInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "MatVecBF16BufInto", got, want)
+
+	scratch, err = getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MatVecBF16BufInto wrote through pooled scratch output instead of caller output")
 	}
 }

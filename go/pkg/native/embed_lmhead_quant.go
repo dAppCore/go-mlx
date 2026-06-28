@@ -6,7 +6,6 @@ package native
 
 import (
 	"math"
-	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -36,7 +35,9 @@ func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dM
 		pRow := packed[int(tok)*rowPacked : (int(tok)+1)*rowPacked]
 		sRow := scales[int(tok)*rowSB : (int(tok)+1)*rowSB]
 		bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
-		out[i] = embedTokenQuantRow(pRow, sRow, bRow, dModel, groupSize, bits, groups, scale)
+		emb := make([]byte, dModel*bf16Size)
+		embedTokenQuantRowInto(emb, pRow, sRow, bRow, dModel, groupSize, bits, groups, scale)
+		out[i] = emb
 	}
 	return out, nil
 }
@@ -61,9 +62,17 @@ func quantEmbedShape(packed, scales, biases []byte, vocab, dModel, groupSize, bi
 }
 
 func embedTokenQuant(packed, scales, biases []byte, tok int32, vocab, dModel, groupSize, bits int, scale float32) ([]byte, error) {
+	emb := make([]byte, dModel*bf16Size)
+	return embedTokenQuantInto(emb, packed, scales, biases, tok, vocab, dModel, groupSize, bits, scale)
+}
+
+func embedTokenQuantInto(dst, packed, scales, biases []byte, tok int32, vocab, dModel, groupSize, bits int, scale float32) ([]byte, error) {
 	groups, rowPacked, rowSB, err := quantEmbedShape(packed, scales, biases, vocab, dModel, groupSize, bits)
 	if err != nil {
 		return nil, err
+	}
+	if len(dst) != dModel*bf16Size {
+		return nil, core.NewError("native.EmbedTokensQuant: dst must be dModel bf16 bytes")
 	}
 	if tok < 0 || int(tok) >= vocab {
 		return nil, core.NewError("native.EmbedTokensQuant: token id out of range")
@@ -71,11 +80,17 @@ func embedTokenQuant(packed, scales, biases []byte, tok int32, vocab, dModel, gr
 	pRow := packed[int(tok)*rowPacked : (int(tok)+1)*rowPacked]
 	sRow := scales[int(tok)*rowSB : (int(tok)+1)*rowSB]
 	bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
-	return embedTokenQuantRow(pRow, sRow, bRow, dModel, groupSize, bits, groups, scale), nil
+	embedTokenQuantRowInto(dst, pRow, sRow, bRow, dModel, groupSize, bits, groups, scale)
+	return dst, nil
 }
 
 func embedTokenQuantRow(pRow, sRow, bRow []byte, dModel, groupSize, bits, groups int, scale float32) []byte {
 	emb := make([]byte, dModel*bf16Size)
+	embedTokenQuantRowInto(emb, pRow, sRow, bRow, dModel, groupSize, bits, groups, scale)
+	return emb
+}
+
+func embedTokenQuantRowInto(emb, pRow, sRow, bRow []byte, dModel, groupSize, bits, groups int, scale float32) {
 	if bits == 4 {
 		// 4-bit fast path: nibbles are byte-aligned (no bit-spanning), and the affine params are
 		// per-group — hoist their bf16ToF32 out of the inner loop (they change per group, not per
@@ -97,7 +112,7 @@ func embedTokenQuantRow(pRow, sRow, bRow []byte, dModel, groupSize, bits, groups
 				emb[c*bf16Size+1] = byte(h >> 8)
 			}
 		}
-		return emb
+		return
 	}
 	for c := 0; c < dModel; c++ {
 		// affine codes are bit-packed LSB-first contiguous, spanning byte boundaries for 5/6-bit.
@@ -109,7 +124,6 @@ func embedTokenQuantRow(pRow, sRow, bRow []byte, dModel, groupSize, bits, groups
 		emb[c*bf16Size] = byte(h)
 		emb[c*bf16Size+1] = byte(h >> 8)
 	}
-	return emb
 }
 
 // extractAffineCode reads the bits-wide affine code at bit offset bitOff from a packed row,
@@ -163,11 +177,20 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 	}
 	var encErr error
 	withAutoreleasePool(func() {
-		hiddenBuf := sharedBytes(hidden)
+		ioScratch, err := getQMVBF16Scratch(vocab, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		hiddenBuf, logitsBuf, err := ioScratch.buffers(hidden)
+		if err != nil {
+			encErr = err
+			return
+		}
 		finalNormBuf := residentBytes(finalNormW)
 		packedBuf, scalesBuf, biasesBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
 		normed := scratchBF16(dModel)
-		logitsBuf := scratchBF16(vocab)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -182,7 +205,7 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(logits, unsafe.Slice((*byte)(logitsBuf.Contents()), len(logits)))
+		copy(logits, ioScratch.out.bytes[:len(logits)])
 	})
 	if encErr != nil {
 		return nil, encErr

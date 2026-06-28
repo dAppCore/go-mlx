@@ -1,27 +1,37 @@
 # Goal: Native Engine Replacement
+Updated 2026-06-28. Remove a remaining-task line when it is done; keep compact trackers compact.
+Contract: make `go/pkg/native` replace `go/pkg/metal` by copying proven engine behaviour, removing the CGO/MLX dependency, and keeping native CGO-free. Do not add gates or new settings.
 
-Updated 2026-06-25.
+Current direction: first-draft feature routes before benchmark polish.
 
-Contract: make `go/pkg/native` replace `go/pkg/metal` by copying proven engine behaviour; feature parity first; no gates/settings.
+- Use `runtime.Pinner` for Go-owned buffers handed to Metal when tests prove lifetime safety and resource savings.
+- Use C++23 `std::mdspan` only for `pkg/metal` comparison, C++ reference tests, or prototypes; do not make it a `pkg/native` dependency.
+- Prefer fused/mega-kernel and no-copy streaming work on Apple unified memory: resident weights, stable host views, fewer host round-trips, and command-buffer chains.
 
-Env: use repo `AGENTS.md` native test env.
+Current proof:
 
-Target/proof: `go/pkg/native` >=95%; latest 91.5%; coverage 40.687s.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, and GPU PLE scratch tests pass.
+- Native coverage command and `go tool cover -func` both pass at `81.4%`.
+- Root/model smoke tests pass: `go test ./go` `1.170s`; `go test ./go/pkg/model` `0.328s`.
+- Coverage target remains `go/pkg/native >=95%`; not met.
 
-Done: resident heads/scratch; BF16/qmv greedy; MTP direct greedy; softcap; whole-tensor/fused MoE; MoE quant per-weight geometry; mmap MoE quant triple+norm/scale views; prompt cache.
+Latest completed slice:
 
-Done 2026-06-25: dispatchSink op-unification — the live re-encode path and the ICB record path now share ONE emit per op (RMSNorm, binary, fused-gelu, RoPE, QK-norm-rope, SDPA, 4-bit qmv, bf16 gemv) across arch + non-arch, byte-identical, zero-alloc (b2dc1a9e..90996e26, 1/N–10/N); ICB fast path opened to non-uniform kvHeads so 12B/31B MQA-global ride replay (3a3f94a6) — validated end-to-end on the REAL models: e2b AND 12B generate correct text on the ICB path (smoke: "2+2=4", farmer→17); 2-pass SDPA on live decode past the long-context knee (cf8bef36).
+- AttentionBlock ICB scratch is keyed by `(dModel, qDim, nHeads, nKVHeads, headDim, kvLen)`; DecodeForward ICB core scratch is keyed by `(dModel, qDim, kvDim, dFF, nLayers)`; RMS residual scratch is keyed by `axisSize`; embed-gather scratch is keyed by `dModel`; binary float32 scratch is keyed by byte length.
+- DecodeLayer residual, decode-step attention/MLP, and attention KV scratch pools are dimension-keyed, keeping scratch resident across alternating model/layer/cache shapes.
+- Dense BF16 and quant `PerLayerInputs` fallbacks borrow pooled `plHostScratch` and run the fused projection chain when caller scratch is absent.
+- `PerLayerInputGate` and GPU PLE input scratch pools are keyed by dimensions, keeping pinned/device scratch resident across alternating layer shapes.
+- Borrowed scratch copies final returned bytes before returning scratch to the pool, preserving public API lifetime.
+- Dense/quant PLE fallback resource deltas: dense `901-1003 us/op`, `12 allocs/op` -> `229-272 us/op`, `8 allocs/op`; quant `267-292 us/op`, `8 allocs/op`.
+- Gate/GPU PLE alternating-shape `Into` benchmarks: `263-282 us/op` and `266-273 us/op`, both `1 allocs/op`.
+- Attention benchmark: fixed `233.6-234.9 us/op`, `150-156 B/op`, `3 allocs/op`; alternating `229.6-232.8 us/op`, `148-150 B/op`, `3 allocs/op`.
+- DecodeStep benchmark: fixed `281.4-311.6 us/op`, `2918-2921 B/op`, `35 allocs/op`; alternating `306.1-312.7 us/op`, `4004-4047 B/op`, `48-49 allocs/op`.
+- DecodeLayer benchmark: fixed `259.8-275.3 us/op`, `165-166 B/op`, `4 allocs/op`; alternating `270.4-274.3 us/op`, `226-228 B/op`, `4 allocs/op`; DecodeLayerBatched fixed/alternating `41`/`36 allocs/op`.
+- ICB/RMS/embed-gather/binary/router/SDPA/VisionSDPA benchmarks: AttentionBlock ICB `32-34 allocs/op`; DecodeForward ICB `504-506`; RMS, embed-gather, binary, and SDPA fixed/alternating stay at `2`; router host-scratch `5-6`; VisionSDPA fixed `14-15`, alternating `447-451`.
 
-Done 2026-06-25 (streaming): fixed `generate -native` reporting decode 0.000s (2507bb56). Root cause was NOT greedy — greedy always streamed via the session's `GenerateEach`. It was the **sampled (temp>0)** path: `model.GenerateSampledWithStopTokensTransform` returns `[]int32` in one batch, so the iterator yielded every token at the end (whole run mislabelled as a 16s "prefill"). `generate -temp` defaults to 1.0, so default benching hit it. Fix: threaded an observational per-token `yield` through the shared contract loop + added `GenerateSampledWithStopTokensTransformEach` (yield==nil = byte-identical batch); native `stream()` routes both sampled branches through it. pkg/metal parity restored.
+Remaining feature tasks:
 
-Perf reality (e2b 4-bit, decode-only, warmup-excluded): pkg/native **157.7** tok/s vs pkg/metal **178.4** — native ~12% BEHIND. This session shifted correctness + structure, NOT the decode rate (157.2→157.7 = noise). The no-cgo path should be AHEAD (one hop); the deficit is recoverable host overhead, found by profiling — not by more op-sharing.
-
-Next:
-- SAMPLED path doesn't use ICB (exposed by the streaming fix): `generate -native` temp 1.0 now reads honestly at **16.9** tok/s vs greedy's **157** — the sampled session loop runs the generic `generateStepwiseWithSession`/`StepWithID`, not the ICB fast replay. pkg/metal's sampled decode IS fast (178 at temp 1.0). **Why it's not a drop-in (read before attempting):** greedy's 157 comes from `generateChainedGPUTail`/`generatePipelinedGPUTail` — the argmax runs ON-GPU and the next token feeds back ON-GPU (one command buffer/token, ZERO host logit readback). Sampling needs the full vocab logits on the HOST (temp/top-k/top-p), which breaks that exact optimisation. So the real options are (a) **on-GPU sampling kernels** (temp/top-k/top-p in Metal, feeding the drawn token back on-GPU — keeps the chained path, ~150), or (b) **ICB-replayed layers + host full-logits head + host sample** (loses the chained on-GPU feedback but the layers still replay — likely well above 16 but below 157; MEASURE). Either is a real piece with a fixed-seed parity gate (same seed: generic-stepwise vs new path → identical tokens), not a ~50-line add. Cladius assessed + deliberately did NOT rush a half-version into a closing window.
-- Collapse the TWO decode orchestrations into ONE (the contract's "one path, no gates"): live `stepToken` (encAttnHalfKV/encMLPHalfBF16, decode_forward_arch.go) and ICB `recordArchICB` (decode_forward_arch_icb.go) are still two hand-written layer expressions gated by `icbEligible`. dispatchSink unified the OPS, not the orchestration. Borrow pkg/metal's model (one compiled forward, replayed by decode_replay.go): make the ICB RECORD the single live expression via a recording sink (icbSink that calls emit() per op); delete recordArchICB's inline loop as dead code.
-- Profile the ~20 tok/s native↔metal decode gap (per-token host overhead: purego marshaling vs cgo per-call; dispatch count vs pkg/metal's compiled-graph fusion).
-- (carried) ICB MoE dispatch; fused qmv argmax; benchmark-backed resource wins.
-
-Known reds (pre-existing — verified failing at 6868d283, BEFORE the 2026-06-25 session commits, so NOT caused by the dispatchSink/streaming work; "green" otherwise = no regression):
-- `TestGemma4PostNorms` (gemma4_norms_test.go) — integrated `DecodeForwardArch` ≠ the op-composed `archDenseNormRef` on the gemma4 sandwich post-norms (PostAttn/PostFF norm applied to the projection output before the residual): tok0 byte0 0x48 vs 0xa0. One of {integrated forward, composed reference} is wrong on post-norm placement. Diagnostic: if real gemma4 (e2b/12B) carries live post-norms and serving is correct, the *reference* is stale; if the synthetic post-norm path is untested by serving, the *forward* may mis-place the norm. Resolve before trusting the forward gate.
-- `TestSpikeFineGrainedReplayMatchesCoarse` (spike_e2b_bench_test.go) — fine-grained ICB replay ≠ coarse because Metal memory barriers don't enforce the true data deps (the test name says so); nondeterministic cosine (0.0004…-0.037 run to run). Deep ICB-barrier dependency-ordering work — part of the replay/orchestration lane.
+- First-draft no-copy/fused routing into session/replay hot paths that still submit/read back per op.
+- First-draft MoE router/expert GPU flow that removes host readbacks while preserving parity.
+- First-draft KV cache parity for fixed, paged, rotating/sliding, and raw restore helpers.
+- First-draft exact full-vocab TopP ranked-prefix/top-mass device path; no fixed-window approximation.

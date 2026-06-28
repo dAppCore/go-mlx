@@ -24,3 +24,23 @@ func TestRoPERejectsShapeMismatch(t *testing.T) {
 		t.Fatal("expected RoPE to reject input length mismatch")
 	}
 }
+
+func TestRoPEAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	x := syntheticFloat32(8*64, 3)
+	if _, err := RoPE(x, 1, 8, 64, 10000, 1, 17, false); err != nil {
+		t.Fatalf("RoPE warmup: %v", err)
+	}
+
+	var ropeErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, ropeErr = RoPE(x, 1, 8, 64, 10000, 1, 17, false)
+	})
+	if ropeErr != nil {
+		t.Fatalf("RoPE: %v", ropeErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("RoPE allocations = %.0f, want <= 10", allocs)
+	}
+}

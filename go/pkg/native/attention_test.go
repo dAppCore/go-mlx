@@ -88,3 +88,62 @@ func TestAttentionBlockKeepsFixedWeightsResident(t *testing.T) {
 		t.Fatalf("AttentionBlock did not keep fixed weights resident (norm=%v q=%v o=%v resident=%d want>=3)", hasNorm, hasQ, hasO, got)
 	}
 }
+
+func TestAttentionBlockKVScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getAttentionBlockKVScratch(128, 128)
+	if err != nil {
+		t.Fatalf("get small attention KV scratch: %v", err)
+	}
+	putAttentionBlockKVScratch(small)
+
+	large, err := getAttentionBlockKVScratch(256, 256)
+	if err != nil {
+		t.Fatalf("get large attention KV scratch: %v", err)
+	}
+	putAttentionBlockKVScratch(large)
+
+	gotSmall, err := getAttentionBlockKVScratch(128, 128)
+	if err != nil {
+		t.Fatalf("get small attention KV scratch again: %v", err)
+	}
+	defer putAttentionBlockKVScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("attention KV scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge, err := getAttentionBlockKVScratch(256, 256)
+	if err != nil {
+		t.Fatalf("get large attention KV scratch again: %v", err)
+	}
+	defer putAttentionBlockKVScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("attention KV scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestAttentionBlockAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen = 64, 1, 1, 64, 4
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, 128, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+	if _, err := AttentionBlock(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, dModel, nHeads, nKV, headDim, kvLen, base, scale, offset, eps); err != nil {
+		t.Fatalf("AttentionBlock warmup: %v", err)
+	}
+
+	var blockErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, blockErr = AttentionBlock(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, dModel, nHeads, nKV, headDim, kvLen, base, scale, offset, eps)
+	})
+	if blockErr != nil {
+		t.Fatalf("AttentionBlock: %v", blockErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("AttentionBlock allocations = %.0f, want <= 10", allocs)
+	}
+}

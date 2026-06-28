@@ -101,3 +101,90 @@ func TestMLPBlockBF16KeepsFixedWeightsResident(t *testing.T) {
 		t.Fatalf("MLPBlockBF16 did not keep fixed weights resident (norm=%v gate=%v up=%v down=%v resident=%d want>=4)", hasNorm, hasGate, hasUp, hasDown, got)
 	}
 }
+
+func TestMLPBlockBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 11))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 13))
+	if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MLPBlockBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+			t.Fatalf("MLPBlockBF16: %v", err)
+		}
+	})
+	if allocs > 15 {
+		t.Fatalf("MLPBlockBF16 allocations = %.0f, want <= 15", allocs)
+	}
+}
+
+func TestMLPBlockBF16ComposedKeepsGELUConstantsResident(t *testing.T) {
+	requireNativeRuntime(t)
+	old := customLibraryLoaded
+	customLibraryLoaded = false
+	t.Cleanup(func() { customLibraryLoaded = old })
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF = 8, 16
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 11))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 13))
+
+	if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MLPBlockBF16 composed: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	consts := []struct {
+		name string
+		buf  []byte
+	}{
+		{"c044", bf16ConstBytes(dFF, 0.044715)},
+		{"c079", bf16ConstBytes(dFF, 0.7978845608028654)},
+		{"c1", bf16ConstBytes(dFF, 1.0)},
+		{"c05", bf16ConstBytes(dFF, 0.5)},
+	}
+
+	residentBufMu.Lock()
+	defer residentBufMu.Unlock()
+	for _, c := range consts {
+		if _, ok := residentBufs[key(c.buf)]; !ok {
+			t.Fatalf("MLPBlockBF16 composed GELU constant %s was not resident", c.name)
+		}
+	}
+}
+
+func TestMLPBlockBF16ComposedAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	withComposedGELU(t)
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 11))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 13))
+	if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MLPBlockBF16 composed warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+			t.Fatalf("MLPBlockBF16 composed: %v", err)
+		}
+	})
+	if allocs > 1535 {
+		t.Fatalf("MLPBlockBF16 composed allocations = %.0f, want <= 1535", allocs)
+	}
+}

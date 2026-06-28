@@ -112,6 +112,9 @@ func DecodeForwardArchQuant(
 	if err != nil {
 		return nil, err
 	}
+	if pleRuntime != nil {
+		defer pleRuntime.Close()
+	}
 	var pleLayers []pleLayer
 	if pleRuntime != nil {
 		pleLayers, err = quantPLELayers("native.DecodeForwardArchQuant", qlayers, dModel, pliDim, plePayload.GroupSize, plePayload.Bits)
@@ -122,13 +125,16 @@ func DecodeForwardArchQuant(
 
 	var outputs [][]byte
 	withAutoreleasePool(func() {
-		lb, moeQuant, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
+		setup := getArchQuantLayerBufScratch(nLayers)
+		defer putArchQuantLayerBufScratch(setup)
+		lb, moeQuant, berr := buildQuantArchLayerBufsIntoScratch(setup, qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
 		if berr != nil {
 			err = berr
 			return
 		}
 		moeWeights := make([]*MoELayerWeights, nLayers) // bf16 MoE unused on the quant path
 		state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
+		defer state.Close()
 		state.moeQuant = moeQuant
 		if pleRuntime != nil {
 			state.ple, state.pliDim = pleLayers, pliDim
@@ -218,8 +224,18 @@ func validateMoEQuantLayerWeights(fn string, w *MoEQuantLayerWeights, dModel, dF
 // binds every weight (norms + the quant triples) as no-copy shard views; nil uploads owned copies.
 // MUST be called inside a withAutoreleasePool.
 func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
-	lb := make([]archLayerBufs, len(qlayers))
-	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
+	return buildQuantArchLayerBufsInternal(make([]archLayerBufs, len(qlayers)), make([]*MoEQuantLayerWeights, len(qlayers)), nil, qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+}
+
+func buildQuantArchLayerBufsIntoScratch(setup *archQuantLayerBufScratch, qlayers []QuantizedLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
+	if setup == nil || !setup.fits(len(qlayers)) {
+		return buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+	}
+	setup.reset(len(qlayers))
+	return buildQuantArchLayerBufsInternal(setup.lb, setup.moe, setup, qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+}
+
+func buildQuantArchLayerBufsInternal(lb []archLayerBufs, moeQuant []*MoEQuantLayerWeights, setup *archQuantLayerBufScratch, qlayers []QuantizedLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
 	var ferr error
 	view := func(b []byte) bufView {
 		if sb != nil {
@@ -248,7 +264,7 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		return qmvWeight{wq: view4(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
 	}
 	viewQuantWeight := func(qw QuantWeight) QuantWeight {
-		if sb == nil || len(qw.Packed) == 0 {
+		if len(qw.Packed) == 0 {
 			return qw
 		}
 		qw.packedView = view4(qw.Packed)
@@ -257,10 +273,16 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		return qw
 	}
 	viewOptional := func(b []byte) bufView {
-		if sb == nil || len(b) == 0 {
+		if len(b) == 0 {
 			return bufView{}
 		}
 		return view(b)
+	}
+	residentOptional := func(b []byte) bufView {
+		if len(b) == 0 {
+			return bufView{}
+		}
+		return bufView{buf: residentBytes(b)}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
@@ -281,8 +303,12 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		lb[li].kNorm = viewOrNil(ql.KNormW)
 		lb[li].layerScalar = layerScalarBuf(ql.LayerScalarW, dModel) // synthesised broadcast (not a shard view)
 		if specs[li].OwnsCache() {
-			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+			if setup != nil {
+				lb[li].kCache, lb[li].vCache, lb[li].kCachePtr, lb[li].vCachePtr = setup.kvCache(li, cacheBytes)
+			} else {
+				lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+			}
 		}
 		lFF := dFF // per-layer FFN width (gemma4 E2B/E4B vary it); 0 ⇒ arch default
 		if ql.DFF > 0 {
@@ -297,7 +323,14 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		// MoE layers run MoEBlockQuant (host-orchestrated) instead of the dense MLP, so the
 		// projector binds only attention; the dense MLP weights/norm are unused (and nil).
 		if ql.MoE != nil {
-			mw := *ql.MoE
+			var mw *MoEQuantLayerWeights
+			if setup != nil {
+				setup.moeVals[li] = *ql.MoE
+				mw = &setup.moeVals[li]
+			} else {
+				mwv := *ql.MoE
+				mw = &mwv
+			}
 			mw.LocalGate = viewQuantWeight(mw.LocalGate)
 			mw.LocalUp = viewQuantWeight(mw.LocalUp)
 			mw.LocalDown = viewQuantWeight(mw.LocalDown)
@@ -311,8 +344,9 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 			mw.postFFNorm1View = viewOptional(mw.PostFFNorm1W)
 			mw.postFFNorm2View = viewOptional(mw.PostFFNorm2W)
 			mw.postFFNormView = viewOptional(mw.PostFFNormW)
+			mw.routerNormView = residentOptional(mw.RouterNormWScaled)
 			mw.perExpertScaleView = viewOptional(mw.PerExpertScale)
-			moeQuant[li] = &mw
+			moeQuant[li] = mw
 		} else {
 			lb[li].mnw = view(ql.MLPNormW)
 			proj.gate, proj.up, proj.down = mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"math"
 	"os"
+	"runtime"
 	"testing"
 
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -81,4 +82,47 @@ func TestGemma4LayerScalar(t *testing.T) {
 		}
 	}
 	t.Logf("layer_scalar: a single-layer hidden with scalar=2 is exactly 2× the unscaled hidden, element-for-element")
+}
+
+func TestLayerScalarBufAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel = 128
+	scalarW := toBF16Bytes([]float32{0.75})
+	if buf := layerScalarBuf(scalarW, dModel); buf == nil {
+		t.Fatal("layerScalarBuf warmup returned nil")
+	}
+	runtime.GC()
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if buf := layerScalarBuf(scalarW, dModel); buf == nil {
+			t.Fatal("layerScalarBuf returned nil")
+		}
+	})
+	if allocs > 6 {
+		t.Fatalf("layerScalarBuf allocations = %.0f, want <= 6", allocs)
+	}
+}
+
+func TestValueNormOnesBufAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const headDim = 256
+	if buf := valueNormOnesBuf(true, headDim); buf == nil {
+		t.Fatal("valueNormOnesBuf warmup returned nil")
+	}
+	runtime.GC()
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if buf := valueNormOnesBuf(true, headDim); buf == nil {
+			t.Fatal("valueNormOnesBuf returned nil")
+		}
+	})
+	if allocs > 6 {
+		t.Fatalf("valueNormOnesBuf allocations = %.0f, want <= 6", allocs)
+	}
 }

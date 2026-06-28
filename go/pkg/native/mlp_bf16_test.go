@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
 
 func TestMLPBF16PrimitiveKernels(t *testing.T) {
@@ -49,5 +50,178 @@ func TestGeluGateMulBF16RejectsLengthMismatch(t *testing.T) {
 
 	if _, err := GeluGateMulBF16(toBF16Bytes([]float32{1, 2}), toBF16Bytes([]float32{1})); err == nil {
 		t.Fatal("expected GeluGateMulBF16 to reject mismatched lengths")
+	}
+}
+
+func TestGeluGateMulBF16ComposedRejectsOddByteLength(t *testing.T) {
+	requireNativeRuntime(t)
+	withComposedGELU(t)
+
+	if _, err := GeluGateMulBF16([]byte{1}, []byte{1}); err == nil {
+		t.Fatal("expected GeluGateMulBF16 composed path to reject odd byte length")
+	}
+}
+
+func TestGeluGateMulBF16EmptyInput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	out, err := GeluGateMulBF16(nil, nil)
+	if err != nil {
+		t.Fatalf("GeluGateMulBF16 empty: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("GeluGateMulBF16 empty len = %d, want 0", len(out))
+	}
+}
+
+func TestGeluGateMulBF16FusedAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom GELU kernel unavailable")
+	}
+
+	const n = 1024
+	gate := toBF16Bytes(syntheticFloat32(n, 3))
+	up := toBF16Bytes(syntheticFloat32(n, 5))
+	if _, err := GeluGateMulBF16(gate, up); err != nil {
+		t.Fatalf("GeluGateMulBF16 fused warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := GeluGateMulBF16(gate, up); err != nil {
+			t.Fatalf("GeluGateMulBF16 fused: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("GeluGateMulBF16 fused allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMulBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	a := toBF16Bytes(syntheticFloat32(n, 3))
+	b := toBF16Bytes(syntheticFloat32(n, 5))
+	if _, err := MulBF16(a, b); err != nil {
+		t.Fatalf("MulBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := MulBF16(a, b); err != nil {
+			t.Fatalf("MulBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("MulBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestGeluGateMulBF16ComposedAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	withComposedGELU(t)
+
+	const n = 1024
+	gate := toBF16Bytes(syntheticFloat32(n, 3))
+	up := toBF16Bytes(syntheticFloat32(n, 5))
+	if _, err := GeluGateMulBF16(gate, up); err != nil {
+		t.Fatalf("GeluGateMulBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := GeluGateMulBF16(gate, up); err != nil {
+			t.Fatalf("GeluGateMulBF16: %v", err)
+		}
+	})
+	if allocs > 55 {
+		t.Fatalf("GeluGateMulBF16 allocations = %.0f, want <= 55", allocs)
+	}
+}
+
+func TestTanhBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	if _, err := TanhBF16(x); err != nil {
+		t.Fatalf("TanhBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := TanhBF16(x); err != nil {
+			t.Fatalf("TanhBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("TanhBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMulBF16ConstAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	if _, err := mulBF16Const(x, n, 0.375); err != nil {
+		t.Fatalf("mulBF16Const warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := mulBF16Const(x, n, 0.375); err != nil {
+			t.Fatalf("mulBF16Const: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("mulBF16Const allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestGeluBF16SingleCommandAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	if _, err := GeluBF16(x); err != nil {
+		t.Fatalf("GeluBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := GeluBF16(x); err != nil {
+			t.Fatalf("GeluBF16: %v", err)
+		}
+	})
+	if allocs > 40 {
+		t.Fatalf("GeluBF16 allocations = %.0f, want <= 40", allocs)
+	}
+}
+
+func TestGeluBF16KeepsConstantsResident(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const n = 16
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	if _, err := GeluBF16(x); err != nil {
+		t.Fatalf("GeluBF16: %v", err)
+	}
+
+	consts := []struct {
+		name string
+		buf  []byte
+	}{
+		{"c044", bf16ConstBytes(n, 0.044715)},
+		{"c079", bf16ConstBytes(n, 0.7978845608028654)},
+		{"c1", bf16ConstBytes(n, 1.0)},
+		{"c05", bf16ConstBytes(n, 0.5)},
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	defer residentBufMu.Unlock()
+	for _, c := range consts {
+		if _, ok := residentBufs[key(c.buf)]; !ok {
+			t.Fatalf("GeluBF16 constant %s was not resident", c.name)
+		}
 	}
 }

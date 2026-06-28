@@ -6,11 +6,13 @@ package native
 
 import (
 	"math"
+	"runtime"
 	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/scheme"
+	"github.com/tmc/apple/kernel"
 	"github.com/tmc/apple/metal"
 )
 
@@ -23,6 +25,205 @@ import (
 
 func sharedBytes(b []byte) metal.MTLBuffer {
 	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(len(b)), metal.MTLResourceStorageModeShared)
+}
+
+type attentionBlockKVScratch struct {
+	kBytes, vBytes int
+	k, v           *pinnedNoCopyBytes
+}
+
+type attentionBlockKVScratchKey struct {
+	kBytes, vBytes int
+}
+
+var attentionBlockKVScratchPools sync.Map
+
+func attentionBlockKVScratchPoolFor(kBytes, vBytes int) *sync.Pool {
+	key := attentionBlockKVScratchKey{kBytes: kBytes, vBytes: vBytes}
+	if v, ok := attentionBlockKVScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := attentionBlockKVScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func newAttentionBlockKVScratch(kBytes, vBytes int) (*attentionBlockKVScratch, error) {
+	if kBytes <= 0 || vBytes <= 0 {
+		return nil, core.NewError("native.newAttentionBlockKVScratch: invalid dimensions")
+	}
+	k, err := newPinnedNoCopyBytes(kBytes)
+	if err != nil {
+		return nil, err
+	}
+	v, err := newPinnedNoCopyBytes(vBytes)
+	if err != nil {
+		k.Close()
+		return nil, err
+	}
+	return &attentionBlockKVScratch{kBytes: kBytes, vBytes: vBytes, k: k, v: v}, nil
+}
+
+func getAttentionBlockKVScratch(kBytes, vBytes int) (*attentionBlockKVScratch, error) {
+	pool := attentionBlockKVScratchPoolFor(kBytes, vBytes)
+	if v := pool.Get(); v != nil {
+		s := v.(*attentionBlockKVScratch)
+		if s.kBytes == kBytes && s.vBytes == vBytes && s.k != nil && s.v != nil {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newAttentionBlockKVScratch(kBytes, vBytes)
+}
+
+func putAttentionBlockKVScratch(s *attentionBlockKVScratch) {
+	if s != nil && s.kBytes > 0 && s.vBytes > 0 && s.k != nil && s.v != nil {
+		attentionBlockKVScratchPoolFor(s.kBytes, s.vBytes).Put(s)
+	}
+}
+
+func (s *attentionBlockKVScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.k != nil {
+		s.k.Close()
+		s.k = nil
+	}
+	if s.v != nil {
+		s.v.Close()
+		s.v = nil
+	}
+	s.kBytes, s.vBytes = 0, 0
+}
+
+func (s *attentionBlockKVScratch) buffers(kCache, vCache []byte) (metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.k == nil || s.v == nil {
+		return nil, nil, core.NewError("native.attentionBlockKVScratch.buffers: scratch is nil")
+	}
+	if len(kCache) != s.kBytes || len(vCache) != s.vBytes {
+		return nil, nil, core.NewError("native.attentionBlockKVScratch.buffers: cache length mismatch")
+	}
+	kBuf, err := s.k.copyBuffer(kCache)
+	if err != nil {
+		return nil, nil, err
+	}
+	vBuf, err := s.v.copyBuffer(vCache)
+	if err != nil {
+		return nil, nil, err
+	}
+	return kBuf, vBuf, nil
+}
+
+func withPinnedNoCopyBytes(b []byte, fn func(metal.MTLBuffer) error) error {
+	if len(b) == 0 {
+		return core.NewError("native.withPinnedNoCopyBytes: empty byte slice")
+	}
+	var pinner runtime.Pinner
+	pinner.Pin(&b[0])
+	defer func() {
+		pinner.Unpin()
+		runtime.KeepAlive(b)
+	}()
+	buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+		unsafe.Pointer(&b[0]),
+		uint(len(b)),
+		metal.MTLResourceStorageModeShared,
+		func(kernel.Pointer, uint64) {},
+	)
+	if buf == nil || buf.GetID() == 0 {
+		return core.NewError("native.withPinnedNoCopyBytes: failed to create no-copy Metal buffer")
+	}
+	return fn(buf)
+}
+
+func temporaryPinnedNoCopyBytes(b []byte, pinner *runtime.Pinner) (metal.MTLBuffer, error) {
+	if len(b) == 0 {
+		return nil, core.NewError("native.temporaryPinnedNoCopyBytes: empty byte slice")
+	}
+	pinner.Pin(&b[0])
+	buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+		unsafe.Pointer(&b[0]),
+		uint(len(b)),
+		metal.MTLResourceStorageModeShared,
+		func(kernel.Pointer, uint64) {},
+	)
+	if buf == nil || buf.GetID() == 0 {
+		pinner.Unpin()
+		return nil, core.NewError("native.temporaryPinnedNoCopyBytes: failed to create no-copy Metal buffer")
+	}
+	return buf, nil
+}
+
+type pinnedNoCopyBytes struct {
+	bytes  []byte
+	buf    metal.MTLBuffer
+	pinner *runtime.Pinner
+}
+
+func newPinnedNoCopyBytes(n int) (*pinnedNoCopyBytes, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if n <= 0 {
+		return nil, core.NewError("native.newPinnedNoCopyBytes: size must be > 0")
+	}
+	b := make([]byte, n)
+	pinner := pinGoBytes(b)
+	if pinner == nil {
+		return nil, core.NewError("native.newPinnedNoCopyBytes: failed to pin backing bytes")
+	}
+	buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+		unsafe.Pointer(&b[0]),
+		uint(len(b)),
+		metal.MTLResourceStorageModeShared,
+		func(kernel.Pointer, uint64) {},
+	)
+	if buf == nil || buf.GetID() == 0 {
+		pinner.Unpin()
+		return nil, core.NewError("native.newPinnedNoCopyBytes: failed to create no-copy Metal buffer")
+	}
+	p := &pinnedNoCopyBytes{bytes: b, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(p, (*pinnedNoCopyBytes).Close)
+	return p, nil
+}
+
+func (p *pinnedNoCopyBytes) copyBuffer(src []byte) (metal.MTLBuffer, error) {
+	if p == nil || p.buf == nil {
+		return nil, core.NewError("native.pinnedNoCopyBytes.copyBuffer: nil pinned buffer")
+	}
+	if len(src) != len(p.bytes) {
+		return nil, core.NewError("native.pinnedNoCopyBytes.copyBuffer: source length mismatch")
+	}
+	copy(p.bytes, src)
+	return p.buf, nil
+}
+
+func (p *pinnedNoCopyBytes) copyPrefixBuffer(src []byte) (metal.MTLBuffer, error) {
+	if p == nil || p.buf == nil {
+		return nil, core.NewError("native.pinnedNoCopyBytes.copyPrefixBuffer: nil pinned buffer")
+	}
+	if len(src) > len(p.bytes) {
+		return nil, core.NewError("native.pinnedNoCopyBytes.copyPrefixBuffer: source length exceeds backing")
+	}
+	copy(p.bytes[:len(src)], src)
+	return p.buf, nil
+}
+
+func (p *pinnedNoCopyBytes) Close() {
+	if p == nil {
+		return
+	}
+	runtime.SetFinalizer(p, nil)
+	if p.pinner != nil {
+		p.pinner.Unpin()
+		p.pinner = nil
+	}
+	runtime.KeepAlive(p.bytes)
+	p.bytes = nil
+	p.buf = nil
 }
 
 // residentBufs caches the GPU buffer for a RESIDENT weight slice. The MoE expert weights are the
@@ -44,8 +245,41 @@ var (
 // for a Go-managed slice (GC can free it and reuse the address → a stale cache hit). Holding b keeps
 // it alive, so the key can never be re-issued for different data.
 type residentBuf struct {
-	buf metal.MTLBuffer
-	pin []byte
+	buf    metal.MTLBuffer
+	pin    []byte
+	pinner *runtime.Pinner
+	noCopy bool
+}
+
+func closeResidentBuf(r residentBuf) {
+	if r.pinner != nil {
+		r.pinner.Unpin()
+	}
+}
+
+func residentKeyInRanges(key uintptr, bases, ends []uintptr) bool {
+	for i, start := range bases {
+		if i >= len(ends) {
+			break
+		}
+		end := ends[i]
+		if start != 0 && end > start && key >= start && key < end {
+			return true
+		}
+	}
+	return false
+}
+
+func evictResidentBufsForRanges(bases, ends []uintptr) {
+	residentBufMu.Lock()
+	defer residentBufMu.Unlock()
+	for key, r := range residentBufs {
+		if !residentKeyInRanges(key, bases, ends) {
+			continue
+		}
+		closeResidentBuf(r)
+		delete(residentBufs, key)
+	}
 }
 
 func residentBytes(b []byte) metal.MTLBuffer {
@@ -55,9 +289,46 @@ func residentBytes(b []byte) metal.MTLBuffer {
 	if r, ok := residentBufs[key]; ok {
 		return r.buf
 	}
-	buf := sharedBytes(b)
-	residentBufs[key] = residentBuf{buf: buf, pin: b}
+	buf, pinner, noCopy := residentNoCopyBytes(b)
+	residentBufs[key] = residentBuf{buf: buf, pin: b, pinner: pinner, noCopy: noCopy}
 	return buf
+}
+
+func residentNoCopyBytes(b []byte) (metal.MTLBuffer, *runtime.Pinner, bool) {
+	if isMappedShardBytes(b) {
+		return sharedBytes(b), nil, false
+	}
+	pinner := pinGoBytes(b)
+	if pinner == nil {
+		return sharedBytes(b), nil, false
+	}
+	buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+		unsafe.Pointer(&b[0]),
+		uint(len(b)),
+		metal.MTLResourceStorageModeShared,
+		func(kernel.Pointer, uint64) {},
+	)
+	if buf == nil || buf.GetID() == 0 {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return sharedBytes(b), nil, false
+	}
+	return buf, pinner, true
+}
+
+func pinGoBytes(b []byte) (pinner *runtime.Pinner) {
+	defer func() {
+		if recover() != nil {
+			if pinner != nil {
+				pinner.Unpin()
+			}
+			pinner = nil
+		}
+	}()
+	pinner = new(runtime.Pinner)
+	pinner.Pin(&b[0])
+	return pinner
 }
 
 // sharedOrNil is sharedBytes for an optional weight: nil/empty → a nil MTLBuffer (the
@@ -126,7 +397,7 @@ func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuff
 // bound buffer offset). matOff=outOff=0 is the plain projection.
 func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, outOff uint, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	pso, err := pipelineFor(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return err
 	}
@@ -142,12 +413,28 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 // path; each tensor can sit in a different shard, hence three offsets) — 0/0/0 is the plain
 // (uploaded-copy) binding. outOff lets the projection write its result straight into a cache row
 // (the V projection), exactly like encGemvBF16To. wq is packed 4-bit; scales/biases bf16.
+type qmvBF16KernelKey struct {
+	groupSize, bits int
+	fast            bool
+}
+
+var qmvBF16KernelNames sync.Map
+
 func qmvBF16KernelName(outDim, inDim, groupSize, bits int) string {
+	fast := outDim%8 == 0 && inDim%512 == 0
+	key := qmvBF16KernelKey{groupSize: groupSize, bits: bits, fast: fast}
+	if v, ok := qmvBF16KernelNames.Load(key); ok {
+		return v.(string)
+	}
 	variant := "_qmv_"
-	if outDim%8 == 0 && inDim%512 == 0 {
+	if fast {
 		variant = "_qmv_fast_"
 	}
-	return core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits)
+	name := core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits)
+	if v, loaded := qmvBF16KernelNames.LoadOrStore(key, name); loaded {
+		return v.(string)
+	}
+	return name
 }
 
 func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff, outOff uint, outDim, inDim, groupSize, bits int) error {
@@ -172,6 +459,10 @@ func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuf
 // full); the kernel writes only the rotated dims, so for partial rotary call it IN PLACE
 // (in==out, inOff==outOff) so the untouched [rotaryDim:headDim] tail keeps its input value.
 func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
+	return encRoPEBF16ToAt(enc, x, out, inOff, outOff, offBuf, 0, nHeads, headDim, rotaryDim, base, scale)
+}
+
+func encRoPEBF16ToAt(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf metal.MTLBuffer, offOff uint, nHeads, headDim, rotaryDim int, base, scale float32) error {
 	pso, err := ropePipelineBF16(false)
 	if err != nil {
 		return err
@@ -182,7 +473,7 @@ func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, i
 	}
 	// base partial-rotary RoPE through the SHARED emitRope body (with encRoPEFreqsBF16To + the ICB setRope);
 	// periods=nil selects the base form, log2(base) at index 10.
-	emitRope(encSink{enc}, pso, x, out, inOff, outOff, offBuf, nil, nHeads, rd, headDim, scale, float32(math.Log2(float64(base))))
+	emitRopeAt(encSink{enc}, pso, x, out, inOff, outOff, offBuf, offOff, nil, nHeads, rd, headDim, scale, float32(math.Log2(float64(base))))
 	return nil
 }
 
@@ -217,7 +508,7 @@ func slideWindow(pos, slideW int) (start, n int) {
 // kvByteOff offsets the K and V bindings (bytes) — used to attend a window of the
 // cache starting at a non-zero row (sliding-window attention reads the last W rows).
 func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
-	pso, err := sdpaVectorPipeline(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
+	pso, err := sdpaVectorPipelineForHeadDim(headDim)
 	if err != nil {
 		return err
 	}
@@ -237,45 +528,18 @@ func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBu
 // writes. Token-identical to encSDPAStrided (sdpa_2pass_test.go), differing only in how
 // the reduction parallelises — so it keeps scaling where the single-pass kernel stalls.
 func encSDPA2PassStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out, partials, sums, maxs metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
-	gqa := nHeads / nKVHeads
 	blocks := sdpa2PassBlocks(n)
-	pso1, err := sdpaVector2Pass1Pipeline(core.Sprintf("sdpa_vector_2pass_1_bfloat16_t_%d_%d", headDim, headDim), blocks)
+	pso1, err := sdpaVector2Pass1PipelineForHeadDim(headDim, blocks)
 	if err != nil {
 		return err
 	}
-	pso2, err := sdpaVector2Pass2Pipeline(core.Sprintf("sdpa_vector_2pass_2_bfloat16_t_%d", headDim))
+	pso2, err := sdpaVector2Pass2PipelineForHeadDim(headDim)
 	if err != nil {
 		return err
 	}
-	// Pass 1: per-block partials. grid (nKVHeads, b=1, blocks); group (32, gqa, qseq=1).
-	enc.SetComputePipelineState(pso1)
-	enc.SetBufferWithOffsetAtIndex(q, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(k, kvByteOff, 1)
-	enc.SetBufferWithOffsetAtIndex(v, kvByteOff, 2)
-	enc.SetBufferWithOffsetAtIndex(partials, 0, 3)
-	enc.SetBufferWithOffsetAtIndex(sums, 0, 4)
-	enc.SetBufferWithOffsetAtIndex(maxs, 0, 5)
-	setEncInt32(enc, int32(n), 7) // N
-	setEncInt64(enc, kHeadStride, 8)
-	setEncInt64(enc, kSeqStride, 9)
-	setEncInt64(enc, vHeadStride, 10)
-	setEncInt64(enc, vSeqStride, 11)
-	setEncFloat32(enc, scale, 12)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(nKVHeads), Height: 1, Depth: uint(blocks)},
-		metal.MTLSize{Width: 32, Height: uint(gqa), Depth: 1},
-	)
-	// Pass 2: merge per-block partials into the head output.
-	enc.SetComputePipelineState(pso2)
-	enc.SetBufferWithOffsetAtIndex(partials, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(sums, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(maxs, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
-	setEncInt32(enc, blocks, 4)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, // b=1
-		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
-	)
+	sink := encSink{enc}
+	emitSDPA2Pass1(sink, pso1, q, k, v, partials, sums, maxs, kvByteOff, 1, nHeads, nKVHeads, n, int(blocks), kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale)
+	emitSDPA2Pass2(sink, pso2, partials, sums, maxs, out, 1, nHeads, int(blocks))
 	return nil
 }
 
@@ -297,21 +561,41 @@ func encSDPADecode(enc metal.MTLComputeCommandEncoder, sc attnScratch, q, k, v, 
 // dtype is resolved from the registered scheme (scheme.BFloat16, scheme.Float32, …),
 // so a new activation dtype is a registered scheme, not a new hardcoded encoder.
 func encBinaryDT(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType, a, b, out metal.MTLBuffer, n int) error {
+	return encBinaryDTTo(enc, op, dt, a, b, out, 0, 0, 0, n)
+}
+
+func encBinaryDTTo(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
 	pso, err := pipelineFor("vv_" + op + dt.Name())
 	if err != nil {
 		return err
 	}
-	emitBinary(encSink{enc}, pso, a, 0, b, 0, out, 0, n)
+	emitBinary(encSink{enc}, pso, a, aOff, b, bOff, out, outOff, n)
+	return nil
+}
+
+func encBinaryLiteralTo(enc metal.MTLComputeCommandEncoder, name string, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
+	pso, err := pipelineFor(name)
+	if err != nil {
+		return err
+	}
+	emitBinary(encSink{enc}, pso, a, aOff, b, bOff, out, outOff, n)
 	return nil
 }
 
 // encAddBF16 / encMulBF16 are the bf16-bound conveniences for gemma's MLP and
-// residual paths — the registered scheme.BFloat16 dtype through encBinaryDT.
+// residual paths. They use literal kernel names to avoid rebuilding the generic
+// "vv_"+op+dtype string in the per-token decode loop.
 func encAddBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n int) error {
-	return encBinaryDT(enc, "Add", scheme.BFloat16, a, b, out, n)
+	return encAddBF16To(enc, a, b, out, 0, 0, 0, n)
+}
+func encAddBF16To(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
+	return encBinaryLiteralTo(enc, "vv_Addbfloat16", a, b, out, aOff, bOff, outOff, n)
 }
 func encMulBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n int) error {
-	return encBinaryDT(enc, "Multiply", scheme.BFloat16, a, b, out, n)
+	return encMulBF16To(enc, a, b, out, 0, 0, 0, n)
+}
+func encMulBF16To(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
+	return encBinaryLiteralTo(enc, "vv_Multiplybfloat16", a, b, out, aOff, bOff, outOff, n)
 }
 
 // encUnaryDT encodes the element-wise unary op (op = "Tanh", …) in the activation
@@ -323,25 +607,31 @@ func encUnaryDT(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType, 
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(in, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 1)
-	cnt := uint32(n)
-	enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&cnt)), 4), 4, 2)
-	group := uint(256)
-	if uint(n) < group {
-		group = uint(n)
+	emitUnary(encSink{enc}, pso, in, out, n)
+	return nil
+}
+
+func encUnaryDTObject(enc metal.MTLComputeCommandEncoderObject, op string, dt scheme.DType, in, out metal.MTLBuffer, n int) error {
+	pso, err := pipelineFor("v_" + op + dt.Name() + dt.Name())
+	if err != nil {
+		return err
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-		metal.MTLSize{Width: group, Height: 1, Depth: 1},
-	)
+	emitUnary(encObjectSink{enc: enc}, pso, in, out, n)
 	return nil
 }
 
 // encTanhBF16 is the bf16-bound tanh (gemma's gelu nonlinearity) — scheme.BFloat16 through encUnaryDT.
 func encTanhBF16(enc metal.MTLComputeCommandEncoder, in, out metal.MTLBuffer, n int) error {
 	return encUnaryDT(enc, "Tanh", scheme.BFloat16, in, out, n)
+}
+
+func encTanhBF16Object(enc metal.MTLComputeCommandEncoderObject, in, out metal.MTLBuffer, n int) error {
+	pso, err := pipelineFor("v_Tanhbfloat16bfloat16")
+	if err != nil {
+		return err
+	}
+	emitUnary(encObjectSink{enc: enc}, pso, in, out, n)
+	return nil
 }
 
 // AttentionBlock runs the attention half of a gemma decode step on-device, in
@@ -377,39 +667,80 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf := sharedBytes(x)
+		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 		nwBuf := residentBytes(normWeight)
 		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
+		kvScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockKVScratch(kvScratch)
+		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		if err != nil {
+			encErr = err
+			return
+		}
 		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		offBuf := scalarI32(off)
+		sc := getAttnScratch(dModel, qDim, nKVHeads*headDim, nHeads, 0)
+		defer putAttnScratch(sc)
 
-		normed := scratchBF16(dModel)
-		q, qr := scratchBF16(qDim), scratchBF16(qDim)
-		attn := scratchBF16(qDim)
-		attnOut := scratchBF16(dModel)
-		outBuf := scratchBF16(dModel)
+		rmsPSO, err := pipelineFor(rmsKernelBF16(dModel))
+		if err != nil {
+			encErr = err
+			return
+		}
+		rmsTG := rmsThreadgroup(dModel, rmsPSO)
+		qPlan, err := newBF16GemvPlan(qDim, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		oPlan, err := newBF16GemvPlan(dModel, qDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		ropePSO, err := ropePipelineBF16(false)
+		if err != nil {
+			encErr = err
+			return
+		}
+		sdpaPSO, err := sdpaVectorPipelineForHeadDim(headDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		addPSO, err := pipelineFor("vv_Addbfloat16")
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		steps := []func() error{
-			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps) },
-			func() error { return encGemvBF16(enc, wqBuf, normed, q, qDim, dModel) },
-			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale) },
-			func() error { return encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale) },
-			func() error { return encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim) },
-			func() error { return encAddBF16(enc, xBuf, attnOut, outBuf, dModel) },
-		}
-		for _, step := range steps {
-			if encErr = step(); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
-		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		sink := encSink{enc}
+		emitRMSNorm(sink, rmsPSO, xBuf, nwBuf, sc.normed, 0, dModel, eps, rmsTG)
+		emitBF16GemvPlan(sink, qPlan, wqBuf, sc.normed, sc.q, dModel, qDim)
+		emitRopeAt(sink, ropePSO, sc.q, sc.qr, 0, 0, offBuf, 0, nil, nHeads, headDim, headDim, scale, float32(math.Log2(float64(base))))
+		emitSDPA(sink, sdpaPSO, sc.qr, kBuf, vBuf, sc.attn, 0, nil, nHeads, nKVHeads, kvLen, int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+		emitBF16GemvPlan(sink, oPlan, woBuf, sc.attn, sc.attnOut, qDim, dModel)
+		emitBinary(sink, addPSO, xBuf, 0, sc.attnOut, 0, outBuf, 0, dModel)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, ioScratch.out.bytes[:len(out)])
 	})
 	return out, encErr
 }

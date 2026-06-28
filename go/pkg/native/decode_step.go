@@ -5,6 +5,7 @@
 package native
 
 import (
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -27,12 +28,41 @@ import (
 // attnScratch holds the attention-half intermediates, allocated once so the
 // decode loop reuses them every token (no per-token buffer churn).
 type attnScratch struct {
+	dModel, qDim, kvDim, nHeads, maxLen int
 	normed, q, qr, kProj, attn, attnOut metal.MTLBuffer
 	// 2-pass long-context SDPA intermediates — nil unless the path opted in (maxLen
 	// reaches the knee), so the router falls back to single-pass when absent. Sized to
 	// the largest layer's qDim × the maxLen block count, allocated once (no per-token
 	// churn): partials [blocks·qDim] bf16, sums/maxs [blocks·nHeads] float32.
 	p2Partials, p2Sums, p2Maxs metal.MTLBuffer
+}
+
+type attnScratchKey struct {
+	dModel, qDim, kvDim, nHeads, maxLen int
+}
+
+var attnScratchPools sync.Map
+
+func attnScratchPoolFor(key attnScratchKey) *sync.Pool {
+	if v, ok := attnScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := attnScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func attnScratchReady(sc *attnScratch, key attnScratchKey) bool {
+	if sc == nil || sc.dModel != key.dModel || sc.qDim != key.qDim || sc.kvDim != key.kvDim || sc.nHeads != key.nHeads || sc.maxLen != key.maxLen ||
+		sc.normed == nil || sc.q == nil || sc.qr == nil || sc.kProj == nil || sc.attn == nil || sc.attnOut == nil {
+		return false
+	}
+	if key.maxLen >= sdpa2PassMinKV && key.nHeads > 0 {
+		return sc.p2Partials != nil && sc.p2Sums != nil && sc.p2Maxs != nil
+	}
+	return true
 }
 
 // newAttnScratch allocates the reusable attention-half scratch. When maxLen reaches
@@ -42,6 +72,7 @@ type attnScratch struct {
 // the LARGEST layer's q dimension (the scratch is shared across all layers).
 func newAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) attnScratch {
 	sc := attnScratch{
+		dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads, maxLen: maxLen,
 		normed:  scratchBF16(dModel),
 		q:       scratchBF16(qDim),
 		qr:      scratchBF16(qDim),
@@ -58,8 +89,32 @@ func newAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) attnScratch {
 	return sc
 }
 
+func getAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) *attnScratch {
+	key := attnScratchKey{dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads, maxLen: maxLen}
+	pool := attnScratchPoolFor(key)
+	if v := pool.Get(); v != nil {
+		sc := v.(*attnScratch)
+		if attnScratchReady(sc, key) {
+			return sc
+		}
+	}
+	sc := newAttnScratch(dModel, qDim, kvDim, nHeads, maxLen)
+	return &sc
+}
+
+func putAttnScratch(sc *attnScratch) {
+	if sc == nil {
+		return
+	}
+	key := attnScratchKey{dModel: sc.dModel, qDim: sc.qDim, kvDim: sc.kvDim, nHeads: sc.nHeads, maxLen: sc.maxLen}
+	if attnScratchReady(sc, key) {
+		attnScratchPoolFor(key).Put(sc)
+	}
+}
+
 // mlpScratch holds the MLP-half intermediates (the gelu chain), allocated once.
 type mlpScratch struct {
+	dModel, dFF                 int
 	mlpNormed, gate, up         metal.MTLBuffer
 	x2, x3, x3s, inner          metal.MTLBuffer
 	scaled, tnh, onePlus, halfG metal.MTLBuffer
@@ -67,8 +122,39 @@ type mlpScratch struct {
 	c044, c079, c1, c05         metal.MTLBuffer
 }
 
+type mlpScratchKey struct {
+	dModel, dFF int
+}
+
+var mlpScratchPools sync.Map
+
+func mlpScratchPoolFor(key mlpScratchKey) *sync.Pool {
+	if v, ok := mlpScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := mlpScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func mlpScratchReady(sc *mlpScratch, key mlpScratchKey) bool {
+	if sc == nil || sc.dModel != key.dModel || sc.dFF != key.dFF ||
+		sc.mlpNormed == nil || sc.gate == nil || sc.up == nil || sc.gated == nil || sc.down == nil {
+		return false
+	}
+	if gpuHasGeluKernel() {
+		return true
+	}
+	return sc.x2 != nil && sc.x3 != nil && sc.x3s != nil && sc.inner != nil &&
+		sc.scaled != nil && sc.tnh != nil && sc.onePlus != nil && sc.halfG != nil &&
+		sc.gelu != nil && sc.c044 != nil && sc.c079 != nil && sc.c1 != nil && sc.c05 != nil
+}
+
 func newMLPScratch(dModel, dFF int) mlpScratch {
 	sc := mlpScratch{
+		dModel: dModel, dFF: dFF,
 		mlpNormed: scratchBF16(dModel),
 		gate:      scratchBF16(dFF), up: scratchBF16(dFF),
 		gated: scratchBF16(dFF), down: scratchBF16(dModel),
@@ -79,11 +165,34 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 	sc.x2, sc.x3, sc.x3s, sc.inner = scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
 	sc.scaled, sc.tnh, sc.onePlus, sc.halfG = scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
 	sc.gelu = scratchBF16(dFF)
-	sc.c044 = sharedBytes(bf16ConstBytes(dFF, 0.044715))
-	sc.c079 = sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
-	sc.c1 = sharedBytes(bf16ConstBytes(dFF, 1.0))
-	sc.c05 = sharedBytes(bf16ConstBytes(dFF, 0.5))
+	sc.c044 = bf16ConstBuffer(dFF, 0.044715)
+	sc.c079 = bf16ConstBuffer(dFF, 0.7978845608028654)
+	sc.c1 = bf16ConstBuffer(dFF, 1.0)
+	sc.c05 = bf16ConstBuffer(dFF, 0.5)
 	return sc
+}
+
+func getMLPScratch(dModel, dFF int) *mlpScratch {
+	key := mlpScratchKey{dModel: dModel, dFF: dFF}
+	pool := mlpScratchPoolFor(key)
+	if v := pool.Get(); v != nil {
+		sc := v.(*mlpScratch)
+		if mlpScratchReady(sc, key) {
+			return sc
+		}
+	}
+	sc := newMLPScratch(dModel, dFF)
+	return &sc
+}
+
+func putMLPScratch(sc *mlpScratch) {
+	if sc == nil {
+		return
+	}
+	key := mlpScratchKey{dModel: sc.dModel, dFF: sc.dFF}
+	if mlpScratchReady(sc, key) {
+		mlpScratchPoolFor(key).Put(sc)
+	}
 }
 
 // encResidualMaybeNorm encodes out = x + v, or out = x + RMSNorm(v, norm) when norm is
@@ -93,19 +202,27 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 // caller no longer needs (sc.normed after the attention projections, sc.mlpNormed after
 // the MLP projections). Bf16, dModel-wide.
 func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out metal.MTLBuffer, norm bufView, dModel int, eps float32) error {
+	return encResidualMaybeNormAt(enc, x, 0, v, 0, scratch, out, 0, norm, dModel, eps)
+}
+
+func encResidualMaybeNormAt(enc metal.MTLComputeCommandEncoder, x metal.MTLBuffer, xOff uint, v metal.MTLBuffer, vOff uint, scratch, out metal.MTLBuffer, outOff uint, norm bufView, dModel int, eps float32) error {
 	if norm.buf == nil {
-		return encAddBF16(enc, x, v, out, dModel)
+		return encAddBF16To(enc, x, v, out, xOff, vOff, outOff, dModel)
 	}
 	// Lockstep with the ICB's setRMSResidual: when the custom library is present the ICB fuses
 	// out = res + rms(branch) into one kernel, so the re-encode must use the SAME fused kernel to stay
 	// byte-equal (the ICB-vs-re-encode parity tests). Same gpuHasGeluKernel gate as the recorder.
-	if gpuHasGeluKernel() {
+	if xOff == 0 && vOff == 0 && outOff == 0 && gpuHasGeluKernel() {
 		return encRMSNormResidualBF16(enc, v, norm.buf, x, out, norm.off, dModel, eps)
 	}
-	if err := encRMSNormBF16(enc, v, norm.buf, scratch, norm.off, dModel, eps); err != nil {
+	if vOff == 0 {
+		if err := encRMSNormBF16(enc, v, norm.buf, scratch, norm.off, dModel, eps); err != nil {
+			return err
+		}
+	} else if err := encRMSNormRowsBF16(enc, v, norm.buf, scratch, vOff, norm.off, 0, 1, dModel, eps); err != nil {
 		return err
 	}
-	return encAddBF16(enc, x, scratch, out, dModel)
+	return encAddBF16To(enc, x, scratch, out, xOff, 0, outOff, dModel)
 }
 
 // encAttnHalfKV encodes the real attention half — projections, K-RoPE into the
@@ -117,6 +234,32 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
 	x, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
+	attnNormW, postAttnNorm, qNorm, kNorm bufView, valueNorm metal.MTLBuffer,
+	sc attnScratch, proj projector,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
+	ropeFreqs metal.MTLBuffer,
+) error {
+	return encAttnHalfKVAt(enc, x, kCacheBuf, vCacheBuf, offBuf, h, 0,
+		attnNormW, postAttnNorm, qNorm, kNorm, valueNorm, sc, proj,
+		dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim, base, scale, eps, ropeFreqs)
+}
+
+func encAttnHalfKVAt(
+	enc metal.MTLComputeCommandEncoder,
+	x, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer, offOff uint,
+	attnNormW, postAttnNorm, qNorm, kNorm bufView, valueNorm metal.MTLBuffer,
+	sc attnScratch, proj projector,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
+	ropeFreqs metal.MTLBuffer,
+) error {
+	return encAttnHalfKVInputAt(enc, x, 0, kCacheBuf, vCacheBuf, offBuf, h, offOff,
+		attnNormW, postAttnNorm, qNorm, kNorm, valueNorm, sc, proj,
+		dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim, base, scale, eps, ropeFreqs)
+}
+
+func encAttnHalfKVInputAt(
+	enc metal.MTLComputeCommandEncoder,
+	x metal.MTLBuffer, xOff uint, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer, offOff uint,
 	attnNormW, postAttnNorm, qNorm, kNorm bufView, valueNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
@@ -138,7 +281,11 @@ func encAttnHalfKV(
 		}
 	}
 	rowOff := uint(slot * kvDim * bf16Size) // byte offset of this token's cache ring slot
-	if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
+	if xOff == 0 {
+		if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
+			return err
+		}
+	} else if err := encRMSNormRowsBF16(enc, x, attnNormW.buf, sc.normed, xOff, attnNormW.off, 0, 1, dModel, eps); err != nil {
 		return err
 	}
 	// query: project, (gemma4 per-head QK-norm), rotate IN PLACE (so partial rotary's tail keeps the projected value)
@@ -147,7 +294,7 @@ func encAttnHalfKV(
 	}
 	if gpuHasGeluKernel() && qNorm.buf != nil {
 		// fused: sc.q = RoPE(RMSNorm(sc.q, qNorm)) in one op — lockstep with the ICB setQKNormRope
-		if err := encQKNormRope(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale, eps); err != nil {
+		if err := encQKNormRopeAt(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, offBuf, offOff, ropeFreqs, nHeads, headDim, rotaryDim, base, scale, eps); err != nil {
 			return err
 		}
 	} else {
@@ -156,7 +303,7 @@ func encAttnHalfKV(
 				return err
 			}
 		}
-		if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
+		if err := encRopeDecodeAt(enc, sc.q, sc.q, 0, 0, offBuf, offOff, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
 			return err
 		}
 	}
@@ -167,7 +314,7 @@ func encAttnHalfKV(
 	}
 	if gpuHasGeluKernel() && kNorm.buf != nil {
 		// fused: kCache row = RoPE(RMSNorm(kCache row, kNorm)) in one op — lockstep with the ICB setQKNormRope
-		if err := encQKNormRope(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale, eps); err != nil {
+		if err := encQKNormRopeAt(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, offBuf, offOff, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale, eps); err != nil {
 			return err
 		}
 	} else {
@@ -176,7 +323,7 @@ func encAttnHalfKV(
 				return err
 			}
 		}
-		if err := encRopeDecode(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
+		if err := encRopeDecodeAt(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, offOff, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
 			return err
 		}
 	}
@@ -209,7 +356,7 @@ func encAttnHalfKV(
 		return err
 	}
 	// h = x + Wo·attn  (gemma4: post-attention norm on Wo·attn first; sc.normed is free)
-	return encResidualMaybeNorm(enc, x, sc.attnOut, sc.normed, h, postAttnNorm, dModel, eps)
+	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, 0, postAttnNorm, dModel, eps)
 }
 
 // encMLPHalfBF16 encodes the gemma MLP half — rms, gate/up projections, the tanh
@@ -219,6 +366,15 @@ func encAttnHalfKV(
 func encMLPHalfBF16(
 	enc metal.MTLComputeCommandEncoder,
 	h, out metal.MTLBuffer, mlpNormW, postFFNorm bufView,
+	sc mlpScratch, proj projector,
+	dModel, dFF int, eps float32,
+) error {
+	return encMLPHalfBF16At(enc, h, out, 0, mlpNormW, postFFNorm, sc, proj, dModel, dFF, eps)
+}
+
+func encMLPHalfBF16At(
+	enc metal.MTLComputeCommandEncoder,
+	h, out metal.MTLBuffer, outOff uint, mlpNormW, postFFNorm bufView,
 	sc mlpScratch, proj projector,
 	dModel, dFF int, eps float32,
 ) error {
@@ -252,7 +408,7 @@ func encMLPHalfBF16(
 		return err
 	}
 	// out = h + Wdown·…  (gemma4: post-feed-forward norm on Wdown·… first; sc.mlpNormed is free)
-	return encResidualMaybeNorm(enc, h, sc.down, sc.mlpNormed, out, postFFNorm, dModel, eps)
+	return encResidualMaybeNormAt(enc, h, 0, sc.down, 0, sc.mlpNormed, out, outOff, postFFNorm, dModel, eps)
 }
 
 // validateStepKV checks the shared shape contract for the KV-cache decode entries.
@@ -295,23 +451,46 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
-		proj := bf16Projector{wQ: copyView(wQ), wK: copyView(wK), wV: copyView(wV), wO: copyView(wO), dModel: dModel, qDim: qDim, kvDim: kvDim}
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		off := int32(pos)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		sc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
-		hBuf := scratchBF16(dModel)
-
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, hBuf, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
-			enc.EndEncoding()
+		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
+		if err != nil {
+			encErr = err
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		defer putQMVBF16Scratch(ioScratch)
+		xBuf, hBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		nwBuf := residentBytes(attnNormW)
+		proj := bf16Projector{
+			wQ: bufView{buf: residentBytes(wQ)}, wK: bufView{buf: residentBytes(wK)}, wV: bufView{buf: residentBytes(wV)}, wO: bufView{buf: residentBytes(wO)},
+			dModel: dModel, qDim: qDim, kvDim: kvDim,
+		}
+		kvScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockKVScratch(kvScratch)
+		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		if err != nil {
+			encErr = err
+			return
+		}
+		offBuf := scalarI32(int32(pos))
+		sc := getAttnScratch(dModel, qDim, kvDim, nHeads, 0)
+		defer putAttnScratch(sc)
+
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, hBuf, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, *sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, unsafe.Slice((*byte)(hBuf.Contents()), len(out)))
 		// reflect the grown cache rows back to the caller's slices
 		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
@@ -346,33 +525,56 @@ func DecodeStepKV(
 	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
+		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		nwBuf := residentBytes(attnNormW)
 		proj := bf16Projector{
-			wQ: copyView(wQ), wK: copyView(wK), wV: copyView(wV), wO: copyView(wO),
-			wGate: copyView(wGate), wUp: copyView(wUp), wDown: copyView(wDown),
+			wQ: bufView{buf: residentBytes(wQ)}, wK: bufView{buf: residentBytes(wK)}, wV: bufView{buf: residentBytes(wV)}, wO: bufView{buf: residentBytes(wO)},
+			wGate: bufView{buf: residentBytes(wGate)}, wUp: bufView{buf: residentBytes(wUp)}, wDown: bufView{buf: residentBytes(wDown)},
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 		}
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		mnwBuf := sharedBytes(mlpNormW)
-		off := int32(pos)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
-		msc := newMLPScratch(dModel, dFF)
-		hBuf, outBuf := scratchBF16(dModel), scratchBF16(dModel)
+		kvScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockKVScratch(kvScratch)
+		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		if err != nil {
+			encErr = err
+			return
+		}
+		mnwBuf := residentBytes(mlpNormW)
+		offBuf := scalarI32(int32(pos))
+		asc := getAttnScratch(dModel, qDim, kvDim, nHeads, 0)
+		defer putAttnScratch(asc)
+		msc := getMLPScratch(dModel, dFF)
+		defer putMLPScratch(msc)
+		layerScratch := getDecodeLayerResidualScratch(dModel)
+		defer putDecodeLayerResidualScratch(layerScratch)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, hBuf, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
-			enc.EndEncoding()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, layerScratch.h, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, *asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+			endEncodingFast(enc)
 			return
 		}
-		if encErr = encMLPHalfBF16(enc, hBuf, outBuf, bufView{buf: mnwBuf}, bufView{}, msc, proj, dModel, dFF, eps); encErr != nil {
-			enc.EndEncoding()
+		if encErr = encMLPHalfBF16(enc, layerScratch.h, outBuf, bufView{buf: mnwBuf}, bufView{}, *msc, proj, dModel, dFF, eps); encErr != nil {
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
 		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
 		copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))

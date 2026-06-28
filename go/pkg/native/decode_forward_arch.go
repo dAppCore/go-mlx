@@ -106,8 +106,21 @@ type archLayerBufs struct {
 	qNorm, kNorm             bufView         // gemma4 per-head QK-norm (nil buf = skip)
 	layerScalar              metal.MTLBuffer // gemma4 per-layer output scalar, broadcast to dModel (synthesised, nil = skip)
 	kCache, vCache           metal.MTLBuffer
+	kCachePtr, vCachePtr     *byte
 	proj                     projector
 	dFF                      int // this layer's FFN width (gemma4 E2B/E4B vary it per layer)
+}
+
+func (lb *archLayerBufs) cacheKVContents() {
+	if lb == nil {
+		return
+	}
+	if lb.kCache != nil {
+		lb.kCachePtr = (*byte)(lb.kCache.Contents())
+	}
+	if lb.vCache != nil {
+		lb.vCachePtr = (*byte)(lb.vCache.Contents())
+	}
 }
 
 // archDecodeState holds the resident buffers of an arch decode — the per-layer weights/
@@ -122,8 +135,13 @@ type archDecodeState struct {
 	moeWeights   []*MoELayerWeights
 	asc          attnScratch
 	msc          mlpScratch
+	coreScratch  *archDecodeCoreScratch
 	hBuf, xA, xB metal.MTLBuffer
+	denseBatch   denseBatchScratch
 	offBuf       metal.MTLBuffer
+	offPtr       *int32
+	hBufPtr      *byte
+	xAPtr, xBPtr *byte
 	ropeFreqs    metal.MTLBuffer // resident periods (1/inv_freq) for YaRN long-context rope; nil = base-derived rope
 	// gemma4 global (proportional+partial) rope: the period spectrum over the FULL head dim
 	// (metal's gemma4ProportionalFreqs) for GlobalAttention layers, so rope pairs (d, d+globalHeadDim/2)
@@ -139,10 +157,15 @@ type archDecodeState struct {
 	// gemma4 per-layer-input tower (E2B/E4B): when ple is non-nil, each layer's output is gated
 	// by PerLayerInputGateQuant before layer_scalar, fed its pliDim slice of perLayerInput (the
 	// PerLayerInputs tensor, set per token). nil = no PLE tower (dense models — byte-identical).
-	ple           []pleLayer
-	perLayerInput []byte // [numLayers·pliDim] bf16, set before each token's stepToken
-	pliDim        int
-	hostScratch   []byte // reusable dModel bf16 host handoff for MoE/PLE host-orchestrated branches
+	ple               []pleLayer
+	perLayerInput     []byte // [numLayers·pliDim] bf16, set before each token's stepToken
+	perLayerInputBuf  metal.MTLBuffer
+	perLayerInputLen  int
+	pliDim            int
+	hostScratch       []byte // reusable dModel bf16 host handoff for tests and non-buffer host-orchestrated branches
+	hostPinnedScratch *pinnedNoCopyBytes
+	pleGateScratch    *perLayerInputGateScratch
+	pleInputScratch   *pinnedNoCopyBytes
 
 	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
 	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
@@ -166,6 +189,116 @@ func (s *archDecodeState) hostHiddenScratch(dModel int) []byte {
 		s.hostScratch = make([]byte, n)
 	}
 	return s.hostScratch[:n]
+}
+
+func (s *archDecodeState) hostHiddenPinnedScratch(dModel int) ([]byte, metal.MTLBuffer, error) {
+	if s == nil {
+		return nil, nil, core.NewError("native.archDecodeState.hostHiddenPinnedScratch: state is nil")
+	}
+	n := dModel * bf16Size
+	if n <= 0 {
+		return nil, nil, core.NewError("native.archDecodeState.hostHiddenPinnedScratch: hidden size must be > 0")
+	}
+	if s.coreScratch != nil {
+		p, err := s.coreScratch.hostPinnedScratch(n)
+		if err != nil {
+			return nil, nil, err
+		}
+		if p != nil {
+			s.hostPinnedScratch = p
+			return p.bytes, p.buf, nil
+		}
+	}
+	if s.hostPinnedScratch == nil || len(s.hostPinnedScratch.bytes) != n {
+		if s.hostPinnedScratch != nil {
+			s.hostPinnedScratch.Close()
+			s.hostPinnedScratch = nil
+		}
+		var err error
+		s.hostPinnedScratch, err = newPinnedNoCopyBytes(n)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return s.hostPinnedScratch.bytes, s.hostPinnedScratch.buf, nil
+}
+
+func (s *archDecodeState) perLayerInputGateScratch() *perLayerInputGateScratch {
+	if s.pleGateScratch == nil || s.pleGateScratch.dModel != s.dModel || s.pleGateScratch.pliDim != s.pliDim {
+		if s.pleGateScratch != nil {
+			s.pleGateScratch.Close()
+		}
+		s.pleGateScratch = newPerLayerInputGateScratch(s.dModel, s.pliDim)
+	}
+	return s.pleGateScratch
+}
+
+func (s *archDecodeState) hostPLEInputBuffer(want int) (metal.MTLBuffer, error) {
+	if s == nil {
+		return nil, core.NewError("native.archDecodeState.hostPLEInputBuffer: state is nil")
+	}
+	if len(s.perLayerInput) != want {
+		return nil, core.NewError("native.archDecodeState.hostPLEInputBuffer: PLE tensor size mismatch")
+	}
+	if s.pleInputScratch == nil || len(s.pleInputScratch.bytes) != want {
+		if s.pleInputScratch != nil {
+			s.pleInputScratch.Close()
+			s.pleInputScratch = nil
+		}
+		var err error
+		s.pleInputScratch, err = newPinnedNoCopyBytes(want)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.pleInputScratch.copyBuffer(s.perLayerInput)
+}
+
+func (s *archDecodeState) Close() {
+	if s == nil {
+		return
+	}
+	if s.pleGateScratch != nil {
+		s.pleGateScratch.Close()
+		s.pleGateScratch = nil
+	}
+	if s.pleInputScratch != nil {
+		s.pleInputScratch.Close()
+		s.pleInputScratch = nil
+	}
+	if s.hostPinnedScratch != nil && (s.coreScratch == nil || s.hostPinnedScratch != s.coreScratch.hostPinned) {
+		s.hostPinnedScratch.Close()
+	}
+	s.hostPinnedScratch = nil
+	if s.coreScratch != nil {
+		putArchDecodeCoreScratch(s.coreScratch)
+		s.coreScratch = nil
+	}
+}
+
+func (s *archDecodeState) bufferPtr(buf metal.MTLBuffer) *byte {
+	if s == nil || buf == nil {
+		return nil
+	}
+	switch buf {
+	case s.hBuf:
+		if s.hBufPtr != nil {
+			return s.hBufPtr
+		}
+	case s.xA:
+		if s.xAPtr != nil {
+			return s.xAPtr
+		}
+	case s.xB:
+		if s.xBPtr != nil {
+			return s.xBPtr
+		}
+	}
+	return (*byte)(buf.Contents())
+}
+
+func (s *archDecodeState) bufferBytes(buf metal.MTLBuffer, n int) []byte {
+	return unsafe.Slice(s.bufferPtr(buf), n)
 }
 
 // pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
@@ -203,8 +336,40 @@ type ArchPLEQuant struct {
 }
 
 type archDecodePLEInputs struct {
-	tokenIDs []int32
-	compute  func(id int32, emb []byte) ([]byte, error)
+	tokenIDs      []int32
+	compute       func(id int32, emb []byte) ([]byte, error)
+	computeBuffer func(id int32, emb []byte, embBuf metal.MTLBuffer) (int, metal.MTLBuffer, []byte, error)
+	scratch       *plHostScratch
+	buffer        metal.MTLBuffer
+}
+
+func (p *archDecodePLEInputs) Close() {
+	if p == nil {
+		return
+	}
+	if p.scratch != nil {
+		p.scratch.Close()
+	}
+	p.scratch = nil
+	p.buffer = nil
+}
+
+func (p *archDecodePLEInputs) ensureScratch(plDim, dModel int, projScale float32) (*plHostScratch, error) {
+	if p == nil {
+		return nil, core.NewError("native.archDecodePLEInputs.ensureScratch: runtime is nil")
+	}
+	if p.scratch == nil {
+		scratch, err := newPLHostScratch(plDim, dModel, projScale)
+		if err != nil {
+			return nil, err
+		}
+		p.scratch = scratch
+		return scratch, nil
+	}
+	if p.scratch.plDim != plDim || p.scratch.dModel != dModel {
+		return nil, core.NewError("native.archDecodePLEInputs.ensureScratch: scratch dimension mismatch")
+	}
+	return p.scratch, nil
 }
 
 func singleArchPLEBF16(fn string, ple []ArchPLEBF16) (*ArchPLEBF16, error) {
@@ -240,12 +405,62 @@ func archPLEBF16Runtime(fn string, p *ArchPLEBF16, nLayers, T, dModel int, eps f
 	if len(p.PerLayerProjNormW) != p.PliDim*bf16Size {
 		return nil, 0, core.NewError(fn + ": PLE projection norm must be pliDim bf16 bytes")
 	}
-	return &archDecodePLEInputs{
-		tokenIDs: p.TokenIDs,
-		compute: func(id int32, emb []byte) ([]byte, error) {
-			return PerLayerInputs(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, nil, nil, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, 0, 0, eps, bufView{})
-		},
-	}, p.PliDim, nil
+	rt := &archDecodePLEInputs{tokenIDs: p.TokenIDs}
+	var projView bufView
+	plDim := nLayers * p.PliDim
+	projScale := float32(1.0 / math.Sqrt(float64(dModel)))
+	ensureResident := func() (*plHostScratch, error) {
+		if projView.buf == nil {
+			projView = bf16WeightView(p.PerLayerModelProjW, bufView{})
+		}
+		return rt.ensureScratch(plDim, dModel, projScale)
+	}
+	rt.compute = func(id int32, emb []byte) ([]byte, error) {
+		var scratch *plHostScratch
+		if len(p.PerLayerModelProjW) > 0 {
+			var err error
+			scratch, err = ensureResident()
+			if err != nil {
+				return nil, err
+			}
+		}
+		out, err := PerLayerInputs(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, nil, nil, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, 0, 0, eps, projView, scratch)
+		if err != nil {
+			rt.buffer = nil
+			return nil, err
+		}
+		if scratch != nil {
+			rt.buffer = scratch.out
+		} else {
+			rt.buffer = nil
+		}
+		return out, nil
+	}
+	rt.computeBuffer = func(id int32, emb []byte, embBuf metal.MTLBuffer) (int, metal.MTLBuffer, []byte, error) {
+		if len(p.PerLayerModelProjW) == 0 {
+			out, err := rt.compute(id, emb)
+			return len(out), nil, out, err
+		}
+		scratch, err := ensureResident()
+		if err != nil {
+			rt.buffer = nil
+			return 0, nil, nil, err
+		}
+		var buf metal.MTLBuffer
+		var n int
+		if embBuf != nil {
+			buf, n, err = perLayerInputsResidentMetalBuffer(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, p.PerLayerProjNormW, id, embBuf, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, eps, projView, scratch)
+		} else {
+			buf, n, err = perLayerInputsResidentBuffer(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, eps, projView, scratch)
+		}
+		if err != nil {
+			rt.buffer = nil
+			return 0, nil, nil, err
+		}
+		rt.buffer = buf
+		return n, buf, nil, nil
+	}
+	return rt, p.PliDim, nil
 }
 
 func archPLEQuantRuntime(fn string, p *ArchPLEQuant, nLayers, T, dModel int, eps float32) (*archDecodePLEInputs, int, error) {
@@ -261,12 +476,82 @@ func archPLEQuantRuntime(fn string, p *ArchPLEQuant, nLayers, T, dModel int, eps
 	if len(p.PerLayerProjNormW) != p.PliDim*bf16Size {
 		return nil, 0, core.NewError(fn + ": PLE projection norm must be pliDim bf16 bytes")
 	}
-	return &archDecodePLEInputs{
-		tokenIDs: p.TokenIDs,
-		compute: func(id int32, emb []byte) ([]byte, error) {
-			return PerLayerInputs(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerModelProjScales, p.PerLayerModelProjBiases, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps, bufView{})
-		},
-	}, p.PliDim, nil
+	rt := &archDecodePLEInputs{tokenIDs: p.TokenIDs}
+	var projView bufView
+	plDim := nLayers * p.PliDim
+	projScale := float32(1.0 / math.Sqrt(float64(dModel)))
+	ensureScratch := func() (*plHostScratch, error) {
+		return rt.ensureScratch(plDim, dModel, projScale)
+	}
+	ensureResident := func() (*plHostScratch, error) {
+		if projView.buf == nil {
+			projView = bf16WeightView(p.PerLayerModelProjW, bufView{})
+		}
+		return ensureScratch()
+	}
+	rt.compute = func(id int32, emb []byte) ([]byte, error) {
+		var scratch *plHostScratch
+		if len(p.PerLayerModelProjW) > 0 {
+			var err error
+			if len(p.PerLayerModelProjScales) == 0 {
+				scratch, err = ensureResident()
+			} else {
+				scratch, err = ensureScratch()
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		out, err := PerLayerInputs(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerModelProjScales, p.PerLayerModelProjBiases, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps, projView, scratch)
+		if err != nil {
+			rt.buffer = nil
+			return nil, err
+		}
+		if scratch != nil {
+			rt.buffer = scratch.out
+		} else {
+			rt.buffer = nil
+		}
+		return out, nil
+	}
+	rt.computeBuffer = func(id int32, emb []byte, embBuf metal.MTLBuffer) (int, metal.MTLBuffer, []byte, error) {
+		if len(p.PerLayerModelProjW) == 0 {
+			out, err := rt.compute(id, emb)
+			return len(out), nil, out, err
+		}
+		var scratch *plHostScratch
+		var err error
+		if len(p.PerLayerModelProjScales) == 0 {
+			scratch, err = ensureResident()
+		} else {
+			scratch, err = ensureScratch()
+		}
+		if err != nil {
+			rt.buffer = nil
+			return 0, nil, nil, err
+		}
+		var buf metal.MTLBuffer
+		var n int
+		if len(p.PerLayerModelProjScales) != 0 {
+			proj := QuantWeight{Packed: p.PerLayerModelProjW, Scales: p.PerLayerModelProjScales, Biases: p.PerLayerModelProjBiases}
+			if embBuf != nil {
+				buf, n, err = perLayerInputsQuantResidentMetalBuffer(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, proj, p.PerLayerProjNormW, id, embBuf, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps, scratch)
+			} else {
+				buf, n, err = perLayerInputsQuantResidentBuffer(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, proj, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps, scratch)
+			}
+		} else if embBuf != nil {
+			buf, n, err = perLayerInputsResidentMetalBuffer(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerProjNormW, id, embBuf, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, eps, projView, scratch)
+		} else {
+			buf, n, err = perLayerInputsResidentBuffer(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, eps, projView, scratch)
+		}
+		if err != nil {
+			rt.buffer = nil
+			return 0, nil, nil, err
+		}
+		rt.buffer = buf
+		return n, buf, nil, nil
+	}
+	return rt, p.PliDim, nil
 }
 
 func quantWeightBytesOK(w QuantWeight, outDim, inDim, groupSize, bits int) bool {
@@ -340,7 +625,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 	// (the per-head value RMSNorm reads axisSize=headDim of it). nil ⇒ no value-norm.
 	var valueNormOnes metal.MTLBuffer
 	if valueNorm {
-		valueNormOnes = sharedBytes(bf16ConstBytes(maxHeadDim, 1.0))
+		valueNormOnes = bf16ConstBuffer(maxHeadDim, 1.0)
 	}
 	// gemma4 global proportional+partial rope spectrum (see gemma4ProportionalPeriods): built once
 	// for GlobalAttention layers so their rope pairs over the FULL head dim. Sliding (full rotary)
@@ -355,15 +640,22 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 	}
 	if globalHeadDim > 0 && rotaryDim > 0 && rotaryDim < globalHeadDim {
 		periods := gemma4ProportionalPeriods(globalHeadDim, rotaryDim, base)
-		globalRopeFreqs = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+		globalRopeFreqs = cachedRawRopePeriodsBuffer(periods)
 	}
-	off := int32(0)
+	coreScratch := getArchDecodeCoreScratch(dModel, maxQDim, maxKvDim, nHeads, maxLen, maxDFF)
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
 		globalRopeFreqs: globalRopeFreqs, globalHeadDim: globalHeadDim,
-		asc: newAttnScratch(dModel, maxQDim, maxKvDim, nHeads, maxLen), msc: newMLPScratch(dModel, maxDFF),
-		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
-		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
+		asc: coreScratch.asc, msc: coreScratch.msc,
+		coreScratch:    coreScratch,
+		hBuf:           coreScratch.hBuf,
+		xA:             coreScratch.xA,
+		xB:             coreScratch.xB,
+		offBuf:         coreScratch.offBuf,
+		offPtr:         coreScratch.offPtr,
+		hBufPtr:        coreScratch.hBufPtr,
+		xAPtr:          coreScratch.xAPtr,
+		xBPtr:          coreScratch.xBPtr,
 		valueNormOnes:  valueNormOnes,
 		dModel:         dModel,
 		nHeads:         nHeads,
@@ -416,19 +708,57 @@ var (
 // because the router does host top-k). The caches persist across calls, so successive
 // positions extend the same sequence. MUST be called inside a withAutoreleasePool.
 func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
-	return s.stepTokenResult(inputEmb, pos, true)
+	return s.stepTokenResultWithInput(inputEmb, pos, true, true)
+}
+
+func (s *archDecodeState) stepTokenInto(inputEmb []byte, pos int, dst []byte) ([]byte, error) {
+	return s.stepTokenResultWithInputInto(inputEmb, pos, true, true, dst)
 }
 
 func (s *archDecodeState) stepTokenNoResult(inputEmb []byte, pos int) error {
-	_, err := s.stepTokenResult(inputEmb, pos, false)
+	_, err := s.stepTokenResultWithInput(inputEmb, pos, false, true)
 	return err
 }
 
 func (s *archDecodeState) stepTokenResult(inputEmb []byte, pos int, readResult bool) ([]byte, error) {
-	*(*int32)(s.offBuf.Contents()) = int32(pos)
-	copy(unsafe.Slice((*byte)(s.xA.Contents()), s.dModel*bf16Size), inputEmb)
-	cb := queue.CommandBuffer()
-	enc := cb.ComputeCommandEncoder()
+	return s.stepTokenResultWithInput(inputEmb, pos, readResult, true)
+}
+
+func (s *archDecodeState) stepTokenLoaded(inputEmb []byte, pos int) ([]byte, error) {
+	return s.stepTokenResultWithInput(inputEmb, pos, true, false)
+}
+
+func (s *archDecodeState) stepTokenResultWithInput(inputEmb []byte, pos int, readResult, copyInput bool) ([]byte, error) {
+	return s.stepTokenResultWithInputInto(inputEmb, pos, readResult, copyInput, nil)
+}
+
+func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int, readResult, copyInput bool, dst []byte) ([]byte, error) {
+	*s.offPtr = int32(pos)
+	if copyInput {
+		copy(s.bufferBytes(s.xA, s.dModel*bf16Size), inputEmb)
+	}
+	var pleInputBuf metal.MTLBuffer
+	if len(s.ple) > 0 {
+		want := len(s.specs) * s.pliDim * bf16Size
+		got := len(s.perLayerInput)
+		if s.perLayerInputBuf != nil {
+			got = s.perLayerInputLen
+		}
+		if got != want {
+			return nil, core.NewError("native.archDecodeState.stepToken: PLE tensor size mismatch")
+		}
+		if s.perLayerInputBuf != nil {
+			pleInputBuf = s.perLayerInputBuf
+		} else {
+			var err error
+			pleInputBuf, err = s.hostPLEInputBuffer(want)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	cb := commandBufferFast(queue)
+	enc := computeCommandEncoderFast(cb)
 	in, out := s.xA, s.xB
 	var trWorstAbs float32
 	trWorstLayer, trFirstBad, trBadLayers := -1, -1, 0
@@ -449,94 +779,110 @@ func (s *archDecodeState) stepTokenResult(inputEmb []byte, pos int, readResult b
 		}
 		if s.specs[li].OwnsCache() {
 			if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
 			if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				return nil, err
 			}
 		}
 		if captureLayerHiddens { // post-attention hidden (x + Wo·attn) — isolates attention from MLP
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			capturedAttnHiddens = append(capturedAttnHiddens, append([]byte(nil), unsafe.Slice((*byte)(s.hBuf.Contents()), s.dModel*bf16Size)...))
-			cb = queue.CommandBuffer()
-			enc = cb.ComputeCommandEncoder()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			capturedAttnHiddens = append(capturedAttnHiddens, append([]byte(nil), s.bufferBytes(s.hBuf, s.dModel*bf16Size)...))
+			cb = commandBufferFast(queue)
+			enc = computeCommandEncoderFast(cb)
 		}
 		var moeQ *MoEQuantLayerWeights
 		if li < len(s.moeQuant) {
 			moeQ = s.moeQuant[li]
 		}
 		if moeW := s.moeWeights[li]; moeQ != nil || moeW != nil {
-			// the MoE FFN needs h on the host (the router does host top-k): flush the
-			// attention half, run the dual-branch block host-side, resume a fresh encoder.
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			hostH := s.hostHiddenScratch(s.dModel)
-			copy(hostH, unsafe.Slice((*byte)(s.hBuf.Contents()), s.dModel*bf16Size))
+			// The MoE FFN is host-orchestrated, but h already lives in a completed
+			// shared Metal buffer. Consume that buffer directly instead of copying
+			// through a pinned host handoff.
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			hostH := s.bufferBytes(s.hBuf, s.dModel*bf16Size)
+			hostHBuf := s.hBuf
 			var res []byte
 			var err error
 			if moeQ != nil {
-				res, err = MoEBlockQuant(hostH, *moeQ, s.dModel, s.dFF, s.eps)
+				res, err = moeBlockQuantWithBufferInPool(hostH, hostHBuf, *moeQ, s.dModel, s.dFF, s.eps)
 			} else {
-				res, err = MoEBlockBF16(hostH, *moeW, s.dModel, s.dFF, s.eps)
+				res, err = moeBlockBF16WithBufferInPool(hostH, hostHBuf, *moeW, s.dModel, s.dFF, s.eps)
 			}
 			if err != nil {
 				return nil, err
 			}
-			copy(unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size), res)
-			cb = queue.CommandBuffer()
-			enc = cb.ComputeCommandEncoder()
+			copy(s.bufferBytes(out, s.dModel*bf16Size), res)
+			cb = commandBufferFast(queue)
+			enc = computeCommandEncoderFast(cb)
 		} else {
 			lff := s.dFF // per-layer FFN width (gemma4 E2B/E4B); falls back to the arch default
 			if s.lb[li].dFF > 0 {
 				lff = s.lb[li].dFF
 			}
 			if err := encMLPHalfBF16(enc, s.hBuf, out, s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, lff, s.eps); err != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				return nil, err
 			}
 		}
-		// gemma4 per-layer-input gate (E2B/E4B): host-orchestrated (QMV+gelu+QMV+norm+add, no
-		// fused encoder op), so flush the layer, gate out host-side, resume — mirrors the MoE
-		// flush. Applied to the layer output before the per-layer scalar.
+		// gemma4 per-layer-input gate (E2B/E4B): keep the gate chain in the live command buffer.
+		// The per-token PLE tensor is pinned once at step entry, and each layer binds its pliDim row
+		// by byte offset. Applied to the layer output before the per-layer scalar.
 		if len(s.ple) > li && len(s.ple[li].postNorm) > 0 {
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			outHost := s.hostHiddenScratch(s.dModel)
-			copy(outHost, unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size))
-			pli := s.perLayerInput[li*s.pliDim*bf16Size : (li+1)*s.pliDim*bf16Size]
-			var gated []byte
-			var gerr error
-			if s.ple[li].bits == 0 { // bf16 PLE gate (the quant path sets bits 4/8 ⇒ the qmv)
-				gated, gerr = PerLayerInputGateBF16(outHost, s.ple[li].gate.Packed, pli, s.ple[li].proj.Packed, s.ple[li].postNorm, s.dModel, s.pliDim, s.eps)
+			pl := s.ple[li]
+			if len(pl.postNorm) != s.dModel*bf16Size {
+				endEncodingFast(enc)
+				return nil, core.NewError("native.archDecodeState.stepToken: PLE post norm size mismatch")
+			}
+			pliOff := uint(li * s.pliDim * bf16Size)
+			sc := s.perLayerInputGateScratch()
+			if pl.bits == 0 { // bf16 PLE gate (the quant path sets bits 4/8 ⇒ the qmv)
+				if len(pl.gate.Packed) != s.pliDim*s.dModel*bf16Size || len(pl.proj.Packed) != s.dModel*s.pliDim*bf16Size {
+					endEncodingFast(enc)
+					return nil, core.NewError("native.archDecodeState.stepToken: PLE bf16 weight size mismatch")
+				}
+				if err := encPerLayerInputGateBF16Scratch(enc, sc, out, residentBytes(pl.gate.Packed), pleInputBuf, residentBytes(pl.proj.Packed), residentBytes(pl.postNorm), out, pliOff, s.dModel, s.pliDim, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
 			} else {
-				gated, gerr = PerLayerInputGateQuant(outHost, s.ple[li].gate, pli, s.ple[li].proj, s.ple[li].postNorm, s.dModel, s.pliDim, s.ple[li].groupSize, s.ple[li].bits, s.eps)
+				gateGroupSize, gateBits, err := validatePerLayerInputGateQuantWeight("gate", pl.gate, s.pliDim, s.dModel, pl.groupSize, pl.bits)
+				if err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
+				projGroupSize, projBits, err := validatePerLayerInputGateQuantWeight("projection", pl.proj, s.dModel, s.pliDim, pl.groupSize, pl.bits)
+				if err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
+				gatePacked, gateScales, gateBiases := quantWeightViews(pl.gate)
+				projPacked, projScales, projBiases := quantWeightViews(pl.proj)
+				if err := encPerLayerInputGateQuantScratch(enc, sc, out, gatePacked, gateScales, gateBiases, pleInputBuf, projPacked, projScales, projBiases, residentBytes(pl.postNorm), out, pliOff, s.dModel, s.pliDim, gateGroupSize, gateBits, projGroupSize, projBits, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
 			}
-			if gerr != nil {
-				return nil, gerr
-			}
-			copy(unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size), gated)
-			cb = queue.CommandBuffer()
-			enc = cb.ComputeCommandEncoder()
 		}
 		// gemma4 per-layer output scalar: multiply the layer's hidden before the next layer.
 		if s.lb[li].layerScalar != nil {
 			if err := encMulBF16(enc, out, s.lb[li].layerScalar, out, s.dModel); err != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				return nil, err
 			}
 		}
 		if s.trace { // per-layer diagnostic: flush, read this layer's output hidden, accumulate
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 			ma, bad := bufMaxAbsNaN(out, s.dModel)
 			if bad > 0 {
 				trBadLayers++
@@ -547,26 +893,34 @@ func (s *archDecodeState) stepTokenResult(inputEmb []byte, pos int, readResult b
 			if ma > trWorstAbs {
 				trWorstAbs, trWorstLayer = ma, li
 			}
-			cb = queue.CommandBuffer()
-			enc = cb.ComputeCommandEncoder()
+			cb = commandBufferFast(queue)
+			enc = computeCommandEncoderFast(cb)
 		}
 		if captureLayerHiddens { // cross-engine per-layer diff: store this layer's output hidden
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			capturedLayerHiddens = append(capturedLayerHiddens, append([]byte(nil), unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size)...))
-			cb = queue.CommandBuffer()
-			enc = cb.ComputeCommandEncoder()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			capturedLayerHiddens = append(capturedLayerHiddens, append([]byte(nil), s.bufferBytes(out, s.dModel*bf16Size)...))
+			cb = commandBufferFast(queue)
+			enc = computeCommandEncoderFast(cb)
 		}
 		in, out = out, in
 	}
-	enc.EndEncoding()
-	cb.Commit()
-	cb.WaitUntilCompleted()
+	endEncodingFast(enc)
+	commitCommandBufferFast(cb)
+	waitUntilCompletedFast(cb)
 	var res []byte
 	if readResult {
-		res = make([]byte, s.dModel*bf16Size)
-		copy(res, unsafe.Slice((*byte)(in.Contents()), s.dModel*bf16Size))
+		n := s.dModel * bf16Size
+		if dst != nil {
+			if len(dst) != n {
+				return nil, core.NewError("native.archDecodeState.stepToken: destination must be hidden bf16 bytes")
+			}
+			res = dst
+		} else {
+			res = make([]byte, n)
+		}
+		copy(res, s.bufferBytes(in, s.dModel*bf16Size))
 	}
 	if s.trace {
 		wt := "-"
@@ -600,23 +954,58 @@ func runArchDecode(
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool, maxLen int,
 ) ([][]byte, error) {
 	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm, maxLen)
+	defer s.Close()
 	return runArchDecodeState(inputs, &s, nil)
 }
 
 func runArchDecodeState(inputs [][]byte, s *archDecodeState, ple *archDecodePLEInputs) ([][]byte, error) {
+	if ple != nil {
+		defer ple.Close()
+	}
 	outputs := make([][]byte, len(inputs))
 	for t := range inputs {
+		inputLoaded := false
 		if ple != nil {
-			pli, err := ple.compute(ple.tokenIDs[t], inputs[t])
-			if err != nil {
-				return nil, err
+			want := len(s.specs) * s.pliDim * bf16Size
+			if ple.computeBuffer != nil {
+				copy(s.bufferBytes(s.xA, s.dModel*bf16Size), inputs[t])
+				inputLoaded = true
+				n, buf, host, err := ple.computeBuffer(ple.tokenIDs[t], inputs[t], s.xA)
+				if err != nil {
+					return nil, err
+				}
+				if n != want {
+					return nil, core.NewError("native.runArchDecodeState: PLE tensor size mismatch")
+				}
+				if buf == nil && len(host) != want {
+					return nil, core.NewError("native.runArchDecodeState: PLE tensor size mismatch")
+				}
+				s.perLayerInput = host
+				s.perLayerInputBuf = buf
+				s.perLayerInputLen = n
+			} else {
+				pli, err := ple.compute(ple.tokenIDs[t], inputs[t])
+				if err != nil {
+					return nil, err
+				}
+				if len(pli) != want {
+					return nil, core.NewError("native.runArchDecodeState: PLE tensor size mismatch")
+				}
+				s.perLayerInput = pli
+				s.perLayerInputBuf = ple.buffer
+				s.perLayerInputLen = len(pli)
 			}
-			if len(pli) != len(s.specs)*s.pliDim*bf16Size {
+			if s.perLayerInputBuf == nil && len(s.perLayerInput) != want {
 				return nil, core.NewError("native.runArchDecodeState: PLE tensor size mismatch")
 			}
-			s.perLayerInput = pli
 		}
-		out, err := s.stepToken(inputs[t], t)
+		var out []byte
+		var err error
+		if inputLoaded {
+			out, err = s.stepTokenLoaded(inputs[t], t)
+		} else {
+			out, err = s.stepToken(inputs[t], t)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -673,6 +1062,9 @@ func DecodeForwardArch(
 	if err != nil {
 		return nil, err
 	}
+	if pleRuntime != nil {
+		defer pleRuntime.Close()
+	}
 	var pleLayers []pleLayer
 	if pleRuntime != nil {
 		pleLayers, err = bf16PLELayers("native.DecodeForwardArch", layers, dModel, pliDim)
@@ -682,14 +1074,17 @@ func DecodeForwardArch(
 	}
 
 	var outputs [][]byte
+	setup := getArchBF16LayerBufScratch(nLayers)
+	defer putArchBF16LayerBufScratch(setup)
 	withAutoreleasePool(func() {
-		lb, moeWeights, berr := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
+		lb, moeWeights, berr := buildBF16ArchLayerBufsIntoScratch(setup, layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
 		if berr != nil {
 			err = berr
 			return
 		}
 		if pleRuntime != nil {
 			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
+			defer state.Close()
 			state.ple, state.pliDim = pleLayers, pliDim
 			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
 			return
@@ -715,13 +1110,42 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []model.LayerSpec
 	nLayers := len(layers)
 	lb := make([]archLayerBufs, nLayers)
 	moeWeights := make([]*MoELayerWeights, nLayers)
+	return buildBF16ArchLayerBufsInto(lb, moeWeights, layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+}
+
+func buildBF16ArchLayerBufsInto(lb []archLayerBufs, moeWeights []*MoELayerWeights, layers []DecodeLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
+	return buildBF16ArchLayerBufsInternal(lb, moeWeights, nil, layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+}
+
+func buildBF16ArchLayerBufsIntoScratch(setup *archBF16LayerBufScratch, layers []DecodeLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
+	if setup == nil {
+		return buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+	}
+	setup.reset(len(layers))
+	return buildBF16ArchLayerBufsInternal(setup.lb, setup.moeWeights, setup, layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, sb)
+}
+
+func buildBF16ArchLayerBufsInternal(lb []archLayerBufs, moeWeights []*MoELayerWeights, setup *archBF16LayerBufScratch, layers []DecodeLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
+	nLayers := len(layers)
+	if cap(lb) < nLayers {
+		lb = make([]archLayerBufs, nLayers)
+	} else {
+		lb = lb[:nLayers]
+		clear(lb)
+	}
+	if cap(moeWeights) < nLayers {
+		moeWeights = make([]*MoELayerWeights, nLayers)
+	} else {
+		moeWeights = moeWeights[:nLayers]
+		clear(moeWeights)
+	}
 	var ferr error
 	// view resolves a required weight: a no-copy shard view (sb != nil) or an uploaded copy.
 	view := func(b []byte) bufView {
 		if sb != nil {
 			return sb.mustBufFor(b, &ferr)
 		}
-		return copyView(b)
+		return bufView{buf: residentBytes(b)}
 	}
 	// viewOrNil is view for an optional weight (absent ⇒ zero bufView, the "skip" sentinel).
 	viewOrNil := func(b []byte) bufView {
@@ -752,8 +1176,13 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []model.LayerSpec
 		lb[li].kNorm = viewOrNil(w.KNormW)
 		lb[li].layerScalar = layerScalarBuf(w.LayerScalarW, dModel) // synthesised broadcast (not a shard view)
 		if specs[li].OwnsCache() {
-			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+			if setup != nil {
+				lb[li].kCache, lb[li].vCache, lb[li].kCachePtr, lb[li].vCachePtr = setup.kvCache(li, cacheBytes)
+			} else {
+				lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				lb[li].cacheKVContents()
+			}
 		}
 		lFF := dFF // per-layer FFN width — gemma4 E2B/E4B MatFormer varies it (6144/12288); 0 ⇒ arch default
 		if w.DFF > 0 {
@@ -784,7 +1213,7 @@ func layerScalarBuf(scalarW []byte, dModel int) metal.MTLBuffer {
 	if len(scalarW) != bf16Size {
 		return nil
 	}
-	return sharedBytes(bf16ConstBytes(dModel, bf16ToF32(scalarW[0], scalarW[1])))
+	return bf16ConstBuffer(dModel, bf16ToF32(scalarW[0], scalarW[1]))
 }
 
 // valueNormOnesBuf is the gemma4 value-norm weight: a [headDim] bf16 ones vector so the
@@ -803,7 +1232,7 @@ func valueNormOnesBuf(on bool, headDim int) metal.MTLBuffer {
 	if !on {
 		return nil
 	}
-	return sharedBytes(bf16ConstBytes(headDim, 1.0))
+	return bf16ConstBuffer(headDim, 1.0)
 }
 
 // maxHeadDimOf returns the largest per-layer head dim over specs (falling back to the base

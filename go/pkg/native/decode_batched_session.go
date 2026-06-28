@@ -12,6 +12,77 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
+type denseBatchScratch struct {
+	inRowsStack  [16]metal.MTLBuffer
+	outRowsStack [16]metal.MTLBuffer
+	offBufStack  [16]metal.MTLBuffer
+	offPtrStack  [16]*int32
+	offOffStack  [16]uint
+	rowOffStack  [16]uint
+	inRows       []metal.MTLBuffer
+	outRows      []metal.MTLBuffer
+	offBuf       []metal.MTLBuffer
+	offPtr       []*int32
+	offOff       []uint
+	rowOff       []uint
+	offPacked    metal.MTLBuffer
+	offPackedCap int
+	inPacked     metal.MTLBuffer
+	outPacked    metal.MTLBuffer
+	rowPackedCap int
+	rowBytes     int
+	lastRows     metal.MTLBuffer
+	lastRowOff   []uint
+	lastK        int
+	lastResult   [1][]byte
+}
+
+func (s *denseBatchScratch) rows(k, dModel int) (inRows, outRows, offBuf []metal.MTLBuffer, offPtr []*int32, offOff, rowOff []uint) {
+	if k <= len(s.inRowsStack) {
+		s.inRows = s.inRowsStack[:k]
+		s.outRows = s.outRowsStack[:k]
+		s.offBuf = s.offBufStack[:k]
+		s.offPtr = s.offPtrStack[:k]
+		s.offOff = s.offOffStack[:k]
+		s.rowOff = s.rowOffStack[:k]
+	} else if cap(s.inRows) < k || cap(s.outRows) < k || cap(s.offBuf) < k || cap(s.offPtr) < k || cap(s.offOff) < k || cap(s.rowOff) < k {
+		s.inRows = make([]metal.MTLBuffer, k)
+		s.outRows = make([]metal.MTLBuffer, k)
+		s.offBuf = make([]metal.MTLBuffer, k)
+		s.offPtr = make([]*int32, k)
+		s.offOff = make([]uint, k)
+		s.rowOff = make([]uint, k)
+	} else {
+		s.inRows = s.inRows[:k]
+		s.outRows = s.outRows[:k]
+		s.offBuf = s.offBuf[:k]
+		s.offPtr = s.offPtr[:k]
+		s.offOff = s.offOff[:k]
+		s.rowOff = s.rowOff[:k]
+	}
+	if s.offPacked == nil || s.offPackedCap < k {
+		s.offPacked = device.NewBufferWithLengthOptions(uint(k*4), metal.MTLResourceStorageModeShared)
+		s.offPackedCap = k
+	}
+	rowBytes := dModel * bf16Size
+	if s.inPacked == nil || s.outPacked == nil || s.rowPackedCap < k || s.rowBytes != rowBytes {
+		s.inPacked = scratchBF16(k * dModel)
+		s.outPacked = scratchBF16(k * dModel)
+		s.rowPackedCap = k
+		s.rowBytes = rowBytes
+	}
+	offsets := unsafe.Slice((*int32)(s.offPacked.Contents()), k)
+	for i := 0; i < k; i++ {
+		s.inRows[i] = s.inPacked
+		s.outRows[i] = s.outPacked
+		s.offBuf[i] = s.offPacked
+		s.offPtr[i] = &offsets[i]
+		s.offOff[i] = uint(i * 4)
+		s.rowOff[i] = uint(i * rowBytes)
+	}
+	return s.inRows, s.outRows, s.offBuf, s.offPtr, s.offOff, s.rowOff
+}
+
 // decode_batched_session.go — the session-level MTP batched verify: K query tokens through the WHOLE
 // resident decode stack in as few command buffers as possible, reusing the resident layer weights and
 // caches (no re-upload). Each row i decodes at position basePos+i, writes its K/V into every layer's
@@ -32,15 +103,26 @@ import (
 // model is outside the dense uniform path — the caller then steps sequentially. Single-goroutine, like
 // every ArchSession decode. Must run inside a withAutoreleasePool.
 func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (out [][]byte, ok bool, err error) {
-	return s.stepTokensBatchedDenseResult(embs, basePos, true)
+	return s.stepTokensBatchedDenseResult(embs, basePos, true, false, nil)
 }
 
 func (s *archDecodeState) stepTokensBatchedDenseNoResult(embs [][]byte, basePos int) (ok bool, err error) {
-	_, ok, err = s.stepTokensBatchedDenseResult(embs, basePos, false)
+	_, ok, err = s.stepTokensBatchedDenseResult(embs, basePos, false, false, nil)
 	return ok, err
 }
 
-func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos int, readResult bool) (out [][]byte, ok bool, err error) {
+func (s *archDecodeState) stepTokensBatchedDenseLastInto(embs [][]byte, basePos int, dst []byte) (last []byte, ok bool, err error) {
+	out, ok, err := s.stepTokensBatchedDenseResult(embs, basePos, true, true, dst)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if len(out) != 1 {
+		return nil, true, core.NewError("native.stepTokensBatchedDenseLast: hidden result count mismatch")
+	}
+	return out[0], true, nil
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos int, readResult, readLastOnly bool, lastDst []byte) (out [][]byte, ok bool, err error) {
 	K := len(embs)
 	if K == 0 {
 		return nil, false, core.NewError("native.stepTokensBatchedDense: empty batch")
@@ -69,28 +151,12 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 	}
 
 	rowBytes := s.dModel * bf16Size
-	// K-wide working rows (ping-ponged across layers) + per-row position buffers, allocated once.
-	var inRowsStack [16]metal.MTLBuffer
-	var outRowsStack [16]metal.MTLBuffer
-	var offBufStack [16]metal.MTLBuffer
-	var inRows []metal.MTLBuffer
-	var outRows []metal.MTLBuffer
-	var offBuf []metal.MTLBuffer
-	if K <= len(inRowsStack) {
-		inRows = inRowsStack[:K]
-		outRows = outRowsStack[:K]
-		offBuf = offBufStack[:K]
-	} else {
-		inRows = make([]metal.MTLBuffer, K)
-		outRows = make([]metal.MTLBuffer, K)
-		offBuf = make([]metal.MTLBuffer, K)
-	}
+	// K-wide working rows (ping-ponged across layers) + per-row position buffers, retained on the state.
+	inRows, outRows, offBuf, offPtr, offOff, rowOff := s.denseBatch.rows(K, s.dModel)
 	for i := 0; i < K; i++ {
-		inRows[i] = scratchBF16(s.dModel)
-		copy(unsafe.Slice((*byte)(inRows[i].Contents()), rowBytes), embs[i])
-		outRows[i] = scratchBF16(s.dModel)
-		off := int32(basePos + i)
-		offBuf[i] = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		off := int(rowOff[i])
+		copy(unsafe.Slice((*byte)(inRows[i].Contents()), off+rowBytes)[off:], embs[i])
+		*offPtr[i] = int32(basePos + i)
 	}
 
 	cb := queue.CommandBuffer()
@@ -112,18 +178,18 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 		// Metal's buffer hazard tracking orders the cross-row cache write→read, so row i+1 attends row
 		// i's freshly written K/V — exactly the sequential per-token causal structure.
 		for i := 0; i < K; i++ {
-			if err = encAttnHalfKV(enc, inRows[i], s.lb[li].kCache, s.lb[li].vCache, offBuf[i], s.hBuf,
+			if err = encAttnHalfKVInputAt(enc, inRows[i], rowOff[i], s.lb[li].kCache, s.lb[li].vCache, offBuf[i], s.hBuf, offOff[i],
 				s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj,
 				s.dModel, s.nHeads, lkv, lhd, basePos+i, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, false, err
 			}
-			if err = encMLPHalfBF16(enc, s.hBuf, outRows[i], s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, lff, s.eps); err != nil {
+			if err = encMLPHalfBF16At(enc, s.hBuf, outRows[i], rowOff[i], s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, lff, s.eps); err != nil {
 				enc.EndEncoding()
 				return nil, false, err
 			}
 			if s.lb[li].layerScalar != nil { // gemma4 per-layer output scalar (on-device)
-				if err = encMulBF16(enc, outRows[i], s.lb[li].layerScalar, outRows[i], s.dModel); err != nil {
+				if err = encMulBF16To(enc, outRows[i], s.lb[li].layerScalar, outRows[i], rowOff[i], 0, rowOff[i], s.dModel); err != nil {
 					enc.EndEncoding()
 					return nil, false, err
 				}
@@ -134,12 +200,30 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 	enc.EndEncoding()
 	cb.Commit()
 	cb.WaitUntilCompleted()
+	if K > 0 {
+		s.denseBatch.lastRows = inRows[0]
+		s.denseBatch.lastRowOff = rowOff[:K]
+		s.denseBatch.lastK = K
+	}
 
 	if readResult {
+		if readLastOnly {
+			out = s.denseBatch.lastResult[:1]
+			if cap(lastDst) < rowBytes {
+				lastDst = make([]byte, rowBytes)
+			} else {
+				lastDst = lastDst[:rowBytes]
+			}
+			out[0] = lastDst
+			off := int(rowOff[K-1])
+			copy(out[0], unsafe.Slice((*byte)(inRows[K-1].Contents()), off+rowBytes)[off:]) // inRows = last swap = final layer out
+			return out, true, nil
+		}
 		out = make([][]byte, K)
 		for i := 0; i < K; i++ {
 			out[i] = make([]byte, rowBytes)
-			copy(out[i], unsafe.Slice((*byte)(inRows[i].Contents()), rowBytes)) // inRows = last swap = final layer out
+			off := int(rowOff[i])
+			copy(out[i], unsafe.Slice((*byte)(inRows[i].Contents()), off+rowBytes)[off:]) // inRows = last swap = final layer out
 		}
 	}
 	return out, true, nil
@@ -177,6 +261,28 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 		}
 		embs[i] = e
 	}
+	if s.canUseDirectHeadGreedy() {
+		if len(greedys) < len(ids) {
+			greedys = make([]int32, len(ids))
+		} else {
+			greedys = greedys[:len(ids)]
+		}
+		var (
+			ok  bool
+			err error
+		)
+		withAutoreleasePool(func() {
+			ok, err = s.state.stepTokensBatchedDenseNoResult(embs, s.pos)
+			if err != nil || !ok {
+				return
+			}
+			err = s.encodePackedGreedyRowsInto(s.state.denseBatch.lastRows, s.state.denseBatch.lastRowOff, len(ids), greedys)
+		})
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		return greedys, true, nil
+	}
 	var (
 		hiddens [][]byte
 		ok      bool
@@ -201,4 +307,44 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 		greedys[i] = g
 	}
 	return greedys, true, nil
+}
+
+func (s *ArchSession) encodePackedGreedyRowsInto(rows metal.MTLBuffer, rowOff []uint, n int, greedys []int32) error {
+	if rows == nil || len(rowOff) < n || len(greedys) < n {
+		return core.NewError("native.verifyBatched: missing packed dense rows")
+	}
+	var scratchStack [16]*headGreedyScratch
+	scratches := scratchStack[:0]
+	if n > len(scratchStack) {
+		scratches = make([]*headGreedyScratch, 0, n)
+	}
+	cb := queue.CommandBuffer()
+	enc := cb.ComputeCommandEncoder()
+	for i := 0; i < n; i++ {
+		scratch, ok, err := s.headEnc.encodeGreedyAt(enc, rows, rowOff[i], nil)
+		if err != nil || !ok {
+			enc.EndEncoding()
+			for _, sc := range scratches {
+				s.headEnc.putGreedyScratch(sc)
+			}
+			if err != nil {
+				return err
+			}
+			return core.NewError("native.verifyBatched: direct head greedy unavailable")
+		}
+		scratches = append(scratches, scratch)
+	}
+	enc.EndEncoding()
+	cb.Commit()
+	cb.WaitUntilCompleted()
+	for i, scratch := range scratches {
+		greedys[i] = scratch.token()
+		s.headEnc.putGreedyScratch(scratch)
+	}
+	for i, token := range greedys[:n] {
+		if token < 0 || int(token) >= s.arch.Vocab {
+			return core.NewError(core.Sprintf("native.verifyBatched: greedy row %d returned invalid token %d for vocab %d", i, token, s.arch.Vocab))
+		}
+	}
+	return nil
 }

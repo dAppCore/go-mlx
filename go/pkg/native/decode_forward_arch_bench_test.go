@@ -4,7 +4,11 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
+)
 
 func BenchmarkDecodeForwardArchOneLayerTwoTokens(b *testing.B) {
 	requireNativeRuntime(b)
@@ -40,5 +44,42 @@ func BenchmarkDecodeForwardArchMoEOneLayerTwoTokens(b *testing.B) {
 		if _, err := DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkArchDecodeStateSetup(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	specs := []model.LayerSpec{{CacheIndex: -1}}
+	layers := []archLayerBufs{{dFF: dFF}}
+	withAutoreleasePool(func() {
+		warm := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+		warm.Close()
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			st := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+			st.Close()
+		}
+	})
+}
+
+func BenchmarkArchDecodeStateGlobalProportionalRopePeriods(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	specs := []model.LayerSpec{{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}}
+	layers := []archLayerBufs{{dFF: dFF}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		withAutoreleasePool(func() {
+			st := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+			if st.globalRopeFreqs == nil || st.globalRopeFreqs.GetID() == 0 {
+				b.Fatal("missing global proportional rope periods")
+			}
+		})
 	}
 }

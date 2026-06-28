@@ -5,10 +5,192 @@
 package native
 
 import (
+	"sync"
+
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
+
+type archICBQuantPSOKey struct{ outDim, inDim, groupSize, bits int }
+
+type archICBQuantProjCheck struct {
+	w           QuantWeight
+	outDim, inD int
+}
+
+type archICBQuantLayerProjBuffers struct {
+	q, k, v, o, g, u, d qmvWeight
+}
+
+type archICBQuantPLEProjBuffers struct {
+	gate, proj qmvWeight
+}
+
+type archICBQuantSetupScratch struct {
+	lFF                  []int
+	anwBufs, mnwBufs     []metal.MTLBuffer
+	qNormBufs, kNormBufs []metal.MTLBuffer
+	postAttnBufs         []metal.MTLBuffer
+	postFFBufs           []metal.MTLBuffer
+	layerScalarBufs      []metal.MTLBuffer
+	lb                   []archICBQuantLayerProjBuffers
+	pleLB                []archICBQuantPLEProjBuffers
+	plePostNorms         []metal.MTLBuffer
+	projResident         []metal.MTLBuffer
+	pleResident          []metal.MTLBuffer
+	projChecks           []archICBQuantProjCheck
+	projNames            []string
+	psoByKey             map[archICBQuantPSOKey]metal.MTLComputePipelineState
+	nQDimByHd, kQDimByHd map[int]metal.MTLBuffer
+	nKvDimByKvd          map[int]metal.MTLBuffer
+	kDFFByW, nDFFByW     map[int]metal.MTLBuffer
+}
+
+type archICBQuantCacheSlices struct {
+	kCaches, vCaches []metal.MTLBuffer
+}
+
+var archICBQuantSetupScratchPool sync.Pool
+var archICBQuantCacheSlicesPool sync.Pool
+
+func newArchICBQuantSetupScratch(nLayers int) *archICBQuantSetupScratch {
+	return &archICBQuantSetupScratch{
+		lFF:             make([]int, nLayers),
+		anwBufs:         make([]metal.MTLBuffer, nLayers),
+		mnwBufs:         make([]metal.MTLBuffer, nLayers),
+		qNormBufs:       make([]metal.MTLBuffer, nLayers),
+		kNormBufs:       make([]metal.MTLBuffer, nLayers),
+		postAttnBufs:    make([]metal.MTLBuffer, nLayers),
+		postFFBufs:      make([]metal.MTLBuffer, nLayers),
+		layerScalarBufs: make([]metal.MTLBuffer, nLayers),
+		lb:              make([]archICBQuantLayerProjBuffers, nLayers),
+		pleLB:           make([]archICBQuantPLEProjBuffers, nLayers),
+		plePostNorms:    make([]metal.MTLBuffer, nLayers),
+		projResident:    make([]metal.MTLBuffer, 0, nLayers*24+16),
+		pleResident:     make([]metal.MTLBuffer, 0, nLayers*6+2),
+		projChecks:      make([]archICBQuantProjCheck, 0, 7),
+		projNames:       make([]string, 0, 7),
+		psoByKey:        make(map[archICBQuantPSOKey]metal.MTLComputePipelineState, nLayers*7),
+		nQDimByHd:       make(map[int]metal.MTLBuffer, nLayers),
+		kQDimByHd:       make(map[int]metal.MTLBuffer, nLayers),
+		nKvDimByKvd:     make(map[int]metal.MTLBuffer, nLayers),
+		kDFFByW:         make(map[int]metal.MTLBuffer, nLayers),
+		nDFFByW:         make(map[int]metal.MTLBuffer, nLayers),
+	}
+}
+
+func (s *archICBQuantSetupScratch) fits(nLayers int) bool {
+	return s != nil &&
+		cap(s.lFF) >= nLayers &&
+		cap(s.anwBufs) >= nLayers &&
+		cap(s.mnwBufs) >= nLayers &&
+		cap(s.qNormBufs) >= nLayers &&
+		cap(s.kNormBufs) >= nLayers &&
+		cap(s.postAttnBufs) >= nLayers &&
+		cap(s.postFFBufs) >= nLayers &&
+		cap(s.layerScalarBufs) >= nLayers &&
+		cap(s.lb) >= nLayers &&
+		cap(s.pleLB) >= nLayers &&
+		cap(s.plePostNorms) >= nLayers &&
+		cap(s.projResident) >= nLayers*24+16 &&
+		cap(s.pleResident) >= nLayers*6+2 &&
+		cap(s.projChecks) >= 7 &&
+		cap(s.projNames) >= 7 &&
+		s.psoByKey != nil &&
+		s.nQDimByHd != nil &&
+		s.kQDimByHd != nil &&
+		s.nKvDimByKvd != nil &&
+		s.kDFFByW != nil &&
+		s.nDFFByW != nil
+}
+
+func (s *archICBQuantSetupScratch) reset(nLayers int) *archICBQuantSetupScratch {
+	clear(s.lFF)
+	clear(s.anwBufs)
+	clear(s.mnwBufs)
+	clear(s.qNormBufs)
+	clear(s.kNormBufs)
+	clear(s.postAttnBufs)
+	clear(s.postFFBufs)
+	clear(s.layerScalarBufs)
+	clear(s.lb)
+	clear(s.pleLB)
+	clear(s.plePostNorms)
+	clear(s.projResident)
+	clear(s.pleResident)
+	clear(s.projChecks)
+	clear(s.projNames)
+	clear(s.psoByKey)
+	clear(s.nQDimByHd)
+	clear(s.kQDimByHd)
+	clear(s.nKvDimByKvd)
+	clear(s.kDFFByW)
+	clear(s.nDFFByW)
+	s.lFF = s.lFF[:nLayers]
+	s.anwBufs = s.anwBufs[:nLayers]
+	s.mnwBufs = s.mnwBufs[:nLayers]
+	s.qNormBufs = s.qNormBufs[:nLayers]
+	s.kNormBufs = s.kNormBufs[:nLayers]
+	s.postAttnBufs = s.postAttnBufs[:nLayers]
+	s.postFFBufs = s.postFFBufs[:nLayers]
+	s.layerScalarBufs = s.layerScalarBufs[:nLayers]
+	s.lb = s.lb[:nLayers]
+	s.pleLB = s.pleLB[:nLayers]
+	s.plePostNorms = s.plePostNorms[:nLayers]
+	s.projResident = s.projResident[:0]
+	s.pleResident = s.pleResident[:0]
+	s.projChecks = s.projChecks[:0]
+	s.projNames = s.projNames[:0]
+	return s
+}
+
+func getArchICBQuantSetupScratch(nLayers int) *archICBQuantSetupScratch {
+	if v := archICBQuantSetupScratchPool.Get(); v != nil {
+		s := v.(*archICBQuantSetupScratch)
+		if s.fits(nLayers) {
+			return s.reset(nLayers)
+		}
+	}
+	return newArchICBQuantSetupScratch(nLayers)
+}
+
+func putArchICBQuantSetupScratch(s *archICBQuantSetupScratch) {
+	if s != nil {
+		archICBQuantSetupScratchPool.Put(s.reset(0))
+	}
+}
+
+func newArchICBQuantCacheSlices(nLayers int) *archICBQuantCacheSlices {
+	return &archICBQuantCacheSlices{
+		kCaches: make([]metal.MTLBuffer, nLayers),
+		vCaches: make([]metal.MTLBuffer, nLayers),
+	}
+}
+
+func (s *archICBQuantCacheSlices) reset(nLayers int) *archICBQuantCacheSlices {
+	clear(s.kCaches)
+	clear(s.vCaches)
+	s.kCaches = s.kCaches[:nLayers]
+	s.vCaches = s.vCaches[:nLayers]
+	return s
+}
+
+func getArchICBQuantCacheSlices(nLayers int) *archICBQuantCacheSlices {
+	if v := archICBQuantCacheSlicesPool.Get(); v != nil {
+		s := v.(*archICBQuantCacheSlices)
+		if cap(s.kCaches) >= nLayers && cap(s.vCaches) >= nLayers {
+			return s.reset(nLayers)
+		}
+	}
+	return newArchICBQuantCacheSlices(nLayers)
+}
+
+func putArchICBQuantCacheSlices(s *archICBQuantCacheSlices) {
+	if s != nil {
+		archICBQuantCacheSlicesPool.Put(s.reset(0))
+	}
+}
 
 // DecodeForwardArchICBQuant is the arch-driven decode with BOTH fast-path levers
 // stacked: quant qmv weights (cut the GPU read) AND the ICB encode-bypass replay (cut
@@ -33,6 +215,9 @@ func recordArchICBQuant(
 	rope icbRope, scale, eps float32, valueNorm bool,
 ) (*archICBReplay, error) {
 	nLayers := len(qlayers)
+	setup := getArchICBQuantSetupScratch(nLayers)
+	defer putArchICBQuantSetupScratch(setup)
+
 	for li := range specs {
 		o := specs[li].KVShareFrom
 		if o < 0 || o > li || (o != li && !specs[o].OwnsCache()) {
@@ -44,16 +229,12 @@ func recordArchICBQuant(
 	}
 	// per-layer FFN width (gemma4 E2B/E4B MatFormer): lFF[li] (from ql.DFF, fallback dFF) —
 	// drives the Gate/Up/Down size validation, the per-width PSO/scalar keying, and the core.
-	lFF := make([]int, nLayers)
+	lFF := setup.lFF
 	for li := range qlayers {
 		lFF[li] = dFF
 		if qlayers[li].DFF > 0 {
 			lFF[li] = qlayers[li].DFF
 		}
-	}
-	type pj struct {
-		w           QuantWeight
-		outDim, inD int
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
@@ -66,16 +247,18 @@ func recordArchICBQuant(
 		lff := lFF[li]
 		lhd := headDimOf(specs[li], headDim) // per-layer head dim (gemma4 full_attention > sliding)
 		lqDim, lkvDim := nHeads*lhd, kvHeadsOf(specs[li], nKVHeads)*lhd
-		projChecks := []pj{
-			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
-			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
-		}
-		projNames := []string{"Q", "O", "Gate", "Up", "Down"}
+		projChecks := setup.projChecks[:0]
+		projNames := setup.projNames[:0]
+		projChecks = append(projChecks,
+			archICBQuantProjCheck{ql.Q, lqDim, dModel}, archICBQuantProjCheck{ql.O, dModel, lqDim},
+			archICBQuantProjCheck{ql.Gate, lff, dModel}, archICBQuantProjCheck{ql.Up, lff, dModel}, archICBQuantProjCheck{ql.Down, dModel, lff},
+		)
+		projNames = append(projNames, "Q", "O", "Gate", "Up", "Down")
 		if specs[li].OwnsCache() { // KV-shared layers carry no own K/V (they read the owner's) — only owners have K/V to size-check
-			projChecks = append(projChecks, pj{ql.K, lkvDim, dModel})
+			projChecks = append(projChecks, archICBQuantProjCheck{ql.K, lkvDim, dModel})
 			projNames = append(projNames, "K")
 			if len(ql.V.Packed) > 0 { // K==V layers carry no v_proj — V rides the k-proj output
-				projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
+				projChecks = append(projChecks, archICBQuantProjCheck{ql.V, lkvDim, dModel})
 				projNames = append(projNames, "V")
 			}
 		}
@@ -103,18 +286,13 @@ func recordArchICBQuant(
 
 	// qmv ICB pipelines, one per distinct (outDim,inDim,groupSize,bits) shape
 	// (built before the pool). Mixed-precision packs need distinct recorded PSOs.
-	type qmvPSOKey struct{ outDim, inDim, groupSize, bits int }
-	psoByKey := map[qmvPSOKey]metal.MTLComputePipelineState{}
+	psoByKey := setup.psoByKey
 	qmvPSO := func(outDim, inDim, groupSize, bits int) (metal.MTLComputePipelineState, error) {
-		key := qmvPSOKey{outDim: outDim, inDim: inDim, groupSize: groupSize, bits: bits}
+		key := archICBQuantPSOKey{outDim: outDim, inDim: inDim, groupSize: groupSize, bits: bits}
 		if pso, ok := psoByKey[key]; ok {
 			return pso, nil
 		}
-		variant := "_qmv_"
-		if outDim%8 == 0 && inDim%512 == 0 {
-			variant = "_qmv_fast_"
-		}
-		pso, err := pipelineForICB(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+		pso, err := pipelineForICB(qmvBF16KernelName(outDim, inDim, groupSize, bits))
 		if err != nil {
 			return nil, err
 		}
@@ -131,14 +309,15 @@ func recordArchICBQuant(
 		lff := lFF[li]
 		lhd := headDimOf(specs[li], headDim)
 		lqDim, lkvDim := nHeads*lhd, kvHeadsOf(specs[li], nKVHeads)*lhd
-		projChecks := []pj{
-			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
-			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
-		}
+		projChecks := setup.projChecks[:0]
+		projChecks = append(projChecks,
+			archICBQuantProjCheck{ql.Q, lqDim, dModel}, archICBQuantProjCheck{ql.O, dModel, lqDim},
+			archICBQuantProjCheck{ql.Gate, lff, dModel}, archICBQuantProjCheck{ql.Up, lff, dModel}, archICBQuantProjCheck{ql.Down, dModel, lff},
+		)
 		if specs[li].OwnsCache() {
-			projChecks = append(projChecks, pj{ql.K, lkvDim, dModel})
+			projChecks = append(projChecks, archICBQuantProjCheck{ql.K, lkvDim, dModel})
 			if len(ql.V.Packed) > 0 {
-				projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
+				projChecks = append(projChecks, archICBQuantProjCheck{ql.V, lkvDim, dModel})
 			}
 		}
 		for _, p := range projChecks {
@@ -161,18 +340,16 @@ func recordArchICBQuant(
 	var r *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
-		anwBufs := make([]metal.MTLBuffer, nLayers)
-		mnwBufs := make([]metal.MTLBuffer, nLayers)
-		qNormBufs := make([]metal.MTLBuffer, nLayers)
-		kNormBufs := make([]metal.MTLBuffer, nLayers)
-		postAttnBufs := make([]metal.MTLBuffer, nLayers)
-		postFFBufs := make([]metal.MTLBuffer, nLayers)
-		layerScalarBufs := make([]metal.MTLBuffer, nLayers)
-		type lw struct{ q, k, v, o, g, u, d qmvWeight }
-		lb := make([]lw, nLayers)
-		type plw struct{ gate, proj qmvWeight }
-		pleLB := make([]plw, nLayers)
-		plePostNorms := make([]metal.MTLBuffer, nLayers)
+		anwBufs := setup.anwBufs
+		mnwBufs := setup.mnwBufs
+		qNormBufs := setup.qNormBufs
+		kNormBufs := setup.kNormBufs
+		postAttnBufs := setup.postAttnBufs
+		postFFBufs := setup.postFFBufs
+		layerScalarBufs := setup.layerScalarBufs
+		lb := setup.lb
+		pleLB := setup.pleLB
+		plePostNorms := setup.plePostNorms
 		residentView := func(b []byte) bufView { return bufView{buf: residentBytes(b)} }
 		residentOrNil := func(b []byte) metal.MTLBuffer {
 			if len(b) == 0 {
@@ -209,7 +386,12 @@ func recordArchICBQuant(
 		// trailing scalar buffers, plus ≤2 FFN dim scalars per distinct dFF width) so the per-forward
 		// build never geometrically regrows its backing array — K==V layers simply leave the v-proj
 		// slot unused. Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7*3+5+nLayers*2)
+		projResident := setup.projResident
+		appendResidentWeight := func(w qmvWeight) {
+			if w.wq.buf != nil { // K==V / KV-shared: no separate weight to make resident
+				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
+			}
+		}
 		for li := range qlayers {
 			ql := qlayers[li]
 			anwBufs[li] = residentBytes(ql.AttnNormW)
@@ -219,18 +401,19 @@ func recordArchICBQuant(
 			postAttnBufs[li] = residentOrNil(ql.PostAttnNormW)
 			postFFBufs[li] = residentOrNil(ql.PostFFNormW)
 			layerScalarBufs[li] = layerScalarBuf(ql.LayerScalarW, dModel)
-			lb[li] = lw{
+			lb[li] = archICBQuantLayerProjBuffers{
 				mkW(ql.Q, ql.GroupSize, ql.Bits), mkW(ql.K, ql.GroupSize, ql.Bits),
 				mkW(ql.V, ql.GroupSize, ql.Bits), mkW(ql.O, ql.GroupSize, ql.Bits),
 				mkW(ql.Gate, ql.GroupSize, ql.Bits), mkW(ql.Up, ql.GroupSize, ql.Bits),
 				mkW(ql.Down, ql.GroupSize, ql.Bits),
 			}
-			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
-				if w.wq.buf == nil { // K==V / KV-shared: no separate weight to make resident
-					continue
-				}
-				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
-			}
+			appendResidentWeight(lb[li].q)
+			appendResidentWeight(lb[li].k)
+			appendResidentWeight(lb[li].v)
+			appendResidentWeight(lb[li].o)
+			appendResidentWeight(lb[li].g)
+			appendResidentWeight(lb[li].u)
+			appendResidentWeight(lb[li].d)
 			// KV-shared layers carry no own K/V weights, yet the recorder still emits a discarded
 			// projK/projV per layer for ICB op-layout uniformity (output -> kThrow/vThrow). Point that
 			// placeholder at the OWNER's K/V (same head dim ⇒ a valid PRECOMPUTED PSO + already-resident
@@ -247,7 +430,7 @@ func recordArchICBQuant(
 				}
 			}
 			if pleRuntime != nil {
-				pleLB[li] = plw{mkW(pleLayers[li].gate, pleGS, pleBits), mkW(pleLayers[li].proj, pleGS, pleBits)}
+				pleLB[li] = archICBQuantPLEProjBuffers{mkW(pleLayers[li].gate, pleGS, pleBits), mkW(pleLayers[li].proj, pleGS, pleBits)}
 				plePostNorms[li] = residentBytes(pleLayers[li].postNorm)
 			}
 		}
@@ -255,9 +438,9 @@ func recordArchICBQuant(
 		kvOf := func(li int) int { return kvHeadsOf(specs[li], nKVHeads) } // per-layer KV heads (12B/31B MQA globals)
 		// per-hd qmv dim scalars: nQDim = qDim out (projQ), kQDim = qDim in (projO) — both hd-only. The K/V
 		// projection out dim (nKvDim = kvHeads·hd) varies with PER-LAYER kvHeads, so it's keyed by kvDim.
-		nQDimByHd := make(map[int]metal.MTLBuffer)
-		kQDimByHd := make(map[int]metal.MTLBuffer)
-		nKvDimByKvd := make(map[int]metal.MTLBuffer)
+		nQDimByHd := setup.nQDimByHd
+		kQDimByHd := setup.kQDimByHd
+		nKvDimByKvd := setup.nKvDimByKvd
 		for li := range specs {
 			hd := headDimOf(specs[li], headDim)
 			if _, ok := nQDimByHd[hd]; !ok {
@@ -269,8 +452,8 @@ func recordArchICBQuant(
 			}
 		}
 		// per-distinct-dFF qmv dim scalars: kDFF (down's K=inDim=lff) and nDFF (gate/up's N=outDim=lff).
-		kDFFByW := make(map[int]metal.MTLBuffer)
-		nDFFByW := make(map[int]metal.MTLBuffer)
+		kDFFByW := setup.kDFFByW
+		nDFFByW := setup.nDFFByW
 		for li := range lFF {
 			lff := lFF[li]
 			if _, ok := kDFFByW[lff]; !ok {
@@ -295,17 +478,17 @@ func recordArchICBQuant(
 			if pso == nil { // psoFor failed (coreErr already set) — never msgSend into a nil pipeline state
 				return
 			}
-			emitQMV(icbSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
+			emitQMV(fastICBSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
 		}
 		var plePlan *archICBPLEPlan
 		if pleRuntime != nil {
 			kPLIDim, nPLIDim := scalarI32(int32(pliDim)), scalarI32(int32(pliDim))
-			pleResident := []metal.MTLBuffer{kPLIDim, nPLIDim}
+			pleResident := append(setup.pleResident, kPLIDim, nPLIDim)
 			for li := range pleLB {
-				for _, w := range []qmvWeight{pleLB[li].gate, pleLB[li].proj} {
-					pleResident = append(pleResident, w.wq.buf, w.scales.buf, w.biases.buf)
-				}
+				pleResident = append(pleResident, pleLB[li].gate.wq.buf, pleLB[li].gate.scales.buf, pleLB[li].gate.biases.buf)
+				pleResident = append(pleResident, pleLB[li].proj.wq.buf, pleLB[li].proj.scales.buf, pleLB[li].proj.biases.buf)
 			}
+			setup.pleResident = pleResident
 			plePlan = &archICBPLEPlan{
 				runtime: pleRuntime, pliDim: pliDim, postNormBufs: plePostNorms, resident: pleResident,
 			}
@@ -494,8 +677,9 @@ func DecodeForwardArchICBQuant(
 	if plePayload != nil {
 		pleGS, pleBits = plePayload.GroupSize, plePayload.Bits
 	}
-	kCaches := make([]metal.MTLBuffer, nLayers)
-	vCaches := make([]metal.MTLBuffer, nLayers)
+	cacheSlices := getArchICBQuantCacheSlices(nLayers)
+	defer putArchICBQuantCacheSlices(cacheSlices)
+	kCaches, vCaches := cacheSlices.kCaches, cacheSlices.vCaches
 	// Pipeline the replay once the batch is long enough to amortise a SECOND ICB recording: the
 	// double-buffered loop overlaps each token's host turn with the prior token's GPU compute,
 	// reclaiming the ~40% per-token WaitUntilCompleted idle (≈1.6× on e2b prefill). Short batches stay

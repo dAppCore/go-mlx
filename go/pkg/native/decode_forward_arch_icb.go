@@ -7,12 +7,14 @@ package native
 import (
 	"math"
 	"slices"
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/apple/metal"
+	"github.com/tmc/apple/objc"
 )
 
 type archICBPLEPlan struct {
@@ -27,6 +29,153 @@ func (p *archICBPLEPlan) enabled() bool {
 	return p != nil && p.runtime != nil && p.pliDim > 0
 }
 
+type archICBGemvShape struct {
+	pso            metal.MTLComputePipelineState
+	bm, bn, sm, tm int
+}
+
+type archICBLayerProjBuffers struct {
+	wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer
+}
+
+type archICBPLEProjBuffers struct {
+	gate, proj metal.MTLBuffer
+}
+
+type archICBFFNScalarBuffers struct {
+	fOut, dIn, dLd metal.MTLBuffer
+}
+
+type archICBSetupScratch struct {
+	lFF, ffnWidthIndex []int
+	uniqueDFF          []int
+	ffUp, ffDown       []archICBGemvShape
+	ffnScalars         []archICBFFNScalarBuffers
+	anwBufs, mnwBufs   []metal.MTLBuffer
+	qNormBufs          []metal.MTLBuffer
+	kNormBufs          []metal.MTLBuffer
+	postAttnBufs       []metal.MTLBuffer
+	postFFBufs         []metal.MTLBuffer
+	layerScalarBufs    []metal.MTLBuffer
+	kCaches, vCaches   []metal.MTLBuffer
+	lb                 []archICBLayerProjBuffers
+	pleLB              []archICBPLEProjBuffers
+	plePostNorms       []metal.MTLBuffer
+	projResident       []metal.MTLBuffer
+	pleResident        []metal.MTLBuffer
+}
+
+var archICBSetupScratchPool sync.Pool
+
+func newArchICBSetupScratch(nLayers int) *archICBSetupScratch {
+	return &archICBSetupScratch{
+		lFF:             make([]int, nLayers),
+		ffnWidthIndex:   make([]int, nLayers),
+		uniqueDFF:       make([]int, 0, nLayers),
+		ffUp:            make([]archICBGemvShape, 0, nLayers),
+		ffDown:          make([]archICBGemvShape, 0, nLayers),
+		ffnScalars:      make([]archICBFFNScalarBuffers, 0, nLayers),
+		anwBufs:         make([]metal.MTLBuffer, nLayers),
+		mnwBufs:         make([]metal.MTLBuffer, nLayers),
+		qNormBufs:       make([]metal.MTLBuffer, nLayers),
+		kNormBufs:       make([]metal.MTLBuffer, nLayers),
+		postAttnBufs:    make([]metal.MTLBuffer, nLayers),
+		postFFBufs:      make([]metal.MTLBuffer, nLayers),
+		layerScalarBufs: make([]metal.MTLBuffer, nLayers),
+		kCaches:         make([]metal.MTLBuffer, nLayers),
+		vCaches:         make([]metal.MTLBuffer, nLayers),
+		lb:              make([]archICBLayerProjBuffers, nLayers),
+		pleLB:           make([]archICBPLEProjBuffers, nLayers),
+		plePostNorms:    make([]metal.MTLBuffer, nLayers),
+		projResident:    make([]metal.MTLBuffer, 0, nLayers*10+16),
+		pleResident:     make([]metal.MTLBuffer, 0, nLayers*2+6),
+	}
+}
+
+func (s *archICBSetupScratch) fits(nLayers int) bool {
+	return s != nil &&
+		cap(s.lFF) >= nLayers &&
+		cap(s.ffnWidthIndex) >= nLayers &&
+		cap(s.uniqueDFF) >= nLayers &&
+		cap(s.ffUp) >= nLayers &&
+		cap(s.ffDown) >= nLayers &&
+		cap(s.ffnScalars) >= nLayers &&
+		cap(s.anwBufs) >= nLayers &&
+		cap(s.mnwBufs) >= nLayers &&
+		cap(s.qNormBufs) >= nLayers &&
+		cap(s.kNormBufs) >= nLayers &&
+		cap(s.postAttnBufs) >= nLayers &&
+		cap(s.postFFBufs) >= nLayers &&
+		cap(s.layerScalarBufs) >= nLayers &&
+		cap(s.kCaches) >= nLayers &&
+		cap(s.vCaches) >= nLayers &&
+		cap(s.lb) >= nLayers &&
+		cap(s.pleLB) >= nLayers &&
+		cap(s.plePostNorms) >= nLayers &&
+		cap(s.projResident) >= nLayers*10+16 &&
+		cap(s.pleResident) >= nLayers*2+6
+}
+
+func (s *archICBSetupScratch) reset(nLayers int) *archICBSetupScratch {
+	clear(s.lFF)
+	clear(s.ffnWidthIndex)
+	clear(s.uniqueDFF)
+	clear(s.ffUp)
+	clear(s.ffDown)
+	clear(s.ffnScalars)
+	clear(s.anwBufs)
+	clear(s.mnwBufs)
+	clear(s.qNormBufs)
+	clear(s.kNormBufs)
+	clear(s.postAttnBufs)
+	clear(s.postFFBufs)
+	clear(s.layerScalarBufs)
+	clear(s.kCaches)
+	clear(s.vCaches)
+	clear(s.lb)
+	clear(s.pleLB)
+	clear(s.plePostNorms)
+	clear(s.projResident)
+	clear(s.pleResident)
+	s.lFF = s.lFF[:nLayers]
+	s.ffnWidthIndex = s.ffnWidthIndex[:nLayers]
+	s.uniqueDFF = s.uniqueDFF[:0]
+	s.ffUp = s.ffUp[:0]
+	s.ffDown = s.ffDown[:0]
+	s.ffnScalars = s.ffnScalars[:0]
+	s.anwBufs = s.anwBufs[:nLayers]
+	s.mnwBufs = s.mnwBufs[:nLayers]
+	s.qNormBufs = s.qNormBufs[:nLayers]
+	s.kNormBufs = s.kNormBufs[:nLayers]
+	s.postAttnBufs = s.postAttnBufs[:nLayers]
+	s.postFFBufs = s.postFFBufs[:nLayers]
+	s.layerScalarBufs = s.layerScalarBufs[:nLayers]
+	s.kCaches = s.kCaches[:nLayers]
+	s.vCaches = s.vCaches[:nLayers]
+	s.lb = s.lb[:nLayers]
+	s.pleLB = s.pleLB[:nLayers]
+	s.plePostNorms = s.plePostNorms[:nLayers]
+	s.projResident = s.projResident[:0]
+	s.pleResident = s.pleResident[:0]
+	return s
+}
+
+func getArchICBSetupScratch(nLayers int) *archICBSetupScratch {
+	if v := archICBSetupScratchPool.Get(); v != nil {
+		s := v.(*archICBSetupScratch)
+		if s.fits(nLayers) {
+			return s.reset(nLayers)
+		}
+	}
+	return newArchICBSetupScratch(nLayers)
+}
+
+func putArchICBSetupScratch(s *archICBSetupScratch) {
+	if s != nil {
+		archICBSetupScratchPool.Put(s.reset(0))
+	}
+}
+
 // archICBReplay is a recorded arch ICB held for incremental replay: recordArchICB builds it ONCE
 // (the decode stack baked into icb) and each stepBody replays it for ONE token over the growing
 // cache with cheap per-token offset rebinds. The batch core records it + runBatch-loops every
@@ -38,6 +187,8 @@ type archICBReplay struct {
 	icb                               metal.MTLIndirectCommandBuffer
 	rng                               foundation.NSRange
 	residentRes                       []metal.MTLResource
+	residentResIDs                    []objc.ID
+	scratch                           *archICBReplayScratch
 	specs                             []model.LayerSpec
 	nLayers                           int
 	vOutBind                          uint
@@ -46,15 +197,200 @@ type archICBReplay struct {
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
 	barrierOps                        []int // fine-grained replay: op indices to insert an encoder memory barrier before
 	kCaches, vCaches                  []metal.MTLBuffer
+	kCachePtrs, vCachePtrs            []*byte
 	offBuf, nGlobalBuf, nSlidingBuf   metal.MTLBuffer
+	offPtr, nGlobalPtr, nSlidingPtr   *int32
 	ping                              [2]metal.MTLBuffer
 	ping0, lastOut, pleInput          metal.MTLBuffer
+	ping0Ptr, pleInputPtr             *byte
+	lastOutPtr                        *byte
 	hasPLE                            bool
 	plePliDim                         int
 	pleRuntime                        *archDecodePLEInputs
 	opsPerLayer                       uint
 	rowBytes                          []int // per-layer KV cache row stride (nKVHeads·hd·bf16Size) — gemma4 global layers are wider
 	slidingWindow, dModel             int
+}
+
+type archICBReplayScratch struct {
+	dModel, maxQd, maxKvd, maxDFF, maxGelu int
+	nLayers, pleInputElems, pleDim         int
+	hasFusedGELU, hasPLE                   bool
+	normed, q, qr, kProj, attn, attnOut    metal.MTLBuffer
+	kThrow, vThrow, mlpNormed              metal.MTLBuffer
+	gate, up, gated, down                  metal.MTLBuffer
+	x2, x3, x3s, inner                     metal.MTLBuffer
+	scaled, tnh, onePlus, halfG, gelu      metal.MTLBuffer
+	c044, c079, c1c, c05                   metal.MTLBuffer
+	pleInput, pleGate, pleGated            metal.MTLBuffer
+	pleProj, pleNorm                       metal.MTLBuffer
+	ping                                   [2]metal.MTLBuffer
+	hBufs                                  []metal.MTLBuffer
+	offBuf, nGlobalBuf, nSlidingBuf        metal.MTLBuffer
+	kRopeIdx, vIdx, vNormIdx, sdpaIdx      []int
+	barrierOps, rowBytes                   []int
+	residentRes                            []metal.MTLResource
+}
+
+var archICBReplayScratchPool sync.Pool
+
+func newArchICBReplayScratch(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim int, hasFusedGELU, hasPLE bool) *archICBReplayScratch {
+	s := &archICBReplayScratch{
+		dModel: dModel, maxQd: maxQd, maxKvd: maxKvd, maxDFF: maxDFF, maxGelu: maxGelu,
+		nLayers: nLayers, pleInputElems: pleInputElems, pleDim: pleDim, hasFusedGELU: hasFusedGELU, hasPLE: hasPLE,
+		normed:      scratchBF16(dModel),
+		q:           scratchBF16(maxQd),
+		qr:          scratchBF16(maxQd),
+		kProj:       scratchBF16(maxKvd),
+		attn:        scratchBF16(maxQd),
+		attnOut:     scratchBF16(dModel),
+		kThrow:      scratchBF16(maxKvd),
+		vThrow:      scratchBF16(maxKvd),
+		mlpNormed:   scratchBF16(dModel),
+		gate:        scratchBF16(maxDFF),
+		up:          scratchBF16(maxDFF),
+		gated:       scratchBF16(maxDFF),
+		down:        scratchBF16(dModel),
+		ping:        [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)},
+		hBufs:       make([]metal.MTLBuffer, nLayers),
+		offBuf:      device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		nGlobalBuf:  device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		nSlidingBuf: device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+		kRopeIdx:    make([]int, nLayers),
+		vIdx:        make([]int, nLayers),
+		vNormIdx:    make([]int, nLayers),
+		sdpaIdx:     make([]int, nLayers),
+		barrierOps:  make([]int, 0, nLayers*24),
+		rowBytes:    make([]int, nLayers),
+		residentRes: make([]metal.MTLResource, 0, nLayers*48+96),
+	}
+	for i := range s.hBufs {
+		s.hBufs[i] = scratchBF16(dModel)
+	}
+	if !hasFusedGELU {
+		s.x2, s.x3, s.x3s, s.inner = scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
+		s.scaled, s.tnh, s.onePlus, s.halfG = scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
+		s.gelu = scratchBF16(maxGelu)
+		s.c044 = bf16ConstBuffer(maxGelu, 0.044715)
+		s.c079 = bf16ConstBuffer(maxGelu, 0.7978845608028654)
+		s.c1c = bf16ConstBuffer(maxGelu, 1.0)
+		s.c05 = bf16ConstBuffer(maxGelu, 0.5)
+	}
+	if hasPLE {
+		s.pleInput = scratchBF16(pleInputElems)
+		s.pleGate = scratchBF16(pleDim)
+		s.pleGated = scratchBF16(pleDim)
+		s.pleProj = scratchBF16(dModel)
+		s.pleNorm = scratchBF16(dModel)
+	}
+	return s
+}
+
+func (s *archICBReplayScratch) matches(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim int, hasFusedGELU, hasPLE bool) bool {
+	if s == nil || s.dModel != dModel || s.maxQd != maxQd || s.maxKvd != maxKvd || s.maxDFF != maxDFF || s.maxGelu != maxGelu ||
+		s.nLayers != nLayers || s.pleInputElems != pleInputElems || s.pleDim != pleDim || s.hasFusedGELU != hasFusedGELU || s.hasPLE != hasPLE {
+		return false
+	}
+	if s.normed == nil || s.q == nil || s.qr == nil || s.kProj == nil || s.attn == nil || s.attnOut == nil ||
+		s.kThrow == nil || s.vThrow == nil || s.mlpNormed == nil || s.gate == nil || s.up == nil || s.gated == nil || s.down == nil ||
+		s.ping[0] == nil || s.ping[1] == nil || s.offBuf == nil || s.nGlobalBuf == nil || s.nSlidingBuf == nil {
+		return false
+	}
+	if len(s.hBufs) != nLayers || len(s.kRopeIdx) != nLayers || len(s.vIdx) != nLayers || len(s.vNormIdx) != nLayers || len(s.sdpaIdx) != nLayers || len(s.rowBytes) != nLayers {
+		return false
+	}
+	for _, h := range s.hBufs {
+		if h == nil {
+			return false
+		}
+	}
+	if !hasFusedGELU && (s.x2 == nil || s.x3 == nil || s.x3s == nil || s.inner == nil || s.scaled == nil || s.tnh == nil || s.onePlus == nil || s.halfG == nil || s.gelu == nil || s.c044 == nil || s.c079 == nil || s.c1c == nil || s.c05 == nil) {
+		return false
+	}
+	if hasPLE && (s.pleInput == nil || s.pleGate == nil || s.pleGated == nil || s.pleProj == nil || s.pleNorm == nil) {
+		return false
+	}
+	return true
+}
+
+func getArchICBReplayScratch(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim int, hasFusedGELU, hasPLE bool) *archICBReplayScratch {
+	if v := archICBReplayScratchPool.Get(); v != nil {
+		s := v.(*archICBReplayScratch)
+		if s.matches(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim, hasFusedGELU, hasPLE) {
+			return s
+		}
+	}
+	return newArchICBReplayScratch(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim, hasFusedGELU, hasPLE)
+}
+
+func putArchICBReplayScratch(s *archICBReplayScratch) {
+	if s != nil {
+		archICBReplayScratchPool.Put(s)
+	}
+}
+
+func (r *archICBReplay) releaseScratch() {
+	if r != nil && r.scratch != nil {
+		putArchICBReplayScratch(r.scratch)
+		r.scratch = nil
+	}
+}
+
+func (r *archICBReplay) cacheKVContents() {
+	if r == nil {
+		return
+	}
+	if len(r.kCachePtrs) != len(r.kCaches) {
+		r.kCachePtrs = make([]*byte, len(r.kCaches))
+	}
+	if len(r.vCachePtrs) != len(r.vCaches) {
+		r.vCachePtrs = make([]*byte, len(r.vCaches))
+	}
+	for i, b := range r.kCaches {
+		if b != nil {
+			r.kCachePtrs[i] = (*byte)(b.Contents())
+		}
+	}
+	for i, b := range r.vCaches {
+		if b != nil {
+			r.vCachePtrs[i] = (*byte)(b.Contents())
+		}
+	}
+}
+
+func (r *archICBReplay) cacheLastOutContents() {
+	if r == nil || r.lastOut == nil {
+		return
+	}
+	r.lastOutPtr = (*byte)(r.lastOut.Contents())
+}
+
+func (r *archICBReplay) cacheStepContents() {
+	if r == nil {
+		return
+	}
+	if r.offBuf != nil {
+		r.offPtr = (*int32)(r.offBuf.Contents())
+	}
+	if r.nGlobalBuf != nil {
+		r.nGlobalPtr = (*int32)(r.nGlobalBuf.Contents())
+	}
+	if r.nSlidingBuf != nil {
+		r.nSlidingPtr = (*int32)(r.nSlidingBuf.Contents())
+	}
+	if r.ping0 != nil {
+		r.ping0Ptr = (*byte)(r.ping0.Contents())
+	}
+	if r.pleInput != nil {
+		r.pleInputPtr = (*byte)(r.pleInput.Contents())
+	}
+}
+
+func (r *archICBReplay) copyLastOutInto(dst []byte) {
+	if r == nil || r.lastOutPtr == nil {
+		return
+	}
+	copy(dst, unsafe.Slice(r.lastOutPtr, r.dModel*bf16Size))
 }
 
 // stepBody replays the recorded ICB for ONE token at position pos over the growing cache. pli is
@@ -76,33 +412,33 @@ func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 // which the caller reads after the command buffer completes. Must run inside an autorelease pool.
 func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte) metal.MTLBuffer {
 	r.prepareStep(inputEmb, pos, pli)
-	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
 	return r.lastOut
 }
 
 func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, readResult bool) []byte {
 	r.prepareStep(inputEmb, pos, pli)
-	cb := queue.CommandBuffer()
-	enc := cb.ComputeCommandEncoder()
-	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	cb := commandBufferFast(queue)
+	enc := computeCommandEncoderFast(cb)
+	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		// replay barrier-free ICB ranges with an encoder memory barrier at each recorded dep point —
 		// resource-scoped coherency instead of the coarse all-prior drain.
 		start := r.rng.Location
 		for _, b := range r.barrierOps {
 			bb := uint(b)
-			enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
 			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
-		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
 	} else {
-		enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+		executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
 	}
-	enc.EndEncoding()
-	cb.Commit()
-	cb.WaitUntilCompleted()
+	endEncodingFast(enc)
+	commitCommandBufferFast(cb)
+	waitUntilCompletedFast(cb)
 	if pieceTimingOn { // GPU execution span of the replay — vs the wall, splits GPU-side from host submit/wait
 		icbGPUNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
 	}
@@ -110,7 +446,7 @@ func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, rea
 		return nil
 	}
 	out := make([]byte, r.dModel*bf16Size)
-	copy(out, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
+	r.copyLastOutInto(out)
 	return out
 }
 
@@ -142,9 +478,9 @@ func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
 	r.prepareStepRebind(pos)
 	if r.hasPLE && pli != nil {
 		want := r.nLayers * r.plePliDim * bf16Size
-		copy(unsafe.Slice((*byte)(r.pleInput.Contents()), want), pli)
+		copy(unsafe.Slice(r.pleInputPtr, want), pli)
 	}
-	copy(unsafe.Slice((*byte)(r.ping0.Contents()), r.dModel*bf16Size), inputEmb)
+	copy(unsafe.Slice(r.ping0Ptr, r.dModel*bf16Size), inputEmb)
 }
 
 // prepareStepRebind does the position-dependent ICB rebind for one decode step — the offset/window
@@ -152,15 +488,15 @@ func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
 // path uses this: the next step's emb (→ping0) and pli (→pleInput) are produced on-GPU by the prior
 // step's encNextInputsGPU, so the host must not overwrite them, only re-point the caches for `pos`.
 func (r *archICBReplay) prepareStepRebind(pos int) {
-	*(*int32)(r.offBuf.Contents()) = int32(pos)
-	*(*int32)(r.nGlobalBuf.Contents()) = int32(pos + 1)
+	*r.offPtr = int32(pos)
+	*r.nGlobalPtr = int32(pos + 1)
 	win := pos + 1
 	start := 0
 	if r.slidingWindow > 0 && win > r.slidingWindow {
 		start = win - r.slidingWindow
 		win = r.slidingWindow
 	}
-	*(*int32)(r.nSlidingBuf.Contents()) = int32(win)
+	*r.nSlidingPtr = int32(win)
 	for li := 0; li < r.nLayers; li++ {
 		if r.specs[li].OwnsCache() {
 			// Re-acquire the command from the retained icb each step: the handle from
@@ -191,7 +527,7 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 // `pos` and replays — no host emb/pli write — returning lastOut (the post-stack hidden).
 func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder, pos int) metal.MTLBuffer {
 	r.prepareStepRebind(pos)
-	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		// Replay barrier-free ICB ranges separated by a RESOURCE-SCOPED encoder memory barrier at each
 		// true dependency — buffer-coherency sync instead of the coarse all-prior SetBarrier full drain,
@@ -199,14 +535,14 @@ func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder
 		start := r.rng.Location
 		for _, b := range r.barrierOps {
 			bb := uint(b)
-			enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
 			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
-		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
 		return r.lastOut
 	}
-	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
 	return r.lastOut
 }
 
@@ -257,14 +593,15 @@ func (r *archICBReplay) runBatchPipelined(r2 *archICBReplay, inputs [][]byte) ([
 	outputs := make([][]byte, len(inputs))
 	readOut := func(rr *archICBReplay) []byte {
 		o := make([]byte, rr.dModel*bf16Size)
-		copy(o, unsafe.Slice((*byte)(rr.lastOut.Contents()), rr.dModel*bf16Size))
+		rr.copyLastOutInto(o)
 		return o
 	}
 	var coreErr error
 	withAutoreleasePool(func() {
 		var prev *archICBReplay
-		var prevCB metal.MTLCommandBuffer
+		var prevCB metal.MTLCommandBufferObject
 		var prevT int
+		prevReady := false
 		for t := range inputs {
 			rr := rs[t%2]
 			var pli []byte
@@ -281,20 +618,20 @@ func (r *archICBReplay) runBatchPipelined(r2 *archICBReplay, inputs [][]byte) ([
 				pli = p
 			}
 			rr.prepareStep(inputs[t], t, pli)
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
 			enc.UseResourcesCountUsage(rr.residentRes, uint(len(rr.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			enc.ExecuteCommandsInBufferWithRange(rr.icb, rr.rng)
-			enc.EndEncoding()
-			cb.Commit() // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
-			if prevCB != nil {
-				prevCB.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb) // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
+			if prevReady {
+				waitUntilCompletedFast(prevCB)
 				outputs[prevT] = readOut(prev)
 			}
-			prev, prevCB, prevT = rr, cb, t
+			prev, prevCB, prevT, prevReady = rr, cb, t, true
 		}
-		if prevCB != nil {
-			prevCB.WaitUntilCompleted()
+		if prevReady {
+			waitUntilCompletedFast(prevCB)
 			outputs[prevT] = readOut(prev)
 		}
 	})
@@ -432,7 +769,7 @@ func recordArchICB(
 	for li := 0; li < nLayers; li++ {
 		hd := hdOf(li)
 		if _, ok := sdpaPSOByHd[hd]; !ok {
-			pso, e := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", hd, hd))
+			pso, e := sdpaVectorPipelineICBForHeadDim(hd)
 			if e != nil {
 				return nil, e
 			}
@@ -443,17 +780,26 @@ func recordArchICB(
 	if err != nil {
 		return nil, err
 	}
-	mulPSO, err := pipelineForICB("vv_Multiplybfloat16")
-	if err != nil {
-		return nil, err
-	}
-	tanhPSO, err := pipelineForICB("v_Tanhbfloat16bfloat16")
-	if err != nil {
-		return nil, err
-	}
+	hasFusedGELU := gpuHasGeluKernel()
+	var mulPSO, tanhPSO metal.MTLComputePipelineState
 	var geluICBPSO metal.MTLComputePipelineState
-	if gpuHasGeluKernel() {
+	if hasFusedGELU {
 		if geluICBPSO, err = geluPipelineICB(); err != nil {
+			return nil, err
+		}
+	} else {
+		mulPSO, err = pipelineForICB("vv_Multiplybfloat16")
+		if err != nil {
+			return nil, err
+		}
+		tanhPSO, err = pipelineForICB("v_Tanhbfloat16bfloat16")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if hasFusedGELU && hasLayerScalar {
+		mulPSO, err = pipelineForICB("vv_Multiplybfloat16")
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -461,7 +807,7 @@ func recordArchICB(
 	// from two barriered ICB ops (rms in-place + vv_Add) to ONE — removing 2 full-drain barriers/layer (the
 	// no-barrier ceiling probe showed each coarse SetBarrier drain costs ~7.5µs at decode batch=1).
 	var rmsResPSO metal.MTLComputePipelineState
-	useFusedResRMS := gpuHasGeluKernel()
+	useFusedResRMS := hasFusedGELU
 	if useFusedResRMS {
 		if rmsResPSO, err = rmsResidualPipelineICB(); err != nil {
 			return nil, err
@@ -473,7 +819,7 @@ func recordArchICB(
 	// kernel) so ICB ≡ re-encode stays byte-equal; ~1 ULP from the old composed path.
 	var qkRopeICBPSO metal.MTLComputePipelineState
 	useFusedQKRope := false
-	if gpuHasGeluKernel() { // same custom library as gelu — if that built, this builds (hard, like gelu)
+	if hasFusedGELU { // same custom library as gelu — if that built, this builds (hard, like gelu)
 		if qkRopeICBPSO, err = qkNormRopePipelineICB(); err != nil {
 			return nil, err
 		}
@@ -483,40 +829,41 @@ func recordArchICB(
 	var r *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
-		normed := scratchBF16(dModel)
-		q, qr, kProj, attn := scratchBF16(maxQd), scratchBF16(maxQd), scratchBF16(maxKvd), scratchBF16(maxQd)
-		attnOut := scratchBF16(dModel)
-		kThrow, vThrow := scratchBF16(maxKvd), scratchBF16(maxKvd) // sharer's discarded K/V
-		mlpNormed := scratchBF16(dModel)
+		pleInputElems, pleDim := 0, 0
+		if hasPLE {
+			pleInputElems, pleDim = nLayers*ple.pliDim, ple.pliDim
+		}
+		sc := getArchICBReplayScratch(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pleInputElems, pleDim, hasFusedGELU, hasPLE)
+
+		normed := sc.normed
+		q, qr, kProj, attn := sc.q, sc.qr, sc.kProj, sc.attn
+		attnOut := sc.attnOut
+		kThrow, vThrow := sc.kThrow, sc.vThrow // sharer's discarded K/V
+		mlpNormed := sc.mlpNormed
 		// FFN scratch + GeLU constants sized to the WIDEST layer (gemma4 MatFormer varies dFF
 		// per layer); each layer dispatches only its own lff elements, so a narrower layer reads
 		// a prefix of these buffers. Uniform callers (maxDFF==dFF) are byte-identical.
-		gate, up := scratchBF16(maxDFF), scratchBF16(maxDFF)
-		x2, x3, x3s, inner := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
-		scaled, tnh, onePlus, halfG := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
-		gelu, gated, down := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(dModel)
-		c044 := sharedBytes(bf16ConstBytes(maxGelu, 0.044715))
-		c079 := sharedBytes(bf16ConstBytes(maxGelu, 0.7978845608028654))
-		c1c := sharedBytes(bf16ConstBytes(maxGelu, 1.0))
-		c05 := sharedBytes(bf16ConstBytes(maxGelu, 0.5))
+		gate, up := sc.gate, sc.up
+		gated, down := sc.gated, sc.down
+		var x2, x3, x3s, inner metal.MTLBuffer
+		var scaled, tnh, onePlus, halfG metal.MTLBuffer
+		var gelu metal.MTLBuffer
+		var c044, c079, c1c, c05 metal.MTLBuffer
+		if !hasFusedGELU {
+			x2, x3, x3s, inner = sc.x2, sc.x3, sc.x3s, sc.inner
+			scaled, tnh, onePlus, halfG = sc.scaled, sc.tnh, sc.onePlus, sc.halfG
+			gelu = sc.gelu
+			c044, c079, c1c, c05 = sc.c044, sc.c079, sc.c1c, sc.c05
+		}
 		var pleInput, pleGate, pleGated, pleProj, pleNorm metal.MTLBuffer
 		if hasPLE {
-			pleInput = scratchBF16(nLayers * ple.pliDim)
-			pleGate, pleGated = scratchBF16(ple.pliDim), scratchBF16(ple.pliDim)
-			pleProj, pleNorm = scratchBF16(dModel), scratchBF16(dModel)
+			pleInput, pleGate, pleGated = sc.pleInput, sc.pleGate, sc.pleGated
+			pleProj, pleNorm = sc.pleProj, sc.pleNorm
 		}
-		ping := [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)}
-		hBufs := make([]metal.MTLBuffer, nLayers)
-		for i := range hBufs {
-			hBufs[i] = scratchBF16(dModel)
-		}
+		ping := sc.ping
+		hBufs := sc.hBufs
 
-		off := int32(0)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		nGlobal := int32(1)
-		nGlobalBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nGlobal), 4, metal.MTLResourceStorageModeShared)
-		nSliding := int32(1)
-		nSlidingBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nSliding), 4, metal.MTLResourceStorageModeShared)
+		offBuf, nGlobalBuf, nSlidingBuf := sc.offBuf, sc.nGlobalBuf, sc.nSlidingBuf
 		// scalarI32/F32 memoise by value, so a sink-driven op (emitRMSNorm via icbSink) binds the SAME
 		// eps/axis/ws buffers these named handles hold — no duplicate scalar buffers, no per-record alloc.
 		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
@@ -626,10 +973,12 @@ func recordArchICB(
 
 		resident := []metal.MTLBuffer{
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, kThrow, vThrow, mlpNormed,
-			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
-			c044, c079, c1c, c05,
+			gate, up, gated, down,
 			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, wsBuf,
 			ropeScaleB, ropeBaseB, ropeLocalBaseB, freqStride1B, sdpaScaleB, addModelB,
+		}
+		if !hasFusedGELU {
+			resident = append(resident, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, c044, c079, c1c, c05)
 		}
 		for _, a := range hdAxisBy {
 			resident = append(resident, a.axisHead, a.ropeMat)
@@ -659,7 +1008,7 @@ func recordArchICB(
 			}
 		}
 		if hasLayerScalar {
-			layerScalarOnes = sharedBytes(bf16ConstBytes(dModel, 1.0))
+			layerScalarOnes = bf16ConstBuffer(dModel, 1.0)
 			resident = append(resident, layerScalarOnes)
 			for _, b := range layerScalarBufs {
 				if b != nil {
@@ -717,7 +1066,7 @@ func recordArchICB(
 			extra++
 		}
 		opsPerLayer := 24 + extra
-		if gpuHasGeluKernel() { // fused gelu is 1 command vs the composed chain's 10
+		if hasFusedGELU { // fused gelu is 1 command vs the composed chain's 10
 			opsPerLayer -= 9
 		}
 		// fused QK-norm+rope collapses (qNorm + ropeQ) and (kNorm + ropeK) from 2 ops to 1 each when the
@@ -732,7 +1081,7 @@ func recordArchICB(
 			kRopeBindIdx = 2
 		}
 		if hasPLE {
-			if gpuHasGeluKernel() {
+			if hasFusedGELU {
 				opsPerLayer += 5 // qmv gate, fused gelu*pli, qmv proj, rms, residual add
 			} else {
 				opsPerLayer += 14 // qmv gate, 10-op gelu*pli chain, qmv proj, rms, residual add
@@ -828,16 +1177,20 @@ func recordArchICB(
 		}
 
 		// per-layer commands whose bindings advance per token
-		kRopeIdx := make([]int, nLayers) // owner cache-write (K) op index — re-acquired per token
-		vIdx := make([]int, nLayers)     // owner cache-write (V) op index
-		vNormIdx := make([]int, nLayers) // owner value-norm op index (rebound/token)
-		sdpaIdx := make([]int, nLayers)  // SDPA op index (sliding: read offset rebound/token)
+		kRopeIdx := sc.kRopeIdx[:nLayers] // owner cache-write (K) op index — re-acquired per token
+		vIdx := sc.vIdx[:nLayers]         // owner cache-write (V) op index
+		vNormIdx := sc.vNormIdx[:nLayers] // owner value-norm op index (rebound/token)
+		sdpaIdx := sc.sdpaIdx[:nLayers]   // SDPA op index (sliding: read offset rebound/token)
+		clear(kRopeIdx)
+		clear(vIdx)
+		clear(vNormIdx)
+		clear(sdpaIdx)
 
 		// one running command index across the whole stack (the conditional norm ops make
 		// per-layer offsets uneven, but the count is uniform so the running counter stays
 		// aligned). The barrier on every command but the first makes execution sequential.
 		opIdx := 0
-		var barrierOps []int // op indices that carry a barrier-before — used by the fine-grained replay
+		barrierOps := sc.barrierOps[:0] // op indices that carry a barrier-before — used by the fine-grained replay
 		emit := func() metal.MTLIndirectComputeCommand {
 			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
 			if opIdx != 0 {
@@ -975,7 +1328,7 @@ func recordArchICB(
 			}
 			recInputProj(emitFFN(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
 			recInputProj(emitNB(), li, hBuf, mnwBufs[li], mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
-			if gpuHasGeluKernel() {                                                 // fused gelu(gate)·up — one ICB command, the binary-op ABI with the gelu pipeline
+			if hasFusedGELU {                                                       // fused gelu(gate)·up — one ICB command, the binary-op ABI with the gelu pipeline
 				setBin(emitFFN(), geluICBPSO, gate, up, gated, lff)
 			} else {
 				setBin(emit(), mulPSO, gate, gate, x2, lff)
@@ -1006,7 +1359,7 @@ func recordArchICB(
 			if hasPLE {
 				ple.recordGate(li, emit(), outBuf, pleGate)
 				pleOff := uint(li * ple.pliDim * bf16Size)
-				if gpuHasGeluKernel() { // fused gelu(pleGate)·pleInput — the binary-op ABI with the gelu pipeline (pleInput at offset)
+				if hasFusedGELU { // fused gelu(pleGate)·pleInput — the binary-op ABI with the gelu pipeline (pleInput at offset)
 					setBinOffsets(emit(), geluICBPSO, pleGate, 0, pleInput, pleOff, pleGated, 0, ple.pliDim)
 				} else {
 					setBin(emit(), mulPSO, pleGate, pleGate, x2, ple.pliDim)
@@ -1045,30 +1398,40 @@ func recordArchICB(
 		}
 
 		lastOut := ping[nLayers%2]
-		residentRes := make([]metal.MTLResource, len(resident))
+		if cap(sc.residentRes) < len(resident) {
+			sc.residentRes = make([]metal.MTLResource, len(resident))
+		}
+		residentRes := sc.residentRes[:len(resident)]
 		for i, bb := range resident {
 			residentRes[i] = bb
 		}
+		residentResIDs := make([]objc.ID, len(residentRes))
+		for i, bb := range residentRes {
+			if bb != nil {
+				residentResIDs[i] = bb.GetID()
+			}
+		}
 		rng := foundation.NSRange{Location: 0, Length: uint(total)}
 
-		optCb := queue.CommandBuffer()
+		optCb := commandBufferFast(queue)
 		blit := optCb.BlitCommandEncoder()
 		blit.OptimizeIndirectCommandBufferWithRange(icb, rng)
 		blit.EndEncoding()
-		optCb.Commit()
-		optCb.WaitUntilCompleted()
+		commitCommandBufferFast(optCb)
+		waitUntilCompletedFast(optCb)
 
 		plePliDim, pleRuntime := 0, (*archDecodePLEInputs)(nil)
 		if hasPLE {
 			plePliDim, pleRuntime = ple.pliDim, ple.runtime
 		}
-		rowBytesByLayer := make([]int, nLayers)
+		rowBytesByLayer := sc.rowBytes[:nLayers]
 		for li := 0; li < nLayers; li++ {
 			rowBytesByLayer[li] = kvdOf(li) * bf16Size
 		}
 		r = &archICBReplay{
-			icb: icb, rng: rng, residentRes: residentRes,
-			specs: specs, nLayers: nLayers, vOutBind: vOutBind, kRopeBind: kRopeBindIdx, hasValueNorm: valueNormOnes != nil,
+			icb: icb, rng: rng, residentRes: residentRes, residentResIDs: residentResIDs,
+			scratch: sc,
+			specs:   specs, nLayers: nLayers, vOutBind: vOutBind, kRopeBind: kRopeBindIdx, hasValueNorm: valueNormOnes != nil,
 			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx, barrierOps: barrierOps,
 			kCaches: kCaches, vCaches: vCaches,
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
@@ -1077,6 +1440,9 @@ func recordArchICB(
 			opsPerLayer: uint(opsPerLayer),
 			rowBytes:    rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,
 		}
+		r.cacheKVContents()
+		r.cacheStepContents()
+		r.cacheLastOutContents()
 	})
 	if coreErr != nil {
 		return nil, coreErr
@@ -1102,7 +1468,9 @@ func decodeForwardArchICBCore(
 	if err != nil {
 		return nil, err
 	}
-	return r.runBatch(inputs)
+	outputs, err := r.runBatch(inputs)
+	r.releaseScratch()
+	return outputs, err
 }
 
 // DecodeForwardArchICB is the bf16 ARCH-driven cache-grow ICB: the encode-bypass replay
@@ -1158,14 +1526,26 @@ func DecodeForwardArchICB(
 		return DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
 	}
 
+	setup := getArchICBSetupScratch(nLayers)
+	defer putArchICBSetupScratch(setup)
+
 	// per-layer FFN width (gemma4 E2B/E4B MatFormer): lFF[li] (from w.DFF, fallback dFF).
-	lFF := make([]int, nLayers)
+	lFF := setup.lFF
+	ffnWidthIndex := setup.ffnWidthIndex
+	uniqueDFF := setup.uniqueDFF
 	for li := range layers {
 		lFF[li] = dFF
 		if layers[li].DFF > 0 {
 			lFF[li] = layers[li].DFF
 		}
+		idx := slices.Index(uniqueDFF, lFF[li])
+		if idx < 0 {
+			idx = len(uniqueDFF)
+			uniqueDFF = append(uniqueDFF, lFF[li])
+		}
+		ffnWidthIndex[li] = idx
 	}
+	setup.uniqueDFF = uniqueDFF
 	plePayload, err := singleArchPLEBF16("native.DecodeForwardArchICB", pleArgs)
 	if err != nil {
 		return nil, err
@@ -1184,7 +1564,7 @@ func DecodeForwardArchICB(
 
 	gemvPSO := func(inDim, outDim int) (metal.MTLComputePipelineState, int, int, int, int, error) {
 		bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-		p, e := pipelineForICB(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+		p, e := pipelineForICB(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
 		return p, bm, bn, sm, tm, e
 	}
 	psoQ, bmQ, bnQ, smQ, tmQ, err := gemvPSO(dModel, qDim)
@@ -1200,85 +1580,84 @@ func DecodeForwardArchICB(
 		return nil, err
 	}
 	// gate/up (dModel→lff) and down (lff→dModel) gemv PSOs + tiles, one per distinct FFN width.
-	type gemvShape struct {
-		pso            metal.MTLComputePipelineState
-		bm, bn, sm, tm int
-	}
-	ffUp := make(map[int]gemvShape)   // gate/up: dModel→lff
-	ffDown := make(map[int]gemvShape) // down: lff→dModel
-	for li := range lFF {
-		lff := lFF[li]
-		if _, ok := ffUp[lff]; !ok {
-			p, bm, bn, sm, tm, e := gemvPSO(dModel, lff)
-			if e != nil {
-				return nil, e
-			}
-			ffUp[lff] = gemvShape{p, bm, bn, sm, tm}
-			p2, bm2, bn2, sm2, tm2, e2 := gemvPSO(lff, dModel)
-			if e2 != nil {
-				return nil, e2
-			}
-			ffDown[lff] = gemvShape{p2, bm2, bn2, sm2, tm2}
+	ffUp := setup.ffUp[:len(uniqueDFF)]
+	ffDown := setup.ffDown[:len(uniqueDFF)]
+	for i, lff := range uniqueDFF {
+		p, bm, bn, sm, tm, e := gemvPSO(dModel, lff)
+		if e != nil {
+			return nil, e
 		}
+		ffUp[i] = archICBGemvShape{p, bm, bn, sm, tm}
+		p2, bm2, bn2, sm2, tm2, e2 := gemvPSO(lff, dModel)
+		if e2 != nil {
+			return nil, e2
+		}
+		ffDown[i] = archICBGemvShape{p2, bm2, bn2, sm2, tm2}
 	}
-	var pleGateShape, pleProjShape gemvShape
+	setup.ffUp = ffUp
+	setup.ffDown = ffDown
+	var pleGateShape, pleProjShape archICBGemvShape
 	if pleRuntime != nil {
 		p, bm, bn, sm, tm, e := gemvPSO(dModel, pliDim)
 		if e != nil {
 			return nil, e
 		}
-		pleGateShape = gemvShape{p, bm, bn, sm, tm}
+		pleGateShape = archICBGemvShape{p, bm, bn, sm, tm}
 		p, bm, bn, sm, tm, e = gemvPSO(pliDim, dModel)
 		if e != nil {
 			return nil, e
 		}
-		pleProjShape = gemvShape{p, bm, bn, sm, tm}
+		pleProjShape = archICBGemvShape{p, bm, bn, sm, tm}
 	}
 
 	var outputs [][]byte
 	var coreErr error
 	withAutoreleasePool(func() {
-		anwBufs := make([]metal.MTLBuffer, nLayers)
-		mnwBufs := make([]metal.MTLBuffer, nLayers)
-		qNormBufs := make([]metal.MTLBuffer, nLayers)
-		kNormBufs := make([]metal.MTLBuffer, nLayers)
-		postAttnBufs := make([]metal.MTLBuffer, nLayers)
-		postFFBufs := make([]metal.MTLBuffer, nLayers)
-		layerScalarBufs := make([]metal.MTLBuffer, nLayers)
-		kCaches := make([]metal.MTLBuffer, nLayers)
-		vCaches := make([]metal.MTLBuffer, nLayers)
-		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
-		lb := make([]lw, nLayers)
-		type plw struct{ gate, proj metal.MTLBuffer }
-		pleLB := make([]plw, nLayers)
-		plePostNorms := make([]metal.MTLBuffer, nLayers)
+		anwBufs := setup.anwBufs
+		mnwBufs := setup.mnwBufs
+		qNormBufs := setup.qNormBufs
+		kNormBufs := setup.kNormBufs
+		postAttnBufs := setup.postAttnBufs
+		postFFBufs := setup.postFFBufs
+		layerScalarBufs := setup.layerScalarBufs
+		kCaches := setup.kCaches
+		vCaches := setup.vCaches
+		lb := setup.lb
+		pleLB := setup.pleLB
+		plePostNorms := setup.plePostNorms
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		// presized to the upper bound (every layer's ≤7 projection buffers, the 16 shared trailing
 		// scalar buffers, plus ≤3 FFN dim scalars per distinct dFF width) so the per-forward build
 		// never geometrically regrows its backing array — K==V layers leave the v-proj slot unused.
 		// Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7+16+nLayers*3)
+		projResident := setup.projResident
+		residentOrNil := func(b []byte) metal.MTLBuffer {
+			if len(b) == 0 {
+				return nil
+			}
+			return residentBytes(b)
+		}
 		for li := range layers {
 			w := layers[li]
-			anwBufs[li] = sharedBytes(w.AttnNormW)
-			mnwBufs[li] = sharedBytes(w.MLPNormW)
-			qNormBufs[li] = sharedOrNil(w.QNormW)
-			kNormBufs[li] = sharedOrNil(w.KNormW)
-			postAttnBufs[li] = sharedOrNil(w.PostAttnNormW)
-			postFFBufs[li] = sharedOrNil(w.PostFFNormW)
+			anwBufs[li] = residentBytes(w.AttnNormW)
+			mnwBufs[li] = residentBytes(w.MLPNormW)
+			qNormBufs[li] = residentOrNil(w.QNormW)
+			kNormBufs[li] = residentOrNil(w.KNormW)
+			postAttnBufs[li] = residentOrNil(w.PostAttnNormW)
+			postFFBufs[li] = residentOrNil(w.PostFFNormW)
 			layerScalarBufs[li] = layerScalarBuf(w.LayerScalarW, dModel)
 			if specs[li].OwnsCache() {
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}
-			lb[li] = lw{sharedBytes(w.WQ), sharedBytes(w.WK), sharedOrNil(w.WV), sharedBytes(w.WO), sharedBytes(w.WGate), sharedBytes(w.WUp), sharedBytes(w.WDown)}
+			lb[li] = archICBLayerProjBuffers{residentBytes(w.WQ), residentBytes(w.WK), residentOrNil(w.WV), residentBytes(w.WO), residentBytes(w.WGate), residentBytes(w.WUp), residentBytes(w.WDown)}
 			projResident = append(projResident, lb[li].wq, lb[li].wk, lb[li].wo, lb[li].wg, lb[li].wu, lb[li].wd)
 			if lb[li].wv != nil { // gemma4 K==V layers carry no v_proj
 				projResident = append(projResident, lb[li].wv)
 			}
 			if pleRuntime != nil {
-				pleLB[li] = plw{sharedBytes(pleLayers[li].gate.Packed), sharedBytes(pleLayers[li].proj.Packed)}
-				plePostNorms[li] = sharedBytes(pleLayers[li].postNorm)
+				pleLB[li] = archICBPLEProjBuffers{residentBytes(pleLayers[li].gate.Packed), residentBytes(pleLayers[li].proj.Packed)}
+				plePostNorms[li] = residentBytes(pleLayers[li].postNorm)
 			}
 		}
 		qInB, qOutB, qLdB := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dModel))
@@ -1287,36 +1666,36 @@ func DecodeForwardArchICB(
 		// FFN gemv dim scalars: the dModel-side (up's in/ld, down's out) are shared; the lff-side
 		// (up's out, down's in/ld) is one buffer per distinct width. All appended to projResident.
 		fInB, fLdB, dOutB := scalarI32(int32(dModel)), scalarI32(int32(dModel)), scalarI32(int32(dModel))
-		fOutByDFF := make(map[int]metal.MTLBuffer) // up out dim = lff
-		dInByDFF := make(map[int]metal.MTLBuffer)  // down in dim = lff
-		dLdByDFF := make(map[int]metal.MTLBuffer)  // down leading dim = lff
-		for li := range lFF {
-			lff := lFF[li]
-			if _, ok := fOutByDFF[lff]; !ok {
-				fOutByDFF[lff] = scalarI32(int32(lff))
-				dInByDFF[lff] = scalarI32(int32(lff))
-				dLdByDFF[lff] = scalarI32(int32(lff))
+		ffnScalars := setup.ffnScalars[:len(uniqueDFF)]
+		for i, lff := range uniqueDFF {
+			ffnScalars[i] = archICBFFNScalarBuffers{
+				fOut: scalarI32(int32(lff)),
+				dIn:  scalarI32(int32(lff)),
+				dLd:  scalarI32(int32(lff)),
 			}
 		}
+		setup.ffnScalars = ffnScalars
 		bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
 		projResident = append(projResident, qInB, qOutB, qLdB, kvInB, kvOutB, kvLdB, oInB, oOutB, oLdB, fInB, fLdB, dOutB, bndB, bshB, vsB, msB)
-		for lff, b := range fOutByDFF {
-			projResident = append(projResident, b, dInByDFF[lff], dLdByDFF[lff])
+		for _, s := range ffnScalars {
+			projResident = append(projResident, s.fOut, s.dIn, s.dLd)
 		}
+		setup.projResident = projResident
 
 		// bf16 tiled gemv through the SHARED emitGemv body (with encGemvBF16To). K/N/ld/batch bind the same
 		// memoised scalars inB/outB/ldB/bndB/bshB/vsB/msB hold, so the call passes inDim/outDim values.
 		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
-			emitGemv(icbSink{c}, pso, mat, 0, vec, o, outOff, inDim, outDim, bm, bn, sm, tm)
+			emitGemv(fastICBSink{c}, pso, mat, 0, vec, o, outOff, inDim, outDim, bm, bn, sm, tm)
 		}
 		var plePlan *archICBPLEPlan
 		if pleRuntime != nil {
 			pleGateInB, pleGateOutB, pleGateLdB := scalarI32(int32(dModel)), scalarI32(int32(pliDim)), scalarI32(int32(dModel))
 			pleProjInB, pleProjOutB, pleProjLdB := scalarI32(int32(pliDim)), scalarI32(int32(dModel)), scalarI32(int32(pliDim))
-			pleResident := []metal.MTLBuffer{pleGateInB, pleGateOutB, pleGateLdB, pleProjInB, pleProjOutB, pleProjLdB}
+			pleResident := append(setup.pleResident, pleGateInB, pleGateOutB, pleGateLdB, pleProjInB, pleProjOutB, pleProjLdB)
 			for li := range pleLB {
 				pleResident = append(pleResident, pleLB[li].gate, pleLB[li].proj)
 			}
+			setup.pleResident = pleResident
 			plePlan = &archICBPLEPlan{
 				runtime: pleRuntime, pliDim: pliDim, postNormBufs: plePostNorms, resident: pleResident,
 			}
@@ -1342,15 +1721,15 @@ func DecodeForwardArchICB(
 				setGemv(c, psoO, l.wo, vec, out, outOff, qDim, dModel, bmO, bnO, smO, tmO)
 			case projGate:
 				lff := lFF[li]
-				u := ffUp[lff]
+				u := ffUp[ffnWidthIndex[li]]
 				setGemv(c, u.pso, l.wg, vec, out, outOff, dModel, lff, u.bm, u.bn, u.sm, u.tm)
 			case projUp:
 				lff := lFF[li]
-				u := ffUp[lff]
+				u := ffUp[ffnWidthIndex[li]]
 				setGemv(c, u.pso, l.wu, vec, out, outOff, dModel, lff, u.bm, u.bn, u.sm, u.tm)
 			case projDown:
 				lff := lFF[li]
-				d := ffDown[lff]
+				d := ffDown[ffnWidthIndex[li]]
 				setGemv(c, d.pso, l.wd, vec, out, outOff, lff, dModel, d.bm, d.bn, d.sm, d.tm)
 			}
 		}

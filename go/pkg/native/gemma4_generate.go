@@ -52,6 +52,7 @@ func GenerateGemma4BF16(g *BF16Model, arch model.Arch, promptIDs []int32, maxNew
 			return
 		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm, maxLen)
+		defer state.Close()
 
 		// step one token id at pos (embed is a pure-host gather; stepToken is the device step).
 		step := func(id int32, pos int) ([]byte, error) {

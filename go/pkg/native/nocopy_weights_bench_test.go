@@ -4,15 +4,49 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
 
-func BenchmarkCopyViewSmallWeight(b *testing.B) {
-	requireNativeRuntime(b)
+func BenchmarkShardBufferResidentRangeEviction(b *testing.B) {
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
 
-	weight := toBF16Bytes(syntheticFloat32(64, 3))
-	b.SetBytes(int64(len(weight)))
+	const entries = 64
+	shard := make([]byte, entries+1)
+	other := make([]byte, entries+1)
+	shardBase := uintptr(unsafe.Pointer(&shard[0]))
+	otherBase := uintptr(unsafe.Pointer(&other[0]))
+	bases := []uintptr{shardBase}
+	ends := []uintptr{shardBase + uintptr(len(shard))}
+	shardKeys := make([]uintptr, entries)
+	otherKeys := make([]uintptr, entries)
+	for i := 0; i < entries; i++ {
+		shardKeys[i] = shardBase + uintptr(i)
+		otherKeys[i] = otherBase + uintptr(i)
+	}
+
+	residentBufMu.Lock()
+	residentBufs = make(map[uintptr]residentBuf, entries*2)
+	for i := 0; i < entries; i++ {
+		residentBufs[shardKeys[i]] = residentBuf{pin: shard[i : i+1]}
+		residentBufs[otherKeys[i]] = residentBuf{pin: other[i : i+1]}
+	}
+	residentBufMu.Unlock()
+
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = copyView(weight)
+		evictResidentBufsForRanges(bases, ends)
+
+		b.StopTimer()
+		residentBufMu.Lock()
+		for j := 0; j < entries; j++ {
+			residentBufs[shardKeys[j]] = residentBuf{pin: shard[j : j+1]}
+			residentBufs[otherKeys[j]] = residentBuf{pin: other[j : j+1]}
+		}
+		residentBufMu.Unlock()
+		b.StartTimer()
 	}
 }

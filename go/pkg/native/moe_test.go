@@ -125,3 +125,29 @@ func TestMoEExpertsBindsWholeBatchedExpertMatrices(t *testing.T) {
 		t.Fatalf("MoEExperts resident tensors mismatch: missing whole=%v selected-slice hits=%d resident=%d want exactly %d whole batched tensors", missingWhole, sliceHits, got, len(wholeKeys))
 	}
 }
+
+func TestMoEExpertsAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel, dFF = 4, 2, 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	gateW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 53))
+	upW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 71))
+	downW := toBF16Bytes(syntheticFloat32(numExperts*dModel*dFF, 47))
+	if _, err := MoEExperts(x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF); err != nil {
+		t.Fatalf("MoEExperts warmup: %v", err)
+	}
+
+	var expertsErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, expertsErr = MoEExperts(x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF)
+	})
+	if expertsErr != nil {
+		t.Fatalf("MoEExperts: %v", expertsErr)
+	}
+	if allocs > 30 {
+		t.Fatalf("MoEExperts allocations = %.0f, want <= 30", allocs)
+	}
+}

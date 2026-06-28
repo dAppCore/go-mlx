@@ -163,10 +163,10 @@ func GeluGateMul(gate, up []float32) ([]float32, error) {
 	}
 	// Multiply in place into g (the fresh slice Gelu just returned) rather than
 	// allocating a second result via Mul → RunBinary. This is byte-identical and
-	// alias-safe only because RunBinaryInto allocates its own Metal outBuf and
-	// copies the result back to g afterwards — there is no GPU-side aliasing of
-	// the in==out Go slice. If RunBinaryInto is ever changed to write directly
-	// into the input buffer, this reuse must change with it.
+	// alias-safe because RunBinaryInto writes to staged output scratch and copies
+	// the result back to g afterwards — there is no GPU-side aliasing of the
+	// in==out Go slice. If RunBinaryInto is ever changed to write directly into
+	// the input buffer, this reuse must change with it.
 	if err := RunBinaryInto("vv_Multiplyfloat32", g, up, g); err != nil {
 		return nil, err
 	}

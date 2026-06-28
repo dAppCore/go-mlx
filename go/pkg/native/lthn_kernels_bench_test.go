@@ -9,6 +9,26 @@ import (
 	"testing"
 )
 
+func BenchmarkMulScalarBF16_1024(b *testing.B) {
+	requireNativeRuntime(b)
+	if _, err := bf16MulScalarPipeline(); err != nil {
+		b.Fatalf("bf16 scalar kernel unavailable: %v", err)
+	}
+	in := toBF16Bytes(syntheticFloat32(1024, 17))
+	scalar := toBF16Bytes([]float32{0.375})
+	if _, err := MulScalarBF16(in, scalar); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(in)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MulScalarBF16(in, scalar); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkGeluGate{Composed,Fused} measure the gelu cost in ONE command buffer: the composed chain
 // (~10 dispatches, each op rounded to bf16) vs the fused kernel (1 dispatch). The commit+wait is
 // constant across both, so the delta isolates the dispatch-count cost — what the fused kernel saves

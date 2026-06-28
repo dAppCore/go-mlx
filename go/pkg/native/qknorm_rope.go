@@ -16,6 +16,9 @@ import (
 var (
 	qkRopeDummyOnce    sync.Once
 	qkRopeDummyPeriods metal.MTLBuffer
+
+	qkRopePeriodsBufMu    sync.Mutex
+	qkRopePeriodsBufCache = map[ropePeriodsKey][]ropePeriodsCacheEntry{}
 )
 
 // qkRopeDummyBuf is a 1-element float buffer bound at the periods slot when use_freqs == 0 (the kernel
@@ -26,6 +29,40 @@ func qkRopeDummyBuf() metal.MTLBuffer {
 		qkRopeDummyPeriods = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&one), 4, metal.MTLResourceStorageModeShared)
 	})
 	return qkRopeDummyPeriods
+}
+
+func cachedQKNormRopePeriodsBuffer(periods []float32) metal.MTLBuffer {
+	if len(periods) == 0 {
+		return nil
+	}
+	key := ropePeriodsKeyFor(periods)
+	qkRopePeriodsBufMu.Lock()
+	for _, entry := range qkRopePeriodsBufCache[key] {
+		if sameFloat32Bits(periods, entry.bits) {
+			buf := entry.buf
+			qkRopePeriodsBufMu.Unlock()
+			return buf
+		}
+	}
+	qkRopePeriodsBufMu.Unlock()
+
+	bits := make([]uint32, len(periods))
+	for i, f := range periods {
+		bits[i] = math.Float32bits(f)
+	}
+	buf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+
+	qkRopePeriodsBufMu.Lock()
+	for _, entry := range qkRopePeriodsBufCache[key] {
+		if sameFloat32Bits(periods, entry.bits) {
+			existing := entry.buf
+			qkRopePeriodsBufMu.Unlock()
+			return existing
+		}
+	}
+	qkRopePeriodsBufCache[key] = append(qkRopePeriodsBufCache[key], ropePeriodsCacheEntry{bits: bits, buf: buf})
+	qkRopePeriodsBufMu.Unlock()
+	return buf
 }
 
 var (
@@ -77,46 +114,38 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 	if err != nil {
 		return nil, err
 	}
-	useFreqs := int32(0)
-	per := periods
-	if len(per) > 0 {
-		useFreqs = 1
-	} else {
-		per = []float32{1} // dummy bind (kernel won't read it when use_freqs == 0)
-	}
-
 	out := make([]byte, len(x))
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, wBuf := sharedBytes(x), sharedBytes(weight)
-		oBuf := device.NewBufferWithLengthOptions(uint(len(out)), metal.MTLResourceStorageModeShared)
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		perBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&per[0]), uint(len(per)*4), metal.MTLResourceStorageModeShared)
+		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, oBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		wBuf := residentBytes(weight)
+		offBuf := scalarI32(int32(offset))
+		var perBuf metal.MTLBuffer
+		if len(periods) > 0 {
+			perBuf = cachedQKNormRopePeriodsBuffer(periods)
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(oBuf, 0, 2)
-		setEncFloat32(enc, eps, 3)
-		setEncInt32(enc, int32(headDim), 4)
-		setEncInt32(enc, int32(rotaryDim), 5)
-		setEncFloat32(enc, scale, 6)
-		enc.SetBufferWithOffsetAtIndex(offBuf, 0, 7)
-		setEncFloat32(enc, base, 8)
-		enc.SetBufferWithOffsetAtIndex(perBuf, 0, 9)
-		setEncInt32(enc, useFreqs, 10)
-		// one threadgroup per head, headDim threads each (threadgroup_position_in_grid = head)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nHeads * headDim), Height: 1, Depth: 1},
-			metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(oBuf.Contents()), len(out)))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitQKNormRope(encSink{enc}, pso, xBuf, wBuf, oBuf, 0, 0, 0, offBuf, perBuf, qkRopeDummyBuf(), nHeads, headDim, rotaryDim, eps, scale, base)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -126,6 +155,10 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 // the freqs/YaRN path. x/w/out may carry byte offsets (the K cache row, the qk-norm shard view).
 // Caller guards with gpuHasGeluKernel.
 func encQKNormRope(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, offBuf, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale, eps float32) error {
+	return encQKNormRopeAt(enc, x, w, out, xOff, wOff, outOff, offBuf, 0, periods, nHeads, headDim, rotaryDim, base, scale, eps)
+}
+
+func encQKNormRopeAt(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, offBuf metal.MTLBuffer, offOff uint, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale, eps float32) error {
 	pso, err := qkNormRopePipeline()
 	if err != nil {
 		return err
@@ -136,7 +169,7 @@ func encQKNormRope(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer
 	}
 	// fused per-head QK-norm + RoPE through the SHARED emitQKNormRope body (with the ICB setQKNormRope);
 	// periods != nil selects the freqs form, else the base form binds qkRopeDummyBuf() at 9 (unread).
-	emitQKNormRope(encSink{enc}, pso, x, w, out, xOff, wOff, outOff, offBuf, periods, qkRopeDummyBuf(),
+	emitQKNormRopeAt(encSink{enc}, pso, x, w, out, xOff, wOff, outOff, offBuf, offOff, periods, qkRopeDummyBuf(),
 		nHeads, headDim, rd, eps, scale, float32(math.Log2(float64(base))))
 	return nil
 }

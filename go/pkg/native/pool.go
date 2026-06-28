@@ -23,7 +23,26 @@ import (
 // objc autorelease pools driven from Go. Every native op funnels its GPU work
 // through here.
 func withAutoreleasePool(fn func()) {
+	if pool, ok := beginAutoreleasePoolRaw(); ok {
+		defer endAutoreleasePoolRaw(pool)
+		fn()
+		return
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	objc.AutoreleasePool(fn)
+}
+
+func beginAutoreleasePoolRaw() (uintptr, bool) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcAutoreleasePoolPush == 0 || objcAutoreleasePoolPop == 0 || puregoSyscall15XABI0 == 0 {
+		return 0, false
+	}
+	runtime.LockOSThread()
+	return puregoCallRaw0(objcAutoreleasePoolPush), true
+}
+
+func endAutoreleasePoolRaw(pool uintptr) {
+	puregoCallRaw1(objcAutoreleasePoolPop, pool)
+	runtime.UnlockOSThread()
 }

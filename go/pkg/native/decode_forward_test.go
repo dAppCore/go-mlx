@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"time"
@@ -115,6 +116,36 @@ func TestDecodeForwardKeepsFixedWeightsResident(t *testing.T) {
 
 	if len(missing) != 0 {
 		t.Fatalf("DecodeForward did not keep fixed weights resident (missing=%v resident=%d want>=9)", missing, got)
+	}
+}
+
+func TestDecodeForwardStepScratchCachesContentsPointers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel = 64
+	input := decodeInputsFixture(1, dModel)[0]
+	sc := newDecodeForwardStepScratch(dModel)
+	if sc.offPtr == nil || sc.xAPtr == nil || sc.xBPtr == nil {
+		t.Fatal("decode forward scratch did not cache step contents pointers")
+	}
+	if sc.offPtr != (*int32)(sc.offBuf.Contents()) || sc.xAPtr != (*byte)(sc.xA.Contents()) || sc.xBPtr != (*byte)(sc.xB.Contents()) {
+		t.Fatal("decode forward scratch cached pointers do not reference Metal buffer contents")
+	}
+
+	sc.seed(7, input)
+	if got := *(*int32)(sc.offBuf.Contents()); got != 7 {
+		t.Fatalf("seeded offset = %d, want 7", got)
+	}
+	if got := unsafe.Slice((*byte)(sc.xA.Contents()), len(input)); !bytes.Equal(got, input) {
+		t.Fatal("seeded input was not written through cached pointer")
+	}
+
+	want := toBF16Bytes(syntheticFloat32(dModel, 77))
+	copy(sc.bufferBytes(sc.xB), want)
+	got := make([]byte, len(want))
+	sc.copyBuffer(got, sc.xB)
+	if !bytes.Equal(got, want) {
+		t.Fatal("copyBuffer did not read through cached output pointer")
 	}
 }
 

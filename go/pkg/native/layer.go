@@ -5,11 +5,66 @@
 package native
 
 import (
-	"unsafe"
+	"math"
+	"sync"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+type decodeLayerResidualScratch struct {
+	dModel int
+	h      metal.MTLBuffer
+}
+
+type bf16GemvPlan struct {
+	pso        metal.MTLComputePipelineState
+	bm, bn, sm int
+	tm         int
+}
+
+var decodeLayerResidualScratchPools sync.Map
+
+func decodeLayerResidualScratchPoolFor(dModel int) *sync.Pool {
+	if v, ok := decodeLayerResidualScratchPools.Load(dModel); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := decodeLayerResidualScratchPools.LoadOrStore(dModel, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func newBF16GemvPlan(outDim, inDim int) (bf16GemvPlan, error) {
+	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
+	if err != nil {
+		return bf16GemvPlan{}, err
+	}
+	return bf16GemvPlan{pso: pso, bm: bm, bn: bn, sm: sm, tm: tm}, nil
+}
+
+func emitBF16GemvPlan[S dispatchSink](sink S, plan bf16GemvPlan, mat, vec, out metal.MTLBuffer, inDim, outDim int) {
+	emitGemv(sink, plan.pso, mat, 0, vec, out, 0, inDim, outDim, plan.bm, plan.bn, plan.sm, plan.tm)
+}
+
+func getDecodeLayerResidualScratch(dModel int) *decodeLayerResidualScratch {
+	pool := decodeLayerResidualScratchPoolFor(dModel)
+	if v := pool.Get(); v != nil {
+		sc := v.(*decodeLayerResidualScratch)
+		if sc.dModel == dModel && sc.h != nil {
+			return sc
+		}
+	}
+	return &decodeLayerResidualScratch{dModel: dModel, h: scratchBF16(dModel)}
+}
+
+func putDecodeLayerResidualScratch(sc *decodeLayerResidualScratch) {
+	if sc != nil && sc.dModel > 0 && sc.h != nil {
+		decodeLayerResidualScratchPoolFor(sc.dModel).Put(sc)
+	}
+}
 
 // DecodeLayer runs a full gemma transformer decode layer on-device, in bf16, in
 // ONE command buffer — the attention block feeding the MLP block, each with its
@@ -49,75 +104,105 @@ func DecodeLayer(
 	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
+		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(ioScratch)
+		xBuf, outBuf, err := ioScratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
 		// inputs
-		xBuf := sharedBytes(x)
 		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
 		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
+		kvScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockKVScratch(kvScratch)
+		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		if err != nil {
+			encErr = err
+			return
+		}
 		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
-		off := int32(offset)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
-		c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
-		c1 := sharedBytes(bf16ConstBytes(dFF, 1.0))
-		c05 := sharedBytes(bf16ConstBytes(dFF, 0.5))
+		offBuf := scalarI32(int32(offset))
 
-		// attention intermediates
-		attnNormed := scratchBF16(dModel)
-		q, qr, attn := scratchBF16(qDim), scratchBF16(qDim), scratchBF16(qDim)
-		attnOut, h := scratchBF16(dModel), scratchBF16(dModel)
-		// mlp intermediates
-		mlpNormed := scratchBF16(dModel)
-		gate, up := scratchBF16(dFF), scratchBF16(dFF)
-		x2, x3, x3s, inner := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-		scaled, tnh, onePlus, halfG := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-		gelu, gated := scratchBF16(dFF), scratchBF16(dFF)
-		down, outBuf := scratchBF16(dModel), scratchBF16(dModel)
+		asc := getAttnScratch(dModel, qDim, nKVHeads*headDim, nHeads, 0)
+		defer putAttnScratch(asc)
+		msc := getMLPScratch(dModel, dFF)
+		defer putMLPScratch(msc)
+		layerScratch := getDecodeLayerResidualScratch(dModel)
+		defer putDecodeLayerResidualScratch(layerScratch)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		steps := []func() error{
-			// --- attention block (h = x + attn(rms(x))) ---
-			func() error { return encRMSNormBF16(enc, xBuf, anwBuf, attnNormed, 0, dModel, eps) },
-			func() error { return encGemvBF16(enc, wqBuf, attnNormed, q, qDim, dModel) },
-			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale) },
-			func() error { return encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale) },
-			func() error { return encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim) },
-			func() error { return encAddBF16(enc, xBuf, attnOut, h, dModel) },
-			// --- MLP block on h (out = h + mlp(rms(h))) ---
-			func() error { return encRMSNormBF16(enc, h, mnwBuf, mlpNormed, 0, dModel, eps) },
-			func() error { return encGemvBF16(enc, wgBuf, mlpNormed, gate, dFF, dModel) },
-			func() error { return encGemvBF16(enc, wuBuf, mlpNormed, up, dFF, dModel) },
-			// gelu(gate)·up — fused kernel (1 dispatch) when loaded, composed bf16 chain otherwise
-			func() error {
-				if gpuHasGeluKernel() {
-					return encGeluGateMulFused(enc, gate, up, gated, dFF)
-				}
-				_ = encMulBF16(enc, gate, gate, x2, dFF)
-				_ = encMulBF16(enc, x2, gate, x3, dFF)
-				_ = encMulBF16(enc, x3, c044, x3s, dFF)
-				_ = encAddBF16(enc, gate, x3s, inner, dFF)
-				_ = encMulBF16(enc, inner, c079, scaled, dFF)
-				_ = encTanhBF16(enc, scaled, tnh, dFF)
-				_ = encAddBF16(enc, tnh, c1, onePlus, dFF)
-				_ = encMulBF16(enc, gate, c05, halfG, dFF)
-				_ = encMulBF16(enc, halfG, onePlus, gelu, dFF)
-				return encMulBF16(enc, gelu, up, gated, dFF)
-			},
-			// down projection, residual
-			func() error { return encGemvBF16(enc, wdBuf, gated, down, dModel, dFF) },
-			func() error { return encAddBF16(enc, h, down, outBuf, dModel) },
+		rmsPSO, err := pipelineFor(rmsKernelBF16(dModel))
+		if err != nil {
+			encErr = err
+			return
 		}
-		for _, step := range steps {
-			if encErr = step(); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
+		rmsTG := rmsThreadgroup(dModel, rmsPSO)
+		qPlan, err := newBF16GemvPlan(qDim, dModel)
+		if err != nil {
+			encErr = err
+			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		oPlan, err := newBF16GemvPlan(dModel, qDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		gatePlan, err := newBF16GemvPlan(dFF, dModel)
+		if err != nil {
+			encErr = err
+			return
+		}
+		downPlan, err := newBF16GemvPlan(dModel, dFF)
+		if err != nil {
+			encErr = err
+			return
+		}
+		ropePSO, err := ropePipelineBF16(false)
+		if err != nil {
+			encErr = err
+			return
+		}
+		sdpaPSO, err := sdpaVectorPipelineForHeadDim(headDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		addPSO, err := pipelineFor("vv_Addbfloat16")
+		if err != nil {
+			encErr = err
+			return
+		}
+
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		sink := encSink{enc}
+		emitRMSNorm(sink, rmsPSO, xBuf, anwBuf, asc.normed, 0, dModel, eps, rmsTG)
+		emitBF16GemvPlan(sink, qPlan, wqBuf, asc.normed, asc.q, dModel, qDim)
+		emitRopeAt(sink, ropePSO, asc.q, asc.qr, 0, 0, offBuf, 0, nil, nHeads, headDim, headDim, scale, float32(math.Log2(float64(base))))
+		emitSDPA(sink, sdpaPSO, asc.qr, kBuf, vBuf, asc.attn, 0, nil, nHeads, nKVHeads, kvLen, int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+		emitBF16GemvPlan(sink, oPlan, woBuf, asc.attn, asc.attnOut, qDim, dModel)
+		emitBinary(sink, addPSO, xBuf, 0, asc.attnOut, 0, layerScratch.h, 0, dModel)
+		emitRMSNorm(sink, rmsPSO, layerScratch.h, mnwBuf, msc.mlpNormed, 0, dModel, eps, rmsTG)
+		emitBF16GemvPlan(sink, gatePlan, wgBuf, msc.mlpNormed, msc.gate, dModel, dFF)
+		emitBF16GemvPlan(sink, gatePlan, wuBuf, msc.mlpNormed, msc.up, dModel, dFF)
+		if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, *msc, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		emitBF16GemvPlan(sink, downPlan, wdBuf, msc.gated, msc.down, dFF, dModel)
+		emitBinary(sink, addPSO, layerScratch.h, 0, msc.down, 0, outBuf, 0, dModel)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, ioScratch.out.bytes[:len(out)])
 	})
 	return out, encErr
 }

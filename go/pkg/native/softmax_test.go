@@ -11,6 +11,25 @@ import (
 	mc "dappco.re/go/mlx/pkg/metal"
 )
 
+func TestSoftmaxF32AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 8, 512
+	x := syntheticFloat32(rows*axisSize, 5)
+	if _, err := SoftmaxF32(x, axisSize); err != nil {
+		t.Fatalf("SoftmaxF32 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := SoftmaxF32(x, axisSize); err != nil {
+			t.Fatalf("SoftmaxF32: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("SoftmaxF32 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestSoftmaxF32 asserts native.SoftmaxF32 is BYTE-IDENTICAL to pkg/metal.Softmax (non-precise) over
 // the last axis — the parity_test.go pattern (vs the metal op, bit-for-bit, not a tolerance). The
 // Conformer audio attention's softmax over the context axis runs through this in float32.

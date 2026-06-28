@@ -5,6 +5,7 @@
 package native
 
 import (
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -29,6 +30,95 @@ import (
 // projections into one steel GEMM (weight reuse across rows) — trades this byte-identity for
 // token-identity (a GEMM reduces over the contraction in a different order than K gemvs); that is the
 // metal-MTP-parity follow-up. This v1 keeps byte-identity and still wins the submit + upload overhead.
+
+// decodeLayerBatchedScratchPool keeps the reusable pinned row staging and GPU intermediates warm for
+// the public batched helper. A command buffer is waited before the scratch is returned.
+var decodeLayerBatchedScratchPools sync.Map
+
+type decodeLayerBatchedScratchKey struct {
+	dModel, qDim, kvDim, nHeads, dFF, K int
+}
+
+type decodeLayerBatchedScratch struct {
+	xs, out                     *pinnedNoCopyBytes
+	asc                         attnScratch
+	msc                         mlpScratch
+	hBuf                        metal.MTLBuffer
+	offBuf                      []metal.MTLBuffer
+	dModel, qDim, kvDim, nHeads int
+	dFF, K                      int
+}
+
+func newDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K int) (*decodeLayerBatchedScratch, error) {
+	rowBytes := dModel * bf16Size
+	xs, err := newPinnedNoCopyBytes(K * rowBytes)
+	if err != nil {
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(K * rowBytes)
+	if err != nil {
+		xs.Close()
+		return nil, err
+	}
+	return &decodeLayerBatchedScratch{
+		xs: xs, out: out,
+		asc:  newAttnScratch(dModel, qDim, kvDim, nHeads, 0),
+		msc:  newMLPScratch(dModel, dFF),
+		hBuf: scratchBF16(dModel), offBuf: make([]metal.MTLBuffer, K),
+		dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads,
+		dFF: dFF, K: K,
+	}, nil
+}
+
+func (s *decodeLayerBatchedScratch) matches(dModel, qDim, kvDim, nHeads, dFF, K int) bool {
+	return s != nil && s.xs != nil && s.out != nil && s.xs.buf != nil && s.out.buf != nil &&
+		s.dModel == dModel && s.qDim == qDim && s.kvDim == kvDim && s.nHeads == nHeads && s.dFF == dFF && s.K == K
+}
+
+func (s *decodeLayerBatchedScratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.xs != nil {
+		s.xs.Close()
+		s.xs = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.asc = attnScratch{}
+	s.msc = mlpScratch{}
+	s.hBuf = nil
+	s.offBuf = nil
+}
+
+func decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K int) *sync.Pool {
+	key := decodeLayerBatchedScratchKey{dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads, dFF: dFF, K: K}
+	if v, ok := decodeLayerBatchedScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	actual, _ := decodeLayerBatchedScratchPools.LoadOrStore(key, pool)
+	return actual.(*sync.Pool)
+}
+
+func getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K int) (*decodeLayerBatchedScratch, error) {
+	if v := decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K).Get(); v != nil {
+		s := v.(*decodeLayerBatchedScratch)
+		if s.matches(dModel, qDim, kvDim, nHeads, dFF, K) {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+}
+
+func putDecodeLayerBatchedScratch(s *decodeLayerBatchedScratch) {
+	if s != nil && s.dModel > 0 && s.qDim > 0 && s.kvDim > 0 && s.nHeads > 0 && s.dFF > 0 && s.K > 0 {
+		decodeLayerBatchedScratchPoolFor(s.dModel, s.qDim, s.kvDim, s.nHeads, s.dFF, s.K).Put(s)
+	}
+}
 
 // DecodeLayerBatchedKV runs one full decode layer (attention half + gemma MLP half, both residuals)
 // for K query tokens at positions [basePos, basePos+K) in one command buffer, growing the seq-major
@@ -70,47 +160,64 @@ func DecodeLayerBatchedKV(
 		// the layer weights are uploaded ONCE and reused across all K rows — the win over K separate
 		// DecodeStepKV calls, each of which re-uploads every weight.
 		proj := bf16Projector{
-			wQ: copyView(wQ), wK: copyView(wK), wV: copyView(wV), wO: copyView(wO),
-			wGate: copyView(wGate), wUp: copyView(wUp), wDown: copyView(wDown),
+			wQ: bufView{buf: residentBytes(wQ)}, wK: bufView{buf: residentBytes(wK)}, wV: bufView{buf: residentBytes(wV)}, wO: bufView{buf: residentBytes(wO)},
+			wGate: bufView{buf: residentBytes(wGate)}, wUp: bufView{buf: residentBytes(wUp)}, wDown: bufView{buf: residentBytes(wDown)},
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 		}
-		nwBuf, mnwBuf := sharedBytes(attnNormW), sharedBytes(mlpNormW)
-		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
-		msc := newMLPScratch(dModel, dFF)
-		hBuf := scratchBF16(dModel)
-		xRow := make([]metal.MTLBuffer, K)
-		outRow := make([]metal.MTLBuffer, K)
-		offBuf := make([]metal.MTLBuffer, K)
+		nwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
+		kvScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putAttentionBlockKVScratch(kvScratch)
+		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		if err != nil {
+			encErr = err
+			return
+		}
+		sc, err := getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putDecodeLayerBatchedScratch(sc)
+		xsBuf, err := sc.xs.copyBuffer(xs)
+		if err != nil {
+			encErr = err
+			return
+		}
+		outBuf := sc.out.buf
 		for i := 0; i < K; i++ {
-			xRow[i] = sharedBytes(xs[i*rowBytes : (i+1)*rowBytes])
-			outRow[i] = scratchBF16(dModel)
-			off := int32(basePos + i)
-			offBuf[i] = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+			sc.offBuf[i] = scalarI32(int32(basePos + i))
 		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		for i := 0; i < K; i++ {
+			xOff := uint(i * rowBytes)
 			// attention half: project q/k/v from row i, write k/v into the cache at row basePos+i,
 			// attend [0..basePos+i] (single-query, the exact per-token kernel) → h.
-			if encErr = encAttnHalfKV(enc, xRow[i], kBuf, vBuf, offBuf[i], hBuf,
-				bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, asc, proj,
-				dModel, nHeads, nKVHeads, headDim, basePos+i, 0, headDim, base, scale, eps, nil); encErr != nil {
-				enc.EndEncoding()
+			if err := encAttnHalfKVInputAt(enc, xsBuf, xOff, kBuf, vBuf, sc.offBuf[i], sc.hBuf, 0,
+				bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, sc.asc, proj,
+				dModel, nHeads, nKVHeads, headDim, basePos+i, 0, headDim, base, scale, eps, nil); err != nil {
+				endEncodingFast(enc)
+				encErr = err
 				return
 			}
-			// MLP half on h → row i's output.
-			if encErr = encMLPHalfBF16(enc, hBuf, outRow[i], bufView{buf: mnwBuf}, bufView{}, msc, proj, dModel, dFF, eps); encErr != nil {
-				enc.EndEncoding()
+			// MLP half on h → row i's output inside the reusable pinned output backing.
+			if err := encMLPHalfBF16At(enc, sc.hBuf, outBuf, uint(i*rowBytes), bufView{buf: mnwBuf}, bufView{}, sc.msc, proj, dModel, dFF, eps); err != nil {
+				endEncodingFast(enc)
+				encErr = err
 				return
 			}
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		for i := 0; i < K; i++ {
-			copy(out[i*rowBytes:(i+1)*rowBytes], unsafe.Slice((*byte)(outRow[i].Contents()), rowBytes))
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, sc.out.bytes)
+		if encErr != nil {
+			return
 		}
 		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
 		copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))

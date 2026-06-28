@@ -7,7 +7,52 @@ package native
 import (
 	"os"
 	"testing"
+	"unsafe"
 )
+
+func rmsQMVFixture(tb testing.TB, outDim, inDim, groupSize, bits int) ([]byte, []byte, QuantWeight) {
+	tb.Helper()
+	x := toBF16Bytes(syntheticFloat32(inDim, inDim+1))
+	normW := toBF16Bytes(syntheticFloat32(inDim, inDim+7))
+	qw := quantWeightFixture(tb, outDim, inDim, groupSize, bits, groupSize+3)
+	return x, normW, qw
+}
+
+func TestRMSQMVKernelNameCachesGeometryString(t *testing.T) {
+	names := []string{
+		rmsQMVKernelName(64, 4),
+		rmsQMVKernelName(64, 4),
+	}
+	if names[0] != names[1] {
+		t.Fatalf("rms qmv kernel names differ: %q vs %q", names[0], names[1])
+	}
+	if unsafe.StringData(names[0]) != unsafe.StringData(names[1]) {
+		t.Fatalf("rms qmv kernel name backing was not cached for repeated geometry")
+	}
+}
+
+func TestRMSQMVFastBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const outDim, inDim, groupSize, bits = 64, 512, 64, 4
+	const eps = float32(1e-6)
+	x, normW, qw := rmsQMVFixture(t, outDim, inDim, groupSize, bits)
+	if _, err := RMSQMVFastBF16(x, normW, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, groupSize, bits, eps); err != nil {
+		t.Fatalf("RMSQMVFastBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := RMSQMVFastBF16(x, normW, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, groupSize, bits, eps); err != nil {
+			t.Fatalf("RMSQMVFastBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("RMSQMVFastBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
 
 // TestRMSQMVFastBF16ParityComposed is the NUMERICAL gate for the fused rms-norm + affine_qmv_fast
 // kernel — the matmul-fusion tier. RMSQMVFastBF16(x, normW, W) must track the composed
@@ -27,7 +72,7 @@ func TestRMSQMVFastBF16ParityComposed(t *testing.T) {
 	}
 	const eps = float32(1e-6)
 	cases := []struct{ inDim, outDim, gs int }{
-		{1536, 256, 64}, // e2b dModel → a KV-ish out, gs 64
+		{1536, 256, 64},  // e2b dModel → a KV-ish out, gs 64
 		{1536, 2048, 32}, // e2b dModel → Q-proj width, gs 32
 		{512, 1024, 64},  // smaller, single block
 	}

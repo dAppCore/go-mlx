@@ -86,3 +86,49 @@ func TestDecodeLayerKeepsFixedWeightsResident(t *testing.T) {
 		t.Fatalf("DecodeLayer did not keep fixed weights resident (missing=%v resident=%d want>=7)", missing, got)
 	}
 }
+
+func TestDecodeLayerResidualScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small := getDecodeLayerResidualScratch(96)
+	putDecodeLayerResidualScratch(small)
+	large := getDecodeLayerResidualScratch(160)
+	putDecodeLayerResidualScratch(large)
+
+	gotSmall := getDecodeLayerResidualScratch(96)
+	defer putDecodeLayerResidualScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("DecodeLayer residual scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge := getDecodeLayerResidualScratch(160)
+	defer putDecodeLayerResidualScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("DecodeLayer residual scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestDecodeLayerAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 4, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+	if _, err := DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps); err != nil {
+		t.Fatalf("DecodeLayer warmup: %v", err)
+	}
+
+	var decodeErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, decodeErr = DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps)
+	})
+	if decodeErr != nil {
+		t.Fatalf("DecodeLayer: %v", decodeErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("DecodeLayer allocations = %.0f, want <= 10", allocs)
+	}
+}

@@ -9,6 +9,42 @@ import (
 	"testing"
 )
 
+func TestRunUnaryAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	in := syntheticFloat32(1024, 3)
+	if _, err := Square(in); err != nil {
+		t.Fatalf("Square warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := Square(in); err != nil {
+			t.Fatalf("Square: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("Square allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRunUnaryBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	in := toBF16Bytes(syntheticFloat32(1024, 3))
+	if _, err := SigmoidBF16(in); err != nil {
+		t.Fatalf("SigmoidBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := SigmoidBF16(in); err != nil {
+			t.Fatalf("SigmoidBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("SigmoidBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 func TestUnaryFloat32Kernels(t *testing.T) {
 	requireNativeRuntime(t)
 

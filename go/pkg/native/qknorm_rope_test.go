@@ -10,6 +10,65 @@ import (
 	"testing"
 )
 
+func TestQKNormRopeBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const nHeads, headDim, rotaryDim = 8, 256, 128
+	const eps, scale, theta = float32(1e-6), float32(1.0), float32(10000)
+	x := toBF16Bytes(syntheticFloat32(nHeads*headDim, headDim+1))
+	w := toBF16Bytes(syntheticFloat32(headDim, headDim+7))
+	log2Theta := float32(math.Log2(float64(theta)))
+	if _, err := QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, nil); err != nil {
+		t.Fatalf("QKNormRopeBF16 warmup: %v", err)
+	}
+
+	var qkErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, qkErr = QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, nil)
+	})
+	if qkErr != nil {
+		t.Fatalf("QKNormRopeBF16: %v", qkErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("QKNormRopeBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestQKNormRopeBF16FreqsAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const nHeads, headDim, rotaryDim = 8, 256, 128
+	const eps, scale, theta = float32(1e-6), float32(1.0), float32(10000)
+	x := toBF16Bytes(syntheticFloat32(nHeads*headDim, headDim+1))
+	w := toBF16Bytes(syntheticFloat32(headDim, headDim+7))
+	log2Theta := float32(math.Log2(float64(theta)))
+	periods := make([]float32, rotaryDim/2)
+	for i := range periods {
+		invFreq := float32(math.Exp2(-float64(i) / float64(rotaryDim/2) * float64(log2Theta)))
+		periods[i] = 1.0 / invFreq
+	}
+	if _, err := QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, periods); err != nil {
+		t.Fatalf("QKNormRopeBF16 freqs warmup: %v", err)
+	}
+
+	var qkErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, qkErr = QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, periods)
+	})
+	if qkErr != nil {
+		t.Fatalf("QKNormRopeBF16 freqs: %v", qkErr)
+	}
+	if allocs > 10 {
+		t.Fatalf("QKNormRopeBF16 freqs allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestQKNormRopeBF16ParityComposed is the NUMERICAL gate for the fused per-head QK-norm + RoPE kernel:
 // QKNormRopeBF16(x, w) must track the composed RoPE(RMSNormBF16(x, w, nHeads, headDim)) — across full
 // rotary, partial rotary, and the freqs/YaRN path — at cosine ~1.0. Not bit-exact (the ~1 ULP native
@@ -29,9 +88,9 @@ func TestQKNormRopeBF16ParityComposed(t *testing.T) {
 	log2Theta := float32(math.Log2(float64(theta)))
 
 	cases := []struct {
-		name                      string
+		name                               string
 		nHeads, headDim, rotaryDim, offset int
-		freqs                     bool
+		freqs                              bool
 	}{
 		{"base full rotary (e2b sliding)", 8, 256, 256, 5, false},
 		{"base partial rotary", 8, 256, 128, 7, false},

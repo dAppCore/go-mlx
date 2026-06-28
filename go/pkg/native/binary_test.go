@@ -6,6 +6,59 @@ package native
 
 import "testing"
 
+func TestRunBinaryAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	a := syntheticFloat32(1024, 3)
+	b := syntheticFloat32(1024, 5)
+	if _, err := Add(a, b); err != nil {
+		t.Fatalf("Add warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := Add(a, b); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("Add allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestBinaryByteScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getBinaryByteScratch(128)
+	if err != nil {
+		t.Fatalf("get small binary scratch: %v", err)
+	}
+	putBinaryByteScratch(small)
+
+	large, err := getBinaryByteScratch(256)
+	if err != nil {
+		t.Fatalf("get large binary scratch: %v", err)
+	}
+	putBinaryByteScratch(large)
+
+	gotSmall, err := getBinaryByteScratch(128)
+	if err != nil {
+		t.Fatalf("get small binary scratch again: %v", err)
+	}
+	defer putBinaryByteScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("binary scratch pool evicted the small scratch after using a larger scratch")
+	}
+
+	gotLarge, err := getBinaryByteScratch(256)
+	if err != nil {
+		t.Fatalf("get large binary scratch again: %v", err)
+	}
+	defer putBinaryByteScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("binary scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
 func TestBinaryFloat32Kernels(t *testing.T) {
 	requireNativeRuntime(t)
 

@@ -69,6 +69,7 @@ func withICBKeyEvicted(t *testing.T, snap map[string]metal.MTLComputePipelineSta
 		}
 		icbPSOCache[k] = v
 	}
+	sdpaVectorICBHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
 	icbPSOMu.Unlock()
 	// Null BOTH libraries: the gemm/rope/sdpa/elementwise pipelines resolve from the
 	// main library, the fused-gelu pipeline from customLibrary — nulling both makes
@@ -139,6 +140,7 @@ func TestCoverAttentionBlockICBPipelineLegs(t *testing.T) {
 	// stragglers from other tests would make findICBKey ambiguous), then warm.
 	icbPSOMu.Lock()
 	icbPSOCache = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorICBHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
 	icbPSOMu.Unlock()
 	if err := invoke(); err != nil {
 		t.Fatalf("warm AttentionBlockICB: %v", err)
@@ -174,6 +176,7 @@ func coverICBEvictAll(t *testing.T, invoke func() error) {
 	// expected error would never fire. The cache is pure memoisation, safe to clear.
 	icbPSOMu.Lock()
 	icbPSOCache = map[string]metal.MTLComputePipelineState{}
+	sdpaVectorICBHeadDimPSOCache = map[int]metal.MTLComputePipelineState{}
 	icbPSOMu.Unlock()
 	if err := invoke(); err != nil {
 		t.Fatalf("warm: %v", err)

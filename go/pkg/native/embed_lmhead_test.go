@@ -158,3 +158,24 @@ func TestLMHeadBF16CachesResidentWeights(t *testing.T) {
 		t.Fatalf("LMHeadBF16 did not keep fixed weights resident (finalNorm=%v head=%v resident=%d want>=2)", hasNorm, hasHead, got)
 	}
 }
+
+func TestLMHeadBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 128
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNormW := toBF16Bytes(syntheticFloat32(dModel, 7))
+	outWeight := toBF16Bytes(syntheticFloat32(vocab*dModel, 53))
+	if _, err := LMHeadBF16(hidden, finalNormW, outWeight, dModel, vocab, 1e-6, 0); err != nil {
+		t.Fatalf("LMHeadBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := LMHeadBF16(hidden, finalNormW, outWeight, dModel, vocab, 1e-6, 0); err != nil {
+			t.Fatalf("LMHeadBF16: %v", err)
+		}
+	})
+	if allocs > 302 {
+		t.Fatalf("LMHeadBF16 allocations = %.0f, want <= 302", allocs)
+	}
+}

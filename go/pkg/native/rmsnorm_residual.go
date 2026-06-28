@@ -6,17 +6,110 @@ package native
 
 import (
 	"sync"
-	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
 
 var (
-	rmsResidualPSOOnce sync.Once
-	rmsResidualPSO     metal.MTLComputePipelineState
-	rmsResidualPSOErr  error
+	rmsResidualPSOOnce       sync.Once
+	rmsResidualPSO           metal.MTLComputePipelineState
+	rmsResidualPSOErr        error
+	rmsResidualScratchPools  sync.Map
+	errRMSResidualScratchDim = core.NewError("native.rmsNormResidualScratch: dimension mismatch")
 )
+
+type rmsNormResidualBF16Scratch struct {
+	axisSize    int
+	x, res, out *pinnedNoCopyBytes
+}
+
+func newRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, error) {
+	if axisSize <= 0 {
+		return nil, core.NewError("native.newRMSNormResidualBF16Scratch: invalid axis size")
+	}
+	n := axisSize * bf16Size
+	x, err := newPinnedNoCopyBytes(n)
+	if err != nil {
+		return nil, err
+	}
+	res, err := newPinnedNoCopyBytes(n)
+	if err != nil {
+		x.Close()
+		return nil, err
+	}
+	out, err := newPinnedNoCopyBytes(n)
+	if err != nil {
+		x.Close()
+		res.Close()
+		return nil, err
+	}
+	return &rmsNormResidualBF16Scratch{axisSize: axisSize, x: x, res: res, out: out}, nil
+}
+
+func rmsResidualScratchPoolFor(axisSize int) *sync.Pool {
+	if v, ok := rmsResidualScratchPools.Load(axisSize); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	actual, _ := rmsResidualScratchPools.LoadOrStore(axisSize, pool)
+	return actual.(*sync.Pool)
+}
+
+func getRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, error) {
+	if v := rmsResidualScratchPoolFor(axisSize).Get(); v != nil {
+		s := v.(*rmsNormResidualBF16Scratch)
+		if s.axisSize == axisSize && s.x != nil && s.res != nil && s.out != nil {
+			return s, nil
+		}
+		s.Close()
+	}
+	return newRMSNormResidualBF16Scratch(axisSize)
+}
+
+func putRMSNormResidualBF16Scratch(s *rmsNormResidualBF16Scratch) {
+	if s != nil && s.axisSize > 0 {
+		rmsResidualScratchPoolFor(s.axisSize).Put(s)
+	}
+}
+
+func (s *rmsNormResidualBF16Scratch) Close() {
+	if s == nil {
+		return
+	}
+	if s.x != nil {
+		s.x.Close()
+		s.x = nil
+	}
+	if s.res != nil {
+		s.res.Close()
+		s.res = nil
+	}
+	if s.out != nil {
+		s.out.Close()
+		s.out = nil
+	}
+	s.axisSize = 0
+}
+
+func (s *rmsNormResidualBF16Scratch) buffers(x, res []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
+	if s == nil || s.x == nil || s.res == nil || s.out == nil {
+		return nil, nil, nil, core.NewError("native.rmsNormResidualBF16Scratch.buffers: scratch is nil")
+	}
+	n := s.axisSize * bf16Size
+	if len(x) != n || len(res) != n || len(s.out.bytes) != n {
+		return nil, nil, nil, errRMSResidualScratchDim
+	}
+	xBuf, err := s.x.copyBuffer(x)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	resBuf, err := s.res.copyBuffer(res)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return xBuf, resBuf, s.out.buf, nil
+}
 
 // rmsNormResidualPipeline builds (once) the fused rms-norm+residual pipeline from the custom kernels
 // library (lthn_kernels.metallib). Shares the customLibraryLoaded gate with the gelu kernel.
@@ -76,29 +169,32 @@ func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]by
 	}
 
 	out := make([]byte, axisSize*bf16Size)
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, wBuf, rBuf := sharedBytes(x), sharedBytes(weight), sharedBytes(res)
-		oBuf := device.NewBufferWithLengthOptions(uint(len(out)), metal.MTLResourceStorageModeShared)
+		wBuf := residentBytes(weight)
+		scratch, err := getRMSNormResidualBF16Scratch(axisSize)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putRMSNormResidualBF16Scratch(scratch)
+		xBuf, rBuf, oBuf, err := scratch.buffers(x, res)
+		if err != nil {
+			encErr = err
+			return
+		}
 		tgSize := rmsThreadgroup(axisSize, pso) // ceil(axis/N_READS) rounded up to a simd — one threadgroup, one row
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(rBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(oBuf, 0, 3)
-		setEncFloat32(enc, eps, 4)
-		setEncInt32(enc, int32(axisSize), 5)
-		setEncInt32(enc, 1, 6) // w_stride = 1 for a contiguous 1-D weight
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(oBuf.Contents()), len(out)))
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitRMSNormResidual(encSink{enc}, pso, xBuf, wBuf, rBuf, oBuf, 0, axisSize, eps, tgSize)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

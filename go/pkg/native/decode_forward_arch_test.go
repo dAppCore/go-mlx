@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
@@ -177,6 +179,112 @@ func TestDecodeForwardArch(t *testing.T) {
 	t.Logf("executor: DecodeForwardArch honours the arch — all-owner ≡ DecodeForward; KV-share ≡ ref; sliding-window (W=%d, %d tokens) ≡ windowed ref and clips vs full attention", W, T2)
 }
 
+func TestDecodeForwardArchAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	if _, err := DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+		t.Fatalf("DecodeForwardArch warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, forwardErr = DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardArch: %v", forwardErr)
+	}
+	if allocs > 20 {
+		t.Fatalf("DecodeForwardArch allocations = %.0f, want <= 20", allocs)
+	}
+}
+
+func TestDecodeForwardArchMoEAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	const numExperts, topK, expertDFF = 4, 2, 96
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	arch.Layer[0].MoE = true
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	layers[0].MoE = buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 9)
+	if _, err := DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+		t.Fatalf("DecodeForwardArch MoE warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		_, forwardErr = DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardArch MoE: %v", forwardErr)
+	}
+	if allocs > 25 {
+		t.Fatalf("DecodeForwardArch MoE allocations = %.0f, want <= 25", allocs)
+	}
+}
+
+func TestArchDecodeStateSetupAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	specs := []model.LayerSpec{{CacheIndex: -1}}
+	layers := []archLayerBufs{{dFF: dFF}}
+
+	withAutoreleasePool(func() {
+		warm := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+		warm.Close()
+
+		allocs := testing.AllocsPerRun(10, func() {
+			st := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+			st.Close()
+		})
+		if allocs > 1 {
+			t.Fatalf("arch decode state setup allocations = %.0f, want <= 1", allocs)
+		}
+	})
+}
+
+func TestBuildBF16ArchLayerBufsScratchReusesKVCaches(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	setup := getArchBF16LayerBufScratch(nLayers)
+	defer putArchBF16LayerBufScratch(setup)
+
+	withAutoreleasePool(func() {
+		lb, _, err := buildBF16ArchLayerBufsIntoScratch(setup, layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen, arch.SlidingWindow, nil)
+		if err != nil {
+			t.Fatalf("first buildBF16ArchLayerBufsIntoScratch: %v", err)
+		}
+		firstK, firstV := uint64(lb[0].kCache.GetID()), uint64(lb[0].vCache.GetID())
+		firstKPtr, firstVPtr := lb[0].kCachePtr, lb[0].vCachePtr
+		if firstK == 0 || firstV == 0 || firstKPtr == nil || firstVPtr == nil {
+			t.Fatal("first BF16 arch layer build did not initialise KV cache buffers and pointers")
+		}
+
+		lb, _, err = buildBF16ArchLayerBufsIntoScratch(setup, layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen, arch.SlidingWindow, nil)
+		if err != nil {
+			t.Fatalf("second buildBF16ArchLayerBufsIntoScratch: %v", err)
+		}
+		if got := uint64(lb[0].kCache.GetID()); got != firstK {
+			t.Fatalf("K cache buffer was not reused: first=%d second=%d", firstK, got)
+		}
+		if got := uint64(lb[0].vCache.GetID()); got != firstV {
+			t.Fatalf("V cache buffer was not reused: first=%d second=%d", firstV, got)
+		}
+		if lb[0].kCachePtr != firstKPtr || lb[0].vCachePtr != firstVPtr {
+			t.Fatal("KV cache contents pointers were not reused")
+		}
+	})
+}
+
 // TestDecodeForwardArchMoE gates the MoE wiring into the executor: a multi-layer arch
 // where one layer is MoE (spec.MoE + layer.MoE weights) decodes byte-for-byte the
 // arch reference (which routes that layer through moeBlockRef instead of the dense
@@ -269,5 +377,91 @@ func TestArchDecodeStateHostScratchReusesBacking(t *testing.T) {
 	}
 	if &larger[0] == &first[0] {
 		t.Fatal("host scratch reused undersized backing for a larger hidden size")
+	}
+}
+
+func TestArchDecodeStateHostPinnedScratchReusesBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	var s archDecodeState
+	first, firstBuf, err := s.hostHiddenPinnedScratch(64)
+	if err != nil {
+		t.Fatalf("hostHiddenPinnedScratch first: %v", err)
+	}
+	if len(first) != 64*bf16Size || firstBuf == nil {
+		t.Fatalf("first pinned scratch length/buffer = %d/%v", len(first), firstBuf)
+	}
+	second, secondBuf, err := s.hostHiddenPinnedScratch(64)
+	if err != nil {
+		t.Fatalf("hostHiddenPinnedScratch second: %v", err)
+	}
+	if &second[0] != &first[0] || secondBuf != firstBuf {
+		t.Fatal("pinned host scratch did not reuse backing for the same hidden size")
+	}
+	larger, largerBuf, err := s.hostHiddenPinnedScratch(128)
+	if err != nil {
+		t.Fatalf("hostHiddenPinnedScratch larger: %v", err)
+	}
+	if len(larger) != 128*bf16Size || &larger[0] == &first[0] || largerBuf == firstBuf {
+		t.Fatal("pinned host scratch did not reallocate for a larger hidden size")
+	}
+	s.Close()
+	if s.hostPinnedScratch != nil {
+		t.Fatal("Close did not clear pinned host scratch")
+	}
+}
+
+func TestArchDecodeStateCachesStepContentsPointers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF = 8, 1, 1, 8, 16
+	s := newArchDecodeState([]model.LayerSpec{{CacheIndex: -1}}, []archLayerBufs{{}}, nil, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, 4)
+	if s.offPtr == nil || s.xAPtr == nil || s.xBPtr == nil || s.hBufPtr == nil {
+		t.Fatal("arch decode state did not cache step buffer contents pointers")
+	}
+
+	*s.offPtr = 3
+	if got := *(*int32)(s.offBuf.Contents()); got != 3 {
+		t.Fatalf("cached offset write = %d, want 3", got)
+	}
+
+	input := toBF16Bytes([]float32{1, 2, 3, 4, 5, 6, 7, 8})
+	copy(unsafe.Slice(s.xAPtr, len(input)), input)
+	if got := unsafe.Slice((*byte)(s.xA.Contents()), len(input)); !bytes.Equal(got, input) {
+		t.Fatalf("cached xA write = %v, want %v", got, input)
+	}
+
+	output := toBF16Bytes([]float32{8, 7, 6, 5, 4, 3, 2, 1})
+	copy(unsafe.Slice(s.xBPtr, len(output)), output)
+	if got := unsafe.Slice(s.bufferPtr(s.xB), len(output)); !bytes.Equal(got, output) {
+		t.Fatalf("cached xB read = %v, want %v", got, output)
+	}
+}
+
+func TestArchDecodeStateCachesGlobalProportionalRopePeriodsBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	specs := []model.LayerSpec{{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}}
+	layers := []archLayerBufs{{dFF: dFF}}
+
+	states := make([]archDecodeState, 0, 2)
+	withAutoreleasePool(func() {
+		st := newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+		if st.globalRopeFreqs == nil || st.globalRopeFreqs.GetID() == 0 {
+			t.Fatal("first arch decode state did not build global proportional rope periods")
+		}
+		states = append(states, st)
+
+		st = newArchDecodeState(specs, layers, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, headDim, 10000, 10000, 0.125, 1e-5, false, maxLen)
+		if st.globalRopeFreqs == nil || st.globalRopeFreqs.GetID() == 0 {
+			t.Fatal("second arch decode state did not build global proportional rope periods")
+		}
+		states = append(states, st)
+	})
+	first := uint64(states[0].globalRopeFreqs.GetID())
+	second := uint64(states[1].globalRopeFreqs.GetID())
+	if first != second {
+		t.Fatalf("global proportional rope periods buffer was not reused: first=%d second=%d", first, second)
 	}
 }

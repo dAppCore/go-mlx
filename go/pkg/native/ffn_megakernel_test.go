@@ -7,35 +7,11 @@ package native
 import (
 	"math"
 	"os"
-	"sync"
 	"testing"
 	"unsafe"
 
-	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
-
-var (
-	ffnMegaPSOOnce sync.Once
-	ffnMegaPSO     metal.MTLComputePipelineState
-	ffnMegaErr     error
-)
-
-func ffnMegaPipeline() (metal.MTLComputePipelineState, error) {
-	ffnMegaPSOOnce.Do(func() {
-		if customLibrary == nil || customLibrary.GetID() == 0 {
-			ffnMegaErr = core.NewError("ffnmega: custom library unavailable")
-			return
-		}
-		fn := customLibrary.NewFunctionWithName("lthn_ffn_megakernel")
-		if fn == nil || fn.GetID() == 0 {
-			ffnMegaErr = core.NewError("ffnmega: kernel not found")
-			return
-		}
-		ffnMegaPSO, ffnMegaErr = device.NewComputePipelineStateWithFunctionError(fn)
-	})
-	return ffnMegaPSO, ffnMegaErr
-}
 
 // hostGeluMul mirrors lthn_gelu_gate_mul_bf16: gated = gelu_tanh(gate)·up, bf16-rounded.
 func hostGeluMul(gate, up []byte) []byte {

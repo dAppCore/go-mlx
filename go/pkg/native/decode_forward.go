@@ -57,6 +57,67 @@ type DecodeLayerWeights struct {
 	DFF int
 }
 
+type decodeForwardStepScratch struct {
+	hBuf, xA, xB metal.MTLBuffer
+	offBuf       metal.MTLBuffer
+	offPtr       *int32
+	hBufPtr      *byte
+	xAPtr, xBPtr *byte
+	dModel       int
+}
+
+func newDecodeForwardStepScratch(dModel int) decodeForwardStepScratch {
+	off := int32(0)
+	hBuf := scratchBF16(dModel)
+	xA, xB := scratchBF16(dModel), scratchBF16(dModel)
+	offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+	return decodeForwardStepScratch{
+		hBuf:    hBuf,
+		xA:      xA,
+		xB:      xB,
+		offBuf:  offBuf,
+		offPtr:  (*int32)(offBuf.Contents()),
+		hBufPtr: (*byte)(hBuf.Contents()),
+		xAPtr:   (*byte)(xA.Contents()),
+		xBPtr:   (*byte)(xB.Contents()),
+		dModel:  dModel,
+	}
+}
+
+func (s *decodeForwardStepScratch) bufferPtr(buf metal.MTLBuffer) *byte {
+	if s == nil || buf == nil {
+		return nil
+	}
+	switch buf {
+	case s.hBuf:
+		if s.hBufPtr != nil {
+			return s.hBufPtr
+		}
+	case s.xA:
+		if s.xAPtr != nil {
+			return s.xAPtr
+		}
+	case s.xB:
+		if s.xBPtr != nil {
+			return s.xBPtr
+		}
+	}
+	return (*byte)(buf.Contents())
+}
+
+func (s *decodeForwardStepScratch) bufferBytes(buf metal.MTLBuffer) []byte {
+	return unsafe.Slice(s.bufferPtr(buf), s.dModel*bf16Size)
+}
+
+func (s *decodeForwardStepScratch) seed(pos int, input []byte) {
+	*s.offPtr = int32(pos)
+	copy(s.bufferBytes(s.xA), input)
+}
+
+func (s *decodeForwardStepScratch) copyBuffer(dst []byte, src metal.MTLBuffer) {
+	copy(dst, s.bufferBytes(src))
+}
+
 // DecodeForward — see file header.
 func DecodeForward(
 	inputs [][]byte, layers []DecodeLayerWeights,
@@ -151,27 +212,21 @@ func DecodeForward(
 		// per-token commit make reuse safe) and the residual-stream ping-pong.
 		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		msc := newMLPScratch(dModel, dFF)
-		hBuf := scratchBF16(dModel)
-		xA, xB := scratchBF16(dModel), scratchBF16(dModel)
-		off := int32(0)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+		sc := newDecodeForwardStepScratch(dModel)
 
 		for t := 0; t < T; t++ {
-			// position buffer for this token (safe to mutate: committed per token)
-			*(*int32)(offBuf.Contents()) = int32(t)
-			// seed the residual stream with this token's input
-			copy(unsafe.Slice((*byte)(xA.Contents()), dModel*bf16Size), inputs[t])
+			sc.seed(t, inputs[t])
 
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			in, out := xA, xB
+			in, out := sc.xA, sc.xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, offBuf, hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, sc.offBuf, sc.hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
+				if encErr = encMLPHalfBF16(enc, sc.hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
@@ -180,7 +235,7 @@ func DecodeForward(
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
-			copy(outputs[t], unsafe.Slice((*byte)(in.Contents()), dModel*bf16Size)) // `in` holds the last layer's output after the final swap
+			sc.copyBuffer(outputs[t], in) // `in` holds the last layer's output after the final swap
 		}
 	})
 	return outputs, encErr

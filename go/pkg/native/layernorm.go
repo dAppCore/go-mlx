@@ -5,8 +5,6 @@
 package native
 
 import (
-	"unsafe"
-
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
@@ -48,29 +46,31 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 	if rows == 0 {
 		return out, nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, wBuf, bBuf := sharedBytes(x), sharedBytes(weight), sharedBytes(bias)
-		outBuf := scratchBF16(rows * axisSize)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncFloat32(enc, eps, 4)
-		setEncInt32(enc, int32(axisSize), 5) // axis_size (uint32 ABI; 4 bytes)
-		setEncInt32(enc, 1, 6)               // w_stride = 1 (contiguous 1-D weight)
-		setEncInt32(enc, 1, 7)               // b_stride = 1 (contiguous 1-D bias)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(x)))
+		scratch, err := getQMVBF16Scratch(rows*axisSize, rows*axisSize)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVBF16Scratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		wBuf, bBuf := residentBytes(weight), residentBytes(bias)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitLayerNorm(encSink{enc}, pso, xBuf, wBuf, bBuf, outBuf, axisSize, rows, eps, tg)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(out, scratch.out.bytes[:len(out)])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
@@ -102,29 +102,31 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 	if rows == 0 {
 		return out, nil
 	}
+	var encErr error
 	withAutoreleasePool(func() {
-		xBuf, wBuf, bBuf := shared(x), shared(weight), shared(bias)
-		outBuf := scratch(rows * axisSize)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncFloat32(enc, eps, 4)
-		setEncInt32(enc, int32(axisSize), 5)
-		setEncInt32(enc, 1, 6)
-		setEncInt32(enc, 1, 7)
-		enc.DispatchThreadsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
-			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(x)))
+		scratch, err := getQMVFloatScratch(rows*axisSize, rows*axisSize)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(scratch)
+		xBuf, outBuf, err := scratch.buffers(x)
+		if err != nil {
+			encErr = err
+			return
+		}
+		wBuf, bBuf := residentFloat32(weight), residentFloat32(bias)
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitLayerNorm(encSink{enc}, pso, xBuf, wBuf, bBuf, outBuf, axisSize, rows, eps, tg)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 

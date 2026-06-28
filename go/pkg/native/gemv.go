@@ -5,7 +5,7 @@
 package native
 
 import (
-	"unsafe"
+	"sync"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -40,6 +40,38 @@ func gemvTiles(k, outVecLen int) (bm, bn, sm, sn, tm, tn int) {
 	return bm, bn, sm, sn, tm, tn
 }
 
+type gemvKernelNameKey struct {
+	dtype              string
+	bm, bn, sm, sn, tm int
+	tn                 int
+}
+
+var (
+	gemvKernelNameMu    sync.Mutex
+	gemvKernelNameCache = map[gemvKernelNameKey]string{}
+)
+
+func gemvKernelName(dtype string, bm, bn, sm, sn, tm, tn int) string {
+	key := gemvKernelNameKey{dtype: dtype, bm: bm, bn: bn, sm: sm, sn: sn, tm: tm, tn: tn}
+	gemvKernelNameMu.Lock()
+	if name, ok := gemvKernelNameCache[key]; ok {
+		gemvKernelNameMu.Unlock()
+		return name
+	}
+	gemvKernelNameMu.Unlock()
+
+	name := core.Sprintf("gemv_%s_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", dtype, bm, bn, sm, sn, tm, tn)
+
+	gemvKernelNameMu.Lock()
+	if existing, ok := gemvKernelNameCache[key]; ok {
+		gemvKernelNameMu.Unlock()
+		return existing
+	}
+	gemvKernelNameCache[key] = name
+	gemvKernelNameMu.Unlock()
+	return name
+}
+
 // MatVec computes out = mat @ vec, where mat is a row-major (outDim x inDim)
 // matrix and vec has length inDim, returning a fresh slice of length outDim. It
 // drives MLX's gemv kernel directly through the no-cgo path: the tile variant is
@@ -69,56 +101,51 @@ func MatVec(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 	}
 
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	name := core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0",
-		bm, bn, sm, sn, tm, tn)
+	name := gemvKernelName("float32", bm, bn, sm, sn, tm, tn)
 	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]float32, outDim)
+	var encErr error
 	withAutoreleasePool(func() {
-		matBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&mat[0]), uint(len(mat)*4), metal.MTLResourceStorageModeShared)
-		vecBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&vec[0]), uint(len(vec)*4), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(outDim*4), metal.MTLResourceStorageModeShared)
+		matBuf := residentFloat32(mat)
+		scratch, err := getQMVFloatScratch(outDim, inDim)
+		if err != nil {
+			encErr = err
+			return
+		}
+		defer putQMVFloatScratch(scratch)
+		vecBuf, outBuf, err := scratch.buffers(vec)
+		if err != nil {
+			encErr = err
+			return
+		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(matBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(vecBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
-		setEncInt32(enc, int32(inDim), 4)  // in_vec_size = K
-		setEncInt32(enc, int32(outDim), 5) // out_vec_size = N (output rows)
-		setEncInt32(enc, int32(inDim), 6)  // matrix_ld = K (row-major mat)
-		setEncInt32(enc, 1, 9)             // batch_ndim
-		setEncInt32(enc, 1, 10)            // batch_shape = {1}
-		setEncInt64(enc, 0, 11)            // vector_batch_stride = {0}
-		setEncInt64(enc, 0, 12)            // matrix_batch_stride = {0}
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		emitGemv(encSink{enc}, pso, matBuf, 0, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 
-		nOutPerTgp := bm * sm * tm
-		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-		)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-
-		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), outDim))
+		copy(float32Bytes(out), scratch.out.bytes[:outDim*4])
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }
 
 // setEncInt32 binds a single int32 as an inline constant at a buffer index
 // (the gemv scalar params: sizes, leading dimension, batch ndim/shape).
 func setEncInt32(enc metal.MTLComputeCommandEncoder, v int32, idx uint) {
-	enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&v)), 4), 4, idx)
+	setBytesI32(enc, v, idx)
 }
 
 // setEncInt64 binds a single int64 as an inline constant at a buffer index
 // (the gemv batch strides, which the kernel types as int64_t*).
 func setEncInt64(enc metal.MTLComputeCommandEncoder, v int64, idx uint) {
-	enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&v)), 8), 8, idx)
+	setBytesI64(enc, v, idx)
 }

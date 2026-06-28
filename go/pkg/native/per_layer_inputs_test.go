@@ -118,6 +118,92 @@ func TestPerLayerInputsBF16CachesProjectionWeight(t *testing.T) {
 	}
 }
 
+func TestPerLayerInputsBF16FallbackAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const vocabPLI, numLayers, pliDim, dModel = 4, 2, 32, 64
+	const plDim = numLayers * pliDim
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 5))
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+
+	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
+		t.Fatalf("PerLayerInputs warmup: %v", err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
+			t.Fatalf("PerLayerInputs: %v", err)
+		}
+	})
+	if allocs > 8 {
+		t.Fatalf("PerLayerInputs bf16 fallback allocations = %.0f, want <= 8", allocs)
+	}
+}
+
+func TestPerLayerInputsBF16ScratchAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const vocabPLI, numLayers, pliDim, dModel = 4, 2, 32, 64
+	const plDim = numLayers * pliDim
+	projScale := float32(1 / math.Sqrt(float64(dModel)))
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 5))
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+	projView := copyView(projW)
+	scratch, err := newPLHostScratch(plDim, dModel, projScale)
+	if err != nil {
+		t.Fatalf("newPLHostScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, projView, scratch); err != nil {
+		t.Fatalf("PerLayerInputs warmup: %v", err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, projView, scratch); err != nil {
+			t.Fatalf("PerLayerInputs: %v", err)
+		}
+	})
+	if allocs > 529 {
+		t.Fatalf("PerLayerInputs scratch allocations = %.0f, want <= 529", allocs)
+	}
+}
+
+func TestPerLayerInputsBF16UsesScalarScaleBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const vocabPLI, numLayers, pliDim, dModel = 4, 2, 32, 64
+	const plDim = numLayers * pliDim
+	projScale := float32(1 / math.Sqrt(float64(dModel)))
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 5))
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+
+	projKey := bf16ConstKey{n: plDim, v: projScale}
+	combineKey := bf16ConstKey{n: plDim, v: gemma4PerLayerCombineScale}
+	bf16ConstMu.Lock()
+	delete(bf16ConstCache, projKey)
+	delete(bf16ConstCache, combineKey)
+	bf16ConstMu.Unlock()
+
+	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
+		t.Fatalf("PerLayerInputs bf16: %v", err)
+	}
+
+	bf16ConstMu.Lock()
+	_, projectedScaleCached := bf16ConstCache[projKey]
+	_, combineScaleCached := bf16ConstCache[combineKey]
+	bf16ConstMu.Unlock()
+	if projectedScaleCached || combineScaleCached {
+		t.Fatalf("PerLayerInputs materialized plDim-wide scale buffers (projected=%v combine=%v), want scalar-bound BF16 scales", projectedScaleCached, combineScaleCached)
+	}
+}
+
 func TestPerLayerInputsQuantCachesProjectionWeight(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -143,5 +229,57 @@ func TestPerLayerInputsQuantCachesProjectionWeight(t *testing.T) {
 	residentBufMu.Unlock()
 	if !hasPacked || !hasScales || !hasBiases {
 		t.Fatalf("PerLayerInputs did not keep quant projection resident (packed=%v scales=%v biases=%v resident=%d want>=3)", hasPacked, hasScales, hasBiases, got)
+	}
+}
+
+func TestPerLayerInputsQuantFallbackAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const vocabPLI, numLayers, pliDim, dModel, groupSize, bits = 4, 2, 32, 64, 32, 4
+	const plDim = numLayers * pliDim
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	proj := quantWeightFixture(t, plDim, dModel, groupSize, bits, 5)
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+
+	if _, err := PerLayerInputs(embed, nil, nil, proj.Packed, proj.Scales, proj.Biases, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, groupSize, bits, 1e-5, bufView{}); err != nil {
+		t.Fatalf("PerLayerInputs quant warmup: %v", err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := PerLayerInputs(embed, nil, nil, proj.Packed, proj.Scales, proj.Biases, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, groupSize, bits, 1e-5, bufView{}); err != nil {
+			t.Fatalf("PerLayerInputs quant: %v", err)
+		}
+	})
+	if allocs > 8 {
+		t.Fatalf("PerLayerInputs quant fallback allocations = %.0f, want <= 8", allocs)
+	}
+}
+
+func TestPerLayerInputsQuantScratchAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const vocabPLI, numLayers, pliDim, dModel, groupSize, bits = 4, 2, 32, 64, 32, 4
+	const plDim = numLayers * pliDim
+	projScale := float32(1 / math.Sqrt(float64(dModel)))
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	proj := quantWeightFixture(t, plDim, dModel, groupSize, bits, 5)
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+	scratch, err := newPLHostScratch(plDim, dModel, projScale)
+	if err != nil {
+		t.Fatalf("newPLHostScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	if _, err := PerLayerInputs(embed, nil, nil, proj.Packed, proj.Scales, proj.Biases, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, groupSize, bits, 1e-5, bufView{}, scratch); err != nil {
+		t.Fatalf("PerLayerInputs quant warmup: %v", err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := PerLayerInputs(embed, nil, nil, proj.Packed, proj.Scales, proj.Biases, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, groupSize, bits, 1e-5, bufView{}, scratch); err != nil {
+			t.Fatalf("PerLayerInputs quant: %v", err)
+		}
+	})
+	if allocs > 490 {
+		t.Fatalf("PerLayerInputs quant scratch allocations = %.0f, want <= 490", allocs)
 	}
 }

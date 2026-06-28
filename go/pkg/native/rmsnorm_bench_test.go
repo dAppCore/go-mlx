@@ -20,3 +20,35 @@ func BenchmarkRMSNormRows4Axis1024(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkRMSNormBF16Rows4Axis512(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const rows, axis = 4, 512
+	x, w := rmsNormBF16Fixture(rows, axis)
+	b.SetBytes(int64(len(x) + len(w)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RMSNormBF16(x, w, rows, axis, 1e-6); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRMSNormBF16IntoRows4Axis512(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const rows, axis = 4, 512
+	x, w := rmsNormBF16Fixture(rows, axis)
+	out := make([]byte, rows*axis*bf16Size)
+	b.SetBytes(int64(len(x) + len(w)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = RMSNormBF16Into(out, x, w, rows, axis, 1e-6)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

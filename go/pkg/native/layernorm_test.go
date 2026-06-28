@@ -11,6 +11,55 @@ import (
 	mc "dappco.re/go/mlx/pkg/metal"
 )
 
+func layerNormBF16Fixture(rows, axisSize int) ([]byte, []byte, []byte) {
+	x := toBF16Bytes(syntheticFloat32(rows*axisSize, 3))
+	w := toBF16Bytes(syntheticFloat32(axisSize, 5))
+	b := toBF16Bytes(syntheticFloat32(axisSize, 7))
+	return x, w, b
+}
+
+func TestLayerNormBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-5)
+	x, w, b := layerNormBF16Fixture(rows, axisSize)
+	if _, err := LayerNormBF16(x, w, b, rows, axisSize, eps); err != nil {
+		t.Fatalf("LayerNormBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := LayerNormBF16(x, w, b, rows, axisSize, eps); err != nil {
+			t.Fatalf("LayerNormBF16: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("LayerNormBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestLayerNormF32AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, axisSize = 4, 512
+	const eps = float32(1e-5)
+	x := syntheticFloat32(rows*axisSize, 3)
+	w := syntheticFloat32(axisSize, 5)
+	b := syntheticFloat32(axisSize, 7)
+	if _, err := LayerNormF32(x, w, b, rows, axisSize, eps); err != nil {
+		t.Fatalf("LayerNormF32 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := LayerNormF32(x, w, b, rows, axisSize, eps); err != nil {
+			t.Fatalf("LayerNormF32: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("LayerNormF32 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
 // TestLayerNormBF16 asserts native.LayerNormBF16 is BYTE-IDENTICAL to pkg/metal.LayerNorm over the
 // last axis (parity_test.go pattern, eqBytes — not a tolerance). The gemma4 audio subsampler's
 // scale-only LayerNorm (after each strided conv) goes through this.
@@ -18,9 +67,7 @@ func TestLayerNormBF16(t *testing.T) {
 	requireNativeRuntime(t)
 	const rows, ax = 20, 64
 	eps := float32(1e-5)
-	x := toBF16Bytes(syntheticFloat32(rows*ax, 3))
-	w := toBF16Bytes(syntheticFloat32(ax, 5))
-	b := toBF16Bytes(syntheticFloat32(ax, 7))
+	x, w, b := layerNormBF16Fixture(rows, ax)
 
 	got, err := LayerNormBF16(x, w, b, rows, ax, eps)
 	if err != nil {
