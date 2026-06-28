@@ -27,6 +27,18 @@ import (
 // run separately — proven in the tests. This is a real decode sub-block on the
 // no-cgo path.
 func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps float32) ([]byte, error) {
+	return mlpBlockBF16Into(nil, x, normWeight, wGate, wUp, wDown, dModel, dFF, eps, false)
+}
+
+// MLPBlockBF16Into is MLPBlockBF16 with caller-owned output storage. If out has
+// enough capacity, the command buffer writes the final residual directly into
+// out through a pinned no-copy Metal buffer; otherwise a correctly sized output
+// is allocated and returned.
+func MLPBlockBF16Into(out []byte, x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps float32) ([]byte, error) {
+	return mlpBlockBF16Into(out, x, normWeight, wGate, wUp, wDown, dModel, dFF, eps, true)
+}
+
+func mlpBlockBF16Into(out []byte, x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps float32, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -40,8 +52,15 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 		return nil, core.NewError("native.MLPBlockBF16: wDown must be dModel*dFF bf16 bytes")
 	}
 
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if dModel == 0 || dFF == 0 {
+		clear(out)
 		return out, nil
 	}
 	rmsPSO, err := pipelineFor(rmsKernelBF16(dModel))
@@ -84,6 +103,13 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		nwBuf := residentBytes(normWeight)
 		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		mlp := getMLPScratch(dModel, dFF)
@@ -109,7 +135,9 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(out)])
+		}
 	})
 	return out, encErr
 }
