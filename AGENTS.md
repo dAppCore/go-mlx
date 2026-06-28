@@ -1,4 +1,4 @@
-Top rule: do not add progress, proof, benchmark, savings, or status-tracking notes to `GOAL.md` or tracker files unless the user explicitly asks for tracking changes.
+Top rule: keep `GOAL.md` and tracker files as compact worklists only. Do not add, preserve, or update progress, proof, benchmark, savings, changelog, or status-diary notes there unless the user explicitly asks for tracking changes; remove completed task lines and report evidence in the turn or commit instead.
 
 # go-mlx Agent Guide
 
