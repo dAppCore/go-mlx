@@ -1512,22 +1512,22 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		}
 		return nativeTextStateLayerFromMetalHeads(layer, tokenCount)
 	}
-	if layer.KeyDType != 0 && layer.KeyDType != metal.DTypeBFloat16 {
-		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: key dtype must be bfloat16")
-	}
-	if layer.ValueDType != 0 && layer.ValueDType != metal.DTypeBFloat16 {
-		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: value dtype must be bfloat16")
-	}
 	kvHeads, headDim, rowBytes, err := nativeTextLayerGeometry(layer, tokenCount)
 	if err != nil {
 		return native.SessionStateLayerBlock{}, err
 	}
+	keyBytes, err := nativeTextLayerSlabToBF16(layer.KeyBytes, layer.KeyDType, kvHeads, headDim, tokenCount)
+	if err != nil {
+		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: unsupported key dtype")
+	}
+	valueBytes, err := nativeTextLayerSlabToBF16(layer.ValueBytes, layer.ValueDType, kvHeads, headDim, tokenCount)
+	if err != nil {
+		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: unsupported value dtype")
+	}
 	n := tokenCount * rowBytes
-	if len(layer.KeyBytes) != n || len(layer.ValueBytes) != n {
+	if len(keyBytes) != n || len(valueBytes) != n {
 		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: native KV slab size mismatch")
 	}
-	keyBytes := layer.KeyBytes
-	valueBytes := layer.ValueBytes
 	if nativeTextLayerSlabIsHeadMajor(layer.KeyShape, tokenCount) {
 		keyBytes = nativeTextLayerSlabToTokenMajor(keyBytes, kvHeads, headDim, tokenCount)
 	}
@@ -1545,6 +1545,25 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		KeyBytes:   keyBytes,
 		ValueBytes: valueBytes,
 	}, nil
+}
+
+func nativeTextLayerSlabToBF16(raw []byte, dtype metal.DType, kvHeads, headDim, tokenCount int) ([]byte, error) {
+	if dtype == 0 || dtype == metal.DTypeBFloat16 {
+		return raw, nil
+	}
+	if dtype != metal.DTypeFloat32 {
+		return nil, core.NewError("unsupported dtype")
+	}
+	values := kvHeads * headDim * tokenCount
+	if values <= 0 || len(raw) != values*4 {
+		return nil, core.NewError("float32 slab size mismatch")
+	}
+	out := make([]byte, values*2)
+	for i := 0; i < values; i++ {
+		bits := binary.LittleEndian.Uint32(raw[i*4 : i*4+4])
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(bits>>16))
+	}
+	return out, nil
 }
 
 func nativeTextStateLayerFromMetalHeads(layer metal.KVLayerSnapshot, tokenCount int) (native.SessionStateLayerBlock, error) {

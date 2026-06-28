@@ -10,9 +10,9 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/sliding-window boundary restore, and full-vocab TopP device-sampling tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/sliding-window boundary restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/native smoke tests pass: `go test ./go` `1.307s`; `go test ./go/pkg/native` `38.425s`.
+- Root/native smoke tests pass: `go test ./go` `1.235s`; `go test ./go/pkg/native` `36.771s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -32,6 +32,7 @@ Latest completed slice:
 - Native state-block capture/restore maps post-cap sliding-window cache rows through their physical ring slots, splits streamed block boundaries at the live-window start like metal, preserves zero-copy contiguous views for full/pre-cap blocks, and keeps range streaming at zero allocations.
 - Native `RestoreKV` accepts metal per-head float32 and raw BF16 KV snapshots by converting them into native BF16 token-major slabs while preserving layer cache metadata.
 - Native `RestoreKV` transposes metal/kvconv raw BF16 layer slabs from `[1, heads, seq, dim]` head-major order into native token-major cache rows.
+- Native `RestoreKV` and `RestoreKVBlocks` now accept metal/kvconv raw float32 layer slabs, convert them to native BF16 token-major rows, and preserve paged cache metadata.
 - Native block restore records exact trusted-prefix token counts for non-uniform boundary grids, so suffix blocks after sliding-window split points graft onto resident prefixes instead of assuming `blockSize * index`.
 - Native logits sampling routes TopP-only vocabularies beyond the old 64-token window through a full-vocab ranked-prefix/top-mass device branch, including suppression, retained-logit replay, and repeat-penalty parity.
 
@@ -39,4 +40,4 @@ Remaining feature tasks:
 
 - First-draft no-copy/fused routing into session/replay hot paths that still submit/read back per op.
 - First-draft MoE router/expert GPU flow that removes host readbacks while preserving parity.
-- Finish KV cache parity for fixed, paged, rotating/sliding, and raw restore helpers beyond trusted-prefix suffix restore.
+- Finish KV cache parity for fixed, paged, rotating/sliding, and restore helpers beyond trusted-prefix suffix restore plus raw BF16/float32 slab restore.

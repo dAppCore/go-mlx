@@ -6,9 +6,12 @@ package mlx
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"reflect"
 	"testing"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
@@ -365,6 +368,14 @@ func nativeSessionTextKVBytes(tokens []int32, salt byte) []byte {
 	return out
 }
 
+func nativeTextF32RawBytes(values []float32) []byte {
+	out := make([]byte, len(values)*4)
+	for i, v := range values {
+		binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(v))
+	}
+	return out
+}
+
 func testNativeTextSessionModel(sessions ...*nativeSessionTextSession) *nativeTextModel {
 	return &nativeTextModel{
 		tm:        &nativeSessionTextTokenModel{sessions: sessions},
@@ -659,6 +670,104 @@ func TestNativeTextSession_RestoreKVConvertsRawLayerSlabSnapshots_Good(t *testin
 	wantValue := nativeTextF32ToBF16([]float32{11, 12, 13, 14, 15, 16, 17, 18})
 	if !reflect.DeepEqual(layer.ValueBytes, wantValue) {
 		t.Fatalf("converted raw slab value bytes = %v, want token-major rows %v", layer.ValueBytes, wantValue)
+	}
+}
+
+func TestNativeTextSession_RestoreKVConvertsFloat32LayerSlabSnapshots_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	headMajorKey := nativeTextF32RawBytes([]float32{1, 2, 5, 6, 3, 4, 7, 8})
+	headMajorValue := nativeTextF32RawBytes([]float32{11, 12, 15, 16, 13, 14, 17, 18})
+	snapshot := &metal.KVSnapshot{
+		Version:       metal.KVSnapshotVersion,
+		Architecture:  "gemma4",
+		Tokens:        []int32{1, 2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 2,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 3,
+			CacheMode:  metal.KVCacheModePaged,
+			MaxSize:    8,
+			KeyDType:   metal.DTypeFloat32,
+			KeyBytes:   headMajorKey,
+			KeyShape:   []int32{1, 2, 2, 2},
+			ValueDType: metal.DTypeFloat32,
+			ValueBytes: headMajorValue,
+			ValueShape: []int32{1, 2, 2, 2},
+		}},
+	}
+	if err := handle.(interface {
+		RestoreKV(context.Context, *metal.KVSnapshot) error
+	}).RestoreKV(ctx, snapshot); err != nil {
+		t.Fatalf("RestoreKV float32 raw layer slab: %v", err)
+	}
+	if len(session.restoredBlocks) != 1 || len(session.restoredBlocks[0].Layers) != 1 {
+		t.Fatalf("restored blocks = %+v, want one converted float32 raw layer slab", session.restoredBlocks)
+	}
+	layer := session.restoredBlocks[0].Layers[0]
+	if layer.CacheIndex != 3 || layer.CacheMode != string(metal.KVCacheModePaged) || layer.MaxSize != 8 {
+		t.Fatalf("converted float32 slab metadata = %d/%q/%d, want 3/paged/8", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
+	}
+	if layer.KVHeads != 2 || layer.HeadDim != 2 || layer.RowBytes != 8 {
+		t.Fatalf("converted float32 slab geometry = heads %d dim %d row %d, want 2/2/8", layer.KVHeads, layer.HeadDim, layer.RowBytes)
+	}
+	wantKey := nativeTextF32ToBF16([]float32{1, 2, 3, 4, 5, 6, 7, 8})
+	if !reflect.DeepEqual(layer.KeyBytes, wantKey) {
+		t.Fatalf("converted float32 slab key bytes = %v, want token-major rows %v", layer.KeyBytes, wantKey)
+	}
+	wantValue := nativeTextF32ToBF16([]float32{11, 12, 13, 14, 15, 16, 17, 18})
+	if !reflect.DeepEqual(layer.ValueBytes, wantValue) {
+		t.Fatalf("converted float32 slab value bytes = %v, want token-major rows %v", layer.ValueBytes, wantValue)
+	}
+}
+
+func TestNativeTextSession_RestoreKVBlocksConvertsFloat32LayerSlabSnapshots_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	block := nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, true)
+	block.Snapshot.Layers[0].CacheMode = metal.KVCacheModePaged
+	block.Snapshot.Layers[0].MaxSize = 8
+	block.Snapshot.Layers[0].KeyDType = metal.DTypeFloat32
+	block.Snapshot.Layers[0].KeyBytes = nativeTextF32RawBytes([]float32{1, 2, 3, 4})
+	block.Snapshot.Layers[0].ValueDType = metal.DTypeFloat32
+	block.Snapshot.Layers[0].ValueBytes = nativeTextF32RawBytes([]float32{11, 12, 13, 14})
+	source := metal.KVSnapshotBlockSource{
+		TokenCount:   2,
+		PrefixTokens: 2,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+			if index != 0 {
+				return metal.KVSnapshotBlock{}, core.NewError("test: block index out of range")
+			}
+			return block, nil
+		},
+	}
+	if err := handle.(interface {
+		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+	}).RestoreKVBlocks(ctx, source); err != nil {
+		t.Fatalf("RestoreKVBlocks float32 raw layer slab: %v", err)
+	}
+	if len(session.restoredBlocks) != 1 || len(session.restoredBlocks[0].Layers) != 1 {
+		t.Fatalf("restored blocks = %+v, want one converted float32 block layer", session.restoredBlocks)
+	}
+	layer := session.restoredBlocks[0].Layers[0]
+	if layer.CacheMode != string(metal.KVCacheModePaged) || layer.MaxSize != 8 {
+		t.Fatalf("restored float32 block metadata = %q/%d, want paged/8", layer.CacheMode, layer.MaxSize)
+	}
+	if want := nativeTextF32ToBF16([]float32{1, 2, 3, 4}); !reflect.DeepEqual(layer.KeyBytes, want) {
+		t.Fatalf("restored float32 block key bytes = %v, want %v", layer.KeyBytes, want)
+	}
+	if want := nativeTextF32ToBF16([]float32{11, 12, 13, 14}); !reflect.DeepEqual(layer.ValueBytes, want) {
+		t.Fatalf("restored float32 block value bytes = %v, want %v", layer.ValueBytes, want)
 	}
 }
 
