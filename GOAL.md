@@ -10,7 +10,7 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, and native KV trusted-prefix/metadata/sliding-window boundary restore tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, and native KV trusted-prefix/metadata/head-snapshot/sliding-window boundary restore tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
 - Root/model smoke tests pass: `go test ./go` `1.170s`; `go test ./go/pkg/model` `0.328s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
@@ -30,6 +30,7 @@ Latest completed slice:
 - ICB/RMS/embed-gather/binary/router/SDPA/VisionSDPA benchmarks: AttentionBlock ICB `32-34 allocs/op`; DecodeForward ICB `504-506`; RMS, embed-gather, binary, and SDPA fixed/alternating stay at `2`; router host-scratch `5-6`; VisionSDPA fixed `14-15`, alternating `447-451`.
 - Native `RestoreKVBlocks` grafts resident trusted-prefix tokens, restores suffix-only absolute blocks, and carries per-layer cache index/mode/max-size metadata through native block descriptors.
 - Native state-block capture/restore maps post-cap sliding-window cache rows through their physical ring slots, splits streamed block boundaries at the live-window start like metal, preserves zero-copy contiguous views for full/pre-cap blocks, and keeps range streaming at zero allocations.
+- Native `RestoreKV` accepts metal per-head float32 and raw BF16 KV snapshots by converting them into native BF16 token-major slabs while preserving layer cache metadata.
 
 Remaining feature tasks:
 

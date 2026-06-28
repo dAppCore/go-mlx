@@ -6,6 +6,7 @@ package mlx
 
 import (
 	"context"
+	"encoding/binary"
 	"iter"
 	"math"
 	"sync"
@@ -1506,7 +1507,10 @@ func nativeTextStateLayersFromBlock(snapshot *metal.KVSnapshot, tokenCount int) 
 
 func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) (native.SessionStateLayerBlock, error) {
 	if len(layer.KeyBytes) == 0 && len(layer.ValueBytes) == 0 {
-		return native.SessionStateLayerBlock{}, nil
+		if len(layer.Heads) == 0 {
+			return native.SessionStateLayerBlock{}, nil
+		}
+		return nativeTextStateLayerFromMetalHeads(layer, tokenCount)
 	}
 	if layer.KeyDType != 0 && layer.KeyDType != metal.DTypeBFloat16 {
 		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: key dtype must be bfloat16")
@@ -1533,6 +1537,115 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		KeyBytes:   layer.KeyBytes,
 		ValueBytes: layer.ValueBytes,
 	}, nil
+}
+
+func nativeTextStateLayerFromMetalHeads(layer metal.KVLayerSnapshot, tokenCount int) (native.SessionStateLayerBlock, error) {
+	if tokenCount <= 0 || len(layer.Heads) == 0 {
+		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: missing native KV geometry")
+	}
+	headDim, err := nativeTextHeadDim(layer.Heads[0], tokenCount, true)
+	if err != nil {
+		return native.SessionStateLayerBlock{}, err
+	}
+	valueHeadDim, err := nativeTextHeadDim(layer.Heads[0], tokenCount, false)
+	if err != nil {
+		return native.SessionStateLayerBlock{}, err
+	}
+	if headDim <= 0 || valueHeadDim != headDim {
+		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: missing native KV geometry")
+	}
+	kvHeads := len(layer.Heads)
+	rowBytes := kvHeads * headDim * 2
+	keyBytes := make([]byte, tokenCount*rowBytes)
+	valueBytes := make([]byte, tokenCount*rowBytes)
+	for hi, head := range layer.Heads {
+		keyHeadDim, err := nativeTextHeadDim(head, tokenCount, true)
+		if err != nil {
+			return native.SessionStateLayerBlock{}, err
+		}
+		valueHeadDim, err := nativeTextHeadDim(head, tokenCount, false)
+		if err != nil {
+			return native.SessionStateLayerBlock{}, err
+		}
+		if keyHeadDim != headDim || valueHeadDim != headDim {
+			return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: native KV head dims differ")
+		}
+		if err := nativeTextCopyHeadTensorBF16(keyBytes, hi, kvHeads, headDim, tokenCount, head, true); err != nil {
+			return native.SessionStateLayerBlock{}, err
+		}
+		if err := nativeTextCopyHeadTensorBF16(valueBytes, hi, kvHeads, headDim, tokenCount, head, false); err != nil {
+			return native.SessionStateLayerBlock{}, err
+		}
+	}
+	return native.SessionStateLayerBlock{
+		Layer:      layer.Layer,
+		CacheIndex: layer.CacheIndex,
+		CacheMode:  string(layer.CacheMode),
+		MaxSize:    layer.MaxSize,
+		KVHeads:    kvHeads,
+		HeadDim:    headDim,
+		RowBytes:   rowBytes,
+		KeyBytes:   keyBytes,
+		ValueBytes: valueBytes,
+	}, nil
+}
+
+func nativeTextHeadDim(head metal.KVHeadSnapshot, tokenCount int, key bool) (int, error) {
+	values := head.Value
+	raw, dtype := head.ValueBytes, head.ValueDType
+	if key {
+		values = head.Key
+		raw, dtype = head.KeyBytes, head.KeyDType
+	}
+	if len(values) > 0 {
+		if tokenCount <= 0 || len(values)%tokenCount != 0 {
+			return 0, core.NewError("mlx.nativeTextSession.RestoreKV: native KV head size mismatch")
+		}
+		return len(values) / tokenCount, nil
+	}
+	bytesPerValue := metal.DTypeByteSize(dtype)
+	if len(raw) == 0 || bytesPerValue <= 0 || tokenCount <= 0 || len(raw)%bytesPerValue != 0 {
+		return 0, core.NewError("mlx.nativeTextSession.RestoreKV: native KV head size mismatch")
+	}
+	elements := len(raw) / bytesPerValue
+	if elements%tokenCount != 0 {
+		return 0, core.NewError("mlx.nativeTextSession.RestoreKV: native KV head size mismatch")
+	}
+	return elements / tokenCount, nil
+}
+
+func nativeTextCopyHeadTensorBF16(dst []byte, headIndex, kvHeads, headDim, tokenCount int, head metal.KVHeadSnapshot, key bool) error {
+	values := head.Value
+	raw, dtype := head.ValueBytes, head.ValueDType
+	if key {
+		values = head.Key
+		raw, dtype = head.KeyBytes, head.KeyDType
+	}
+	rowBytes := kvHeads * headDim * 2
+	for t := 0; t < tokenCount; t++ {
+		dstOff := t*rowBytes + headIndex*headDim*2
+		if len(values) > 0 {
+			srcOff := t * headDim
+			for d := 0; d < headDim; d++ {
+				bits := math.Float32bits(values[srcOff+d])
+				binary.LittleEndian.PutUint16(dst[dstOff+d*2:dstOff+d*2+2], uint16(bits>>16))
+			}
+			continue
+		}
+		srcOff := t * headDim * metal.DTypeByteSize(dtype)
+		switch dtype {
+		case metal.DTypeBFloat16:
+			copy(dst[dstOff:dstOff+headDim*2], raw[srcOff:srcOff+headDim*2])
+		case metal.DTypeFloat32:
+			for d := 0; d < headDim; d++ {
+				bits := binary.LittleEndian.Uint32(raw[srcOff+d*4 : srcOff+d*4+4])
+				binary.LittleEndian.PutUint16(dst[dstOff+d*2:dstOff+d*2+2], uint16(bits>>16))
+			}
+		default:
+			return core.NewError("mlx.nativeTextSession.RestoreKV: unsupported native KV head dtype")
+		}
+	}
+	return nil
 }
 
 func nativeTextLayerGeometry(layer metal.KVLayerSnapshot, tokenCount int) (int, int, int, error) {

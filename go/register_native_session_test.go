@@ -510,6 +510,106 @@ func TestNativeTextModelNewSession_CaptureRangeRestore_Good(t *testing.T) {
 	}
 }
 
+func TestNativeTextSession_RestoreKVConvertsHeadSnapshots_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	snapshot := &metal.KVSnapshot{
+		Version:       metal.KVSnapshotVersion,
+		Architecture:  "gemma4",
+		Tokens:        []int32{1, 2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 4,
+			CacheMode:  metal.KVCacheModeFixed,
+			MaxSize:    8,
+			Heads: []metal.KVHeadSnapshot{{
+				Key:   []float32{1, 2, 3, 4},
+				Value: []float32{5, 6, 7, 8},
+			}},
+		}},
+	}
+	if err := handle.(interface {
+		RestoreKV(context.Context, *metal.KVSnapshot) error
+	}).RestoreKV(ctx, snapshot); err != nil {
+		t.Fatalf("RestoreKV head snapshot: %v", err)
+	}
+	if len(session.restoredBlocks) != 1 || len(session.restoredBlocks[0].Layers) != 1 {
+		t.Fatalf("restored blocks = %+v, want one converted head layer", session.restoredBlocks)
+	}
+	layer := session.restoredBlocks[0].Layers[0]
+	if layer.CacheIndex != 4 || layer.CacheMode != string(metal.KVCacheModeFixed) || layer.MaxSize != 8 {
+		t.Fatalf("converted layer metadata = %d/%q/%d, want 4/fixed/8", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
+	}
+	if layer.KVHeads != 1 || layer.HeadDim != 2 || layer.RowBytes != 4 {
+		t.Fatalf("converted layer geometry = heads %d dim %d row %d, want 1/2/4", layer.KVHeads, layer.HeadDim, layer.RowBytes)
+	}
+	if want := nativeTextF32ToBF16([]float32{1, 2, 3, 4}); !reflect.DeepEqual(layer.KeyBytes, want) {
+		t.Fatalf("converted key bytes = %v, want %v", layer.KeyBytes, want)
+	}
+	if want := nativeTextF32ToBF16([]float32{5, 6, 7, 8}); !reflect.DeepEqual(layer.ValueBytes, want) {
+		t.Fatalf("converted value bytes = %v, want %v", layer.ValueBytes, want)
+	}
+}
+
+func TestNativeTextSession_RestoreKVConvertsRawHeadSnapshots_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	head0Key := nativeTextF32ToBF16([]float32{1, 2, 5, 6})
+	head1Key := nativeTextF32ToBF16([]float32{3, 4, 7, 8})
+	head0Value := nativeTextF32ToBF16([]float32{11, 12, 15, 16})
+	head1Value := nativeTextF32ToBF16([]float32{13, 14, 17, 18})
+	snapshot := &metal.KVSnapshot{
+		Version:       metal.KVSnapshotVersion,
+		Architecture:  "gemma4",
+		Tokens:        []int32{1, 2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 2,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 1,
+			CacheMode:  metal.KVCacheModeFixed,
+			Heads: []metal.KVHeadSnapshot{
+				{KeyDType: metal.DTypeBFloat16, KeyBytes: head0Key, ValueDType: metal.DTypeBFloat16, ValueBytes: head0Value},
+				{KeyDType: metal.DTypeBFloat16, KeyBytes: head1Key, ValueDType: metal.DTypeBFloat16, ValueBytes: head1Value},
+			},
+		}},
+	}
+	if err := handle.(interface {
+		RestoreKV(context.Context, *metal.KVSnapshot) error
+	}).RestoreKV(ctx, snapshot); err != nil {
+		t.Fatalf("RestoreKV raw head snapshot: %v", err)
+	}
+	if len(session.restoredBlocks) != 1 || len(session.restoredBlocks[0].Layers) != 1 {
+		t.Fatalf("restored blocks = %+v, want one converted raw head layer", session.restoredBlocks)
+	}
+	layer := session.restoredBlocks[0].Layers[0]
+	if layer.KVHeads != 2 || layer.HeadDim != 2 || layer.RowBytes != 8 {
+		t.Fatalf("converted raw layer geometry = heads %d dim %d row %d, want 2/2/8", layer.KVHeads, layer.HeadDim, layer.RowBytes)
+	}
+	wantKey := nativeTextF32ToBF16([]float32{1, 2, 3, 4, 5, 6, 7, 8})
+	if !reflect.DeepEqual(layer.KeyBytes, wantKey) {
+		t.Fatalf("converted raw key bytes = %v, want token-major rows %v", layer.KeyBytes, wantKey)
+	}
+	wantValue := nativeTextF32ToBF16([]float32{11, 12, 13, 14, 15, 16, 17, 18})
+	if !reflect.DeepEqual(layer.ValueBytes, wantValue) {
+		t.Fatalf("converted raw value bytes = %v, want token-major rows %v", layer.ValueBytes, wantValue)
+	}
+}
+
 func TestNativeTextSession_RestoreKVBlocksGenerateUsesRetainedBoundaryMetadata_Good(t *testing.T) {
 	ctx := context.Background()
 	session := newNativeSessionTextSession()
