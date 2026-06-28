@@ -1405,6 +1405,46 @@ func TestArchSessionHeadGreedyUsesRetainedHiddenNoCopyBuffer(t *testing.T) {
 	}
 }
 
+func TestArchSessionGenerateFirstHeadUsesRetainedPromptHiddenNoCopy(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if !sess.canUseDirectHeadGreedy() {
+		t.Fatal("session fixture cannot use default resident direct greedy")
+	}
+	sentinel, err := newHeadHiddenScratch(dModel * bf16Size)
+	if err != nil {
+		t.Fatalf("newHeadHiddenScratch: %v", err)
+	}
+	defer sentinel.Close()
+	for i := range sentinel.pinned.bytes {
+		sentinel.pinned.bytes[i] = 0xa5
+	}
+	sess.headEnc.hiddenScratch.Put(sentinel)
+
+	if _, err := sess.Generate([]int32{1, 5, 3}, 1, -1); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if sess.retainedHiddenBuffer() == nil {
+		t.Fatal("Generate did not retain prompt/generated boundary hidden in a no-copy buffer")
+	}
+	gotScratch, _ := sess.headEnc.hiddenScratch.Get().(*headHiddenScratch)
+	if gotScratch != sentinel {
+		t.Fatalf("Generate first head consumed unexpected hidden scratch %p, want sentinel %p", gotScratch, sentinel)
+	}
+	for i, b := range gotScratch.pinned.bytes {
+		if b != 0xa5 {
+			t.Fatalf("Generate first head copied prompt hidden into head scratch at byte %d", i)
+		}
+	}
+}
+
 func TestArchSessionHeadGreedyFreshAllocationBudget(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

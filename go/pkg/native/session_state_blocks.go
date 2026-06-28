@@ -406,6 +406,14 @@ func stateBlockLayerBytes(view sessionStateLayerView, start, tokenCount, positio
 	if start < windowStart {
 		return nil, nil, core.NewError("native.StateBlockSource.Load: block starts before sliding cache window")
 	}
+	slot := start % view.cacheRows
+	if slot+tokenCount <= view.cacheRows {
+		off := slot * view.rowBytes
+		if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+			return nil, nil, core.NewError("native.StateBlockSource.Load: sliding block exceeds cache rows")
+		}
+		return view.keyBytes[off : off+n], view.valueBytes[off : off+n], nil
+	}
 	keyBytes := make([]byte, n)
 	valueBytes := make([]byte, n)
 	for t := 0; t < tokenCount; t++ {
@@ -636,7 +644,7 @@ func (s *ArchSession) stateBlockBoundaries(blockSize, position int, views []sess
 		s.stateBlockBounds = s.stateBlockBounds[:0]
 		return s.stateBlockBounds
 	}
-	expected := 2 + position/blockSize + len(views)
+	expected := 2 + position/blockSize + 2*len(views)
 	if cap(s.stateBlockBounds) < expected {
 		s.stateBlockBounds = make([]int, 0, expected)
 	} else {
@@ -657,6 +665,9 @@ func (s *ArchSession) stateBlockBoundaries(blockSize, position int, views []sess
 			continue
 		}
 		boundaries = stateBlockBoundaryInsert(boundaries, windowStart)
+		for wrap := ((windowStart / view.cacheRows) + 1) * view.cacheRows; wrap < position; wrap += view.cacheRows {
+			boundaries = stateBlockBoundaryInsert(boundaries, wrap)
+		}
 	}
 	s.stateBlockBounds = boundaries
 	return boundaries

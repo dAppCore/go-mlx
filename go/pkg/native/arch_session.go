@@ -1094,6 +1094,19 @@ func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, 
 	return hidden, err
 }
 
+func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var err error
+	for _, id := range ids[:len(ids)-1] {
+		if _, err = s.stepIDInPool(id); err != nil {
+			return nil, err
+		}
+	}
+	return s.stepIDRetainedInPool(ids[len(ids)-1])
+}
+
 func (s *ArchSession) prefillRetainedTokensBatchedDense(ids []int32, scope string) ([]byte, bool, error) {
 	if len(ids) == 0 {
 		return nil, false, nil
@@ -3373,11 +3386,10 @@ func (s *ArchSession) GenerateSampledEach(promptIDs []int32, maxNew int, stopTok
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
-		var hidden []byte
-		for _, id := range promptIDs {
-			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
-				return
-			}
+		hidden, err := s.prefillPromptRetainedInPool(promptIDs)
+		if err != nil {
+			genErr = err
+			return
 		}
 		gen, genErr = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, true)
 	})
@@ -3404,11 +3416,10 @@ func (s *ArchSession) GenerateSampledOneShotEach(promptIDs []int32, maxNew int, 
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
-		var hidden []byte
-		for _, id := range promptIDs {
-			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
-				return
-			}
+		hidden, err := s.prefillPromptRetainedInPool(promptIDs)
+		if err != nil {
+			genErr = err
+			return
 		}
 		gen, genErr = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, false)
 	})
@@ -3441,11 +3452,10 @@ func (s *ArchSession) GenerateOneShot(promptIDs []int32, maxNew, eosID int) ([]i
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
-		var hidden []byte
-		for _, id := range promptIDs {
-			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
-				return
-			}
+		hidden, err := s.prefillPromptRetainedInPool(promptIDs)
+		if err != nil {
+			genErr = err
+			return
 		}
 		gen, genErr = s.generateOneShotFromHiddenInPool(hidden, maxNew, eosID)
 	})
@@ -3682,11 +3692,10 @@ func (s *ArchSession) generateWithYield(promptIDs []int32, maxNew, eosID int, re
 	var genErr error
 	withAutoreleasePool(func() {
 		// prefill the new prompt over the carried-over cache; keep the last hidden state.
-		var hidden []byte
-		for _, id := range promptIDs {
-			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
-				return
-			}
+		hidden, err := s.prefillPromptRetainedInPool(promptIDs)
+		if err != nil {
+			genErr = err
+			return
 		}
 		if len(rememberPromptIDs) > 0 {
 			cacheFirstLogits := func(logits []byte) {

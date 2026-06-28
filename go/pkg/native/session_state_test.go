@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"encoding/binary"
+	"reflect"
 	"testing"
 	"unsafe"
 
@@ -905,6 +906,24 @@ func TestSessionStateFillBlockMapsSlidingRingRows(t *testing.T) {
 	}
 	if !bytes.Equal(block.Layers[0].ValueBytes, []byte{14, 0, 15, 0}) {
 		t.Fatalf("sliding value rows = %v, want logical rows 4,5", block.Layers[0].ValueBytes)
+	}
+	if unsafe.Pointer(&block.Layers[0].KeyBytes[0]) != unsafe.Pointer(&keyRows[0]) {
+		t.Fatal("contiguous sliding key rows were copied instead of returned as a resident view")
+	}
+	if unsafe.Pointer(&block.Layers[0].ValueBytes[0]) != unsafe.Pointer(&valueRows[0]) {
+		t.Fatal("contiguous sliding value rows were copied instead of returned as a resident view")
+	}
+}
+
+func TestSessionStateBlockBoundariesSplitSlidingRingWrap(t *testing.T) {
+	sess := &ArchSession{}
+	got := append([]int(nil), sess.stateBlockBoundaries(3, 10, []sessionStateLayerView{{
+		maxSize:   4,
+		cacheRows: 4,
+	}})...)
+	want := []int{0, 3, 6, 8, 9, 10}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sliding boundaries = %v, want %v", got, want)
 	}
 }
 

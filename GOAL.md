@@ -10,9 +10,9 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary/fixed-mode metadata restore, and full-vocab TopP device-sampling tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, prompt-final retained hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary/sliding ring-wrap zero-copy/fixed-mode metadata restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `37.538s`.
+- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `37.854s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -38,6 +38,8 @@ Latest completed slice:
 - Native `RestoreKVBlocks` preserves sliding-tail `TokenOffset` when a streamed block source starts at the live window: it synthesises expired-prefix metadata, keeps live BF16 token-major tail bytes, and compacts unavailable expired token IDs like monolithic `RestoreKV`.
 - Native `RestoreStateBlocks` now treats recorded fixed cache mode and max-size metadata as part of the restore contract, rejecting cross-mode or cross-window block restores before any resident KV row write.
 - Native logits sampling routes TopP-only vocabularies beyond the old 64-token window through a full-vocab ranked-prefix/top-mass device branch, including suppression, retained-logit replay, and repeat-penalty parity.
+- Native prompt prefill for Generate/Sampled/OneShot now retains the final prompt hidden in a pinned no-copy buffer, so the first generated-token head consumes the retained-hidden buffer instead of staging through head scratch.
+- Native sliding state-block streaming now splits live-window block boundaries at physical ring-wrap points and returns contiguous live rows as resident slices. Wrapped sliding block benchmark: `147.1 ns/op`, `0 B/op`, `0 allocs/op`.
 
 Remaining feature tasks:
 

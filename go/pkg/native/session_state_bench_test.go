@@ -96,6 +96,48 @@ func BenchmarkSessionStateRangeBlocksTrustedPrefix(b *testing.B) {
 	}
 }
 
+func BenchmarkSessionStateRangeBlocksSlidingWrappedNoCopy(b *testing.B) {
+	const (
+		position  = 10
+		blockSize = 3
+		rowBytes  = 2
+		cacheRows = 4
+	)
+	keyRows := []byte{8, 0, 9, 0, 6, 0, 7, 0}
+	valueRows := []byte{18, 0, 19, 0, 16, 0, 17, 0}
+	views := []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    cacheRows,
+		cacheRows:  cacheRows,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   rowBytes,
+		keyBytes:   keyRows,
+		valueBytes: valueRows,
+	}}
+	s := &ArchSession{}
+	boundaries := append([]int(nil), s.stateBlockBoundaries(blockSize, position, views)...)
+	layers := make([]SessionStateLayerBlock, len(views))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		total := 0
+		for blockIndex := 0; blockIndex < len(boundaries)-1; blockIndex++ {
+			block, err := fillStateBlockFromBoundaries(blockIndex, boundaries, position, views, layers)
+			if err != nil {
+				b.Fatalf("fillStateBlockFromBoundaries: %v", err)
+			}
+			for _, layer := range block.Layers {
+				total += len(layer.KeyBytes) + len(layer.ValueBytes)
+			}
+		}
+		sessionStateBlockBytesSink = total
+	}
+}
+
 func BenchmarkSessionStateRestorePromptCacheEntry(b *testing.B) {
 	requireNativeRuntime(b)
 	saved := newSessionStateFixture(b)
