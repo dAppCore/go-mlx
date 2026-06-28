@@ -7,6 +7,7 @@ package native
 import (
 	"math"
 	"testing"
+	"unsafe"
 
 	mc "dappco.re/go/mlx/pkg/metal"
 )
@@ -74,6 +75,59 @@ func TestMatMulF32NTSplitKAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMatMulF32IntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 16, 64, 137
+	a := syntheticFloat32(M*K, 3)
+	b := syntheticFloat32(K*N, 4)
+	want, err := MatMulF32(a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32 reference: %v", err)
+	}
+	out := syntheticFloat32(M*N, 11)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := MatMulF32Into(out, a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32Into: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatMulF32Into did not reuse caller-owned output backing")
+	}
+	for i := range want {
+		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+			t.Fatalf("MatMulF32Into differs at %d: %v vs %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMatMulF32NTIntoReusesOutputBackingForSplitK(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 3, 128, 128
+	a, b := matMulF32NTFixture(M, K, N)
+	want, err := MatMulF32NT(a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32NT reference: %v", err)
+	}
+	out := syntheticFloat32(M*N, 13)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := MatMulF32NTInto(out, a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32NTInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatMulF32NTInto did not reuse caller-owned output backing")
+	}
+	for i := range want {
+		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+			t.Fatalf("MatMulF32NTInto differs at %d: %v vs %v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestMatMulF32 asserts native.MatMulF32 (the fused steel GEMM wrapper) is BYTE-IDENTICAL to
 // pkg/metal.Matmul on float32 arrays across shapes — the parity_test.go pattern. This is the f32
 // matmul the Conformer audio attention needs (the bf16 gemv-loop matches metal for bf16 but NOT for
@@ -107,9 +161,28 @@ func BenchmarkMatMulF32NTSplitK3x128x128(b *testing.B) {
 	const M, K, N = 3, 128, 128
 	a, w := matMulF32NTFixture(M, K, N)
 	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := MatMulF32NT(a, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulF32NTIntoSplitK3x128x128(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 3, 128, 128
+	a, w := matMulF32NTFixture(M, K, N)
+	out := make([]float32, M*N)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = MatMulF32NTInto(out, a, w, M, K, N)
+		if err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -121,9 +194,28 @@ func BenchmarkMatMulF32NT16x64x137(b *testing.B) {
 	const M, K, N = 16, 64, 137
 	a, w := matMulF32NTFixture(M, K, N)
 	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := MatMulF32NT(a, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulF32NTInto16x64x137(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 16, 64, 137
+	a, w := matMulF32NTFixture(M, K, N)
+	out := make([]float32, M*N)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = MatMulF32NTInto(out, a, w, M, K, N)
+		if err != nil {
 			b.Fatal(err)
 		}
 	}

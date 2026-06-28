@@ -451,7 +451,17 @@ var (
 // MatMulF32 computes out[M,N] = a[M,K] @ b[K,N] (row-major contiguous f32) through MLX's fused steel
 // GEMM — BYTE-IDENTICAL to pkg/metal.Matmul on the same f32 arrays. nn, no output source, no axpby.
 func MatMulF32(a, b []float32, M, K, N int) ([]float32, error) {
-	out := make([]float32, M*N)
+	return MatMulF32Into(nil, a, b, M, K, N)
+}
+
+// MatMulF32Into is MatMulF32 with caller-owned output storage when cap(out) >= M*N.
+func MatMulF32Into(out, a, b []float32, M, K, N int) ([]float32, error) {
+	outLen := M * N
+	if cap(out) < outLen {
+		out = make([]float32, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	if err := matMulF32CoreInto(out, a, b, M, K, N, steelNN, false); err != nil {
 		return nil, err
 	}
@@ -465,7 +475,17 @@ func MatMulF32(a, b []float32, M, K, N int) ([]float32, error) {
 // (Matmul(PosEmbed, Transpose(W)), M=PosCount tiny, K=hidden large) is exactly a split-K case — the
 // nn or fused nt kernel diverges ~1 ULP there.
 func MatMulF32NT(a, b []float32, M, K, N int) ([]float32, error) {
-	out := make([]float32, M*N)
+	return MatMulF32NTInto(nil, a, b, M, K, N)
+}
+
+// MatMulF32NTInto is MatMulF32NT with caller-owned output storage when cap(out) >= M*N.
+func MatMulF32NTInto(out, a, b []float32, M, K, N int) ([]float32, error) {
+	outLen := M * N
+	if cap(out) < outLen {
+		out = make([]float32, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	if err := matMulF32NTInto(out, a, b, M, K, N); err != nil {
 		return nil, err
 	}
