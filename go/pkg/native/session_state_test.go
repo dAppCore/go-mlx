@@ -1461,6 +1461,36 @@ func TestArchSessionRestoreKVBlocksRootSnapshotsContinues(t *testing.T) {
 	}
 }
 
+func TestArchSessionRestoreKVBlocksHonoursPrefixTokens(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+	prefix := prompt[:4]
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(saved): %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	source.PrefixTokens = len(prefix)
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	if restored.Pos() != len(prefix) {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), len(prefix))
+	}
+	if !idsEqual(restored.cachedIDs, prefix) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prefix)
+	}
+	if _, err := restored.GenerateFromCache(1, -1); err == nil {
+		t.Fatal("GenerateFromCache after prefix-only RestoreKVBlocks error = nil")
+	}
+}
+
 func TestArchSessionRestoreKVBlocksRootSnapshotsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5, 6}

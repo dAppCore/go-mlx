@@ -252,8 +252,15 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 	if source.BlockCount > 0 && source.Load == nil {
 		return core.NewError("native.RestoreKVBlocks: nil block loader")
 	}
+	prefixTokens := source.PrefixTokens
+	if prefixTokens <= 0 {
+		prefixTokens = source.TokenCount
+	}
+	if prefixTokens <= 0 || prefixTokens > source.TokenCount || prefixTokens > s.maxLen {
+		return core.NewError("native.RestoreKVBlocks: prefix tokens outside token count")
+	}
 	trustedPrefix := source.TrustedPrefixTokens
-	if trustedPrefix < 0 || trustedPrefix > source.TokenCount {
+	if trustedPrefix < 0 || trustedPrefix > prefixTokens {
 		return core.NewError("native.RestoreKVBlocks: trusted prefix outside token count")
 	}
 	if trustedPrefix > 0 {
@@ -262,23 +269,23 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		}
 	}
 	if source.BlockCount == 0 {
-		if trustedPrefix != source.TokenCount {
+		if trustedPrefix != prefixTokens {
 			return core.NewError("native.RestoreKVBlocks: empty block source")
 		}
-		return s.restoreTrustedKVBlockMetadata(source)
+		return s.restoreTrustedKVBlockMetadata(source, prefixTokens)
 	}
 	targetViews, err := s.stateLayerViews()
 	if err != nil {
 		return err
 	}
-	cachedIDs := make([]int32, 0, source.TokenCount)
+	cachedIDs := make([]int32, 0, prefixTokens)
 	if trustedPrefix > 0 {
 		cachedIDs = append(cachedIDs, s.cachedIDs[:trustedPrefix]...)
 	}
 	expectedStart := trustedPrefix
 	expectedIndex := source.FirstBlockIndex
 	var finalSnapshot *kv.Snapshot
-	for i := 0; i < source.BlockCount; i++ {
+	for i := 0; i < source.BlockCount && expectedStart < prefixTokens; i++ {
 		block, err := source.Load(i)
 		if err != nil {
 			return err
@@ -292,7 +299,7 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		if block.TokenStart != expectedStart {
 			return core.NewError("native.RestoreKVBlocks: block token start mismatch")
 		}
-		if block.TokenCount <= 0 || block.TokenStart+block.TokenCount > source.TokenCount {
+		if block.TokenCount <= 0 || block.TokenStart+block.TokenCount > prefixTokens {
 			return core.NewError("native.RestoreKVBlocks: invalid block token range")
 		}
 		if block.Snapshot.SeqLen != 0 && block.Snapshot.SeqLen != block.TokenCount {
@@ -304,41 +311,41 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		if len(block.Snapshot.Tokens) != block.TokenCount {
 			return core.NewError("native.RestoreKVBlocks: block token count mismatch")
 		}
-		if err := s.restoreKVSnapshotBlockLayers(block, source.TokenCount, targetViews); err != nil {
+		if err := s.restoreKVSnapshotBlockLayers(block, prefixTokens, targetViews); err != nil {
 			return err
 		}
 		cachedIDs = append(cachedIDs, block.Snapshot.Tokens...)
 		expectedStart += block.TokenCount
 		finalSnapshot = block.Snapshot
 	}
-	if expectedStart != source.TokenCount {
+	if expectedStart != prefixTokens {
 		return core.NewError("native.RestoreKVBlocks: block coverage does not match token count")
 	}
 	metadata := &kv.Snapshot{
 		Tokens:      cachedIDs,
-		TokenOffset: source.TokenCount,
+		TokenOffset: prefixTokens,
 	}
-	if finalSnapshot != nil {
+	if finalSnapshot != nil && prefixTokens == source.TokenCount {
 		metadata.Generated = finalSnapshot.Generated
 		metadata.LogitShape = finalSnapshot.LogitShape
 		metadata.Logits = finalSnapshot.Logits
 	}
-	return s.restoreKVSnapshotMetadata(metadata, source.TokenCount)
+	return s.restoreKVSnapshotMetadata(metadata, prefixTokens)
 }
 
-func (s *ArchSession) restoreTrustedKVBlockMetadata(source KVBlockSource) error {
+func (s *ArchSession) restoreTrustedKVBlockMetadata(source KVBlockSource, prefixTokens int) error {
 	if len(source.RetainedLogits) > 0 && len(source.RetainedLogits) != s.arch.Vocab*bf16Size {
 		return core.NewError("native.RestoreKVBlocks: retained logits size mismatch")
 	}
 	metadata := &kv.Snapshot{
-		Tokens:      append([]int32(nil), s.cachedIDs[:source.TokenCount]...),
-		TokenOffset: source.TokenCount,
+		Tokens:      append([]int32(nil), s.cachedIDs[:prefixTokens]...),
+		TokenOffset: prefixTokens,
 	}
-	if len(source.RetainedLogits) > 0 {
+	if len(source.RetainedLogits) > 0 && prefixTokens == source.TokenCount {
 		metadata.LogitShape = []int32{1, int32(s.arch.Vocab)}
 		metadata.Logits = bf16ToF32Slice(source.RetainedLogits)
 	}
-	return s.restoreKVSnapshotMetadata(metadata, source.TokenCount)
+	return s.restoreKVSnapshotMetadata(metadata, prefixTokens)
 }
 
 func (s *ArchSession) validateKVBlockTrustedPrefix(source KVBlockSource, trustedPrefix int) error {
