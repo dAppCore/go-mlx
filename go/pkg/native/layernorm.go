@@ -97,6 +97,10 @@ func LayerNormBF16Into(out []byte, x, weight, bias []byte, rows, axisSize int, e
 // matching metal.LayerNorm on fp32 arrays (the subsampler's second LayerNorm runs fp32). weight/bias
 // are length-axisSize fp32 (the bf16 model weights widened). Axes above 6656 use MLX's looped kernel.
 func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([]float32, error) {
+	return LayerNormF32Into(nil, x, weight, bias, rows, axisSize, eps)
+}
+
+func LayerNormF32Into(out []float32, x, weight, bias []float32, rows, axisSize int, eps float32) ([]float32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -117,7 +121,13 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 
 	tg := layerNormThreadgroup(axisSize, pso)
 
-	out := make([]float32, len(x))
+	outLen := len(x)
+	callerOut := out != nil && cap(out) >= outLen
+	if !callerOut {
+		out = make([]float32, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	if rows == 0 {
 		return out, nil
 	}
@@ -134,6 +144,13 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		wBuf, bBuf := residentFloat32(weight), residentFloat32(bias)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -141,7 +158,9 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
+		if !directOut {
+			copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

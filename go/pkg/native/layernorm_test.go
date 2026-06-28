@@ -136,6 +136,50 @@ func TestLayerNormF32(t *testing.T) {
 	eqF32(t, "LayerNormF32 vs metal.LayerNorm", got, r)
 }
 
+func TestLayerNormF32IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, ax = 4, 64
+	const eps = float32(1e-5)
+	x := syntheticFloat32(rows*ax, 3)
+	w := syntheticFloat32(ax, 5)
+	b := syntheticFloat32(ax, 7)
+	want, err := LayerNormF32(x, w, b, rows, ax, eps)
+	if err != nil {
+		t.Fatalf("LayerNormF32 reference: %v", err)
+	}
+
+	out := make([]float32, rows*ax)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVFloatScratch(rows*ax, rows*ax)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
+
+	got, err := LayerNormF32Into(out, x, w, b, rows, ax, eps)
+	if err != nil {
+		t.Fatalf("LayerNormF32Into: %v", err)
+	}
+	if len(got) != len(out) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("LayerNormF32Into did not reuse caller-owned output backing")
+	}
+	if !bytes.Equal(float32Bytes(got), float32Bytes(want)) {
+		t.Fatal("LayerNormF32Into output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVFloatScratch(rows*ax, rows*ax)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("LayerNormF32Into wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestLayerNormF32LoopedAxis(t *testing.T) {
 	requireNativeRuntime(t)
 	const rows, ax = 2, 7000
