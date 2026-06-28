@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"testing"
 
 	"dappco.re/go/mlx/pkg/model"
@@ -65,5 +66,58 @@ func TestWarmPromptCachePLESequentialAllocationBudget(t *testing.T) {
 	}
 	if allocs > 5000 {
 		t.Fatalf("PLE WarmPromptCache allocations = %.0f, want <= 5000", allocs)
+	}
+}
+
+func TestPrefillCachedIDsPLEUsesGPUNextInputs(t *testing.T) {
+	requireNativeRuntime(t)
+	ids := []int32{1, 5, 3, 7}
+	serial := newPromptCachePLEFixture(t)
+	chained := newPromptCachePLEFixture(t)
+	if chained.encNextInputsGPU == nil {
+		t.Fatal("PLE fixture did not wire GPU next-inputs seam")
+	}
+
+	if err := serial.prefillCachedIDs(ids); err != nil {
+		t.Fatalf("serial prefillCachedIDs: %v", err)
+	}
+
+	hostEmbeds := 0
+	hostPLE := 0
+	origEmbed := chained.embed
+	origPLE := chained.perLayerInput
+	chained.embed = func(id int32) ([]byte, error) {
+		hostEmbeds++
+		return origEmbed(id)
+	}
+	chained.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
+		hostPLE++
+		return origPLE(id, emb)
+	}
+	if err := chained.prefillCachedIDs(ids); err != nil {
+		t.Fatalf("chained prefillCachedIDs: %v", err)
+	}
+	if hostEmbeds != 0 || hostPLE != 0 {
+		t.Fatalf("prefillCachedIDs used host embed/PLE: embeds=%d ple=%d", hostEmbeds, hostPLE)
+	}
+	if chained.nextInputTokenPtr == nil {
+		t.Fatal("prefillCachedIDs did not seed the GPU token buffer")
+	}
+	if staged := *chained.nextInputTokenPtr; staged != ids[len(ids)-1] {
+		t.Fatalf("prefillCachedIDs staged token %d, want final prefix token %d", staged, ids[len(ids)-1])
+	}
+
+	chained.embed = origEmbed
+	chained.perLayerInput = origPLE
+	serialHidden, err := serial.stepID(9)
+	if err != nil {
+		t.Fatalf("serial continuation stepID: %v", err)
+	}
+	chainedHidden, err := chained.stepID(9)
+	if err != nil {
+		t.Fatalf("chained continuation stepID: %v", err)
+	}
+	if !bytes.Equal(chainedHidden, serialHidden) {
+		t.Fatal("GPU-input cached prefix produced different continuation hidden than host-input prefix")
 	}
 }

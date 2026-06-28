@@ -286,6 +286,9 @@ func (s *ArchSession) prefillCachedIDs(ids []int32) error {
 	if s.pos+len(ids) > s.maxLen {
 		return core.NewError("native.CompactCache: sequence would exceed maxLen cache rows")
 	}
+	if s.state.icb != nil && !icbDisabledForTest && s.encNextInputsGPU != nil && s.plScratchNew != nil && !chainedGPUInputsDisabled {
+		return s.prefillCachedIDsGPUInputs(ids)
+	}
 	if s.perLayerInput == nil && s.state.icb == nil {
 		var embStack [16][]byte
 		var embs [][]byte
@@ -344,6 +347,25 @@ func (s *ArchSession) prefillCachedIDs(ids []int32) error {
 			} else if err = s.state.stepTokenNoResult(emb, s.pos); err != nil {
 				return
 			}
+			s.pos++
+		}
+	})
+	return err
+}
+
+func (s *ArchSession) prefillCachedIDsGPUInputs(ids []int32) error {
+	var err error
+	withAutoreleasePool(func() {
+		for _, id := range ids {
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			if _, err = s.encodeStepBodyFromGPUInputsInPool(enc, id); err != nil {
+				endEncodingFast(enc)
+				return
+			}
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 			s.pos++
 		}
 	})

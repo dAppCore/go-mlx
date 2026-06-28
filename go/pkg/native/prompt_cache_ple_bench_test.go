@@ -6,10 +6,13 @@ package native
 
 import "testing"
 
-func BenchmarkWarmPromptCachePLESequential(b *testing.B) {
+func benchWarmPromptCachePLESequential(b *testing.B, gpuInputs bool) {
 	requireNativeRuntime(b)
 	sess := newPromptCachePLEFixture(b)
 	prefix := []int32{1, 5, 3, 7}
+	oldChainDisabled := chainedGPUInputsDisabled
+	chainedGPUInputsDisabled = !gpuInputs
+	defer func() { chainedGPUInputsDisabled = oldChainDisabled }()
 	if err := sess.WarmPromptCache(prefix); err != nil {
 		b.Fatalf("WarmPromptCache warmup: %v", err)
 	}
@@ -23,4 +26,16 @@ func BenchmarkWarmPromptCachePLESequential(b *testing.B) {
 			b.Fatalf("WarmPromptCache: %v", err)
 		}
 	}
+}
+
+func BenchmarkWarmPromptCachePLESequential(b *testing.B) {
+	benchWarmPromptCachePLESequential(b, true)
+}
+
+func BenchmarkWarmPromptCachePLESequentialHost(b *testing.B) {
+	benchWarmPromptCachePLESequential(b, false)
+}
+
+func BenchmarkWarmPromptCachePLESequentialGPUInputs(b *testing.B) {
+	benchWarmPromptCachePLESequential(b, true)
 }
