@@ -650,6 +650,18 @@ func encTanhBF16Object(enc metal.MTLComputeCommandEncoderObject, in, out metal.M
 // is a separate follow-up. All inputs/outputs are raw bf16 bytes. The result
 // equals the same native bf16 ops run separately — proven in the tests.
 func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads, nKVHeads, headDim, kvLen int, base, scale float32, offset int, eps float32) ([]byte, error) {
+	return attentionBlockInto(nil, x, normWeight, wQ, wO, kCache, vCache, dModel, nHeads, nKVHeads, headDim, kvLen, base, scale, offset, eps, false)
+}
+
+// AttentionBlockInto is AttentionBlock with caller-owned output storage. If out
+// has enough capacity, the final residual add writes directly into out through a
+// pinned no-copy Metal buffer; otherwise a correctly sized output is allocated
+// and returned.
+func AttentionBlockInto(out []byte, x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads, nKVHeads, headDim, kvLen int, base, scale float32, offset int, eps float32) ([]byte, error) {
+	return attentionBlockInto(out, x, normWeight, wQ, wO, kCache, vCache, dModel, nHeads, nKVHeads, headDim, kvLen, base, scale, offset, eps, true)
+}
+
+func attentionBlockInto(out []byte, x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads, nKVHeads, headDim, kvLen int, base, scale float32, offset int, eps float32, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -664,7 +676,13 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 		return nil, core.NewError("native.AttentionBlock: kCache/vCache size mismatch")
 	}
 
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
@@ -677,6 +695,13 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		nwBuf := residentBytes(normWeight)
 		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
@@ -740,7 +765,9 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(out)])
+		}
 	})
 	return out, encErr
 }
