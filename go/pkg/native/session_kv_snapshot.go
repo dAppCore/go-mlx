@@ -21,6 +21,7 @@ type KVBlockSource struct {
 	TrustedPrefixTokens int
 	FirstBlockIndex     int
 	CachedIDs           []int32
+	RetainedLogits      []byte
 	BlockCount          int
 	Load                func(int) (kv.Block, error)
 }
@@ -127,6 +128,7 @@ func (s *ArchSession) KVBlockSource(blockSize int, opts kv.CaptureOptions) (KVBl
 		TrustedPrefixTokens: stateSource.trustedPrefixTokens(),
 		FirstBlockIndex:     stateSource.firstBlockIndex,
 		CachedIDs:           append([]int32(nil), stateSource.CachedIDs...),
+		RetainedLogits:      append([]byte(nil), stateSource.RetainedLogits...),
 		BlockCount:          stateSource.BlockCount,
 	}
 	source.Load = func(index int) (kv.Block, error) {
@@ -244,10 +246,10 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 	if source.TokenCount <= 0 || source.TokenCount > s.maxLen {
 		return core.NewError("native.RestoreKVBlocks: token count outside maxLen")
 	}
-	if source.BlockCount <= 0 {
-		return core.NewError("native.RestoreKVBlocks: empty block source")
+	if source.BlockCount < 0 {
+		return core.NewError("native.RestoreKVBlocks: negative block count")
 	}
-	if source.Load == nil {
+	if source.BlockCount > 0 && source.Load == nil {
 		return core.NewError("native.RestoreKVBlocks: nil block loader")
 	}
 	trustedPrefix := source.TrustedPrefixTokens
@@ -258,6 +260,12 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		if err := s.validateKVBlockTrustedPrefix(source, trustedPrefix); err != nil {
 			return err
 		}
+	}
+	if source.BlockCount == 0 {
+		if trustedPrefix != source.TokenCount {
+			return core.NewError("native.RestoreKVBlocks: empty block source")
+		}
+		return s.restoreTrustedKVBlockMetadata(source)
 	}
 	targetViews, err := s.stateLayerViews()
 	if err != nil {
@@ -314,6 +322,21 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		metadata.Generated = finalSnapshot.Generated
 		metadata.LogitShape = finalSnapshot.LogitShape
 		metadata.Logits = finalSnapshot.Logits
+	}
+	return s.restoreKVSnapshotMetadata(metadata, source.TokenCount)
+}
+
+func (s *ArchSession) restoreTrustedKVBlockMetadata(source KVBlockSource) error {
+	if len(source.RetainedLogits) > 0 && len(source.RetainedLogits) != s.arch.Vocab*bf16Size {
+		return core.NewError("native.RestoreKVBlocks: retained logits size mismatch")
+	}
+	metadata := &kv.Snapshot{
+		Tokens:      append([]int32(nil), s.cachedIDs[:source.TokenCount]...),
+		TokenOffset: source.TokenCount,
+	}
+	if len(source.RetainedLogits) > 0 {
+		metadata.LogitShape = []int32{1, int32(s.arch.Vocab)}
+		metadata.Logits = bf16ToF32Slice(source.RetainedLogits)
 	}
 	return s.restoreKVSnapshotMetadata(metadata, source.TokenCount)
 }
