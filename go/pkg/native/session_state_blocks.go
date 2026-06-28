@@ -8,7 +8,10 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
+
+const nativeStateCacheModeFixed = "fixed"
 
 // SessionStateLayerBlock is one layer's K/V cache bytes for a contiguous token
 // range. KeyBytes and ValueBytes are views into the session's resident Metal
@@ -16,6 +19,9 @@ import (
 // consume or copy them before mutating/closing the source session.
 type SessionStateLayerBlock struct {
 	Layer      int
+	CacheIndex int
+	CacheMode  string
+	MaxSize    int
 	KVHeads    int
 	HeadDim    int
 	RowBytes   int
@@ -46,7 +52,37 @@ type SessionStateBlockSource struct {
 	blockSize          int
 	firstBlockIndex    int
 	totalBlockCount    int
+	blockBoundaries    []int
 	views              []sessionStateLayerView
+}
+
+// TrustPrefixBlocks records that this source intentionally skips whole leading
+// blocks already resident in the target session. RestoreStateBlocks validates
+// the resident token IDs before grafting the suffix blocks.
+func (source *SessionStateBlockSource) TrustPrefixBlocks(blockSize, firstBlockIndex int) error {
+	if source == nil {
+		return core.NewError("native.SessionStateBlockSource: nil source")
+	}
+	if blockSize <= 0 {
+		return core.NewError("native.SessionStateBlockSource: block size must be > 0")
+	}
+	if firstBlockIndex < 0 {
+		return core.NewError("native.SessionStateBlockSource: first block index must be >= 0")
+	}
+	if firstBlockIndex == 0 {
+		source.blockSize = 0
+		source.firstBlockIndex = 0
+		source.totalBlockCount = source.BlockCount
+		return nil
+	}
+	trustedPrefix := firstBlockIndex * blockSize
+	if trustedPrefix > source.Position {
+		return core.NewError("native.SessionStateBlockSource: trusted prefix outside position")
+	}
+	source.blockSize = blockSize
+	source.firstBlockIndex = firstBlockIndex
+	source.totalBlockCount = firstBlockIndex + source.BlockCount
+	return nil
 }
 
 type sessionStateLayerView struct {
@@ -54,6 +90,10 @@ type sessionStateLayerView struct {
 	kvHeads    int
 	headDim    int
 	rowBytes   int
+	cacheIndex int
+	cacheMode  string
+	maxSize    int
+	cacheRows  int
 	keyBytes   []byte
 	valueBytes []byte
 }
@@ -68,7 +108,7 @@ func (s *ArchSession) StateBlockSource(blockSize int) (SessionStateBlockSource, 
 // sleep: full blocks ending at or before startToken are skipped, but yielded
 // block indexes remain absolute in the original block grid.
 func (s *ArchSession) StateBlockSourceFrom(startToken, blockSize int) (SessionStateBlockSource, error) {
-	blockCount, firstBlock, totalBlocks, views, err := s.stateBlockPlan(startToken, blockSize)
+	blockCount, firstBlock, totalBlocks, boundaries, views, err := s.stateBlockPlan(startToken, blockSize)
 	if err != nil {
 		return SessionStateBlockSource{}, err
 	}
@@ -80,6 +120,7 @@ func (s *ArchSession) StateBlockSourceFrom(startToken, blockSize int) (SessionSt
 			return SessionStateBlockSource{}, err
 		}
 	}
+	sourceBoundaries := append([]int(nil), boundaries...)
 	source := SessionStateBlockSource{
 		Position:           s.pos,
 		CachedIDs:          append([]int32(nil), s.cachedIDs...),
@@ -92,10 +133,11 @@ func (s *ArchSession) StateBlockSourceFrom(startToken, blockSize int) (SessionSt
 		blockSize:          blockSize,
 		firstBlockIndex:    firstBlock,
 		totalBlockCount:    totalBlocks,
+		blockBoundaries:    sourceBoundaries,
 		views:              views,
 	}
 	source.Load = func(index int) (SessionStateBlock, error) {
-		return loadStateBlock(firstBlock+index, blockSize, totalBlocks, source.Position, views)
+		return loadStateBlockFromBoundaries(firstBlock+index, sourceBoundaries, source.Position, views)
 	}
 	return source, nil
 }
@@ -113,13 +155,13 @@ func (s *ArchSession) RangeStateBlocksFrom(startToken, blockSize int, yield func
 	if yield == nil {
 		return core.NewError("native.RangeStateBlocks: nil yield")
 	}
-	blockCount, firstBlock, totalBlocks, views, err := s.stateBlockPlan(startToken, blockSize)
+	blockCount, firstBlock, _, boundaries, views, err := s.stateBlockPlan(startToken, blockSize)
 	if err != nil {
 		return err
 	}
 	layers := s.stateBlockLayerScratch(len(views))
 	for i := 0; i < blockCount; i++ {
-		block, err := fillStateBlock(firstBlock+i, blockSize, totalBlocks, s.pos, views, layers)
+		block, err := fillStateBlockFromBoundaries(firstBlock+i, boundaries, s.pos, views, layers)
 		if err != nil {
 			return err
 		}
@@ -197,6 +239,13 @@ func (source SessionStateBlockSource) trustedPrefixTokens() int {
 	if source.blockSize <= 0 || source.firstBlockIndex <= 0 {
 		return 0
 	}
+	if len(source.blockBoundaries) > source.firstBlockIndex {
+		prefix := source.blockBoundaries[source.firstBlockIndex]
+		if prefix > source.Position {
+			return source.Position
+		}
+		return prefix
+	}
 	prefix := source.firstBlockIndex * source.blockSize
 	if prefix > source.Position {
 		return source.Position
@@ -226,6 +275,9 @@ func (s *ArchSession) validateStateBlockTrustedPrefix(source SessionStateBlockSo
 }
 
 func (source SessionStateBlockSource) loadInto(index int, layers []SessionStateLayerBlock) (SessionStateBlock, error) {
+	if len(source.views) > 0 && len(source.blockBoundaries) > 1 {
+		return fillStateBlockFromBoundaries(source.firstBlockIndex+index, source.blockBoundaries, source.Position, source.views, layers)
+	}
 	if len(source.views) > 0 && source.blockSize > 0 {
 		return fillStateBlock(source.firstBlockIndex+index, source.blockSize, source.totalBlockCount, source.Position, source.views, layers)
 	}
@@ -235,6 +287,11 @@ func (source SessionStateBlockSource) loadInto(index int, layers []SessionStateL
 func loadStateBlock(index, blockSize, blockCount, position int, views []sessionStateLayerView) (SessionStateBlock, error) {
 	layers := make([]SessionStateLayerBlock, len(views))
 	return fillStateBlock(index, blockSize, blockCount, position, views, layers)
+}
+
+func loadStateBlockFromBoundaries(index int, boundaries []int, position int, views []sessionStateLayerView) (SessionStateBlock, error) {
+	layers := make([]SessionStateLayerBlock, len(views))
+	return fillStateBlockFromBoundaries(index, boundaries, position, views, layers)
 }
 
 func fillStateBlock(index, blockSize, blockCount, position int, views []sessionStateLayerView, layers []SessionStateLayerBlock) (SessionStateBlock, error) {
@@ -249,23 +306,81 @@ func fillStateBlock(index, blockSize, blockCount, position int, views []sessionS
 	if end > position {
 		end = position
 	}
+	return fillStateBlockSpan(index, start, end, position, views, layers)
+}
+
+func fillStateBlockFromBoundaries(index int, boundaries []int, position int, views []sessionStateLayerView, layers []SessionStateLayerBlock) (SessionStateBlock, error) {
+	if len(boundaries) < 2 {
+		return SessionStateBlock{}, core.NewError("native.StateBlockSource.Load: invalid block boundaries")
+	}
+	if index < 0 || index >= len(boundaries)-1 {
+		return SessionStateBlock{}, core.NewError("native.StateBlockSource.Load: block index out of range")
+	}
+	start := boundaries[index]
+	end := boundaries[index+1]
+	return fillStateBlockSpan(index, start, end, position, views, layers)
+}
+
+func fillStateBlockSpan(index, start, end, position int, views []sessionStateLayerView, layers []SessionStateLayerBlock) (SessionStateBlock, error) {
+	if start < 0 || end <= start || end > position {
+		return SessionStateBlock{}, core.NewError("native.StateBlockSource.Load: invalid block range")
+	}
 	tokenCount := end - start
 	if len(layers) != len(views) {
 		return SessionStateBlock{}, core.NewError("native.StateBlockSource.Load: layer descriptor size mismatch")
 	}
 	for i, view := range views {
-		off := start * view.rowBytes
-		n := tokenCount * view.rowBytes
+		keyBytes, valueBytes, err := stateBlockLayerBytes(view, start, tokenCount, position)
+		if err != nil {
+			return SessionStateBlock{}, err
+		}
 		layers[i] = SessionStateLayerBlock{
 			Layer:      view.layer,
+			CacheIndex: view.cacheIndex,
+			CacheMode:  view.cacheMode,
+			MaxSize:    view.maxSize,
 			KVHeads:    view.kvHeads,
 			HeadDim:    view.headDim,
 			RowBytes:   view.rowBytes,
-			KeyBytes:   view.keyBytes[off : off+n],
-			ValueBytes: view.valueBytes[off : off+n],
+			KeyBytes:   keyBytes,
+			ValueBytes: valueBytes,
 		}
 	}
 	return SessionStateBlock{Index: index, TokenStart: start, TokenCount: tokenCount, Layers: layers}, nil
+}
+
+func stateBlockLayerBytes(view sessionStateLayerView, start, tokenCount, position int) ([]byte, []byte, error) {
+	if view.rowBytes <= 0 || view.cacheRows <= 0 {
+		return nil, nil, core.NewError("native.StateBlockSource.Load: invalid layer view geometry")
+	}
+	n := tokenCount * view.rowBytes
+	if view.maxSize <= 0 || position <= view.cacheRows {
+		off := start * view.rowBytes
+		if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+			return nil, nil, core.NewError("native.StateBlockSource.Load: block exceeds cache rows")
+		}
+		return view.keyBytes[off : off+n], view.valueBytes[off : off+n], nil
+	}
+	windowStart := position - view.cacheRows
+	if start+tokenCount <= windowStart {
+		return nil, nil, nil
+	}
+	if start < windowStart {
+		return nil, nil, core.NewError("native.StateBlockSource.Load: block starts before sliding cache window")
+	}
+	keyBytes := make([]byte, n)
+	valueBytes := make([]byte, n)
+	for t := 0; t < tokenCount; t++ {
+		slot := (start + t) % view.cacheRows
+		src := slot * view.rowBytes
+		dst := t * view.rowBytes
+		if src < 0 || src+view.rowBytes > len(view.keyBytes) || src+view.rowBytes > len(view.valueBytes) {
+			return nil, nil, core.NewError("native.StateBlockSource.Load: sliding block exceeds cache rows")
+		}
+		copy(keyBytes[dst:dst+view.rowBytes], view.keyBytes[src:src+view.rowBytes])
+		copy(valueBytes[dst:dst+view.rowBytes], view.valueBytes[src:src+view.rowBytes])
+	}
+	return keyBytes, valueBytes, nil
 }
 
 func restoreStateBlock(index, expectedStart, position, ownerCount int, targetViews []sessionStateLayerView, block SessionStateBlock) error {
@@ -316,13 +431,54 @@ func restoreStateBlock(index, expectedStart, position, ownerCount int, targetVie
 		if layer.RowBytes != view.rowBytes {
 			return core.NewError("native.RestoreStateBlocks: row-byte mismatch")
 		}
-		n := block.TokenCount * view.rowBytes
-		if len(layer.KeyBytes) != n || len(layer.ValueBytes) != n {
-			return core.NewError("native.RestoreStateBlocks: block payload size mismatch")
+		if err := restoreStateBlockLayer(view, block.TokenStart, block.TokenCount, position, layer); err != nil {
+			return err
 		}
-		off := block.TokenStart * view.rowBytes
+	}
+	return nil
+}
+
+func restoreStateBlockLayer(view sessionStateLayerView, start, tokenCount, position int, layer SessionStateLayerBlock) error {
+	if view.rowBytes <= 0 || view.cacheRows <= 0 {
+		return core.NewError("native.RestoreStateBlocks: invalid layer view geometry")
+	}
+	if view.maxSize > 0 && position > view.cacheRows {
+		windowStart := position - view.cacheRows
+		if start+tokenCount <= windowStart {
+			if len(layer.KeyBytes) == 0 && len(layer.ValueBytes) == 0 {
+				return nil
+			}
+			return core.NewError("native.RestoreStateBlocks: expired sliding block has KV payload")
+		}
+	}
+	n := tokenCount * view.rowBytes
+	if len(layer.KeyBytes) != n || len(layer.ValueBytes) != n {
+		return core.NewError("native.RestoreStateBlocks: block payload size mismatch")
+	}
+	if view.maxSize <= 0 || position <= view.cacheRows {
+		off := start * view.rowBytes
+		if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+			return core.NewError("native.RestoreStateBlocks: block exceeds cache rows")
+		}
 		copy(view.keyBytes[off:off+n], layer.KeyBytes)
 		copy(view.valueBytes[off:off+n], layer.ValueBytes)
+		return nil
+	}
+	if start < position-view.cacheRows {
+		return core.NewError("native.RestoreStateBlocks: block starts before sliding cache window")
+	}
+	for t := 0; t < tokenCount; t++ {
+		slot := (start + t) % view.cacheRows
+		dst := slot * view.rowBytes
+		src := t * view.rowBytes
+		if dst < 0 || dst+view.rowBytes > len(view.keyBytes) || dst+view.rowBytes > len(view.valueBytes) {
+			return core.NewError("native.RestoreStateBlocks: sliding block exceeds cache rows")
+		}
+		if src+view.rowBytes > len(layer.KeyBytes) || src+view.rowBytes > len(layer.ValueBytes) {
+			return core.NewError("native.RestoreStateBlocks: block payload size mismatch")
+		}
+		copy(view.keyBytes[dst:dst+view.rowBytes], layer.KeyBytes[src:src+view.rowBytes])
+		copy(view.valueBytes[dst:dst+view.rowBytes], layer.ValueBytes[src:src+view.rowBytes])
 	}
 	return nil
 }
@@ -379,7 +535,8 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 			return nil, err
 		}
 		cacheBytes := int(k.Length())
-		rowBytes, err := s.stateCacheRowBytes(cacheBytes)
+		cacheRows := s.stateCacheRows(spec)
+		rowBytes, err := s.stateCacheRowBytes(cacheBytes, cacheRows)
 		if err != nil {
 			return nil, err
 		}
@@ -388,6 +545,10 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 			kvHeads:    kvHeadsOf(spec, s.arch.KVHeads),
 			headDim:    headDimOf(spec, s.arch.HeadDim),
 			rowBytes:   rowBytes,
+			cacheIndex: spec.CacheIndex,
+			cacheMode:  nativeStateCacheModeFixed,
+			maxSize:    s.stateCacheMaxSize(spec),
+			cacheRows:  cacheRows,
 			keyBytes:   unsafe.Slice(kPtr, cacheBytes),
 			valueBytes: unsafe.Slice(vPtr, cacheBytes),
 		})
@@ -397,39 +558,79 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 	return s.stateBlockViews, nil
 }
 
-func (s *ArchSession) stateBlockPlan(startToken, blockSize int) (int, int, int, []sessionStateLayerView, error) {
+func (s *ArchSession) stateBlockPlan(startToken, blockSize int) (int, int, int, []int, []sessionStateLayerView, error) {
 	if s == nil {
-		return 0, 0, 0, nil, core.NewError("native.StateBlockSource: nil session")
+		return 0, 0, 0, nil, nil, core.NewError("native.StateBlockSource: nil session")
 	}
 	if blockSize <= 0 {
-		return 0, 0, 0, nil, core.NewError("native.StateBlockSource: block size must be > 0")
+		return 0, 0, 0, nil, nil, core.NewError("native.StateBlockSource: block size must be > 0")
 	}
 	if startToken < 0 {
-		return 0, 0, 0, nil, core.NewError("native.StateBlockSource: start token must be >= 0")
+		return 0, 0, 0, nil, nil, core.NewError("native.StateBlockSource: start token must be >= 0")
 	}
 	if s.pos < 0 || s.pos > s.maxLen {
-		return 0, 0, 0, nil, core.NewError("native.StateBlockSource: position outside maxLen")
-	}
-	totalBlocks := 0
-	if s.pos > 0 {
-		totalBlocks = (s.pos + blockSize - 1) / blockSize
-	}
-	firstBlock := 0
-	for firstBlock < totalBlocks {
-		end := (firstBlock + 1) * blockSize
-		if end > s.pos {
-			end = s.pos
-		}
-		if end > startToken {
-			break
-		}
-		firstBlock++
+		return 0, 0, 0, nil, nil, core.NewError("native.StateBlockSource: position outside maxLen")
 	}
 	views, err := s.stateLayerViews()
 	if err != nil {
-		return 0, 0, 0, nil, err
+		return 0, 0, 0, nil, nil, err
 	}
-	return totalBlocks - firstBlock, firstBlock, totalBlocks, views, nil
+	boundaries := s.stateBlockBoundaries(blockSize, s.pos, views)
+	totalBlocks := 0
+	if len(boundaries) > 1 {
+		totalBlocks = len(boundaries) - 1
+	}
+	firstBlock := 0
+	for firstBlock < totalBlocks && boundaries[firstBlock+1] <= startToken {
+		firstBlock++
+	}
+	return totalBlocks - firstBlock, firstBlock, totalBlocks, boundaries, views, nil
+}
+
+func (s *ArchSession) stateBlockBoundaries(blockSize, position int, views []sessionStateLayerView) []int {
+	if position <= 0 {
+		s.stateBlockBounds = s.stateBlockBounds[:0]
+		return s.stateBlockBounds
+	}
+	expected := 2 + position/blockSize + len(views)
+	if cap(s.stateBlockBounds) < expected {
+		s.stateBlockBounds = make([]int, 0, expected)
+	} else {
+		s.stateBlockBounds = s.stateBlockBounds[:0]
+	}
+	boundaries := s.stateBlockBounds
+	boundaries = append(boundaries, 0)
+	for next := blockSize; next < position; next += blockSize {
+		boundaries = append(boundaries, next)
+	}
+	boundaries = append(boundaries, position)
+	for _, view := range views {
+		if view.maxSize <= 0 || view.cacheRows <= 0 || position <= view.cacheRows {
+			continue
+		}
+		windowStart := position - view.cacheRows
+		if windowStart <= 0 || windowStart >= position {
+			continue
+		}
+		boundaries = stateBlockBoundaryInsert(boundaries, windowStart)
+	}
+	s.stateBlockBounds = boundaries
+	return boundaries
+}
+
+func stateBlockBoundaryInsert(boundaries []int, boundary int) []int {
+	for i, existing := range boundaries {
+		if existing == boundary {
+			return boundaries
+		}
+		if existing > boundary {
+			boundaries = append(boundaries, 0)
+			copy(boundaries[i+1:], boundaries[i:])
+			boundaries[i] = boundary
+			return boundaries
+		}
+	}
+	return append(boundaries, boundary)
 }
 
 func (s *ArchSession) ownedStateCacheLayers() int {
@@ -451,12 +652,26 @@ func (s *ArchSession) stateBlockLayerScratch(n int) []SessionStateLayerBlock {
 	return s.stateBlockLayers
 }
 
-func (s *ArchSession) stateCacheRowBytes(cacheBytes int) (int, error) {
-	if s.maxLen <= 0 {
+func (s *ArchSession) stateCacheRows(spec model.LayerSpec) int {
+	if s.arch.SlidingWindow > 0 && s.arch.SlidingWindow < s.maxLen && spec.Attention != model.GlobalAttention {
+		return s.arch.SlidingWindow
+	}
+	return s.maxLen
+}
+
+func (s *ArchSession) stateCacheMaxSize(spec model.LayerSpec) int {
+	if s.arch.SlidingWindow > 0 && s.arch.SlidingWindow < s.maxLen && spec.Attention != model.GlobalAttention {
+		return s.arch.SlidingWindow
+	}
+	return 0
+}
+
+func (s *ArchSession) stateCacheRowBytes(cacheBytes, cacheRows int) (int, error) {
+	if cacheRows <= 0 {
 		return 0, core.NewError("native.sessionStateBlocks: maxLen must be > 0")
 	}
-	if cacheBytes%s.maxLen != 0 {
+	if cacheBytes%cacheRows != 0 {
 		return 0, core.NewError("native.sessionStateBlocks: cache length is not row-aligned")
 	}
-	return cacheBytes / s.maxLen, nil
+	return cacheBytes / cacheRows, nil
 }

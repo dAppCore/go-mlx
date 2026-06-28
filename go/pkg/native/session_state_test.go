@@ -741,6 +741,254 @@ func TestSessionStateRangeBlocksSkipsTrustedPrefix(t *testing.T) {
 	}
 }
 
+func TestSessionStateBlockSourceTrustPrefixBlocks(t *testing.T) {
+	source := SessionStateBlockSource{Position: 7, BlockCount: 2}
+	if err := source.TrustPrefixBlocks(2, 2); err != nil {
+		t.Fatalf("TrustPrefixBlocks: %v", err)
+	}
+	if got := source.trustedPrefixTokens(); got != 4 {
+		t.Fatalf("trusted prefix = %d, want 4", got)
+	}
+	if source.firstBlockIndex != 2 || source.totalBlockCount != 4 {
+		t.Fatalf("block grid = first %d total %d, want 2/4", source.firstBlockIndex, source.totalBlockCount)
+	}
+	if err := source.TrustPrefixBlocks(2, 0); err != nil {
+		t.Fatalf("TrustPrefixBlocks reset: %v", err)
+	}
+	if got := source.trustedPrefixTokens(); got != 0 {
+		t.Fatalf("trusted prefix after reset = %d, want 0", got)
+	}
+	if err := source.TrustPrefixBlocks(0, 1); err == nil {
+		t.Fatal("TrustPrefixBlocks zero block size error = nil")
+	}
+	if err := source.TrustPrefixBlocks(4, 3); err == nil {
+		t.Fatal("TrustPrefixBlocks oversized prefix error = nil")
+	}
+}
+
+func TestSessionStateBlockSourceCarriesSlidingCacheMetadata(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := sessionStateFixture(t)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 2, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := sess.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	block, err := source.Load(0)
+	if err != nil {
+		t.Fatalf("Load(0): %v", err)
+	}
+	if len(block.Layers) == 0 {
+		t.Fatal("state block has no layers")
+	}
+	layer := block.Layers[0]
+	if layer.Layer != 0 {
+		t.Fatalf("first layer = %d, want sliding layer 0", layer.Layer)
+	}
+	if layer.CacheMode != "fixed" || layer.MaxSize != arch.SlidingWindow {
+		t.Fatalf("sliding layer cache metadata = %q/%d, want fixed/%d", layer.CacheMode, layer.MaxSize, arch.SlidingWindow)
+	}
+}
+
+func TestSessionStateBlockSourceSplitsSlidingWindowBoundary(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := sessionStateFixture(t)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 2, 3, 4, 5, 6, 7}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := sess.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	want := []struct {
+		index int
+		start int
+		count int
+	}{
+		{0, 0, 2},
+		{1, 2, 1},
+		{2, 3, 1},
+		{3, 4, 2},
+		{4, 6, 1},
+	}
+	if source.BlockCount != len(want) {
+		t.Fatalf("block count = %d, want %d", source.BlockCount, len(want))
+	}
+	for i, w := range want {
+		block, err := source.Load(i)
+		if err != nil {
+			t.Fatalf("Load(%d): %v", i, err)
+		}
+		if block.Index != w.index || block.TokenStart != w.start || block.TokenCount != w.count {
+			t.Fatalf("block %d = index %d start %d count %d, want index %d start %d count %d", i, block.Index, block.TokenStart, block.TokenCount, w.index, w.start, w.count)
+		}
+	}
+}
+
+func TestSessionStateFillBlockMapsSlidingRingRows(t *testing.T) {
+	keyRows := []byte{
+		4, 0,
+		5, 0,
+		2, 0,
+		3, 0,
+	}
+	valueRows := []byte{
+		14, 0,
+		15, 0,
+		12, 0,
+		13, 0,
+	}
+	layers := make([]SessionStateLayerBlock, 1)
+	block, err := fillStateBlock(2, 2, 3, 6, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   keyRows,
+		valueBytes: valueRows,
+	}}, layers)
+	if err != nil {
+		t.Fatalf("fillStateBlock sliding ring: %v", err)
+	}
+	if block.TokenStart != 4 || block.TokenCount != 2 {
+		t.Fatalf("block range = %d/%d, want 4/2", block.TokenStart, block.TokenCount)
+	}
+	if !bytes.Equal(block.Layers[0].KeyBytes, []byte{4, 0, 5, 0}) {
+		t.Fatalf("sliding key rows = %v, want logical rows 4,5", block.Layers[0].KeyBytes)
+	}
+	if !bytes.Equal(block.Layers[0].ValueBytes, []byte{14, 0, 15, 0}) {
+		t.Fatalf("sliding value rows = %v, want logical rows 4,5", block.Layers[0].ValueBytes)
+	}
+}
+
+func TestSessionStateFillBlockOmitsExpiredSlidingRows(t *testing.T) {
+	layers := make([]SessionStateLayerBlock, 1)
+	block, err := fillStateBlock(0, 2, 3, 6, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   []byte{4, 0, 5, 0, 2, 0, 3, 0},
+		valueBytes: []byte{14, 0, 15, 0, 12, 0, 13, 0},
+	}}, layers)
+	if err != nil {
+		t.Fatalf("fillStateBlock expired sliding rows: %v", err)
+	}
+	if block.TokenStart != 0 || block.TokenCount != 2 {
+		t.Fatalf("block range = %d/%d, want 0/2", block.TokenStart, block.TokenCount)
+	}
+	if len(block.Layers) != 1 || block.Layers[0].Layer != 0 {
+		t.Fatalf("block layers = %+v, want metadata-only sliding layer", block.Layers)
+	}
+	if len(block.Layers[0].KeyBytes) != 0 || len(block.Layers[0].ValueBytes) != 0 {
+		t.Fatalf("expired sliding rows carried KV bytes key=%v value=%v, want metadata-only", block.Layers[0].KeyBytes, block.Layers[0].ValueBytes)
+	}
+	if block.Layers[0].CacheMode != nativeStateCacheModeFixed || block.Layers[0].MaxSize != 4 {
+		t.Fatalf("expired sliding metadata = %q/%d, want fixed/4", block.Layers[0].CacheMode, block.Layers[0].MaxSize)
+	}
+}
+
+func TestSessionStateRestoreBlockMapsSlidingRingRows(t *testing.T) {
+	keyRows := make([]byte, 8)
+	valueRows := make([]byte, 8)
+	err := restoreStateBlock(2, 4, 6, 1, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   keyRows,
+		valueBytes: valueRows,
+	}}, SessionStateBlock{
+		Index:      2,
+		TokenStart: 4,
+		TokenCount: 2,
+		Layers: []SessionStateLayerBlock{{
+			Layer:      0,
+			CacheIndex: 0,
+			CacheMode:  nativeStateCacheModeFixed,
+			MaxSize:    4,
+			KVHeads:    1,
+			HeadDim:    1,
+			RowBytes:   2,
+			KeyBytes:   []byte{4, 0, 5, 0},
+			ValueBytes: []byte{14, 0, 15, 0},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("restoreStateBlock sliding ring: %v", err)
+	}
+	if !bytes.Equal(keyRows[:4], []byte{4, 0, 5, 0}) {
+		t.Fatalf("restored key ring prefix = %v, want logical rows 4,5 in slots 0,1", keyRows)
+	}
+	if !bytes.Equal(valueRows[:4], []byte{14, 0, 15, 0}) {
+		t.Fatalf("restored value ring prefix = %v, want logical rows 4,5 in slots 0,1", valueRows)
+	}
+}
+
+func TestSessionStateRestoreBlockSkipsExpiredSlidingRows(t *testing.T) {
+	keyRows := []byte{4, 0, 5, 0, 2, 0, 3, 0}
+	valueRows := []byte{14, 0, 15, 0, 12, 0, 13, 0}
+	origKey := append([]byte(nil), keyRows...)
+	origValue := append([]byte(nil), valueRows...)
+	err := restoreStateBlock(0, 0, 6, 1, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   keyRows,
+		valueBytes: valueRows,
+	}}, SessionStateBlock{
+		Index:      0,
+		TokenStart: 0,
+		TokenCount: 2,
+		Layers: []SessionStateLayerBlock{{
+			Layer:      0,
+			CacheIndex: 0,
+			CacheMode:  nativeStateCacheModeFixed,
+			MaxSize:    4,
+			KVHeads:    1,
+			HeadDim:    1,
+			RowBytes:   2,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("restoreStateBlock expired sliding rows: %v", err)
+	}
+	if !bytes.Equal(keyRows, origKey) || !bytes.Equal(valueRows, origValue) {
+		t.Fatalf("expired sliding restore mutated rows key=%v value=%v", keyRows, valueRows)
+	}
+}
+
 func TestSessionStateRestoreBlocksGraftsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prefix := []int32{1, 2, 3, 4}

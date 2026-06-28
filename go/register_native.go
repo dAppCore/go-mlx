@@ -1085,7 +1085,7 @@ func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source metal.KV
 		s.err = err
 		return err
 	}
-	restored, tokens, logits, err := nativeTextStateSourceFromBlockSource(ctx, source)
+	restored, tokens, logits, err := nativeTextStateSourceFromBlockSource(ctx, source, s.tokens)
 	if err != nil {
 		s.err = err
 		return err
@@ -1235,10 +1235,15 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 		if headDim == 0 {
 			headDim = layer.HeadDim
 		}
+		cacheMode := metal.KVCacheModeFixed
+		if layer.CacheMode != "" {
+			cacheMode = metal.KVCacheMode(layer.CacheMode)
+		}
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
-			CacheIndex: i,
-			CacheMode:  metal.KVCacheModeFixed,
+			CacheIndex: layer.CacheIndex,
+			CacheMode:  cacheMode,
+			MaxSize:    layer.MaxSize,
 			KeyDType:   metal.DTypeBFloat16,
 			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
 			KeyShape:   []int32{int32(block.TokenCount), int32(layer.KVHeads), int32(layer.HeadDim)},
@@ -1371,7 +1376,7 @@ func nativeTextStateSourceFromSnapshot(snapshot *metal.KVSnapshot) (native.Sessi
 	return source, tokens, append([]int32(nil), snapshot.Generated...), logits, nil
 }
 
-func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSnapshotBlockSource) (native.SessionStateBlockSource, []int32, []byte, error) {
+func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSnapshotBlockSource, residentTokens []int32) (native.SessionStateBlockSource, []int32, []byte, error) {
 	if source.BlockCount <= 0 || source.Load == nil {
 		return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: invalid block source")
 	}
@@ -1383,9 +1388,11 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 		return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: empty block source")
 	}
 	blocks := make([]native.SessionStateBlock, 0, source.BlockCount)
-	tokens := make([]int32, 0, position)
+	tokens := make([]int32, position)
+	filledUntil := 0
+	trustedFirstBlock, trustedBlockSize := 0, 0
 	var logits []byte
-	for i := 0; i < source.BlockCount && len(tokens) < position; i++ {
+	for i := 0; i < source.BlockCount && filledUntil < position; i++ {
 		if err := ctx.Err(); err != nil {
 			return native.SessionStateBlockSource{}, nil, nil, err
 		}
@@ -1396,12 +1403,29 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 		if block.Snapshot == nil {
 			return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: nil block snapshot")
 		}
+		if block.TokenStart < 0 || block.TokenCount <= 0 {
+			continue
+		}
 		take := block.TokenCount
 		if block.TokenStart+take > position {
 			take = position - block.TokenStart
 		}
 		if take <= 0 {
 			continue
+		}
+		if block.TokenStart > filledUntil {
+			if filledUntil != 0 || block.TokenStart > len(residentTokens) {
+				return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
+			}
+			copy(tokens[:block.TokenStart], residentTokens[:block.TokenStart])
+			filledUntil = block.TokenStart
+			if block.Index > 0 && block.TokenStart%block.Index == 0 {
+				trustedFirstBlock = block.Index
+				trustedBlockSize = block.TokenStart / block.Index
+			}
+		}
+		if block.TokenStart != filledUntil || len(block.Snapshot.Tokens) < take {
+			return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
 		}
 		layers, err := nativeTextStateLayersFromBlock(block.Snapshot, take)
 		if err != nil {
@@ -1413,12 +1437,13 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 			TokenCount: take,
 			Layers:     layers,
 		})
-		tokens = append(tokens, block.Snapshot.Tokens[:min(take, len(block.Snapshot.Tokens))]...)
+		copy(tokens[block.TokenStart:block.TokenStart+take], block.Snapshot.Tokens[:take])
+		filledUntil += take
 		if block.TokenStart+take == position && len(block.Snapshot.Logits) > 0 {
 			logits = nativeTextF32ToBF16(block.Snapshot.Logits)
 		}
 	}
-	if len(tokens) != position {
+	if filledUntil != position {
 		return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
 	}
 	restored := native.SessionStateBlockSource{
@@ -1434,6 +1459,11 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 			return native.SessionStateBlock{}, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block index out of range")
 		}
 		return blocks[index], nil
+	}
+	if trustedFirstBlock > 0 && trustedBlockSize > 0 {
+		if err := restored.TrustPrefixBlocks(trustedBlockSize, trustedFirstBlock); err != nil {
+			return native.SessionStateBlockSource{}, nil, nil, err
+		}
 	}
 	return restored, tokens, logits, nil
 }
@@ -1494,6 +1524,9 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 	}
 	return native.SessionStateLayerBlock{
 		Layer:      layer.Layer,
+		CacheIndex: layer.CacheIndex,
+		CacheMode:  string(layer.CacheMode),
+		MaxSize:    layer.MaxSize,
 		KVHeads:    kvHeads,
 		HeadDim:    headDim,
 		RowBytes:   rowBytes,

@@ -61,6 +61,7 @@ type ArchSession struct {
 	stateBlockViews    []sessionStateLayerView
 	stateBlockViewsICB bool
 	stateBlockLayers   []SessionStateLayerBlock
+	stateBlockBounds   []int
 	pos                int // tokens already in the cache (the next token decodes at this position)
 	maxLen             int
 	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
@@ -198,6 +199,7 @@ func (s *ArchSession) closeModelAndDecodeStateReferences() {
 	s.stateBlockViews = nil
 	s.stateBlockViewsICB = false
 	s.stateBlockLayers = nil
+	s.stateBlockBounds = nil
 	s.cachedIDs = nil
 	s.cachedPromptIDs = nil
 	s.cachedPromptHidden = nil

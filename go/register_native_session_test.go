@@ -560,6 +560,122 @@ func TestNativeTextSession_RestoreKVBlocksGenerateUsesRetainedBoundaryMetadata_G
 	}
 }
 
+func TestNativeTextSession_RestoreKVBlocksGraftsResidentTrustedPrefix_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	prefiller := handle.(interface {
+		PrefillTokens(context.Context, []int32) error
+	})
+	if err := prefiller.PrefillTokens(ctx, []int32{1, 2}); err != nil {
+		t.Fatalf("PrefillTokens trusted prefix: %v", err)
+	}
+	source := metal.KVSnapshotBlockSource{
+		TokenCount:   3,
+		PrefixTokens: 3,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+			if index != 0 {
+				return metal.KVSnapshotBlock{}, nil
+			}
+			return nativeSessionTextMetalBlock(1, 2, []int32{3}, true), nil
+		},
+	}
+	if err := handle.(interface {
+		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+	}).RestoreKVBlocks(ctx, source); err != nil {
+		t.Fatalf("RestoreKVBlocks suffix-only trusted prefix: %v", err)
+	}
+	if !reflect.DeepEqual(session.tokens, []int32{1, 2, 3}) {
+		t.Fatalf("tokens after trusted-prefix RestoreKVBlocks = %v", session.tokens)
+	}
+	if !reflect.DeepEqual(session.restored.CachedIDs, []int32{1, 2, 3}) {
+		t.Fatalf("restored cached ids = %v, want full trusted prefix plus suffix", session.restored.CachedIDs)
+	}
+	if len(session.restoredBlocks) != 1 || session.restoredBlocks[0].Index != 1 || session.restoredBlocks[0].TokenStart != 2 || session.restoredBlocks[0].TokenCount != 1 {
+		t.Fatalf("restored suffix blocks = %+v, want only absolute block 1 at token 2", session.restoredBlocks)
+	}
+	var generated []int32
+	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+		generated = append(generated, tok.ID)
+	}
+	if err := handle.Err(); err != nil {
+		t.Fatalf("Generate Err: %v", err)
+	}
+	if !reflect.DeepEqual(generated, []int32{3}) {
+		t.Fatalf("generated after trusted-prefix restore = %v, want [3]", generated)
+	}
+}
+
+func TestNativeTextSession_RestoreKVBlocksCarriesCacheModeMetadata_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	block := nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, true)
+	block.Snapshot.Layers[0].CacheIndex = 3
+	block.Snapshot.Layers[0].CacheMode = metal.KVCacheModePaged
+	block.Snapshot.Layers[0].MaxSize = 64
+	source := metal.KVSnapshotBlockSource{
+		TokenCount:   2,
+		PrefixTokens: 2,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+			if index != 0 {
+				return metal.KVSnapshotBlock{}, nil
+			}
+			return block, nil
+		},
+	}
+	if err := handle.(interface {
+		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+	}).RestoreKVBlocks(ctx, source); err != nil {
+		t.Fatalf("RestoreKVBlocks paged metadata: %v", err)
+	}
+	if len(session.restoredBlocks) != 1 || len(session.restoredBlocks[0].Layers) != 1 {
+		t.Fatalf("restored blocks = %+v, want one layer block", session.restoredBlocks)
+	}
+	layer := session.restoredBlocks[0].Layers[0]
+	if layer.CacheIndex != 3 || layer.CacheMode != string(metal.KVCacheModePaged) || layer.MaxSize != 64 {
+		t.Fatalf("restored layer cache metadata = %d/%q/%d, want 3/paged/64", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
+	}
+}
+
+func TestNativeTextSession_SnapshotFromNativeBlockCarriesCacheModeMetadata_Good(t *testing.T) {
+	model := testNativeTextSessionModel(newNativeSessionTextSession())
+	handle := model.NewSession()
+	session := handle.(*nativeTextSession)
+	source := native.SessionStateBlockSource{
+		Position:  2,
+		CachedIDs: []int32{1, 2},
+	}
+	block := native.SessionStateBlock{
+		Index:      0,
+		TokenStart: 0,
+		TokenCount: 2,
+		Layers: []native.SessionStateLayerBlock{{
+			Layer:      0,
+			CacheIndex: 3,
+			CacheMode:  string(metal.KVCacheModePaged),
+			MaxSize:    64,
+			KVHeads:    1,
+			HeadDim:    2,
+			RowBytes:   4,
+			KeyBytes:   nativeSessionTextKVBytes([]int32{1, 2}, 0x10),
+			ValueBytes: nativeSessionTextKVBytes([]int32{1, 2}, 0x20),
+		}},
+	}
+	snapshot := session.snapshotFromNativeBlock(source, block, false, false)
+	if len(snapshot.Layers) != 1 {
+		t.Fatalf("snapshot layers = %d, want 1", len(snapshot.Layers))
+	}
+	layer := snapshot.Layers[0]
+	if layer.CacheIndex != 3 || layer.CacheMode != metal.KVCacheModePaged || layer.MaxSize != 64 {
+		t.Fatalf("snapshot layer cache metadata = %d/%q/%d, want 3/paged/64", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
+	}
+}
+
 func TestNativeTextSession_RestoreKVBlocksGenerateSampledUsesRetainedBoundaryMetadata_Good(t *testing.T) {
 	ctx := context.Background()
 	session := newNativeSessionTextSession()
