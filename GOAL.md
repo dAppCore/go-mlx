@@ -31,6 +31,7 @@ Latest completed slice:
 - Native `RestoreKVBlocks` grafts resident trusted-prefix tokens, restores suffix-only absolute blocks, and carries per-layer cache index/mode/max-size metadata through native block descriptors.
 - Native state-block capture/restore maps post-cap sliding-window cache rows through their physical ring slots, splits streamed block boundaries at the live-window start like metal, preserves zero-copy contiguous views for full/pre-cap blocks, and keeps range streaming at zero allocations.
 - Native `RestoreKV` accepts metal per-head float32 and raw BF16 KV snapshots by converting them into native BF16 token-major slabs while preserving layer cache metadata.
+- Native `RestoreKV` transposes metal/kvconv raw BF16 layer slabs from `[1, heads, seq, dim]` head-major order into native token-major cache rows.
 - Native block restore records exact trusted-prefix token counts for non-uniform boundary grids, so suffix blocks after sliding-window split points graft onto resident prefixes instead of assuming `blockSize * index`.
 
 Remaining feature tasks:

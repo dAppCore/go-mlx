@@ -1526,6 +1526,14 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 	if len(layer.KeyBytes) != n || len(layer.ValueBytes) != n {
 		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: native KV slab size mismatch")
 	}
+	keyBytes := layer.KeyBytes
+	valueBytes := layer.ValueBytes
+	if nativeTextLayerSlabIsHeadMajor(layer.KeyShape, tokenCount) {
+		keyBytes = nativeTextLayerSlabToTokenMajor(keyBytes, kvHeads, headDim, tokenCount)
+	}
+	if nativeTextLayerSlabIsHeadMajor(layer.ValueShape, tokenCount) {
+		valueBytes = nativeTextLayerSlabToTokenMajor(valueBytes, kvHeads, headDim, tokenCount)
+	}
 	return native.SessionStateLayerBlock{
 		Layer:      layer.Layer,
 		CacheIndex: layer.CacheIndex,
@@ -1534,8 +1542,8 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		KVHeads:    kvHeads,
 		HeadDim:    headDim,
 		RowBytes:   rowBytes,
-		KeyBytes:   layer.KeyBytes,
-		ValueBytes: layer.ValueBytes,
+		KeyBytes:   keyBytes,
+		ValueBytes: valueBytes,
 	}, nil
 }
 
@@ -1660,6 +1668,27 @@ func nativeTextLayerGeometry(layer metal.KVLayerSnapshot, tokenCount int) (int, 
 	}
 	rowBytes := kvHeads * headDim * 2
 	return kvHeads, headDim, rowBytes, nil
+}
+
+func nativeTextLayerSlabIsHeadMajor(shape []int32, tokenCount int) bool {
+	return len(shape) == 4 && shape[0] == 1 && int(shape[2]) == tokenCount
+}
+
+func nativeTextLayerSlabToTokenMajor(raw []byte, kvHeads, headDim, tokenCount int) []byte {
+	if kvHeads <= 0 || headDim <= 0 || tokenCount <= 0 {
+		return raw
+	}
+	headBytes := headDim * 2
+	rowBytes := kvHeads * headBytes
+	out := make([]byte, len(raw))
+	for t := 0; t < tokenCount; t++ {
+		for h := 0; h < kvHeads; h++ {
+			src := (h*tokenCount + t) * headBytes
+			dst := t*rowBytes + h*headBytes
+			copy(out[dst:dst+headBytes], raw[src:src+headBytes])
+		}
+	}
+	return out
 }
 
 func nativeTextBF16ToF32(raw []byte) []float32 {
