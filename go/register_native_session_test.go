@@ -728,6 +728,63 @@ func TestNativeTextSession_RestoreKVConvertsFloat32LayerSlabSnapshots_Good(t *te
 	}
 }
 
+func TestNativeTextSession_RestoreKVPreservesSlidingTailTokenOffset_Good(t *testing.T) {
+	ctx := context.Background()
+	session := newNativeSessionTextSession()
+	model := testNativeTextSessionModel(session)
+	handle := model.NewSession()
+	snapshot := &metal.KVSnapshot{
+		Version:       metal.KVSnapshotVersion,
+		Architecture:  "gemma4",
+		Tokens:        []int32{5, 6},
+		TokenOffset:   6,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			CacheMode:  metal.KVCacheModeFixed,
+			MaxSize:    2,
+			KeyDType:   metal.DTypeBFloat16,
+			KeyBytes:   nativeTextF32ToBF16([]float32{5, 6, 7, 8}),
+			KeyShape:   []int32{1, 1, 2, 2},
+			ValueDType: metal.DTypeBFloat16,
+			ValueBytes: nativeTextF32ToBF16([]float32{15, 16, 17, 18}),
+			ValueShape: []int32{1, 1, 2, 2},
+		}},
+	}
+	if err := handle.(interface {
+		RestoreKV(context.Context, *metal.KVSnapshot) error
+	}).RestoreKV(ctx, snapshot); err != nil {
+		t.Fatalf("RestoreKV sliding tail: %v", err)
+	}
+	if session.pos != snapshot.TokenOffset {
+		t.Fatalf("restored position = %d, want token offset %d", session.pos, snapshot.TokenOffset)
+	}
+	if len(session.restoredBlocks) != 2 {
+		t.Fatalf("restored blocks = %+v, want expired prefix + live tail", session.restoredBlocks)
+	}
+	prefix, tail := session.restoredBlocks[0], session.restoredBlocks[1]
+	if prefix.TokenStart != 0 || prefix.TokenCount != 4 || len(prefix.Layers) != 1 {
+		t.Fatalf("prefix block = start %d count %d layers %d, want 0/4/1", prefix.TokenStart, prefix.TokenCount, len(prefix.Layers))
+	}
+	if len(prefix.Layers[0].KeyBytes) != 0 || len(prefix.Layers[0].ValueBytes) != 0 {
+		t.Fatalf("expired prefix carried KV bytes key=%v value=%v", prefix.Layers[0].KeyBytes, prefix.Layers[0].ValueBytes)
+	}
+	if tail.TokenStart != 4 || tail.TokenCount != 2 || len(tail.Layers) != 1 {
+		t.Fatalf("tail block = start %d count %d layers %d, want 4/2/1", tail.TokenStart, tail.TokenCount, len(tail.Layers))
+	}
+	if want := nativeTextF32ToBF16([]float32{5, 6, 7, 8}); !reflect.DeepEqual(tail.Layers[0].KeyBytes, want) {
+		t.Fatalf("tail key bytes = %v, want %v", tail.Layers[0].KeyBytes, want)
+	}
+	if want := nativeTextF32ToBF16([]float32{15, 16, 17, 18}); !reflect.DeepEqual(tail.Layers[0].ValueBytes, want) {
+		t.Fatalf("tail value bytes = %v, want %v", tail.Layers[0].ValueBytes, want)
+	}
+}
+
 func TestNativeTextSession_RestoreKVBlocksConvertsFloat32LayerSlabSnapshots_Good(t *testing.T) {
 	ctx := context.Background()
 	session := newNativeSessionTextSession()

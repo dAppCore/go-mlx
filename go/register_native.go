@@ -1341,22 +1341,30 @@ func nativeTextStateSourceFromSnapshot(snapshot *metal.KVSnapshot) (native.Sessi
 	if snapshot == nil {
 		return native.SessionStateBlockSource{}, nil, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKV: nil snapshot")
 	}
-	position := snapshot.SeqLen
-	if position <= 0 {
-		position = len(snapshot.Tokens)
+	visibleTokens := snapshot.SeqLen
+	if visibleTokens <= 0 {
+		visibleTokens = len(snapshot.Tokens)
 	}
-	if position <= 0 {
+	position := visibleTokens
+	if snapshot.TokenOffset > position {
+		position = snapshot.TokenOffset
+	}
+	if visibleTokens <= 0 || position <= 0 {
 		return native.SessionStateBlockSource{}, nil, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKV: empty snapshot")
 	}
-	if len(snapshot.Tokens) > position {
+	if len(snapshot.Tokens) > visibleTokens {
 		return native.SessionStateBlockSource{}, nil, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKV: token state exceeds sequence length")
 	}
-	layers, err := nativeTextStateLayersFromSnapshot(snapshot, position)
+	layers, err := nativeTextStateLayersFromSnapshot(snapshot, visibleTokens)
 	if err != nil {
 		return native.SessionStateBlockSource{}, nil, nil, nil, err
 	}
 	if len(layers) == 0 {
 		return native.SessionStateBlockSource{}, nil, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKV: snapshot has no native KV slabs")
+	}
+	blocks, err := nativeTextStateBlocksFromSnapshot(layers, position, visibleTokens)
+	if err != nil {
+		return native.SessionStateBlockSource{}, nil, nil, nil, err
 	}
 	tokens := append([]int32(nil), snapshot.Tokens...)
 	logits := nativeTextF32ToBF16(snapshot.Logits)
@@ -1366,15 +1374,58 @@ func nativeTextStateSourceFromSnapshot(snapshot *metal.KVSnapshot) (native.Sessi
 		CachedPromptIDs:    append([]int32(nil), tokens...),
 		CachedPromptLogits: append([]byte(nil), logits...),
 		RetainedLogits:     append([]byte(nil), logits...),
-		BlockCount:         1,
+		BlockCount:         len(blocks),
 	}
 	source.Load = func(index int) (native.SessionStateBlock, error) {
-		if index != 0 {
+		if index < 0 || index >= len(blocks) {
 			return native.SessionStateBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: block index out of range")
 		}
-		return native.SessionStateBlock{Index: 0, TokenStart: 0, TokenCount: position, Layers: layers}, nil
+		return blocks[index], nil
 	}
 	return source, tokens, append([]int32(nil), snapshot.Generated...), logits, nil
+}
+
+func nativeTextStateBlocksFromSnapshot(layers []native.SessionStateLayerBlock, position, visibleTokens int) ([]native.SessionStateBlock, error) {
+	if visibleTokens <= 0 || position < visibleTokens {
+		return nil, core.NewError("mlx.nativeTextSession.RestoreKV: invalid snapshot token timeline")
+	}
+	if position == visibleTokens {
+		return []native.SessionStateBlock{{
+			Index:      0,
+			TokenStart: 0,
+			TokenCount: visibleTokens,
+			Layers:     layers,
+		}}, nil
+	}
+	prefixTokens := position - visibleTokens
+	prefixLayers := make([]native.SessionStateLayerBlock, len(layers))
+	tailLayers := make([]native.SessionStateLayerBlock, len(layers))
+	for i, layer := range layers {
+		if layer.MaxSize <= 0 {
+			return nil, core.NewError("mlx.nativeTextSession.RestoreKV: token offset exceeds unbounded KV snapshot length")
+		}
+		if visibleTokens < layer.MaxSize {
+			return nil, core.NewError("mlx.nativeTextSession.RestoreKV: token offset snapshot is shorter than cache window")
+		}
+		prefixLayers[i] = layer
+		prefixLayers[i].KeyBytes = nil
+		prefixLayers[i].ValueBytes = nil
+		tailLayers[i] = layer
+	}
+	return []native.SessionStateBlock{
+		{
+			Index:      0,
+			TokenStart: 0,
+			TokenCount: prefixTokens,
+			Layers:     prefixLayers,
+		},
+		{
+			Index:      1,
+			TokenStart: prefixTokens,
+			TokenCount: visibleTokens,
+			Layers:     tailLayers,
+		},
+	}, nil
 }
 
 func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSnapshotBlockSource, residentTokens []int32) (native.SessionStateBlockSource, []int32, []byte, error) {
