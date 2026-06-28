@@ -3650,7 +3650,18 @@ func (s *ArchSession) sampledChainedGPUTailCanContinue(params model.SampleParams
 	return s.sampleLogitsTokenParamsEligible(params) && !sampleLogitsTokenCPUPreferred(params, s.arch.Vocab)
 }
 
+func (s *ArchSession) sampledPipelinedGPUTailCanContinue(params model.SampleParams, history []int32, transform model.TokenTransform) bool {
+	return pipelinedGPUDecodeEnabled &&
+		params.RepeatPenalty <= 1 &&
+		s != nil &&
+		s.recordPeerICB != nil &&
+		s.sampledChainedGPUTailCanContinue(params, history, transform)
+}
+
 func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, yield func(int32) bool, cacheFinal bool, initialGenerated int, history []int32) ([]int32, []int32, error) {
+	if cacheFinal && s.sampledPipelinedGPUTailCanContinue(params, history, nil) {
+		return s.generateSampledPipelinedGPUTail(gen, maxNew, stopTokens, sampler, params, yield, initialGenerated, history)
+	}
 	icb := s.state.icb
 	sc := s.gpuTailPLScratchBuffer(0)
 	sc.out = icb.pleInput
@@ -3757,6 +3768,167 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		s.pos++
 		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
 	}
+	return gen, history, nil
+}
+
+func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, yield func(int32) bool, initialGenerated int, history []int32) ([]int32, []int32, error) {
+	if len(gen) == 0 {
+		return gen, history, core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: empty generation seed")
+	}
+	icbB, err := s.peerICB()
+	if err != nil {
+		return gen, history, err
+	}
+	icbs := [2]*archICBReplay{s.state.icb, icbB}
+	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
+
+	type inflightSampledStep struct {
+		cb      metal.MTLCommandBuffer
+		lastOut *byte
+		topK    *headTopKScratch
+		logits  *headGreedyScratch
+	}
+	var rerr error
+
+	release := func(p inflightSampledStep) {
+		if p.topK != nil {
+			s.headEnc.putTopKScratch(p.topK)
+		}
+		if p.logits != nil {
+			s.headEnc.putGreedyScratch(p.logits)
+		}
+	}
+
+	read := func(p inflightSampledStep) (int32, bool) {
+		p.cb.WaitUntilCompleted()
+		if pieceTimingOn {
+			chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
+		}
+		var token int32
+		switch {
+		case p.topK != nil:
+			token = p.topK.token()
+		case p.logits != nil:
+			token = p.logits.token()
+		default:
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: missing sampled scratch")
+			return 0, false
+		}
+		release(p)
+		if token < 0 || int(token) >= s.arch.Vocab {
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: sampled invalid token")
+			return 0, false
+		}
+		return token, true
+	}
+
+	submit := func(i, generatedBefore int) (inflightSampledStep, bool) {
+		pickParams := params
+		if params.MinTokensBeforeStop > 0 && initialGenerated+generatedBefore < params.MinTokensBeforeStop {
+			pickParams.SuppressTokens = s.suppressionTokensScratch(params.SuppressTokens, stopTokens)
+		}
+		if !s.sampledPipelinedGPUTailCanContinue(pickParams, history, nil) {
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: sampled parameters changed to a non-pipeline shape")
+			return inflightSampledStep{}, false
+		}
+		draw := sampler.Draw()
+		icb, tgt := icbs[i], icbs[1-i]
+		sc[i].out = tgt.pleInput
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+		if s.sampleTopKTokenParamsEligible(pickParams) {
+			scratch, ok, stepErr := s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			if !ok || stepErr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putTopKScratch(scratch)
+				}
+				if stepErr == nil {
+					stepErr = core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: TopK token path declined mid-pipeline")
+				}
+				rerr = stepErr
+				return inflightSampledStep{}, false
+			}
+			if stepErr = s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i]); stepErr != nil {
+				endEncodingFast(enc)
+				s.headEnc.putTopKScratch(scratch)
+				rerr = stepErr
+				return inflightSampledStep{}, false
+			}
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			s.pos++
+			return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, topK: scratch}, true
+		}
+		scratch, ok, stepErr := s.headEnc.encodeLogitsSample(enc, lastOut, pickParams, draw, history)
+		if !ok || stepErr != nil {
+			endEncodingFast(enc)
+			if scratch != nil {
+				s.headEnc.putGreedyScratch(scratch)
+			}
+			if stepErr == nil {
+				stepErr = core.NewError("native.ArchSession.generateSampledPipelinedGPUTail: logits token path declined mid-pipeline")
+			}
+			rerr = stepErr
+			return inflightSampledStep{}, false
+		}
+		if stepErr = s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i]); stepErr != nil {
+			endEncodingFast(enc)
+			s.headEnc.putGreedyScratch(scratch)
+			rerr = stepErr
+			return inflightSampledStep{}, false
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		s.pos++
+		return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, logits: scratch}, true
+	}
+
+	tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
+	sc[0].out = icbs[0].pleInput
+	seedCB := commandBufferFast(queue)
+	seedEnc := computeCommandEncoderFast(seedCB)
+	if err := s.encNextInputsGPU(seedEnc, tokBuf, icbs[0].ping0, sc[0]); err != nil {
+		endEncodingFast(seedEnc)
+		return gen, history, err
+	}
+	endEncodingFast(seedEnc)
+	commitCommandBufferFast(seedCB)
+	waitUntilCompletedFast(seedCB)
+
+	prev, ok := submit(0, len(gen))
+	if !ok {
+		return gen, history, rerr
+	}
+	i := 1
+	stop := false
+	for len(gen) < maxNew && !stop {
+		nxt, ok := submit(i, len(gen)+1)
+		if !ok {
+			prev.cb.WaitUntilCompleted()
+			release(prev)
+			return gen, history, rerr
+		}
+		i = 1 - i
+		token, valid := read(prev)
+		if !valid {
+			nxt.cb.WaitUntilCompleted()
+			release(nxt)
+			return gen, history, rerr
+		}
+		gen = append(gen, token)
+		stop = (yield != nil && !yield(token)) || nativeTokenInSet(token, stopTokens)
+		prev = nxt
+	}
+	token, valid := read(prev)
+	if valid && !stop && len(gen) < maxNew {
+		gen = append(gen, token)
+	}
+	if rerr != nil {
+		return gen, history, rerr
+	}
+	s.rememberRetainedHiddenFrom(prev.lastOut)
 	return gen, history, nil
 }
 

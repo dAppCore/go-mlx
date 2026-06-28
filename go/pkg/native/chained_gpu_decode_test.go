@@ -407,6 +407,56 @@ func TestSampledChainedGPUDecodeStagesTailFromDeviceToken(t *testing.T) {
 	}
 }
 
+func TestPipelinedSampledGPUDecodeMatchesChained(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 8
+	prompt := []int32{1, 5, 3, 2}
+	params := model.SampleParams{Temperature: 0.9, TopK: 4, TopP: 0.8}
+
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	chainedGPUInputsDisabled = false
+
+	pipelinedGPUDecodeEnabled = false
+	chain, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("chained session: %v", err)
+	}
+	chainGen, err := chain.GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(91), params, nil, nil)
+	if err != nil {
+		t.Fatalf("chained GenerateSampledEach: %v", err)
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	pipe, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	if pipe.recordPeerICB == nil {
+		t.Skip("peer ICB recorder unavailable")
+	}
+	pipeGen, err := pipe.GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(91), params, nil, nil)
+	if err != nil {
+		t.Fatalf("pipelined GenerateSampledEach: %v", err)
+	}
+	if !idsEqual(pipeGen, chainGen) {
+		t.Fatalf("sampled pipelined tokens = %v, want chained %v", pipeGen, chainGen)
+	}
+	if pipe.gpuTailPLScratch[0] == nil || pipe.gpuTailPLScratch[1] == nil {
+		t.Fatal("sampled pipelined GPU tail did not use both session PLE scratch slots")
+	}
+	if pipe.gpuTailPLScratch[0] == pipe.gpuTailPLScratch[1] {
+		t.Fatal("sampled pipelined GPU tail scratch slots alias")
+	}
+}
+
 func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
@@ -444,7 +494,7 @@ func BenchmarkChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLE(b, fals
 func BenchmarkChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLE(b, true, false) }
 func BenchmarkChainedDecodePLEPipe(b *testing.B) { benchChainedDecodePLE(b, true, true) }
 
-func benchSampledChainedDecodePLE(b *testing.B, gpuInputs bool) {
+func benchSampledChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
 	}
@@ -453,7 +503,8 @@ func benchSampledChainedDecodePLE(b *testing.B, gpuInputs bool) {
 	prompt := []int32{1, 5, 3, 7, 2, 9}
 	params := model.SampleParams{Temperature: 0.9, TopK: 8, TopP: 0.85}
 	chainedGPUInputsDisabled = !gpuInputs
-	defer func() { chainedGPUInputsDisabled = false }()
+	pipelinedGPUDecodeEnabled = pipelined
+	defer func() { chainedGPUInputsDisabled = false; pipelinedGPUDecodeEnabled = false }()
 	b.SetBytes(int64(N))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -472,5 +523,8 @@ func benchSampledChainedDecodePLE(b *testing.B, gpuInputs bool) {
 	}
 }
 
-func BenchmarkSampledChainedDecodePLEHost(b *testing.B) { benchSampledChainedDecodePLE(b, false) }
-func BenchmarkSampledChainedDecodePLEGpu(b *testing.B)  { benchSampledChainedDecodePLE(b, true) }
+func BenchmarkSampledChainedDecodePLEHost(b *testing.B) {
+	benchSampledChainedDecodePLE(b, false, false)
+}
+func BenchmarkSampledChainedDecodePLEGpu(b *testing.B)  { benchSampledChainedDecodePLE(b, true, false) }
+func BenchmarkSampledChainedDecodePLEPipe(b *testing.B) { benchSampledChainedDecodePLE(b, true, true) }
