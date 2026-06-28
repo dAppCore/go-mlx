@@ -7,6 +7,7 @@ package native
 import (
 	"math"
 	"testing"
+	"unsafe"
 
 	mc "dappco.re/go/mlx/pkg/metal"
 )
@@ -52,6 +53,32 @@ func TestSoftmaxF32(t *testing.T) {
 	for i := range want {
 		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 			t.Fatalf("SoftmaxF32 differs at %d: %v vs %v (not byte-identical)", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSoftmaxF32IntoReusesOutputBackingAndMatchesSoftmaxF32(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, ax = 8, 512
+	x := syntheticFloat32(rows*ax, 5)
+	want, err := SoftmaxF32(x, ax)
+	if err != nil {
+		t.Fatalf("SoftmaxF32 reference: %v", err)
+	}
+	out := syntheticFloat32(rows*ax, 11)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := SoftmaxF32Into(out, x, ax)
+	if err != nil {
+		t.Fatalf("SoftmaxF32Into: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("SoftmaxF32Into did not reuse caller-owned output backing")
+	}
+	for i := range want {
+		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+			t.Fatalf("SoftmaxF32Into differs at %d: %v vs %v", i, got[i], want[i])
 		}
 	}
 }

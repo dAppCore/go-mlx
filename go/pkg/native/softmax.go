@@ -22,7 +22,16 @@ const (
 // over the context axis goes through this. ABI (mlx softmax.cpp): in→0, out→1, axis_size→2; one
 // threadgroup per row. Axes up to 4096 use the block kernel; longer axes use the looped kernel.
 func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
-	out := make([]float32, len(in))
+	return SoftmaxF32Into(nil, in, axisSize)
+}
+
+// SoftmaxF32Into is SoftmaxF32 with caller-owned output storage when cap(out) >= len(in).
+func SoftmaxF32Into(out, in []float32, axisSize int) ([]float32, error) {
+	if cap(out) < len(in) {
+		out = make([]float32, len(in))
+	} else {
+		out = out[:len(in)]
+	}
 	if err := softmaxF32Into(out, in, axisSize); err != nil {
 		return nil, err
 	}
