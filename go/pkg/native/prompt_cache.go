@@ -372,6 +372,30 @@ func (s *ArchSession) prefillCachedIDsGPUInputs(ids []int32) error {
 	return err
 }
 
+func (s *ArchSession) stepIDRetainedGPUInputsInPool(id int32) ([]byte, bool, error) {
+	if s.state.icb == nil || icbDisabledForTest || s.encNextInputsGPU == nil || s.plScratchNew == nil || chainedGPUInputsDisabled {
+		return nil, false, nil
+	}
+	var err error
+	withAutoreleasePool(func() {
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if _, err = s.encodeStepBodyFromGPUInputsInPool(enc, id); err != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		s.pos++
+		s.rememberRetainedHiddenFrom(s.state.icb.lastOutPtr)
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	return s.retainedHidden, true, nil
+}
+
 func (s *ArchSession) prefillPromptCacheEntry(ids []int32) ([]byte, []byte, error) {
 	if len(ids) == 0 {
 		return nil, nil, nil
@@ -387,9 +411,16 @@ func (s *ArchSession) prefillPromptCacheEntry(ids []int32) ([]byte, []byte, erro
 	var hidden, logits []byte
 	var err error
 	withAutoreleasePool(func() {
-		hidden, err = s.stepIDRetainedInPool(ids[len(ids)-1])
+		var ok bool
+		hidden, ok, err = s.stepIDRetainedGPUInputsInPool(ids[len(ids)-1])
 		if err != nil {
 			return
+		}
+		if !ok {
+			hidden, err = s.stepIDRetainedInPool(ids[len(ids)-1])
+			if err != nil {
+				return
+			}
 		}
 		logits, err = s.promptCacheLogitsFromRetainedHidden(hidden)
 	})

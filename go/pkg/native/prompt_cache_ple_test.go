@@ -121,3 +121,47 @@ func TestPrefillCachedIDsPLEUsesGPUNextInputs(t *testing.T) {
 		t.Fatal("GPU-input cached prefix produced different continuation hidden than host-input prefix")
 	}
 }
+
+func TestWarmPromptCachePLEUsesGPUNextInputsThroughFinalToken(t *testing.T) {
+	requireNativeRuntime(t)
+	prefix := []int32{1, 5, 3, 7}
+	serial := newPromptCachePLEFixture(t)
+	chained := newPromptCachePLEFixture(t)
+	if chained.encNextInputsGPU == nil {
+		t.Fatal("PLE fixture did not wire GPU next-inputs seam")
+	}
+	if err := serial.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("serial WarmPromptCache: %v", err)
+	}
+
+	hostEmbeds := 0
+	hostPLE := 0
+	origEmbed := chained.embed
+	origPLE := chained.perLayerInput
+	chained.embed = func(id int32) ([]byte, error) {
+		hostEmbeds++
+		return origEmbed(id)
+	}
+	chained.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
+		hostPLE++
+		return origPLE(id, emb)
+	}
+	if err := chained.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("chained WarmPromptCache: %v", err)
+	}
+	if hostEmbeds != 0 || hostPLE != 0 {
+		t.Fatalf("WarmPromptCache used host embed/PLE: embeds=%d ple=%d", hostEmbeds, hostPLE)
+	}
+	if len(chained.retainedHidden) == 0 || len(chained.retainedLogits) == 0 {
+		t.Fatal("WarmPromptCache did not retain prompt-boundary hidden/logits")
+	}
+	if !bytes.Equal(chained.retainedHidden, serial.retainedHidden) {
+		t.Fatal("GPU-input warm cache retained hidden differs from host-input retained hidden")
+	}
+	if !bytes.Equal(chained.retainedLogits, serial.retainedLogits) {
+		t.Fatal("GPU-input warm cache retained logits differ from host-input retained logits")
+	}
+	if hit := chained.CachedPrefixLen(prefix); hit != len(prefix) {
+		t.Fatalf("GPU-input warm cache prefix hit = %d, want %d", hit, len(prefix))
+	}
+}
