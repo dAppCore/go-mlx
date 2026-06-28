@@ -130,6 +130,25 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 		lcp++
 	}
 	if lcp == len(promptIDs) {
+		if logits := s.cachedPromptLogitsForSampledReplay(promptIDs, params); logits != nil {
+			s.rememberRetainedLogits(logits)
+			s.pos = lcp
+			var gen []int32
+			var err error
+			withAutoreleasePool(func() {
+				gen, err = s.generateSampledFromLogitsInPool(s.retainedLogits, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
+			})
+			if err != nil {
+				s.cachedIDs = nil
+				s.clearCachedPromptHidden()
+				return nil, err
+			}
+			resident := s.cachedIDs[:0]
+			resident = append(resident, promptIDs...)
+			resident = append(resident, gen...)
+			s.cachedIDs = resident
+			return gen, nil
+		}
 		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
 			s.rememberRetainedHidden(hidden)
 			hidden = s.retainedHidden
@@ -174,6 +193,17 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 	resident = append(resident, gen...)
 	s.cachedIDs = resident
 	return gen, nil
+}
+
+func (s *ArchSession) cachedPromptLogitsForSampledReplay(promptIDs []int32, params model.SampleParams) []byte {
+	logits := s.cachedPromptLogitsFor(promptIDs)
+	if logits == nil {
+		return nil
+	}
+	if sampledGreedyParamsEligible(params) || s.arch.SoftCap <= 0 {
+		return logits
+	}
+	return nil
 }
 
 // ClearPromptCache drops native retained-prefix metadata and rewinds the decode

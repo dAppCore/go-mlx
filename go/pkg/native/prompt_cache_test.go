@@ -301,6 +301,49 @@ func TestGenerateCachedSampledEachExactPromptSkipsPromptReencode(t *testing.T) {
 	}
 }
 
+func TestGenerateCachedSampledExactPromptUsesCachedLogits(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{Temperature: 0}
+
+	fallback := newSessionStateFixture(t)
+	if err := fallback.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache fallback: %v", err)
+	}
+	fallback.cachedPromptLogits = nil
+	fallbackToken, err := fallback.GenerateCachedSampledEach(prompt, 1, nil, model.NewSampler(1), params, nil, nil)
+	if err != nil {
+		t.Fatalf("fallback GenerateCachedSampledEach: %v", err)
+	}
+	if len(fallbackToken) != 1 {
+		t.Fatalf("fallback generated %d tokens, want 1", len(fallbackToken))
+	}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	target := (fallbackToken[0] + 1) % int32(warm.arch.Vocab)
+	logits := make([]float32, warm.arch.Vocab)
+	for i := range logits {
+		logits[i] = -4
+	}
+	logits[target] = 4
+	warm.cachedPromptLogits = toBF16Bytes(logits)
+	warm.cachedPromptHidden = nil
+
+	got, err := warm.GenerateCachedSampledEach(prompt, 1, nil, model.NewSampler(1), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateCachedSampledEach cached logits: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("cached-logits generated %d tokens, want 1", len(got))
+	}
+	if got[0] != target {
+		t.Fatalf("cached-logits first token = %d, want synthetic cached-logits token %d", got[0], target)
+	}
+}
+
 func TestGenerateCachedSampledSuffixUsesRetainedPromptHiddenNoCopy(t *testing.T) {
 	requireNativeRuntime(t)
 	shared := []int32{1, 2, 3}
