@@ -124,6 +124,10 @@ func RMSNormBF16Into(out []byte, x, weight []byte, rows, axisSize int, eps float
 //
 //	out, err := native.MatVecBF16(matBytes, vecBytes, 512, 256)
 func MatVecBF16(mat, vec []byte, outDim, inDim int) ([]byte, error) {
+	return MatVecBF16Into(nil, mat, vec, outDim, inDim)
+}
+
+func MatVecBF16Into(out []byte, mat, vec []byte, outDim, inDim int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -133,47 +137,14 @@ func MatVecBF16(mat, vec []byte, outDim, inDim int) ([]byte, error) {
 	if len(vec) != inDim*bf16Size {
 		return nil, core.NewError("native.MatVecBF16: len(vec) must equal inDim*2 bytes")
 	}
-	if outDim == 0 || inDim == 0 {
-		return make([]byte, outDim*bf16Size), nil
-	}
-
-	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
-	name := gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn)
-	pso, err := pipelineFor(name)
-	if err != nil {
-		return nil, err
-	}
-
 	outLen := outDim * bf16Size
-	out := make([]byte, outLen)
-	var encErr error
-	withAutoreleasePool(func() {
-		matBuf := residentBytes(mat)
-		scratch, err := getQMVBF16Scratch(outDim, inDim)
-		if err != nil {
-			encErr = err
-			return
+	if outDim == 0 || inDim == 0 {
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
 		}
-		defer putQMVBF16Scratch(scratch)
-		vecBuf, outBuf, err := scratch.buffers(vec)
-		if err != nil {
-			encErr = err
-			return
-		}
-
-		cb := commandBufferFast(queue)
-		enc := computeCommandEncoderFast(cb)
-		emitGemv(encSink{enc}, pso, matBuf, 0, vecBuf, outBuf, 0, inDim, outDim, bm, bn, sm, tm)
-		endEncodingFast(enc)
-		commitCommandBufferFast(cb)
-		waitUntilCompletedFast(cb)
-
-		copy(out, scratch.out.bytes[:outLen])
-	})
-	if encErr != nil {
-		return nil, encErr
+		return out[:outLen], nil
 	}
-	return out, nil
+	return MatVecBF16BufInto(out, bufView{buf: residentBytes(mat)}, vec, outDim, inDim)
 }
 
 // ropePSOCacheBF16 memoises the bf16 rope pipeline keyed by the function-constant

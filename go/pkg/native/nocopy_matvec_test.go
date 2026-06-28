@@ -127,3 +127,28 @@ func TestMatVecBF16BufIntoReusesOutputBackingAndBypassesScratchOutput(t *testing
 		t.Fatal("MatVecBF16BufInto wrote through pooled scratch output instead of caller output")
 	}
 }
+
+func TestMatVecBF16IntoReusesOutputBackingAndMatchesMatVecBF16(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const outDim, inDim = 128, 256
+	mat := toBF16Bytes(syntheticFloat32(outDim*inDim, 3))
+	vec := toBF16Bytes(syntheticFloat32(inDim, 5))
+	want, err := MatVecBF16(mat, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVecBF16 reference: %v", err)
+	}
+	out := bytes.Repeat([]byte{0xa5}, outDim*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := MatVecBF16Into(out, mat, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVecBF16Into: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatVecBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "MatVecBF16Into", got, want)
+}
