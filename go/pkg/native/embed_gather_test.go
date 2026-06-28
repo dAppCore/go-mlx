@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 func embedGatherQuantFixture(vocab, dModel, groupSize, bits int) ([]byte, []byte, []byte) {
@@ -40,6 +42,39 @@ func TestEmbedGatherQuantBF16AllocationBudget(t *testing.T) {
 	})
 	if allocs > 10 {
 		t.Fatalf("EmbedGatherQuantBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestEmbedGatherQuantBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library not loaded")
+	}
+
+	const vocab, dModel, groupSize, bits = 256, 512, 64, 4
+	const scale = float32(0.5)
+	packed, scales, biases := embedGatherQuantFixture(vocab, dModel, groupSize, bits)
+	out := make([]byte, dModel*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := EmbedGatherQuantBF16Into(out, 42, packed, scales, biases, dModel, groupSize, bits, scale)
+	if err != nil {
+		t.Fatalf("EmbedGatherQuantBF16Into: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("EmbedGatherQuantBF16Into len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("EmbedGatherQuantBF16Into did not return caller-owned output backing")
+	}
+	want, err := EmbedGatherQuantBF16(42, packed, scales, biases, dModel, groupSize, bits, scale)
+	if err != nil {
+		t.Fatalf("EmbedGatherQuantBF16 reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("EmbedGatherQuantBF16Into output differs from allocating wrapper")
 	}
 }
 

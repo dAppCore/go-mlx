@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -22,8 +23,12 @@ var (
 )
 
 type embedGatherScratch struct {
-	dModel     int
-	token, out *pinnedNoCopyBytes
+	dModel        int
+	token, out    *pinnedNoCopyBytes
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
 }
 
 func embedGatherScratchPoolFor(dModel int) *sync.Pool {
@@ -97,7 +102,46 @@ func (s *embedGatherScratch) Close() {
 		s.out.Close()
 		s.out = nil
 	}
+	s.closeOutputView()
 	s.dModel = 0
+}
+
+func (s *embedGatherScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *embedGatherScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
 }
 
 func (s *embedGatherScratch) buffers(tokenID int32, dModel int) (metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -146,6 +190,10 @@ func elemGroupTG(n int) int {
 // EmbedGatherQuantBF16 gathers + dequantises one token's 4-bit embedding row on the GPU — the standalone
 // host entry (creates a token buffer, dispatches, reads out). Byte-tracks embedTokenQuant. dModel bf16.
 func EmbedGatherQuantBF16(tokenID int32, packed, scales, biases []byte, dModel, groupSize, bits int, embedScale float32) ([]byte, error) {
+	return EmbedGatherQuantBF16Into(nil, tokenID, packed, scales, biases, dModel, groupSize, bits, embedScale)
+}
+
+func EmbedGatherQuantBF16Into(out []byte, tokenID int32, packed, scales, biases []byte, dModel, groupSize, bits int, embedScale float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -156,7 +204,13 @@ func EmbedGatherQuantBF16(tokenID int32, packed, scales, biases []byte, dModel, 
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	if dModel == 0 {
 		return out, nil
 	}
@@ -173,6 +227,13 @@ func EmbedGatherQuantBF16(tokenID int32, packed, scales, biases []byte, dModel, 
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		pBuf, sBuf, bBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -180,7 +241,9 @@ func EmbedGatherQuantBF16(tokenID int32, packed, scales, biases []byte, dModel, 
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

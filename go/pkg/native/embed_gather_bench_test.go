@@ -25,6 +25,26 @@ func BenchmarkEmbedGatherQuantBF16256x512(b *testing.B) {
 	}
 }
 
+func BenchmarkEmbedGatherQuantBF16Into256x512(b *testing.B) {
+	requireNativeRuntime(b)
+	if !gpuHasGeluKernel() {
+		b.Skip("custom kernel library not loaded")
+	}
+
+	const vocab, dModel, groupSize, bits = 256, 512, 64, 4
+	const scale = float32(0.5)
+	packed, scales, biases := embedGatherQuantFixture(vocab, dModel, groupSize, bits)
+	out := make([]byte, dModel*bf16Size)
+	b.SetBytes(int64(len(packed) + len(scales) + len(biases)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := EmbedGatherQuantBF16Into(out, 42, packed, scales, biases, dModel, groupSize, bits, scale); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkEmbedGatherQuantBF16AlternatingDModel(b *testing.B) {
 	requireNativeRuntime(b)
 	if !gpuHasGeluKernel() {
