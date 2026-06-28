@@ -708,6 +708,33 @@ func TestNativeTextSession_RestoreKVBlocksGraftsResidentTrustedPrefix_Good(t *te
 	}
 }
 
+func TestNativeTextSession_RestoreKVBlocksKeepsNonUniformTrustedPrefix_Good(t *testing.T) {
+	ctx := context.Background()
+	source := metal.KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+			if index != 0 {
+				return metal.KVSnapshotBlock{}, nil
+			}
+			return nativeSessionTextMetalBlock(2, 3, []int32{4}, true), nil
+		},
+	}
+	restored, tokens, _, err := nativeTextStateSourceFromBlockSource(ctx, source, []int32{1, 2, 3})
+	if err != nil {
+		t.Fatalf("nativeTextStateSourceFromBlockSource non-uniform prefix: %v", err)
+	}
+	if !reflect.DeepEqual(tokens, []int32{1, 2, 3, 4}) {
+		t.Fatalf("tokens = %v, want trusted prefix plus suffix", tokens)
+	}
+	trustedPrefix := reflect.ValueOf(restored).FieldByName("trustedPrefix").Int()
+	firstBlock := reflect.ValueOf(restored).FieldByName("firstBlockIndex").Int()
+	if trustedPrefix != 3 || firstBlock != 2 {
+		t.Fatalf("trusted prefix metadata = prefix %d first block %d, want 3/2", trustedPrefix, firstBlock)
+	}
+}
+
 func TestNativeTextSession_RestoreKVBlocksCarriesCacheModeMetadata_Good(t *testing.T) {
 	ctx := context.Background()
 	session := newNativeSessionTextSession()

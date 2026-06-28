@@ -10,6 +10,7 @@ import (
 	"testing"
 	"unsafe"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
@@ -766,6 +767,34 @@ func TestSessionStateBlockSourceTrustPrefixBlocks(t *testing.T) {
 	}
 }
 
+func TestSessionStateBlockSourceTrustPrefixTokens(t *testing.T) {
+	source := SessionStateBlockSource{Position: 7, BlockCount: 2}
+	if err := source.TrustPrefixTokens(3, 2); err != nil {
+		t.Fatalf("TrustPrefixTokens: %v", err)
+	}
+	if got := source.trustedPrefixTokens(); got != 3 {
+		t.Fatalf("trusted token prefix = %d, want 3", got)
+	}
+	if source.firstBlockIndex != 2 || source.totalBlockCount != 4 {
+		t.Fatalf("block grid = first %d total %d, want 2/4", source.firstBlockIndex, source.totalBlockCount)
+	}
+	if err := source.TrustPrefixTokens(0, 0); err != nil {
+		t.Fatalf("TrustPrefixTokens reset: %v", err)
+	}
+	if got := source.trustedPrefixTokens(); got != 0 {
+		t.Fatalf("trusted token prefix after reset = %d, want 0", got)
+	}
+	if err := source.TrustPrefixTokens(-1, 1); err == nil {
+		t.Fatal("TrustPrefixTokens negative prefix error = nil")
+	}
+	if err := source.TrustPrefixTokens(8, 1); err == nil {
+		t.Fatal("TrustPrefixTokens oversized prefix error = nil")
+	}
+	if err := source.TrustPrefixTokens(3, 0); err == nil {
+		t.Fatal("TrustPrefixTokens positive prefix with zero first block error = nil")
+	}
+}
+
 func TestSessionStateBlockSourceCarriesSlidingCacheMetadata(t *testing.T) {
 	requireNativeRuntime(t)
 	g, arch, maxLen := sessionStateFixture(t)
@@ -1033,6 +1062,83 @@ func TestSessionStateRestoreBlocksGraftsTrustedPrefix(t *testing.T) {
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("skipped-prefix block-restored GenerateFromCache = %v, want cold prompt continuation %v", got, want)
+	}
+}
+
+func TestSessionStateRestoreBlocksGraftsExactTrustedPrefix(t *testing.T) {
+	requireNativeRuntime(t)
+	prefix := []int32{1, 2, 3}
+	suffix := []int32{4}
+	prompt := append(append([]int32(nil), prefix...), suffix...)
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens full prompt: %v", err)
+	}
+	sourceAll, err := saved.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	parentBlock, err := sourceAll.Load(1)
+	if err != nil {
+		t.Fatalf("Load parent suffix block: %v", err)
+	}
+	if parentBlock.TokenStart != 2 || parentBlock.TokenCount != 2 {
+		t.Fatalf("parent block = start %d count %d, want 2/2", parentBlock.TokenStart, parentBlock.TokenCount)
+	}
+	suffixLayers := make([]SessionStateLayerBlock, len(parentBlock.Layers))
+	for i, layer := range parentBlock.Layers {
+		rowOff := (len(prefix) - parentBlock.TokenStart) * layer.RowBytes
+		rowEnd := rowOff + layer.RowBytes
+		if rowOff < 0 || rowEnd > len(layer.KeyBytes) || rowEnd > len(layer.ValueBytes) {
+			t.Fatalf("suffix layer %d row slice [%d:%d] outside key/value payloads", i, rowOff, rowEnd)
+		}
+		suffixLayers[i] = layer
+		suffixLayers[i].KeyBytes = append([]byte(nil), layer.KeyBytes[rowOff:rowEnd]...)
+		suffixLayers[i].ValueBytes = append([]byte(nil), layer.ValueBytes[rowOff:rowEnd]...)
+	}
+	source := SessionStateBlockSource{
+		Position:           len(prompt),
+		CachedIDs:          append([]int32(nil), prompt...),
+		CachedPromptIDs:    append([]int32(nil), prompt...),
+		CachedPromptHidden: append([]byte(nil), sourceAll.CachedPromptHidden...),
+		CachedPromptLogits: append([]byte(nil), sourceAll.CachedPromptLogits...),
+		RetainedHidden:     append([]byte(nil), sourceAll.RetainedHidden...),
+		RetainedLogits:     append([]byte(nil), sourceAll.RetainedLogits...),
+		BlockCount:         1,
+		Load: func(index int) (SessionStateBlock, error) {
+			if index != 0 {
+				return SessionStateBlock{}, core.NewError("test: block index out of range")
+			}
+			return SessionStateBlock{
+				Index:      2,
+				TokenStart: len(prefix),
+				TokenCount: len(suffix),
+				Layers:     suffixLayers,
+			}, nil
+		},
+	}
+	if err := source.TrustPrefixTokens(len(prefix), 2); err != nil {
+		t.Fatalf("TrustPrefixTokens exact prefix: %v", err)
+	}
+
+	empty := newSessionStateFixture(t)
+	if err := empty.RestoreStateBlocks(source); err == nil {
+		t.Fatal("RestoreStateBlocks exact-prefix into empty session error = nil")
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.PrefillTokens(prefix); err != nil {
+		t.Fatalf("PrefillTokens prefix: %v", err)
+	}
+	if err := restored.RestoreStateBlocks(source); err != nil {
+		t.Fatalf("RestoreStateBlocks exact-prefix: %v", err)
+	}
+	if restored.Pos() != len(prompt) {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), len(prompt))
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
 	}
 }
 

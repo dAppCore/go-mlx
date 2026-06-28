@@ -52,6 +52,7 @@ type SessionStateBlockSource struct {
 	blockSize          int
 	firstBlockIndex    int
 	totalBlockCount    int
+	trustedPrefix      int
 	blockBoundaries    []int
 	views              []sessionStateLayerView
 }
@@ -73,15 +74,46 @@ func (source *SessionStateBlockSource) TrustPrefixBlocks(blockSize, firstBlockIn
 		source.blockSize = 0
 		source.firstBlockIndex = 0
 		source.totalBlockCount = source.BlockCount
+		source.trustedPrefix = 0
 		return nil
 	}
 	trustedPrefix := firstBlockIndex * blockSize
+	if err := source.TrustPrefixTokens(trustedPrefix, firstBlockIndex); err != nil {
+		return err
+	}
+	source.blockSize = blockSize
+	return nil
+}
+
+// TrustPrefixTokens records an exact skipped token prefix for block streams
+// whose absolute block indexes are not a uniform blockSize grid.
+func (source *SessionStateBlockSource) TrustPrefixTokens(trustedPrefix, firstBlockIndex int) error {
+	if source == nil {
+		return core.NewError("native.SessionStateBlockSource: nil source")
+	}
+	if trustedPrefix < 0 {
+		return core.NewError("native.SessionStateBlockSource: trusted prefix must be >= 0")
+	}
 	if trustedPrefix > source.Position {
 		return core.NewError("native.SessionStateBlockSource: trusted prefix outside position")
 	}
-	source.blockSize = blockSize
+	if firstBlockIndex < 0 {
+		return core.NewError("native.SessionStateBlockSource: first block index must be >= 0")
+	}
+	if trustedPrefix == 0 {
+		source.blockSize = 0
+		source.firstBlockIndex = 0
+		source.totalBlockCount = source.BlockCount
+		source.trustedPrefix = 0
+		return nil
+	}
+	if firstBlockIndex == 0 {
+		return core.NewError("native.SessionStateBlockSource: first block index must be > 0 for trusted prefix")
+	}
+	source.blockSize = 0
 	source.firstBlockIndex = firstBlockIndex
 	source.totalBlockCount = firstBlockIndex + source.BlockCount
+	source.trustedPrefix = trustedPrefix
 	return nil
 }
 
@@ -236,6 +268,12 @@ func (s *ArchSession) RestoreStateBlocks(source SessionStateBlockSource) error {
 }
 
 func (source SessionStateBlockSource) trustedPrefixTokens() int {
+	if source.trustedPrefix > 0 {
+		if source.trustedPrefix > source.Position {
+			return source.Position
+		}
+		return source.trustedPrefix
+	}
 	if source.blockSize <= 0 || source.firstBlockIndex <= 0 {
 		return 0
 	}

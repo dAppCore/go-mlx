@@ -1391,7 +1391,7 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 	blocks := make([]native.SessionStateBlock, 0, source.BlockCount)
 	tokens := make([]int32, position)
 	filledUntil := 0
-	trustedFirstBlock, trustedBlockSize := 0, 0
+	trustedPrefix, trustedFirstBlock := 0, 0
 	var logits []byte
 	for i := 0; i < source.BlockCount && filledUntil < position; i++ {
 		if err := ctx.Err(); err != nil {
@@ -1420,9 +1420,9 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 			}
 			copy(tokens[:block.TokenStart], residentTokens[:block.TokenStart])
 			filledUntil = block.TokenStart
-			if block.Index > 0 && block.TokenStart%block.Index == 0 {
+			if block.Index > 0 {
+				trustedPrefix = block.TokenStart
 				trustedFirstBlock = block.Index
-				trustedBlockSize = block.TokenStart / block.Index
 			}
 		}
 		if block.TokenStart != filledUntil || len(block.Snapshot.Tokens) < take {
@@ -1461,8 +1461,8 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 		}
 		return blocks[index], nil
 	}
-	if trustedFirstBlock > 0 && trustedBlockSize > 0 {
-		if err := restored.TrustPrefixBlocks(trustedBlockSize, trustedFirstBlock); err != nil {
+	if trustedPrefix > 0 && trustedFirstBlock > 0 {
+		if err := restored.TrustPrefixTokens(trustedPrefix, trustedFirstBlock); err != nil {
 			return native.SessionStateBlockSource{}, nil, nil, err
 		}
 	}
