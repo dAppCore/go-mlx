@@ -959,10 +959,26 @@ func runArchDecode(
 }
 
 func runArchDecodeState(inputs [][]byte, s *archDecodeState, ple *archDecodePLEInputs) ([][]byte, error) {
+	return runArchDecodeStateInto(nil, inputs, s, ple, false)
+}
+
+func runArchDecodeStateInto(outputs [][]byte, inputs [][]byte, s *archDecodeState, ple *archDecodePLEInputs, useCallerOut bool) ([][]byte, error) {
 	if ple != nil {
 		defer ple.Close()
 	}
-	outputs := make([][]byte, len(inputs))
+	outLen := s.dModel * bf16Size
+	if cap(outputs) < len(inputs) {
+		outputs = make([][]byte, len(inputs))
+	} else {
+		outputs = outputs[:len(inputs)]
+	}
+	for t := range outputs {
+		if useCallerOut && cap(outputs[t]) >= outLen {
+			outputs[t] = outputs[t][:outLen]
+			continue
+		}
+		outputs[t] = make([]byte, outLen)
+	}
 	for t := range inputs {
 		inputLoaded := false
 		if ple != nil {
@@ -1002,9 +1018,9 @@ func runArchDecodeState(inputs [][]byte, s *archDecodeState, ple *archDecodePLEI
 		var out []byte
 		var err error
 		if inputLoaded {
-			out, err = s.stepTokenLoaded(inputs[t], t)
+			out, err = s.stepTokenResultWithInputInto(inputs[t], t, true, false, outputs[t])
 		} else {
-			out, err = s.stepToken(inputs[t], t)
+			out, err = s.stepTokenInto(inputs[t], t, outputs[t])
 		}
 		if err != nil {
 			return nil, err
@@ -1025,6 +1041,28 @@ func DecodeForwardArch(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
+) ([][]byte, error) {
+	return decodeForwardArchInto(nil, inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, false, pleArgs...)
+}
+
+// DecodeForwardArchInto is DecodeForwardArch with caller-owned per-token output
+// storage. Output slices with enough capacity are reused for the final hidden
+// readback from each token.
+func DecodeForwardArchInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
+) ([][]byte, error) {
+	return decodeForwardArchInto(outputs, inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, true, pleArgs...)
+}
+
+func decodeForwardArchInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	useCallerOut bool,
 	pleArgs ...ArchPLEBF16,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
@@ -1073,7 +1111,6 @@ func DecodeForwardArch(
 		}
 	}
 
-	var outputs [][]byte
 	setup := getArchBF16LayerBufScratch(nLayers)
 	defer putArchBF16LayerBufScratch(setup)
 	withAutoreleasePool(func() {
@@ -1086,10 +1123,12 @@ func DecodeForwardArch(
 			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
 			defer state.Close()
 			state.ple, state.pliDim = pleLayers, pliDim
-			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
+			outputs, err = runArchDecodeStateInto(outputs, inputs, &state, pleRuntime, useCallerOut)
 			return
 		}
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
+		state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
+		defer state.Close()
+		outputs, err = runArchDecodeStateInto(outputs, inputs, &state, nil, useCallerOut)
 	})
 	return outputs, err
 }
