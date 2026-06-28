@@ -3577,6 +3577,9 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 		if params.MinTokensBeforeStop > 0 && initialGenerated+len(gen) < params.MinTokensBeforeStop {
 			nextPickParams.SuppressTokens = s.suppressionTokensScratch(params.SuppressTokens, stopTokens)
 		}
+		if !stop && len(gen) < maxNew && s.sampledChainedGPUTailCanContinue(nextPickParams, history, transform) {
+			return s.generateSampledChainedGPUTail(gen, maxNew, stopTokens, sampler, params, yield, cacheFinal, initialGenerated, history)
+		}
 		stepped := false
 		if !sampledGreedyParamsEligible(nextPickParams) {
 			if sampledTopOneGreedyParamsEligible(nextPickParams, history) && s.state.icb != nil && !icbDisabledForTest && s.headEnc != nil && s.greedy != nil {
@@ -3627,6 +3630,132 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 		if stop {
 			break
 		}
+	}
+	return gen, history, nil
+}
+
+func (s *ArchSession) sampledChainedGPUTailCanContinue(params model.SampleParams, history []int32, transform model.TokenTransform) bool {
+	if transform != nil || chainedGPUInputsDisabled || icbDisabledForTest {
+		return false
+	}
+	if s == nil || s.state.icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil || s.headEnc == nil {
+		return false
+	}
+	if sampledGreedyParamsEligible(params) || sampledTopOneGreedyParamsEligible(params, history) {
+		return false
+	}
+	if s.sampleTopKTokenParamsEligible(params) {
+		return true
+	}
+	return s.sampleLogitsTokenParamsEligible(params) && !sampleLogitsTokenCPUPreferred(params, s.arch.Vocab)
+}
+
+func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, yield func(int32) bool, cacheFinal bool, initialGenerated int, history []int32) ([]int32, []int32, error) {
+	icb := s.state.icb
+	sc := s.gpuTailPLScratchBuffer(0)
+	sc.out = icb.pleInput
+	if len(gen) == 0 {
+		return gen, history, core.NewError("native.ArchSession.generateSampledChainedGPUTail: empty generation seed")
+	}
+	tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
+	seedCB := commandBufferFast(queue)
+	seedEnc := computeCommandEncoderFast(seedCB)
+	if err := s.encNextInputsGPU(seedEnc, tokBuf, icb.ping0, sc); err != nil {
+		endEncodingFast(seedEnc)
+		return gen, history, err
+	}
+	endEncodingFast(seedEnc)
+	commitCommandBufferFast(seedCB)
+	waitUntilCompletedFast(seedCB)
+
+	for len(gen) < maxNew {
+		pickParams := params
+		if params.MinTokensBeforeStop > 0 && initialGenerated+len(gen) < params.MinTokensBeforeStop {
+			pickParams.SuppressTokens = s.suppressionTokensScratch(params.SuppressTokens, stopTokens)
+		}
+		if !s.sampledChainedGPUTailCanContinue(pickParams, history, nil) {
+			break
+		}
+		draw := sampler.Draw()
+		var token int32
+		var ok bool
+		var stepErr error
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+		if s.sampleTopKTokenParamsEligible(pickParams) {
+			var scratch *headTopKScratch
+			scratch, ok, stepErr = s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			if !ok || stepErr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putTopKScratch(scratch)
+				}
+				if stepErr == nil {
+					stepErr = core.NewError("native.ArchSession.generateSampledChainedGPUTail: TopK token path declined mid-chain")
+				}
+				return gen, history, stepErr
+			}
+			stepErr = s.encNextInputsGPU(enc, scratch.outToken, icb.ping0, sc)
+			endEncodingFast(enc)
+			if stepErr != nil {
+				s.headEnc.putTopKScratch(scratch)
+				return gen, history, stepErr
+			}
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			token = scratch.token()
+			s.headEnc.putTopKScratch(scratch)
+		} else {
+			var scratch *headGreedyScratch
+			scratch, ok, stepErr = s.headEnc.encodeLogitsSample(enc, lastOut, pickParams, draw, history)
+			if !ok || stepErr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putGreedyScratch(scratch)
+				}
+				if stepErr == nil {
+					stepErr = core.NewError("native.ArchSession.generateSampledChainedGPUTail: logits token path declined mid-chain")
+				}
+				return gen, history, stepErr
+			}
+			stepErr = s.encNextInputsGPU(enc, scratch.outToken, icb.ping0, sc)
+			endEncodingFast(enc)
+			if stepErr != nil {
+				s.headEnc.putGreedyScratch(scratch)
+				return gen, history, stepErr
+			}
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			token = scratch.token()
+			s.headEnc.putGreedyScratch(scratch)
+		}
+		s.pos++
+		if token < 0 || int(token) >= s.arch.Vocab {
+			return gen, history, core.NewError("native.ArchSession.generateSampledChainedGPUTail: sampled invalid token")
+		}
+		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		gen = append(gen, token)
+		if params.RepeatPenalty > 1 {
+			history = append(history, token)
+		}
+		stop := (yield != nil && !yield(token)) || nativeTokenInSet(token, stopTokens)
+		if !cacheFinal && (stop || len(gen) >= maxNew) {
+			return gen, history, nil
+		}
+		if stop {
+			break
+		}
+	}
+	if cacheFinal && len(gen) > 0 {
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		icb.encodeStepBodyNoInput(enc, s.pos)
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		s.pos++
+		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
 	}
 	return gen, history, nil
 }

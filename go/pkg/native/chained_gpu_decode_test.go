@@ -352,6 +352,61 @@ func TestPipelinedGPUDecodeKVShared(t *testing.T) {
 	t.Logf("pipelined KV-shared matches chained: %v", pipeGen)
 }
 
+func TestSampledChainedGPUDecodeStagesTailFromDeviceToken(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 5
+	prompt := []int32{1, 5, 3, 2}
+	params := model.SampleParams{Temperature: 0.9, TopK: 4, TopP: 0.8}
+
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() { chainedGPUInputsDisabled = oldChainDisabled }()
+
+	chainedGPUInputsDisabled = true
+	host, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("host session: %v", err)
+	}
+	hostGen, err := host.GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(27), params, nil, nil)
+	if err != nil {
+		t.Fatalf("host GenerateSampledEach: %v", err)
+	}
+
+	chainedGPUInputsDisabled = false
+
+	sess, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if sess.encNextInputsGPU == nil {
+		t.Fatal("expected sampled chained-GPU path to have the GPU next-inputs seam wired")
+	}
+	if !sess.sampleTopKTokenParamsEligible(params) {
+		t.Skip("device TopK sampled-token path unavailable")
+	}
+	gen, err := sess.GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(27), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledEach: %v", err)
+	}
+	if len(gen) != maxNew {
+		t.Fatalf("GenerateSampledEach returned %d tokens, want %d: %v", len(gen), maxNew, gen)
+	}
+	if !idsEqual(gen, hostGen) {
+		t.Fatalf("sampled chained-GPU tokens = %v, want host path %v", gen, hostGen)
+	}
+	if gen[0] == gen[len(gen)-1] {
+		t.Skipf("sampled fixture produced matching first/final tokens %d; cannot distinguish host restaging", gen[0])
+	}
+	if sess.nextInputTokenPtr == nil {
+		t.Fatal("sampled chained-GPU path never seeded the host token buffer")
+	}
+	if got, want := *sess.nextInputTokenPtr, gen[0]; got != want {
+		t.Fatalf("sampled chained-GPU tail restaged host token %d, want host seed to remain first sampled token %d (gen=%v)", got, want, gen)
+	}
+}
+
 func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
@@ -388,3 +443,34 @@ func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 func BenchmarkChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLE(b, false, false) }
 func BenchmarkChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLE(b, true, false) }
 func BenchmarkChainedDecodePLEPipe(b *testing.B) { benchChainedDecodePLE(b, true, true) }
+
+func benchSampledChainedDecodePLE(b *testing.B, gpuInputs bool) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		b.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(b, 16, 6144, 8192, 0)
+	const maxLen, N = 96, 32
+	prompt := []int32{1, 5, 3, 7, 2, 9}
+	params := model.SampleParams{Temperature: 0.9, TopK: 8, TopP: 0.85}
+	chainedGPUInputsDisabled = !gpuInputs
+	defer func() { chainedGPUInputsDisabled = false }()
+	b.SetBytes(int64(N))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		sess, err := NewArchQuantSession(g, arch, maxLen)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		if _, err := sess.GenerateSampledEach(prompt, N, nil, model.NewSampler(27), params, nil, nil); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		_ = sess.Close()
+		b.StartTimer()
+	}
+}
+
+func BenchmarkSampledChainedDecodePLEHost(b *testing.B) { benchSampledChainedDecodePLE(b, false) }
+func BenchmarkSampledChainedDecodePLEGpu(b *testing.B)  { benchSampledChainedDecodePLE(b, true) }
