@@ -124,6 +124,26 @@ func DecodeForward(
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
+	return decodeForwardInto(nil, inputs, layers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, false)
+}
+
+// DecodeForwardInto is DecodeForward with caller-owned per-token output storage.
+// Output slices with enough capacity are reused for the final host readback,
+// avoiding per-token output allocation in streaming callers.
+func DecodeForwardInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+) ([][]byte, error) {
+	return decodeForwardInto(outputs, inputs, layers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, true)
+}
+
+func decodeForwardInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+	useCallerOut bool,
+) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -160,9 +180,18 @@ func DecodeForward(
 		}
 	}
 
-	outputs := make([][]byte, T)
+	outLen := dModel * bf16Size
+	if cap(outputs) < T {
+		outputs = make([][]byte, T)
+	} else {
+		outputs = outputs[:T]
+	}
 	for i := range outputs {
-		outputs[i] = make([]byte, dModel*bf16Size)
+		if useCallerOut && cap(outputs[i]) >= outLen {
+			outputs[i] = outputs[i][:outLen]
+			continue
+		}
+		outputs[i] = make([]byte, outLen)
 	}
 	var encErr error
 	withAutoreleasePool(func() {
