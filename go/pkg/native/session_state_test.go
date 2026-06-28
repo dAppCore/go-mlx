@@ -1018,6 +1018,72 @@ func TestSessionStateRestoreBlockSkipsExpiredSlidingRows(t *testing.T) {
 	}
 }
 
+func TestSessionStateRestoreBlockRejectsFixedMaxSizeMismatch(t *testing.T) {
+	err := restoreStateBlock(0, 0, 2, 1, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   make([]byte, 8),
+		valueBytes: make([]byte, 8),
+	}}, SessionStateBlock{
+		Index:      0,
+		TokenStart: 0,
+		TokenCount: 2,
+		Layers: []SessionStateLayerBlock{{
+			Layer:      0,
+			CacheIndex: 0,
+			CacheMode:  nativeStateCacheModeFixed,
+			MaxSize:    6,
+			KVHeads:    1,
+			HeadDim:    1,
+			RowBytes:   2,
+			KeyBytes:   []byte{1, 0, 2, 0},
+			ValueBytes: []byte{11, 0, 12, 0},
+		}},
+	})
+	if err == nil {
+		t.Fatal("restoreStateBlock fixed max-size mismatch error = nil")
+	}
+}
+
+func TestSessionStateRestoreBlockRejectsCacheModeMismatch(t *testing.T) {
+	err := restoreStateBlock(0, 0, 2, 1, []sessionStateLayerView{{
+		layer:      0,
+		cacheIndex: 0,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+		cacheRows:  4,
+		kvHeads:    1,
+		headDim:    1,
+		rowBytes:   2,
+		keyBytes:   make([]byte, 8),
+		valueBytes: make([]byte, 8),
+	}}, SessionStateBlock{
+		Index:      0,
+		TokenStart: 0,
+		TokenCount: 2,
+		Layers: []SessionStateLayerBlock{{
+			Layer:      0,
+			CacheIndex: 0,
+			CacheMode:  "paged",
+			MaxSize:    4,
+			KVHeads:    1,
+			HeadDim:    1,
+			RowBytes:   2,
+			KeyBytes:   []byte{1, 0, 2, 0},
+			ValueBytes: []byte{11, 0, 12, 0},
+		}},
+	})
+	if err == nil {
+		t.Fatal("restoreStateBlock cache-mode mismatch error = nil")
+	}
+}
+
 func TestSessionStateRestoreBlocksGraftsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prefix := []int32{1, 2, 3, 4}

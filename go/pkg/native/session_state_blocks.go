@@ -466,6 +466,12 @@ func restoreStateBlock(index, expectedStart, position, ownerCount int, targetVie
 		if layer.HeadDim > 0 && layer.HeadDim != view.headDim {
 			return core.NewError("native.RestoreStateBlocks: head-dim mismatch")
 		}
+		if layer.CacheMode != "" && view.cacheMode != "" && layer.CacheMode != view.cacheMode {
+			return core.NewError("native.RestoreStateBlocks: cache-mode mismatch")
+		}
+		if layer.MaxSize > 0 && layer.MaxSize != view.maxSize {
+			return core.NewError("native.RestoreStateBlocks: cache max-size mismatch")
+		}
 		if layer.RowBytes != view.rowBytes {
 			return core.NewError("native.RestoreStateBlocks: row-byte mismatch")
 		}
