@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"testing"
@@ -119,6 +120,39 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	}
 
 	t.Logf("quant arch: all-owner ≡ DecodeForwardQuant byte-for-byte; KV-share reroutes; sliding (W=%d, %d toks) clips — 4-bit on the arch path", W, T2)
+}
+
+func TestDecodeForwardArchQuantIntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	const groupSize, bits = 64, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)}
+	want, err := DecodeForwardArchQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant reference: %v", err)
+	}
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+	ptrs := []unsafe.Pointer{unsafe.Pointer(&out[0][0]), unsafe.Pointer(&out[1][0])}
+
+	got, err := DecodeForwardArchQuantInto(out, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuantInto: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DecodeForwardArchQuantInto returned %d outputs, want %d", len(got), len(want))
+	}
+	for tok := range want {
+		if len(got[tok]) != dModel*bf16Size || unsafe.Pointer(&got[tok][0]) != ptrs[tok] {
+			t.Fatalf("DecodeForwardArchQuantInto token %d did not reuse caller-owned output backing", tok)
+		}
+		eqBytes(t, "DecodeForwardArchQuantInto token", got[tok], want[tok])
+	}
 }
 
 func TestDecodeForwardArchQuantMoEAllocationBudget(t *testing.T) {

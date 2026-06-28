@@ -24,6 +24,28 @@ func DecodeForwardArchQuant(
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEQuant,
 ) ([][]byte, error) {
+	return decodeForwardArchQuantInto(nil, inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, false, pleArgs...)
+}
+
+// DecodeForwardArchQuantInto is DecodeForwardArchQuant with caller-owned
+// per-token output storage. Output slices with enough capacity are reused for
+// the final hidden readback from each token.
+func DecodeForwardArchQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEQuant,
+) ([][]byte, error) {
+	return decodeForwardArchQuantInto(outputs, inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, true, pleArgs...)
+}
+
+func decodeForwardArchQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	useCallerOut bool,
+	pleArgs ...ArchPLEQuant,
+) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -123,7 +145,6 @@ func DecodeForwardArchQuant(
 		}
 	}
 
-	var outputs [][]byte
 	withAutoreleasePool(func() {
 		setup := getArchQuantLayerBufScratch(nLayers)
 		defer putArchQuantLayerBufScratch(setup)
@@ -138,10 +159,10 @@ func DecodeForwardArchQuant(
 		state.moeQuant = moeQuant
 		if pleRuntime != nil {
 			state.ple, state.pliDim = pleLayers, pliDim
-			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
+			outputs, err = runArchDecodeStateInto(outputs, inputs, &state, pleRuntime, useCallerOut)
 			return
 		}
-		outputs, err = runArchDecodeState(inputs, &state, nil)
+		outputs, err = runArchDecodeStateInto(outputs, inputs, &state, nil, useCallerOut)
 	})
 	return outputs, err
 }

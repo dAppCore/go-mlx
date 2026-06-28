@@ -92,9 +92,9 @@ func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 	}
 }
 
-// DecodeForwardInto is DecodeForward with caller-owned output storage. The bf16
-// re-encode path writes through DecodeForwardArchInto; other backend routes keep
-// their existing executors and copy their outputs into the supplied slices.
+// DecodeForwardInto is DecodeForward with caller-owned output storage. The
+// re-encode paths write through their arch Into executors; ICB routes keep their
+// existing executors and copy their outputs into the supplied slices.
 func (b *NativeBackend) DecodeForwardInto(outputs [][]byte, inputs [][]byte) ([][]byte, error) {
 	a := b.arch
 	if a.PerLayerInputHidden > 0 {
@@ -113,11 +113,7 @@ func (b *NativeBackend) DecodeForwardInto(outputs [][]byte, inputs [][]byte) ([]
 		}
 		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
 	case b.isQuant:
-		got, err := DecodeForwardArchQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
-		if err != nil {
-			return nil, err
-		}
-		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+		return DecodeForwardArchQuantInto(outputs, inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	case icb:
 		got, err := DecodeForwardArchICB(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 		if err != nil {
