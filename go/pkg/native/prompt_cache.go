@@ -5,6 +5,8 @@
 package native
 
 import (
+	"unsafe"
+
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 )
@@ -79,6 +81,8 @@ func (s *ArchSession) generateCached(promptIDs []int32, maxNew, eosID int, suppr
 	if lcp == len(promptIDs) {
 		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
 			logits := s.cachedPromptLogitsFor(promptIDs)
+			s.rememberRetainedHidden(hidden)
+			hidden = s.retainedHidden
 			s.pos = lcp // roll back over any generated tail; prompt K/V rows stay resident
 			gen, err := s.generateFromHiddenSuppressedEach(hidden, maxNew, eosID, logits, suppress, transform, yield)
 			if err != nil {
@@ -127,6 +131,8 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 	}
 	if lcp == len(promptIDs) {
 		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
+			s.rememberRetainedHidden(hidden)
+			hidden = s.retainedHidden
 			s.pos = lcp
 			var gen []int32
 			var err error
@@ -150,11 +156,10 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
-		var hidden []byte
-		for _, id := range promptIDs[lcp:] {
-			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
-				return
-			}
+		hidden, err := s.prefillPromptRetainedInPool(promptIDs[lcp:])
+		if err != nil {
+			genErr = err
+			return
 		}
 		s.rememberCachedPromptEntry(promptIDs, hidden, nil)
 		gen, genErr = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
@@ -364,12 +369,44 @@ func (s *ArchSession) rememberCachedPromptEntry(promptIDs []int32, hidden []byte
 	ids := s.cachedPromptIDs[:0]
 	ids = append(ids, promptIDs...)
 	s.cachedPromptIDs = ids
-	s.cachedPromptHidden = hidden
+	s.cachedPromptHidden = s.stableCachedPromptHidden(hidden)
 	if len(logits) == 0 {
 		s.cachedPromptLogits = nil
 		return
 	}
 	s.cachedPromptLogits = logits
+}
+
+func (s *ArchSession) stableCachedPromptHidden(hidden []byte) []byte {
+	n := len(hidden)
+	if n == 0 {
+		return nil
+	}
+	if cap(s.cachedPromptHidden) < n || sameByteBacking(s.cachedPromptHidden, s.retainedHidden) {
+		s.cachedPromptHidden = make([]byte, n)
+	} else {
+		s.cachedPromptHidden = s.cachedPromptHidden[:n]
+	}
+	copy(s.cachedPromptHidden, hidden)
+	return s.cachedPromptHidden
+}
+
+func sameByteBacking(a, b []byte) bool {
+	return byteBackingPointer(a) != nil && byteBackingPointer(a) == byteDataPointer(b)
+}
+
+func byteBackingPointer(b []byte) unsafe.Pointer {
+	if cap(b) == 0 {
+		return nil
+	}
+	return unsafe.Pointer(&b[:cap(b)][0])
+}
+
+func byteDataPointer(b []byte) unsafe.Pointer {
+	if len(b) == 0 {
+		return nil
+	}
+	return unsafe.Pointer(&b[0])
 }
 
 func (s *ArchSession) clearCachedPromptHidden() {

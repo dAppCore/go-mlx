@@ -167,6 +167,29 @@ func BenchmarkGenerateCachedOneTokenSuffixReplay(b *testing.B) {
 	}
 }
 
+func BenchmarkGenerateCachedSampledOneTokenSuffixReplay(b *testing.B) {
+	requireNativeRuntime(b)
+	s := newSessionStateFixture(b)
+	prompts := [2][]int32{
+		{1, 2, 3, 4, 5},
+		{1, 2, 3, 4, 6},
+	}
+	params := model.SampleParams{Temperature: 0.8, TopK: 5, TopP: 0.75}
+	if err := s.WarmPromptCache(prompts[0]); err != nil {
+		b.Fatalf("WarmPromptCache: %v", err)
+	}
+	sampler := model.NewSampler(1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prompt := prompts[i&1]
+		if _, err := s.GenerateCachedSampledEach(prompt, 1, nil, sampler, params, nil, nil); err != nil {
+			b.Fatalf("GenerateCachedSampledEach suffix: %v", err)
+		}
+	}
+}
+
 func BenchmarkCompactCacheRetainedIDs(b *testing.B) {
 	requireNativeRuntime(b)
 	s := newSessionStateFixture(b)

@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"testing"
 	"unsafe"
 
@@ -297,6 +298,40 @@ func TestGenerateCachedSampledEachExactPromptSkipsPromptReencode(t *testing.T) {
 	wantResident := append(append([]int32(nil), prompt...), got...)
 	if !idsEqual(warm.cachedIDs, wantResident) {
 		t.Fatalf("cachedIDs after sampled exact prompt = %v, want %v", warm.cachedIDs, wantResident)
+	}
+}
+
+func TestGenerateCachedSampledSuffixUsesRetainedPromptHiddenNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	shared := []int32{1, 2, 3}
+	full := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{Temperature: 0.8, TopK: 5, TopP: 0.75}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(shared); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if warm.headEnc == nil {
+		t.Fatal("session fixture did not build resident head encoder")
+	}
+	if hit := warm.CachedPrefixLen(full); hit != len(shared) {
+		t.Fatalf("prompt-cache prefix hit = %d, want %d", hit, len(shared))
+	}
+
+	if _, err := warm.generateCachedSampled(full, 1, nil, model.NewSampler(123), params, nil, nil, false); err != nil {
+		t.Fatalf("generateCachedSampled suffix: %v", err)
+	}
+	if warm.retainedHiddenBuffer() == nil {
+		t.Fatal("sampled suffix replay did not retain the final prompt hidden in a no-copy buffer")
+	}
+	if len(warm.cachedPromptHidden) == 0 || len(warm.retainedHidden) == 0 {
+		t.Fatal("sampled suffix replay did not record prompt-boundary hidden")
+	}
+	if !bytes.Equal(warm.cachedPromptHidden, warm.retainedHidden) {
+		t.Fatal("sampled suffix cached hidden did not match the retained prompt-boundary hidden")
+	}
+	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) {
+		t.Fatal("sampled suffix cached hidden aliases mutable retained hidden backing")
 	}
 }
 
