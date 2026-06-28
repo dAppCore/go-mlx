@@ -299,7 +299,22 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		if block.TokenStart != expectedStart {
 			return core.NewError("native.RestoreKVBlocks: block token start mismatch")
 		}
-		if block.TokenCount <= 0 || block.TokenStart+block.TokenCount > prefixTokens {
+		if block.TokenCount <= 0 {
+			return core.NewError("native.RestoreKVBlocks: invalid block token range")
+		}
+		if block.TokenStart+block.TokenCount > prefixTokens {
+			trimCount := prefixTokens - block.TokenStart
+			if trimCount <= 0 {
+				return core.NewError("native.RestoreKVBlocks: invalid block token range")
+			}
+			trimmed, err := block.Snapshot.SliceBlock(0, trimCount, block.TokenStart, false)
+			if err != nil {
+				return core.E("native.RestoreKVBlocks", "slice prefix block", err)
+			}
+			block.TokenCount = trimCount
+			block.Snapshot = trimmed
+		}
+		if block.TokenStart+block.TokenCount > prefixTokens {
 			return core.NewError("native.RestoreKVBlocks: invalid block token range")
 		}
 		if block.Snapshot.SeqLen != 0 && block.Snapshot.SeqLen != block.TokenCount {

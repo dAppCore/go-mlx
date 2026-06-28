@@ -1491,6 +1491,66 @@ func TestArchSessionRestoreKVBlocksHonoursPrefixTokens(t *testing.T) {
 	}
 }
 
+func TestArchSessionRestoreKVBlocksSlicesPartialPrefixBlock(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+	prefixLen := 3
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(saved): %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	source.PrefixTokens = prefixLen
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	if restored.Pos() != prefixLen {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), prefixLen)
+	}
+	if !idsEqual(restored.cachedIDs, prompt[:prefixLen]) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt[:prefixLen])
+	}
+	wantPrefix := newSessionStateFixture(t)
+	if err := wantPrefix.PrefillTokens(prompt[:prefixLen]); err != nil {
+		t.Fatalf("PrefillTokens(want prefix): %v", err)
+	}
+	gotBlocks, err := restored.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource(restored): %v", err)
+	}
+	wantBlocks, err := wantPrefix.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource(want): %v", err)
+	}
+	if gotBlocks.BlockCount != wantBlocks.BlockCount {
+		t.Fatalf("block count = %d, want %d", gotBlocks.BlockCount, wantBlocks.BlockCount)
+	}
+	for i := 0; i < gotBlocks.BlockCount; i++ {
+		got, err := gotBlocks.Load(i)
+		if err != nil {
+			t.Fatalf("Load(restored %d): %v", i, err)
+		}
+		want, err := wantBlocks.Load(i)
+		if err != nil {
+			t.Fatalf("Load(want %d): %v", i, err)
+		}
+		if got.TokenStart != want.TokenStart || got.TokenCount != want.TokenCount || len(got.Layers) != len(want.Layers) {
+			t.Fatalf("block %d metadata = start %d count %d layers %d, want %d/%d/%d", i, got.TokenStart, got.TokenCount, len(got.Layers), want.TokenStart, want.TokenCount, len(want.Layers))
+		}
+		for li := range got.Layers {
+			if !bytes.Equal(got.Layers[li].KeyBytes, want.Layers[li].KeyBytes) || !bytes.Equal(got.Layers[li].ValueBytes, want.Layers[li].ValueBytes) {
+				t.Fatalf("block %d layer %d KV bytes mismatch", i, li)
+			}
+		}
+	}
+}
+
 func TestArchSessionRestoreKVBlocksRootSnapshotsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5, 6}
