@@ -165,3 +165,55 @@ func TestWarmPromptCachePLEUsesGPUNextInputsThroughFinalToken(t *testing.T) {
 		t.Fatalf("GPU-input warm cache prefix hit = %d, want %d", hit, len(prefix))
 	}
 }
+
+func TestPrefillPromptRetainedPLEUsesGPUNextInputs(t *testing.T) {
+	requireNativeRuntime(t)
+	ids := []int32{1, 5, 3, 7}
+	serial := newPromptCachePLEFixture(t)
+	chained := newPromptCachePLEFixture(t)
+	if chained.encNextInputsGPU == nil {
+		t.Fatal("PLE fixture did not wire GPU next-inputs seam")
+	}
+
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() { chainedGPUInputsDisabled = oldChainDisabled }()
+	chainedGPUInputsDisabled = true
+	serialHidden, err := serial.prefillPromptRetainedInPool(ids)
+	if err != nil {
+		t.Fatalf("serial prefillPromptRetainedInPool: %v", err)
+	}
+	serialHidden = append([]byte(nil), serialHidden...)
+
+	hostEmbeds := 0
+	hostPLE := 0
+	origEmbed := chained.embed
+	origPLE := chained.perLayerInput
+	chained.embed = func(id int32) ([]byte, error) {
+		hostEmbeds++
+		return origEmbed(id)
+	}
+	chained.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
+		hostPLE++
+		return origPLE(id, emb)
+	}
+	chainedGPUInputsDisabled = false
+	chainedHidden, err := chained.prefillPromptRetainedInPool(ids)
+	if err != nil {
+		t.Fatalf("chained prefillPromptRetainedInPool: %v", err)
+	}
+	if hostEmbeds != 0 || hostPLE != 0 {
+		t.Fatalf("prefillPromptRetainedInPool used host embed/PLE: embeds=%d ple=%d", hostEmbeds, hostPLE)
+	}
+	if chained.Pos() != len(ids) {
+		t.Fatalf("prefillPromptRetainedInPool pos = %d, want %d", chained.Pos(), len(ids))
+	}
+	if len(chained.retainedHidden) == 0 {
+		t.Fatal("prefillPromptRetainedInPool did not retain prompt-boundary hidden")
+	}
+	if !bytes.Equal(chainedHidden, serialHidden) {
+		t.Fatal("GPU-input retained prompt hidden differs from host-input retained prompt hidden")
+	}
+	if !bytes.Equal(chained.retainedHidden, serialHidden) {
+		t.Fatal("GPU-input retained prompt boundary differs from host-input retained prompt hidden")
+	}
+}

@@ -1106,6 +1106,9 @@ func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	if hidden, ok, err := s.prefillPromptRetainedGPUInputsInPool(ids); ok || err != nil {
+		return hidden, err
+	}
 	var err error
 	for _, id := range ids[:len(ids)-1] {
 		if _, err = s.stepIDInPool(id); err != nil {
@@ -1113,6 +1116,18 @@ func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 		}
 	}
 	return s.stepIDRetainedInPool(ids[len(ids)-1])
+}
+
+func (s *ArchSession) prefillPromptRetainedGPUInputsInPool(ids []int32) ([]byte, bool, error) {
+	if s.state.icb == nil || icbDisabledForTest || s.encNextInputsGPU == nil || s.plScratchNew == nil || chainedGPUInputsDisabled {
+		return nil, false, nil
+	}
+	if len(ids) > 1 {
+		if err := s.prefillCachedIDsGPUInputs(ids[:len(ids)-1]); err != nil {
+			return nil, true, err
+		}
+	}
+	return s.stepIDRetainedGPUInputsInPool(ids[len(ids)-1])
 }
 
 func (s *ArchSession) prefillRetainedTokensBatchedDense(ids []int32, scope string) ([]byte, bool, error) {
