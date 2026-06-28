@@ -91,3 +91,58 @@ func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 		return DecodeForwardArch(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	}
 }
+
+// DecodeForwardInto is DecodeForward with caller-owned output storage. The bf16
+// re-encode path writes through DecodeForwardArchInto; other backend routes keep
+// their existing executors and copy their outputs into the supplied slices.
+func (b *NativeBackend) DecodeForwardInto(outputs [][]byte, inputs [][]byte) ([][]byte, error) {
+	a := b.arch
+	if a.PerLayerInputHidden > 0 {
+		return nil, core.NewError("native.NativeBackend.DecodeForwardInto: per-layer-input models need the incremental session path, not whole-sequence decode")
+	}
+	dModel, nHeads, nKVHeads, headDim, dFF := a.Hidden, a.Heads, a.KVHeads, a.HeadDim, a.FF
+	base, eps := a.RopeBase, a.Eps
+	scale := attnScaleOf(a)
+	sw := a.SlidingWindow
+	icb := b.useICB && !a.HasMoE()
+	switch {
+	case b.isQuant && icb:
+		got, err := DecodeForwardArchICBQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
+		if err != nil {
+			return nil, err
+		}
+		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+	case b.isQuant:
+		got, err := DecodeForwardArchQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
+		if err != nil {
+			return nil, err
+		}
+		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+	case icb:
+		got, err := DecodeForwardArchICB(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
+		if err != nil {
+			return nil, err
+		}
+		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+	default:
+		return DecodeForwardArchInto(outputs, inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
+	}
+}
+
+func copyDecodeForwardOutputsInto(outputs, got [][]byte, dModel int) [][]byte {
+	outLen := dModel * bf16Size
+	if cap(outputs) < len(got) {
+		outputs = make([][]byte, len(got))
+	} else {
+		outputs = outputs[:len(got)]
+	}
+	for i := range got {
+		if cap(outputs[i]) < outLen {
+			outputs[i] = make([]byte, outLen)
+		} else {
+			outputs[i] = outputs[i][:outLen]
+		}
+		copy(outputs[i], got[i])
+	}
+	return outputs
+}

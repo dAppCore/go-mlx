@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -142,4 +144,40 @@ func TestNativeBackend(t *testing.T) {
 	}
 
 	t.Logf("backend seam: config→arch→NativeBackend routes all four paths (bf16/4-bit × re-encode/ICB) ≡ the direct forward; MoE+ICB falls back to re-encode")
+}
+
+func TestNativeBackendDecodeForwardIntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	backend, err := NewBF16Backend(arch, layers, maxLen)
+	if err != nil {
+		t.Fatalf("NewBF16Backend: %v", err)
+	}
+	inputs := decodeInputsFixture(2, dModel)
+	want, err := backend.DecodeForward(inputs)
+	if err != nil {
+		t.Fatalf("DecodeForward reference: %v", err)
+	}
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+	ptrs := []unsafe.Pointer{unsafe.Pointer(&out[0][0]), unsafe.Pointer(&out[1][0])}
+
+	got, err := backend.DecodeForwardInto(out, inputs)
+	if err != nil {
+		t.Fatalf("DecodeForwardInto: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DecodeForwardInto returned %d outputs, want %d", len(got), len(want))
+	}
+	for tok := range want {
+		if len(got[tok]) != dModel*bf16Size || unsafe.Pointer(&got[tok][0]) != ptrs[tok] {
+			t.Fatalf("DecodeForwardInto token %d did not reuse caller-owned output backing", tok)
+		}
+		eqBytes(t, "NativeBackend.DecodeForwardInto token", got[tok], want[tok])
+	}
 }
