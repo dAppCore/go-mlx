@@ -52,17 +52,41 @@ func rmsThreadgroup(axisSize int, pso metal.MTLComputePipelineState) uint {
 // kernel (every gemma hidden size); larger takes the looped kernel. float32 only.
 // Byte-for-byte parity with pkg/metal.RMSNorm is gated in parity_test.go.
 func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]float32, len(x))
+	if err := rmsNormInto(out, x, weight, rows, axisSize, eps, false); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func RMSNormInto(out, x, weight []float32, rows, axisSize int, eps float32) ([]float32, error) {
+	callerOut := out != nil && cap(out) >= len(x)
+	if !callerOut {
+		out = make([]float32, len(x))
+	} else {
+		out = out[:len(x)]
+	}
+	if err := rmsNormInto(out, x, weight, rows, axisSize, eps, callerOut); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func rmsNormInto(out, x, weight []float32, rows, axisSize int, eps float32, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(x) != rows*axisSize {
-		return nil, core.NewError("native.RMSNorm: len(x) must equal rows*axisSize")
+		return core.NewError("native.RMSNorm: len(x) must equal rows*axisSize")
 	}
 	if len(weight) != axisSize {
-		return nil, core.NewError("native.RMSNorm: len(weight) must equal axisSize")
+		return core.NewError("native.RMSNorm: len(weight) must equal axisSize")
+	}
+	if len(out) != len(x) {
+		return core.NewError("native.RMSNorm: len(out) must equal len(x)")
 	}
 	if rows == 0 || axisSize == 0 {
-		return make([]float32, len(x)), nil
+		return nil
 	}
 
 	name := "rmsfloat32"
@@ -72,10 +96,9 @@ func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, e
 	}
 	pso, err := pipelineFor(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	out := make([]float32, rows*axisSize)
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getQMVFloatScratch(len(x), len(x))
@@ -89,6 +112,13 @@ func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, e
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		wBuf := residentBytes(float32Bytes(weight))
 
 		tgSize := rmsThreadgroup(axisSize, pso)
@@ -99,12 +129,14 @@ func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, e
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
+		if !directOut {
+			copy(float32Bytes(out), scratch.out.bytes[:len(x)*4])
+		}
 	})
 	if encErr != nil {
-		return nil, encErr
+		return encErr
 	}
-	return out, nil
+	return nil
 }
 
 // setEncFloat32 binds a single float32 as an inline constant at a buffer index
