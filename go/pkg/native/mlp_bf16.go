@@ -330,19 +330,33 @@ func encGeluBF16Composed(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuf
 // the bf16 primitives, each intermediate rounded to bf16 (the gelu_approx graph
 // MLX would run un-fused in bf16). Input/output raw bf16 bytes.
 func GeluBF16(x []byte) ([]byte, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]byte, len(x))
+	if err := geluBF16Into(out, x, false); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+func GeluBF16Into(out, x []byte) error {
+	return geluBF16Into(out, x, true)
+}
+
+func geluBF16Into(out, x []byte, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
 	}
 	// Validate byte alignment before the empty short-circuit, matching the
 	// per-primitive path (an odd length reached MulBF16's check in the old
 	// composition, so an odd 1-byte input must still error rather than return).
 	if len(x)%bf16Size != 0 {
-		return nil, core.NewError("native.GeluBF16: byte length must be a multiple of 2")
+		return core.NewError("native.GeluBF16: byte length must be a multiple of 2")
+	}
+	if len(out) != len(x) {
+		return core.NewError("native.GeluBF16Into: out must be the same byte length as x")
 	}
 	n := len(x) / bf16Size
-	out := make([]byte, len(x))
 	if n == 0 {
-		return out, nil
+		return nil
 	}
 	var encErr error
 	withAutoreleasePool(func() {
@@ -357,6 +371,14 @@ func GeluBF16(x []byte) ([]byte, error) {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := scratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -367,12 +389,11 @@ func GeluBF16(x []byte) ([]byte, error) {
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(out)])
+		}
 	})
-	if encErr != nil {
-		return nil, encErr
-	}
-	return out, nil
+	return encErr
 }
 
 func geluGateMulComposed(gate, up []byte, n int) ([]byte, error) {

@@ -240,6 +240,28 @@ func TestGeluBF16SingleCommandAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestGeluBF16IntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	out := make([]byte, len(x))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	if err := GeluBF16Into(out, x); err != nil {
+		t.Fatalf("GeluBF16Into: %v", err)
+	}
+	want, err := GeluBF16(x)
+	if err != nil {
+		t.Fatalf("GeluBF16 reference: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("GeluBF16Into output differs from allocating wrapper")
+	}
+}
+
 func TestGeluBF16KeepsConstantsResident(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

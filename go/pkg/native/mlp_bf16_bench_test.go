@@ -125,3 +125,18 @@ func BenchmarkGeluBF161024(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkGeluBF16Into1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	x := toBF16Bytes(syntheticFloat32(1024, 3))
+	out := make([]byte, len(x))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(x)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := GeluBF16Into(out, x); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
