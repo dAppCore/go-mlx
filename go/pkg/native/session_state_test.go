@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
@@ -1269,6 +1270,84 @@ func TestSessionStateBlocksRestorePromptCacheEntry(t *testing.T) {
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("block-restored prompt-cache generation = %v, want %v", got, want)
+	}
+}
+
+func TestArchSessionCaptureKVRootSnapshotUsesNativeLayerSlabs(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := sess.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	if snapshot.Version != kv.SnapshotVersion {
+		t.Fatalf("snapshot version = %d, want %d", snapshot.Version, kv.SnapshotVersion)
+	}
+	if !idsEqual(snapshot.Tokens, prompt) || snapshot.TokenOffset != len(prompt) || snapshot.SeqLen != len(prompt) {
+		t.Fatalf("snapshot tokens/offset/seq = %v/%d/%d, want %v/%d/%d", snapshot.Tokens, snapshot.TokenOffset, snapshot.SeqLen, prompt, len(prompt), len(prompt))
+	}
+	if snapshot.NumLayers != len(sess.state.specs) || len(snapshot.Layers) != len(sess.state.specs) {
+		t.Fatalf("snapshot layers = %d/%d, want %d", snapshot.NumLayers, len(snapshot.Layers), len(sess.state.specs))
+	}
+	layer := snapshot.Layers[0]
+	if layer.Layer != 0 || layer.CacheIndex != sess.state.specs[0].CacheIndex {
+		t.Fatalf("layer identity = %d/%d, want layer 0 cache %d", layer.Layer, layer.CacheIndex, sess.state.specs[0].CacheIndex)
+	}
+	wantShape := []int32{1, int32(kvHeadsOf(sess.state.specs[0], sess.arch.KVHeads)), int32(len(prompt)), int32(headDimOf(sess.state.specs[0], sess.arch.HeadDim))}
+	if !reflect.DeepEqual(layer.KeyShape, wantShape) || !reflect.DeepEqual(layer.ValueShape, wantShape) {
+		t.Fatalf("layer shapes = %v/%v, want %v", layer.KeyShape, layer.ValueShape, wantShape)
+	}
+	if layer.KeyDType != "bfloat16" || layer.ValueDType != "bfloat16" {
+		t.Fatalf("layer dtypes = %q/%q, want bfloat16", layer.KeyDType, layer.ValueDType)
+	}
+	wantBytes := int(wantShape[1] * wantShape[2] * wantShape[3] * bf16Size)
+	if len(layer.KeyBytes) != wantBytes || len(layer.ValueBytes) != wantBytes {
+		t.Fatalf("layer byte lengths = %d/%d, want %d", len(layer.KeyBytes), len(layer.ValueBytes), wantBytes)
+	}
+	if len(layer.Heads) != 0 {
+		t.Fatalf("raw-only snapshot carried %d per-head float snapshots, want none", len(layer.Heads))
+	}
+}
+
+func TestArchSessionRestoreKVRootSnapshotContinuesFromNativeLayerSlabs(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := saved.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKV(snapshot); err != nil {
+		t.Fatalf("RestoreKV: %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+	got, err := restored.GenerateFromCache(3, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after RestoreKV: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("restored GenerateFromCache = %v, want cold continuation %v", got, want)
 	}
 }
 
