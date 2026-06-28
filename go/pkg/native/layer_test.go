@@ -37,6 +37,48 @@ func TestDecodeLayerMatchesAttentionThenMLP(t *testing.T) {
 	}
 }
 
+func TestDecodeLayerIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 4, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+	want, err := DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps)
+	if err != nil {
+		t.Fatalf("DecodeLayer reference: %v", err)
+	}
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := DecodeLayerInto(out, x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps)
+	if err != nil {
+		t.Fatalf("DecodeLayerInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("DecodeLayerInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "DecodeLayerInto", got, want)
+
+	scratch, err = getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("DecodeLayerInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestDecodeLayerRejectsShapeMismatch(t *testing.T) {
 	requireNativeRuntime(t)
 

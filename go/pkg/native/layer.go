@@ -84,6 +84,29 @@ func DecodeLayer(
 	dModel, nHeads, nKVHeads, headDim, kvLen, dFF int,
 	base, scale float32, offset int, eps float32,
 ) ([]byte, error) {
+	return decodeLayerInto(nil, x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, kvLen, dFF, base, scale, offset, eps, false)
+}
+
+// DecodeLayerInto is DecodeLayer with caller-owned output storage. If out has
+// enough capacity, the final MLP residual add writes directly into out through a
+// pinned no-copy Metal buffer; otherwise a correctly sized output is allocated
+// and returned.
+func DecodeLayerInto(
+	out []byte,
+	x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, kvLen, dFF int,
+	base, scale float32, offset int, eps float32,
+) ([]byte, error) {
+	return decodeLayerInto(out, x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, kvLen, dFF, base, scale, offset, eps, true)
+}
+
+func decodeLayerInto(
+	out []byte,
+	x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, kvLen, dFF int,
+	base, scale float32, offset int, eps float32,
+	useCallerOut bool,
+) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -101,7 +124,13 @@ func DecodeLayer(
 		return nil, core.NewError("native.DecodeLayer: kCache/vCache size mismatch")
 	}
 
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
@@ -114,6 +143,13 @@ func DecodeLayer(
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		// inputs
 		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
@@ -202,7 +238,9 @@ func DecodeLayer(
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(out)])
+		}
 	})
 	return out, encErr
 }
