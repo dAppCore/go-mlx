@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 func rmsNormResidualFixture(axisSize int) ([]byte, []byte, []byte) {
@@ -64,6 +65,39 @@ func TestRMSNormResidualScratchPoolKeepsDimensionsResident(t *testing.T) {
 	gotLarge := largePool.Get()
 	if gotLarge != large {
 		t.Fatal("RMS residual scratch pool evicted the model-width scratch after reusing the head-size scratch")
+	}
+}
+
+func TestRMSNormResidualBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const axisSize = 1536
+	const eps = float32(1e-6)
+	x, w, res := rmsNormResidualFixture(axisSize)
+	out := make([]byte, axisSize*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := RMSNormResidualBF16Into(out, x, w, res, axisSize, eps)
+	if err != nil {
+		t.Fatalf("RMSNormResidualBF16Into: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("RMSNormResidualBF16Into len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("RMSNormResidualBF16Into did not return caller-owned output backing")
+	}
+	want, err := RMSNormResidualBF16(x, w, res, axisSize, eps)
+	if err != nil {
+		t.Fatalf("RMSNormResidualBF16 reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("RMSNormResidualBF16Into output differs from allocating wrapper")
 	}
 }
 

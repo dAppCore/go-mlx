@@ -24,6 +24,25 @@ func BenchmarkRMSNormResidualBF16Axis1536(b *testing.B) {
 	}
 }
 
+func BenchmarkRMSNormResidualBF16IntoAxis1536(b *testing.B) {
+	requireNativeRuntime(b)
+	if !gpuHasGeluKernel() {
+		b.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const axisSize = 1536
+	const eps = float32(1e-6)
+	x, w, res := rmsNormResidualFixture(axisSize)
+	out := make([]byte, axisSize*bf16Size)
+	b.SetBytes(int64(len(x) + len(w) + len(res)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RMSNormResidualBF16Into(out, x, w, res, axisSize, eps); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkRMSNormResidualBF16AlternatingAxis(b *testing.B) {
 	requireNativeRuntime(b)
 	if !gpuHasGeluKernel() {

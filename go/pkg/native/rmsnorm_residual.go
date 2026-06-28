@@ -5,7 +5,9 @@
 package native
 
 import (
+	"runtime"
 	"sync"
+	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -20,8 +22,12 @@ var (
 )
 
 type rmsNormResidualBF16Scratch struct {
-	axisSize    int
-	x, res, out *pinnedNoCopyBytes
+	axisSize      int
+	x, res, out   *pinnedNoCopyBytes
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
 }
 
 func newRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, error) {
@@ -89,7 +95,46 @@ func (s *rmsNormResidualBF16Scratch) Close() {
 		s.out.Close()
 		s.out = nil
 	}
+	s.closeOutputView()
 	s.axisSize = 0
+}
+
+func (s *rmsNormResidualBF16Scratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *rmsNormResidualBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
 }
 
 func (s *rmsNormResidualBF16Scratch) buffers(x, res []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -151,6 +196,10 @@ func encRMSNormResidualBF16(enc metal.MTLComputeCommandEncoder, x, weight, res, 
 }
 
 func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]byte, error) {
+	return RMSNormResidualBF16Into(nil, x, weight, res, axisSize, eps)
+}
+
+func RMSNormResidualBF16Into(out []byte, x, weight, res []byte, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -168,7 +217,13 @@ func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]by
 		return nil, err
 	}
 
-	out := make([]byte, axisSize*bf16Size)
+	outLen := axisSize * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		wBuf := residentBytes(weight)
@@ -183,6 +238,13 @@ func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]by
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				oBuf = tmp
+				directOut = true
+			}
+		}
 		tgSize := rmsThreadgroup(axisSize, pso) // ceil(axis/N_READS) rounded up to a simd — one threadgroup, one row
 
 		cb := commandBufferFast(queue)
@@ -191,7 +253,9 @@ func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]by
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
