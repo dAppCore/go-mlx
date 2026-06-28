@@ -93,7 +93,14 @@ func encGeluGateMulFusedTo(enc metal.MTLComputeCommandEncoder, gate, up, out met
 // geluGateMulFused is the one-shot host wrapper around the fused kernel — gate/up bf16 bytes in,
 // bf16 bytes out. The diagnostic + bench exercise it; the decode stays on the composed chain.
 func geluGateMulFused(gate, up []byte, n int) ([]byte, error) {
-	var out []byte
+	out := make([]byte, n*bf16Size)
+	if err := geluGateMulFusedInto(out, gate, up, n, false); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func geluGateMulFusedInto(out, gate, up []byte, n int, directOutput bool) error {
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getBinaryByteScratch(n * bf16Size)
@@ -107,6 +114,14 @@ func geluGateMulFused(gate, up []byte, n int) ([]byte, error) {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := ioScratch.outputView(out)
+			if ok {
+				oBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		if encErr = encGeluGateMulFused(enc, gBuf, uBuf, oBuf, n); encErr != nil {
@@ -116,10 +131,11 @@ func geluGateMulFused(gate, up []byte, n int) ([]byte, error) {
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		out = make([]byte, n*bf16Size)
-		copy(out, ioScratch.out.bytes[:n*bf16Size])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:n*bf16Size])
+		}
 	})
-	return out, encErr
+	return encErr
 }
 
 var (

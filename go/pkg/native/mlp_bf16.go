@@ -412,6 +412,13 @@ func geluBF16Into(out, x []byte, directOutput bool) error {
 
 func geluGateMulComposed(gate, up []byte, n int) ([]byte, error) {
 	out := make([]byte, n*bf16Size)
+	if err := geluGateMulComposedInto(out, gate, up, n, false); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func geluGateMulComposedInto(out, gate, up []byte, n int, directOutput bool) error {
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getBinaryByteScratch(n * bf16Size)
@@ -424,6 +431,14 @@ func geluGateMulComposed(gate, up []byte, n int) ([]byte, error) {
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if directOutput {
+			tmp, ok := ioScratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		gelu := scratchBF16(n)
 
@@ -440,29 +455,47 @@ func geluGateMulComposed(gate, up []byte, n int) ([]byte, error) {
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(out)])
+		}
 	})
-	return out, encErr
+	return encErr
 }
 
 // GeluGateMulBF16 computes gelu(gate)·up in bf16 — gemma's MLP gate in the decode
 // dtype. Uses the fused kernel (fp32-internal, one dispatch) when the custom kernels
 // metallib is loaded, else the composed bf16 primitive chain. Parity in parity_test.go.
 func GeluGateMulBF16(gate, up []byte) ([]byte, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]byte, len(gate))
+	if err := geluGateMulBF16Into(out, gate, up, false); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func GeluGateMulBF16Into(out, gate, up []byte) error {
+	return geluGateMulBF16Into(out, gate, up, true)
+}
+
+func geluGateMulBF16Into(out, gate, up []byte, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(up) != len(gate) {
-		return nil, core.NewError("native.GeluGateMulBF16: gate/up length mismatch")
+		return core.NewError("native.GeluGateMulBF16: gate/up length mismatch")
 	}
 	if len(gate)%bf16Size != 0 {
-		return nil, core.NewError("native.GeluGateMulBF16: byte length must be a multiple of 2")
+		return core.NewError("native.GeluGateMulBF16: byte length must be a multiple of 2")
+	}
+	if len(out) != len(gate) {
+		return core.NewError("native.GeluGateMulBF16Into: out must be the same byte length as gate")
 	}
 	if len(gate) == 0 {
-		return []byte{}, nil
+		return nil
 	}
+	n := len(gate) / bf16Size
 	if gpuHasGeluKernel() {
-		return geluGateMulFused(gate, up, len(gate)/bf16Size)
+		return geluGateMulFusedInto(out, gate, up, n, directOutput)
 	}
-	return geluGateMulComposed(gate, up, len(gate)/bf16Size)
+	return geluGateMulComposedInto(out, gate, up, n, directOutput)
 }

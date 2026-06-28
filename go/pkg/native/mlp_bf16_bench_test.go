@@ -127,6 +127,25 @@ func BenchmarkGeluGateMulBF16Composed1024(b *testing.B) {
 	}
 }
 
+func BenchmarkGeluGateMulBF16ComposedInto1024(b *testing.B) {
+	requireNativeRuntime(b)
+	old := customLibraryLoaded
+	customLibraryLoaded = false
+	defer func() { customLibraryLoaded = old }()
+
+	gate := toBF16Bytes(syntheticFloat32(1024, 3))
+	up := toBF16Bytes(syntheticFloat32(1024, 5))
+	out := make([]byte, len(gate))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(gate) + len(up)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := GeluGateMulBF16Into(out, gate, up); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkGeluBF161024(b *testing.B) {
 	requireNativeRuntime(b)
 

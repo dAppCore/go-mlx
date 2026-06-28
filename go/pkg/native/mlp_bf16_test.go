@@ -161,6 +161,47 @@ func TestGeluGateMulBF16ComposedAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestGeluGateMulBF16IntoComposedUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	withComposedGELU(t)
+
+	const n = 1024
+	gate := toBF16Bytes(syntheticFloat32(n, 3))
+	up := toBF16Bytes(syntheticFloat32(n, 5))
+	out := make([]byte, len(gate))
+	for i := range out {
+		out[i] = 0xA5
+	}
+	want, err := GeluGateMulBF16(gate, up)
+	if err != nil {
+		t.Fatalf("GeluGateMulBF16 reference: %v", err)
+	}
+
+	scratch, err := getBinaryByteScratch(len(gate))
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x9B}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putBinaryByteScratch(scratch)
+
+	if err := GeluGateMulBF16Into(out, gate, up); err != nil {
+		t.Fatalf("GeluGateMulBF16Into: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("GeluGateMulBF16Into output differs from allocating wrapper")
+	}
+
+	scratch, err = getBinaryByteScratch(len(gate))
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch after call: %v", err)
+	}
+	defer putBinaryByteScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("GeluGateMulBF16Into wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestTanhBF16AllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
