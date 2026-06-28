@@ -180,6 +180,28 @@ func TestAddBF16AllocationBudget(t *testing.T) {
 	}
 }
 
+func TestAddBF16IntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	a := toBF16Bytes(syntheticFloat32(1024, 3))
+	b := toBF16Bytes(syntheticFloat32(1024, 5))
+	out := make([]byte, len(a))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	if err := AddBF16Into(out, a, b); err != nil {
+		t.Fatalf("AddBF16Into: %v", err)
+	}
+	want, err := AddBF16(a, b)
+	if err != nil {
+		t.Fatalf("AddBF16 reference: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("AddBF16Into output differs from allocating wrapper")
+	}
+}
+
 func TestAddBF16ComputesResidualBytes(t *testing.T) {
 	requireNativeRuntime(t)
 

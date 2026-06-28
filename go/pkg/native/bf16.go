@@ -353,50 +353,7 @@ func RoPEDimsBF16Into(out []byte, x []byte, b, nHeads, headDim, rotaryDim int, b
 //
 //	out, err := native.AddBF16(aBytes, bBytes)
 func AddBF16(a, b []byte) ([]byte, error) {
-	if err := ensureInit(); err != nil {
-		return nil, err
-	}
-	if len(a) != len(b) {
-		return nil, core.NewError("native.AddBF16: a and b must be the same length")
-	}
-	if len(a)%bf16Size != 0 {
-		return nil, core.NewError("native.AddBF16: byte length must be a multiple of 2 (bf16 elements)")
-	}
-	pso, err := pipelineFor("vv_Addbfloat16")
-	if err != nil {
-		return nil, err
-	}
-	n := len(a) / bf16Size // element count
-	out := make([]byte, len(a))
-	if n == 0 {
-		return out, nil
-	}
-
-	var encErr error
-	withAutoreleasePool(func() {
-		ioScratch, err := getBinaryByteScratch(len(a))
-		if err != nil {
-			encErr = err
-			return
-		}
-		defer putBinaryByteScratch(ioScratch)
-		aBuf, bBuf, outBuf, err := ioScratch.buffers(a, b)
-		if err != nil {
-			encErr = err
-			return
-		}
-
-		cb := commandBufferFast(queue)
-		enc := computeCommandEncoderFast(cb)
-		emitBinary(encSink{enc}, pso, aBuf, 0, bBuf, 0, outBuf, 0, n)
-		endEncodingFast(enc)
-		commitCommandBufferFast(cb)
-		waitUntilCompletedFast(cb)
-
-		copy(out, ioScratch.out.bytes[:len(a)])
-	})
-	if encErr != nil {
-		return nil, encErr
-	}
-	return out, nil
+	return runBinaryBF16("vv_Addbfloat16", a, b)
 }
+
+func AddBF16Into(out, a, b []byte) error { return runBinaryBF16Into("vv_Addbfloat16", a, b, out) }

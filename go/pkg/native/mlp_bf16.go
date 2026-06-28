@@ -81,7 +81,7 @@ func bf16ConstBuffer(n int, v float32) metal.MTLBuffer {
 // equal-length bf16 byte buffers. name e.g. "vv_Multiplybfloat16".
 func runBinaryBF16(name string, a, b []byte) ([]byte, error) {
 	out := make([]byte, len(a))
-	if err := runBinaryBF16Into(name, a, b, out); err != nil {
+	if err := runBinaryBF16IntoDirect(name, a, b, out, false); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -152,6 +152,10 @@ func binaryBF16ConstInto(name string, encFn func(metal.MTLComputeCommandEncoder,
 // composed bf16 op (GeluBF16) can ping-pong reusable scratch across its chain.
 // Same kernel and inputs as runBinaryBF16 — the bytes written are identical.
 func runBinaryBF16Into(name string, a, b, out []byte) error {
+	return runBinaryBF16IntoDirect(name, a, b, out, true)
+}
+
+func runBinaryBF16IntoDirect(name string, a, b, out []byte, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -185,13 +189,23 @@ func runBinaryBF16Into(name string, a, b, out []byte) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := ioScratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		emitBinary(encSink{enc}, pso, aBuf, 0, bBuf, 0, outBuf, 0, n)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, ioScratch.out.bytes[:len(a)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(a)])
+		}
 	})
 	return encErr
 }
@@ -199,6 +213,8 @@ func runBinaryBF16Into(name string, a, b, out []byte) error {
 // MulBF16 is the bf16 sibling of Mul: element-wise a[i]*b[i] over bf16 bytes
 // (kernel vv_Multiplybfloat16) — the MLP gate·up step in the decode dtype.
 func MulBF16(a, b []byte) ([]byte, error) { return runBinaryBF16("vv_Multiplybfloat16", a, b) }
+
+func MulBF16Into(out, a, b []byte) error { return runBinaryBF16Into("vv_Multiplybfloat16", a, b, out) }
 
 // TanhBF16 is the bf16 sibling of Tanh: element-wise tanh over bf16 bytes (kernel
 // v_Tanhbfloat16bfloat16) — the nonlinearity inside the gelu approximation.

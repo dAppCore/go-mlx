@@ -117,6 +117,29 @@ func TestMulBF16AllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMulBF16IntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	a := toBF16Bytes(syntheticFloat32(n, 3))
+	b := toBF16Bytes(syntheticFloat32(n, 5))
+	out := make([]byte, len(a))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	if err := MulBF16Into(out, a, b); err != nil {
+		t.Fatalf("MulBF16Into: %v", err)
+	}
+	want, err := MulBF16(a, b)
+	if err != nil {
+		t.Fatalf("MulBF16 reference: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("MulBF16Into output differs from allocating wrapper")
+	}
+}
+
 func TestGeluGateMulBF16ComposedAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	withComposedGELU(t)
