@@ -1,5 +1,5 @@
 # Goal: Native Engine Replacement
-Rule: do not grow this file with progress, proof, benchmark, savings, or per-slice status notes. When a remaining task is done, remove that task line; report evidence in the turn or commit instead.
+Top rule: keep this file and tracker files as compact worklists only. Do not read or edit them as routine progress logs, and do not add, preserve, or update proof, benchmark, savings, changelog, or status-diary notes here unless the user explicitly asks for tracking changes. When a tracked task is done, remove the task line and report evidence in the turn or commit instead.
 
 Updated 2026-06-28.
 Contract: make `go/pkg/native` replace `go/pkg/metal` by copying proven engine behaviour, removing the CGO/MLX dependency, and keeping native CGO-free. Do not add gates or new settings.
