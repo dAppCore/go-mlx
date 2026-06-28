@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
 	"unsafe"
@@ -106,6 +107,37 @@ func TestSDPA2PassAllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("SDPA2Pass allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestSDPA2PassIntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, nKV, headDim, kvLen = 1, 4, 2, 64, 2048
+	q := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 3))
+	k := toBF16Bytes(syntheticFloat32(batch*nKV*kvLen*headDim, 5))
+	v := toBF16Bytes(syntheticFloat32(batch*nKV*kvLen*headDim, 7))
+	out := make([]byte, batch*nHeads*headDim*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := SDPA2PassInto(out, q, k, v, batch, nHeads, nKV, headDim, kvLen, 0.125)
+	if err != nil {
+		t.Fatalf("SDPA2PassInto: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("SDPA2PassInto len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("SDPA2PassInto did not return caller-owned output backing")
+	}
+	want, err := SDPA2Pass(q, k, v, batch, nHeads, nKV, headDim, kvLen, 0.125)
+	if err != nil {
+		t.Fatalf("SDPA2Pass reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("SDPA2PassInto output differs from allocating wrapper")
 	}
 }
 

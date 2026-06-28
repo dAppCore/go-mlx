@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
 
 func TestSDPASingleValueReturnsV(t *testing.T) {
@@ -89,5 +90,36 @@ func TestSDPAAllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("SDPA allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestSDPAIntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const b, nHeads, nKV, headDim, kvLen = 1, 8, 4, 64, 16
+	q := toBF16Bytes(syntheticFloat32(b*nHeads*headDim, 3))
+	k := toBF16Bytes(syntheticFloat32(b*nKV*kvLen*headDim, 5))
+	v := toBF16Bytes(syntheticFloat32(b*nKV*kvLen*headDim, 7))
+	out := make([]byte, b*nHeads*headDim*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := SDPAInto(out, q, k, v, b, nHeads, nKV, headDim, kvLen, 0.125)
+	if err != nil {
+		t.Fatalf("SDPAInto: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("SDPAInto len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("SDPAInto did not return caller-owned output backing")
+	}
+	want, err := SDPA(q, k, v, b, nHeads, nKV, headDim, kvLen, 0.125)
+	if err != nil {
+		t.Fatalf("SDPA reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("SDPAInto output differs from allocating wrapper")
 	}
 }

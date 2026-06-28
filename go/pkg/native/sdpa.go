@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -36,6 +37,10 @@ type sdpaBF16Scratch struct {
 	q, k, v, out                     *pinnedNoCopyBytes
 	p2PartialBytes, p2SumBytes       int
 	p2Partials, p2Sums, p2Maxs       metal.MTLBuffer
+	outViewPtr                       uintptr
+	outViewLen                       int
+	outView                          metal.MTLBuffer
+	outViewPinned                    *pinnedNoCopyBytes
 }
 
 type sdpaBF16ScratchKey struct {
@@ -133,9 +138,48 @@ func (s *sdpaBF16Scratch) Close() {
 		s.out.Close()
 		s.out = nil
 	}
+	s.closeOutputView()
 	s.qBytes, s.kBytes, s.vBytes, s.outBytes = 0, 0, 0, 0
 	s.p2Partials, s.p2Sums, s.p2Maxs = nil, nil, nil
 	s.p2PartialBytes, s.p2SumBytes = 0, 0
+}
+
+func (s *sdpaBF16Scratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *sdpaBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
 }
 
 func (s *sdpaBF16Scratch) buffers(qb, kb, vb []byte) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -393,6 +437,10 @@ func sdpa2PassBlocks(kvLen int) int32 {
 // threadgroup-per-head reduction degrades. Token-identical to SDPA (online softmax,
 // same maths); validated cosine~1 vs a host float reference in sdpa_2pass_test.go.
 func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale float32) ([]byte, error) {
+	return SDPA2PassInto(nil, qb, kb, vb, b, nHeads, nKVHeads, headDim, kvLen, scale)
+}
+
+func SDPA2PassInto(out []byte, qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -411,7 +459,12 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 
 	const bf16Size = 2
 	outLen := b * nHeads * headDim * bf16Size
-	out := make([]byte, outLen)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getSDPABF16Scratch(len(qb), len(kb), len(vb), outLen)
@@ -424,6 +477,13 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		// intermediates: partials [b·nHeads·blocks·headDim] bf16, sums/maxs [b·nHeads·blocks] float32.
 		nbh := b * nHeads
@@ -442,7 +502,9 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(out, scratch.out.bytes[:outLen])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
@@ -465,6 +527,10 @@ func SDPA2Pass(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale
 // kernel accumulates the softmax differently); decode against a longer cache is
 // the sdpa_vector_2pass follow-up.
 func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale float32) ([]byte, error) {
+	return SDPAInto(nil, qb, kb, vb, b, nHeads, nKVHeads, headDim, kvLen, scale)
+}
+
+func SDPAInto(out []byte, qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -478,7 +544,12 @@ func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale floa
 
 	const bf16Size = 2
 	outLen := b * nHeads * headDim * bf16Size
-	out := make([]byte, outLen)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getSDPABF16Scratch(len(qb), len(kb), len(vb), outLen)
@@ -492,6 +563,13 @@ func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale floa
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -500,7 +578,9 @@ func SDPA(qb, kb, vb []byte, b, nHeads, nKVHeads, headDim, kvLen int, scale floa
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(out, scratch.out.bytes[:outLen])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
