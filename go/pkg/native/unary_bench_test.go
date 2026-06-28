@@ -32,3 +32,18 @@ func BenchmarkSigmoidBF161024(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkSigmoidBF16Into1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	in := toBF16Bytes(syntheticFloat32(1024, 3))
+	out := make([]byte, len(in))
+	b.SetBytes(int64(len(in)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := RunUnaryBF16Into("v_Sigmoidbfloat16bfloat16", in, out); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

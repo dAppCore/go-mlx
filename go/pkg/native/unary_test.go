@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -42,6 +43,27 @@ func TestRunUnaryBF16AllocationBudget(t *testing.T) {
 	})
 	if allocs > 10 {
 		t.Fatalf("SigmoidBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRunUnaryBF16IntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	in := toBF16Bytes(syntheticFloat32(1024, 3))
+	out := make([]byte, len(in))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	if err := RunUnaryBF16Into("v_Sigmoidbfloat16bfloat16", in, out); err != nil {
+		t.Fatalf("RunUnaryBF16Into: %v", err)
+	}
+	want, err := SigmoidBF16(in)
+	if err != nil {
+		t.Fatalf("SigmoidBF16 reference: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("RunUnaryBF16Into output differs from allocating wrapper")
 	}
 }
 

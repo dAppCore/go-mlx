@@ -114,20 +114,34 @@ func RunUnaryInto(name string, in, out []float32) error {
 // token and the 2-byte element width differ. Byte-for-byte parity with the matching pkg/metal unary
 // op on the same bf16 array is the point — it is how the vision/audio towers stay byte-identical.
 func RunUnaryBF16(name string, in []byte) ([]byte, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]byte, len(in))
+	if err := runUnaryBF16Into(name, in, out, false); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func RunUnaryBF16Into(name string, in, out []byte) error {
+	return runUnaryBF16Into(name, in, out, true)
+}
+
+func runUnaryBF16Into(name string, in, out []byte, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(in)%bf16Size != 0 {
-		return nil, core.NewError("native.RunUnaryBF16: byte length must be a multiple of 2 (bf16 elements)")
+		return core.NewError("native.RunUnaryBF16Into: byte length must be a multiple of 2 (bf16 elements)")
+	}
+	if len(out) != len(in) {
+		return core.NewError("native.RunUnaryBF16Into: out must be the same byte length as in")
 	}
 	pso, err := pipelineFor(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	n := len(in) / bf16Size
-	out := make([]byte, len(in))
 	if n == 0 {
-		return out, nil
+		return nil
 	}
 	var encErr error
 	withAutoreleasePool(func() {
@@ -142,18 +156,28 @@ func RunUnaryBF16(name string, in []byte) ([]byte, error) {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := scratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		emitUnary(encSink{enc}, pso, inBuf, outBuf, n)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(in)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(in)])
+		}
 	})
 	if encErr != nil {
-		return nil, encErr
+		return encErr
 	}
-	return out, nil
+	return nil
 }
 
 // SigmoidBF16 is the byte-parity bf16 sigmoid (kernel v_Sigmoidbfloat16bfloat16) — equals
