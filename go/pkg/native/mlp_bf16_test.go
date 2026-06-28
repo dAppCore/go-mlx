@@ -221,6 +221,45 @@ func TestMulBF16ConstAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMulBF16ConstIntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const n = 1024
+	x := toBF16Bytes(syntheticFloat32(n, 3))
+	out := make([]byte, len(x))
+	for i := range out {
+		out[i] = 0xA5
+	}
+	want, err := mulBF16Const(x, n, 0.375)
+	if err != nil {
+		t.Fatalf("mulBF16Const reference: %v", err)
+	}
+
+	scratch, err := getQMVBF16Scratch(n, n)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x9B}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	if err := mulBF16ConstInto(x, n, 0.375, out); err != nil {
+		t.Fatalf("mulBF16ConstInto: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("mulBF16ConstInto output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVBF16Scratch(n, n)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("mulBF16ConstInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestGeluBF16SingleCommandAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 

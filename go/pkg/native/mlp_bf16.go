@@ -89,7 +89,7 @@ func runBinaryBF16(name string, a, b []byte) ([]byte, error) {
 
 func mulBF16Const(a []byte, n int, v float32) ([]byte, error) {
 	out := make([]byte, len(a))
-	if err := mulBF16ConstInto(a, n, v, out); err != nil {
+	if err := binaryBF16ConstIntoDirect("mulBF16ConstInto", encMulBF16, a, n, v, out, false); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -104,6 +104,10 @@ func addBF16ConstInto(a []byte, n int, v float32, out []byte) error {
 }
 
 func binaryBF16ConstInto(name string, encFn func(metal.MTLComputeCommandEncoder, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, int) error, a []byte, n int, v float32, out []byte) error {
+	return binaryBF16ConstIntoDirect(name, encFn, a, n, v, out, true)
+}
+
+func binaryBF16ConstIntoDirect(name string, encFn func(metal.MTLComputeCommandEncoder, metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, int) error, a []byte, n int, v float32, out []byte, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -132,6 +136,14 @@ func binaryBF16ConstInto(name string, encFn func(metal.MTLComputeCommandEncoder,
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := scratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cBuf := bf16ConstBuffer(n, v)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -142,7 +154,9 @@ func binaryBF16ConstInto(name string, encFn func(metal.MTLComputeCommandEncoder,
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(out)])
+		}
 	})
 	return encErr
 }

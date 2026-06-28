@@ -80,6 +80,21 @@ func BenchmarkMulBF16Const1024(b *testing.B) {
 	}
 }
 
+func BenchmarkMulBF16ConstInto1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	x := toBF16Bytes(syntheticFloat32(1024, 3))
+	out := make([]byte, len(x))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(x)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := mulBF16ConstInto(x, 1024, 0.375, out); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkGeluGateMulBF161024(b *testing.B) {
 	requireNativeRuntime(b)
 
