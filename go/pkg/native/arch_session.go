@@ -2561,7 +2561,7 @@ func (s *ArchSession) sampleLogitsTokenParamsEligible(params model.SampleParams)
 	if params.TopK < 0 || params.TopK > headSampleTopKMaxK {
 		return false
 	}
-	if params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && !logitsSampleTopPOnlyFitsRankedWindow(params, s.arch.Vocab) {
+	if params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && !logitsSampleTopPOnlyFullVocab(params, s.arch.Vocab) {
 		return false
 	}
 	return s.headEnc.logitsSampleUsable()
@@ -2574,7 +2574,7 @@ func (s *ArchSession) retainedLogitsSampleParamsEligible(params model.SamplePara
 	if params.TopK < 0 || params.TopK > headSampleTopKMaxK {
 		return false
 	}
-	if params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && !logitsSampleTopPOnlyFitsRankedWindow(params, s.arch.Vocab) {
+	if params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && !logitsSampleTopPOnlyFullVocab(params, s.arch.Vocab) {
 		return false
 	}
 	return s.headEnc.logitsBufferSampleUsable()
@@ -2584,12 +2584,12 @@ func sampleLogitsTokenCPUPreferred(params model.SampleParams, vocab int) bool {
 	return params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && params.RepeatPenalty <= 1 && vocab > 0 && vocab <= headSampleTopKMaxK
 }
 
-func logitsSampleTopPOnlyFitsRankedWindow(params model.SampleParams, vocab int) bool {
-	return params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && vocab > 0 && vocab <= headSampleTopKMaxK
+func logitsSampleTopPOnlyFullVocab(params model.SampleParams, vocab int) bool {
+	return params.TopK == 0 && params.TopP > 0 && params.TopP < 1 && vocab > 0
 }
 
 func logitsSampleKernelTopK(params model.SampleParams, vocab int) int {
-	if logitsSampleTopPOnlyFitsRankedWindow(params, vocab) {
+	if logitsSampleTopPOnlyFullVocab(params, vocab) {
 		return vocab
 	}
 	return params.TopK

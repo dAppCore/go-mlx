@@ -866,17 +866,17 @@ func TestArchSessionSampleVocabLargeTempOnlyAvoidsProbabilityScratch(t *testing.
 
 func TestLogitsSampleTopPOnlyKernelTopK(t *testing.T) {
 	params := model.SampleParams{Temperature: 1, TopP: 0.9}
-	if !logitsSampleTopPOnlyFitsRankedWindow(params, headSampleTopKMaxK) {
+	if !logitsSampleTopPOnlyFullVocab(params, headSampleTopKMaxK) {
 		t.Fatal("TopP-only sampler did not accept exact ranked-window vocab")
 	}
 	if got := logitsSampleKernelTopK(params, headSampleTopKMaxK); got != headSampleTopKMaxK {
 		t.Fatalf("TopP-only ranked-window topK = %d, want %d", got, headSampleTopKMaxK)
 	}
-	if logitsSampleTopPOnlyFitsRankedWindow(params, headSampleTopKMaxK+1) {
-		t.Fatal("TopP-only sampler accepted vocab larger than the exact ranked window")
+	if !logitsSampleTopPOnlyFullVocab(params, headSampleTopKMaxK+1) {
+		t.Fatal("TopP-only sampler rejected full-vocab ranked-prefix sampling above the old fixed window")
 	}
-	if got := logitsSampleKernelTopK(params, headSampleTopKMaxK+1); got != 0 {
-		t.Fatalf("large-vocab TopP-only topK = %d, want fallback topK 0", got)
+	if got := logitsSampleKernelTopK(params, headSampleTopKMaxK+1); got != headSampleTopKMaxK+1 {
+		t.Fatalf("large-vocab TopP-only topK = %d, want full vocab %d", got, headSampleTopKMaxK+1)
 	}
 }
 
@@ -1954,6 +1954,85 @@ func TestArchSessionSampleLogitsTopPOnlySmallVocabMatchesFullHead(t *testing.T) 
 	}
 	if got != want {
 		t.Fatalf("device logits TopP-only sample = %d, want full-head sample %d", got, want)
+	}
+}
+
+func TestArchSessionSampleLogitsTopPOnlyLargeVocabMatchesFullHead(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, headSampleTopKMaxK + 8
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	hidden := append([]byte(nil), sess.retainedHidden...)
+	params := model.SampleParams{Temperature: 1, TopP: 0.72, SuppressTokens: []int32{2, 7}}
+	full, err := sess.head(hidden, false)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	draw := model.NewSampler(123).Draw()
+	want, err := model.NewSampler(123).Sample(full, arch.Vocab, params)
+	if err != nil {
+		t.Fatalf("full Sample: %v", err)
+	}
+	got, ok, err := sess.sampleLogitsTokenFromHiddenInPool(hidden, params, draw, nil)
+	if err != nil {
+		t.Fatalf("sampleLogitsTokenFromHiddenInPool: %v", err)
+	}
+	if !ok {
+		t.Fatal("device logits TopP-only large-vocab sampler declined")
+	}
+	if got != want {
+		t.Fatalf("device logits TopP-only large-vocab sample = %d, want full-head sample %d", got, want)
+	}
+}
+
+func TestArchSessionSampleLogitsTopPOnlyLargeVocabRepeatPenaltyMatchesFullHead(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, headSampleTopKMaxK + 8
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	hidden := append([]byte(nil), sess.retainedHidden...)
+	params := model.SampleParams{Temperature: 1, TopP: 0.72, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	history := []int32{4, 5, 5, 31}
+	full, err := sess.head(hidden, false)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	penalized, err := nativeApplyRepeatPenaltyBF16(full, arch.Vocab, history, params.RepeatPenalty)
+	if err != nil {
+		t.Fatalf("nativeApplyRepeatPenaltyBF16: %v", err)
+	}
+	draw := model.NewSampler(123).Draw()
+	want, err := model.NewSampler(123).Sample(penalized, arch.Vocab, params)
+	if err != nil {
+		t.Fatalf("penalized full Sample: %v", err)
+	}
+	got, ok, err := sess.sampleLogitsTokenFromHiddenInPool(hidden, params, draw, history)
+	if err != nil {
+		t.Fatalf("sampleLogitsTokenFromHiddenInPool: %v", err)
+	}
+	if !ok {
+		t.Fatal("device logits TopP-only large-vocab repeat-penalty sampler declined")
+	}
+	if got != want {
+		t.Fatalf("device logits TopP-only large-vocab repeat-penalty sample = %d, want penalized full-head sample %d", got, want)
 	}
 }
 

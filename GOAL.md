@@ -10,9 +10,9 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, and native KV exact trusted-prefix/metadata/head-snapshot/sliding-window boundary restore tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/sliding-window boundary restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/model smoke tests pass: `go test ./go` `1.170s`; `go test ./go/pkg/model` `0.328s`.
+- Root/native smoke tests pass: `go test ./go` `1.307s`; `go test ./go/pkg/native` `38.425s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -33,10 +33,10 @@ Latest completed slice:
 - Native `RestoreKV` accepts metal per-head float32 and raw BF16 KV snapshots by converting them into native BF16 token-major slabs while preserving layer cache metadata.
 - Native `RestoreKV` transposes metal/kvconv raw BF16 layer slabs from `[1, heads, seq, dim]` head-major order into native token-major cache rows.
 - Native block restore records exact trusted-prefix token counts for non-uniform boundary grids, so suffix blocks after sliding-window split points graft onto resident prefixes instead of assuming `blockSize * index`.
+- Native logits sampling routes TopP-only vocabularies beyond the old 64-token window through a full-vocab ranked-prefix/top-mass device branch, including suppression, retained-logit replay, and repeat-penalty parity.
 
 Remaining feature tasks:
 
 - First-draft no-copy/fused routing into session/replay hot paths that still submit/read back per op.
 - First-draft MoE router/expert GPU flow that removes host readbacks while preserving parity.
 - Finish KV cache parity for fixed, paged, rotating/sliding, and raw restore helpers beyond trusted-prefix suffix restore.
-- First-draft exact full-vocab TopP ranked-prefix/top-mass device path; no fixed-window approximation.

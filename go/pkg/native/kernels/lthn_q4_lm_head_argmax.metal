@@ -78,6 +78,14 @@ static inline void lthn_insert_topk(
   }
 }
 
+static inline bool lthn_ranked_logits_after(float score, int id, float prev_score, int prev_id) {
+  return prev_id < 0 || score < prev_score || (score == prev_score && id > prev_id);
+}
+
+static inline bool lthn_ranked_logits_better(float score, int id, float best_score, int best_id) {
+  return id >= 0 && (best_id < 0 || score > best_score || (score == best_score && id < best_id));
+}
+
 static inline void lthn_insert_topk_threadgroup(
     threadgroup float* values,
     threadgroup int* indices,
@@ -797,15 +805,36 @@ kernel void lthn_logits_sample_bf16(
   }
 
   threadgroup float block_values[lthn_logits_sample_lanes];
+  threadgroup int block_indices[lthn_logits_sample_lanes];
   threadgroup float group_top_values[lthn_logits_topk_lanes * lthn_topk_max_k];
   threadgroup int group_top_indices[lthn_logits_topk_lanes * lthn_topk_max_k];
   threadgroup float shared_max;
+  threadgroup float shared_total;
   threadgroup float shared_target;
+  threadgroup float shared_prev_score;
+  threadgroup float shared_acc;
+  threadgroup float shared_final_sum;
+  threadgroup float shared_first_weight;
+  threadgroup int shared_prev_id;
+  threadgroup int shared_keep_count;
+  threadgroup int shared_min_keep_count;
+  threadgroup int shared_final_keep_count;
   threadgroup int chosen_lane;
+  threadgroup int shared_done;
   if (lane == 0u) {
     shared_max = -INFINITY;
+    shared_total = 0.0f;
     shared_target = 0.0f;
+    shared_prev_score = INFINITY;
+    shared_acc = 0.0f;
+    shared_final_sum = 0.0f;
+    shared_first_weight = 0.0f;
+    shared_prev_id = -1;
+    shared_keep_count = 0;
+    shared_min_keep_count = 0;
+    shared_final_keep_count = 0;
     chosen_lane = -1;
+    shared_done = 0;
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -815,56 +844,70 @@ kernel void lthn_logits_sample_bf16(
 
   const int top_k = params.top_k;
   if (top_k > 0) {
-    if (top_k > int(lthn_topk_max_k) || top_k > vocab) {
+    const bool full_vocab_top_p =
+        top_k == vocab && params.top_p > 0.0f && params.top_p < 1.0f;
+    if (top_k > int(lthn_topk_max_k)) {
+      if (!full_vocab_top_p) {
+        if (lane == 0u) {
+          out[0] = -1;
+        }
+        return;
+      }
+    } else if (top_k > vocab) {
       if (lane == 0u) {
         out[0] = -1;
       }
       return;
     }
-    if (lane < lthn_logits_topk_lanes) {
-      const int topk_chunk = (vocab + int(lthn_logits_topk_lanes) - 1) / int(lthn_logits_topk_lanes);
-      const int topk_start = int(lane) * topk_chunk;
-      const int topk_end = min(topk_start + topk_chunk, vocab);
-      float local_values[lthn_topk_max_k];
-      int local_indices[lthn_topk_max_k];
-      for (int i = 0; i < int(lthn_topk_max_k); ++i) {
-        local_values[i] = -INFINITY;
-        local_indices[i] = -1;
-      }
-      for (int i = topk_start; i < topk_end; ++i) {
-        if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
-          continue;
+    if (!full_vocab_top_p) {
+      if (lane < lthn_logits_topk_lanes) {
+        const int topk_chunk = (vocab + int(lthn_logits_topk_lanes) - 1) / int(lthn_logits_topk_lanes);
+        const int topk_start = int(lane) * topk_chunk;
+        const int topk_end = min(topk_start + topk_chunk, vocab);
+        float local_values[lthn_topk_max_k];
+        int local_indices[lthn_topk_max_k];
+        for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+          local_values[i] = -INFINITY;
+          local_indices[i] = -1;
         }
-        float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
-        lthn_insert_topk(local_values, local_indices, top_k, raw, i);
+        for (int i = topk_start; i < topk_end; ++i) {
+          if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+            continue;
+          }
+          float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+          lthn_insert_topk(local_values, local_indices, top_k, raw, i);
+        }
+        for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+          uint off = lane * lthn_topk_max_k + uint(i);
+          group_top_values[off] = local_values[i];
+          group_top_indices[off] = local_indices[i];
+        }
       }
-      for (int i = 0; i < int(lthn_topk_max_k); ++i) {
-        uint off = lane * lthn_topk_max_k + uint(i);
-        group_top_values[off] = local_values[i];
-        group_top_indices[off] = local_indices[i];
-      }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (lane != 0u) {
+      if (lane != 0u) {
+        return;
+      }
+      float merged_values[lthn_topk_max_k];
+      int merged_indices[lthn_topk_max_k];
+      for (int i = 0; i < int(lthn_topk_max_k); ++i) {
+        merged_values[i] = -INFINITY;
+        merged_indices[i] = -1;
+      }
+      for (uint lane_i = 0u; lane_i < lthn_logits_topk_lanes; ++lane_i) {
+        for (int pos = 0; pos < top_k; ++pos) {
+          uint off = lane_i * lthn_topk_max_k + uint(pos);
+          lthn_insert_topk(merged_values, merged_indices, top_k, group_top_values[off], group_top_indices[off]);
+        }
+      }
+      out[0] = lthn_sample_topk_window_raw(
+          merged_values, merged_indices, top_k, params.temperature, params.top_p, params.min_p, params.draw);
       return;
     }
-    float merged_values[lthn_topk_max_k];
-    int merged_indices[lthn_topk_max_k];
-    for (int i = 0; i < int(lthn_topk_max_k); ++i) {
-      merged_values[i] = -INFINITY;
-      merged_indices[i] = -1;
-    }
-    for (uint lane_i = 0u; lane_i < lthn_logits_topk_lanes; ++lane_i) {
-      for (int pos = 0; pos < top_k; ++pos) {
-        uint off = lane_i * lthn_topk_max_k + uint(pos);
-        lthn_insert_topk(merged_values, merged_indices, top_k, group_top_values[off], group_top_indices[off]);
-      }
-    }
-    out[0] = lthn_sample_topk_window_raw(
-        merged_values, merged_indices, top_k, params.temperature, params.top_p, params.min_p, params.draw);
-    return;
   }
+
+  const bool full_vocab_top_p =
+      top_k == vocab && params.top_p > 0.0f && params.top_p < 1.0f;
 
   float local_max = -INFINITY;
   for (int i = start; i < end; ++i) {
@@ -894,7 +937,7 @@ kernel void lthn_logits_sample_bf16(
     }
     float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
     float p = exp(raw / params.temperature - shared_max);
-    if (params.min_p > 0.0f && p < params.min_p) {
+    if (!full_vocab_top_p && params.min_p > 0.0f && p < params.min_p) {
       continue;
     }
     local_sum += p;
@@ -907,6 +950,7 @@ kernel void lthn_logits_sample_bf16(
     for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
       total += block_values[i];
     }
+    shared_total = total;
     if (total <= 0.0f) {
       out[0] = -1;
       chosen_lane = -1;
@@ -928,6 +972,148 @@ kernel void lthn_logits_sample_bf16(
     }
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (full_vocab_top_p) {
+    if (lane == 0u) {
+      shared_prev_score = INFINITY;
+      shared_prev_id = -1;
+      shared_keep_count = 0;
+      shared_min_keep_count = 0;
+      shared_acc = 0.0f;
+      shared_final_sum = 0.0f;
+      shared_first_weight = 0.0f;
+      shared_target = params.top_p * shared_total;
+      shared_done = shared_total <= 0.0f ? 1 : 0;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int rank = 0; rank < vocab; ++rank) {
+      if (shared_done != 0) {
+        break;
+      }
+      float local_best = -INFINITY;
+      int local_id = -1;
+      const float prev_score = shared_prev_score;
+      const int prev_id = shared_prev_id;
+      for (int i = start; i < end; ++i) {
+        if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+          continue;
+        }
+        float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+        if (!lthn_ranked_logits_after(raw, i, prev_score, prev_id)) {
+          continue;
+        }
+        if (lthn_ranked_logits_better(raw, i, local_best, local_id)) {
+          local_best = raw;
+          local_id = i;
+        }
+      }
+      block_values[lane] = local_best;
+      block_indices[lane] = local_id;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      if (lane == 0u) {
+        float best_score = -INFINITY;
+        int best_id = -1;
+        for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
+          if (lthn_ranked_logits_better(block_values[i], block_indices[i], best_score, best_id)) {
+            best_score = block_values[i];
+            best_id = block_indices[i];
+          }
+        }
+        if (best_id < 0) {
+          shared_done = 1;
+        } else {
+          float weight = exp(best_score / params.temperature - shared_max);
+          if (shared_keep_count == 0) {
+            shared_first_weight = weight;
+          }
+          shared_acc += weight;
+          shared_keep_count += 1;
+          if (params.min_p > 0.0f && weight >= shared_first_weight * params.min_p) {
+            shared_final_sum += weight;
+            shared_min_keep_count += 1;
+          }
+          shared_prev_score = best_score;
+          shared_prev_id = best_id;
+          if (shared_acc >= shared_target) {
+            shared_done = 1;
+          }
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (lane == 0u) {
+      shared_final_keep_count = shared_keep_count;
+      if (params.min_p > 0.0f && shared_min_keep_count > 0) {
+        shared_final_keep_count = shared_min_keep_count;
+      } else {
+        shared_final_sum = shared_acc;
+      }
+      shared_prev_score = INFINITY;
+      shared_prev_id = -1;
+      shared_acc = 0.0f;
+      shared_target = clamp(params.draw, 0.0f, 0.99999994f) * shared_final_sum;
+      shared_done = shared_final_keep_count <= 0 || shared_final_sum <= 0.0f ? 1 : 0;
+      if (shared_done != 0) {
+        out[0] = -1;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int rank = 0; rank < vocab; ++rank) {
+      if (rank >= shared_final_keep_count || shared_done != 0) {
+        break;
+      }
+      float local_best = -INFINITY;
+      int local_id = -1;
+      const float prev_score = shared_prev_score;
+      const int prev_id = shared_prev_id;
+      for (int i = start; i < end; ++i) {
+        if (lthn_lm_head_row_suppressed(uint(i), suppress, params.suppress_count)) {
+          continue;
+        }
+        float raw = lthn_repeat_penalized_logit(uint(i), float(logits[i]), history, params.history_count, params.repeat_penalty);
+        if (!lthn_ranked_logits_after(raw, i, prev_score, prev_id)) {
+          continue;
+        }
+        if (lthn_ranked_logits_better(raw, i, local_best, local_id)) {
+          local_best = raw;
+          local_id = i;
+        }
+      }
+      block_values[lane] = local_best;
+      block_indices[lane] = local_id;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      if (lane == 0u) {
+        float best_score = -INFINITY;
+        int best_id = -1;
+        for (uint i = 0; i < lthn_logits_sample_lanes; ++i) {
+          if (lthn_ranked_logits_better(block_values[i], block_indices[i], best_score, best_id)) {
+            best_score = block_values[i];
+            best_id = block_indices[i];
+          }
+        }
+        if (best_id < 0) {
+          out[0] = -1;
+          shared_done = 1;
+        } else {
+          float weight = exp(best_score / params.temperature - shared_max);
+          shared_acc += weight;
+          shared_prev_score = best_score;
+          shared_prev_id = best_id;
+          out[0] = best_id;
+          if (shared_acc >= shared_target) {
+            shared_done = 1;
+          }
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    return;
+  }
 
   if (int(lane) != chosen_lane || chosen_lane < 0) {
     return;
