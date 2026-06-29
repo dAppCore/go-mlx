@@ -207,6 +207,7 @@ type archICBReplay struct {
 	lastOutPtr                        *byte
 	finalOutIdx                       int
 	finalOutBind                      uint
+	finalOutBufID                     objc.ID
 	hasFinalOut                       bool
 	hasPLE                            bool
 	plePliDim                         int
@@ -568,19 +569,34 @@ func (r *archICBReplay) stepBodyIntoBuffer(inputEmb []byte, pos int, pli []byte,
 	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
 		return false
 	}
-	cmd := r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
-	if !r.bindStepOutputCommand(cmd, out) {
+	if !r.bindStepOutput(out) {
 		return false
 	}
 	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
 	r.stepBodyResultWithResources(inputEmb, pos, pli, false, residentRes, residentIDs)
-	r.bindStepOutputCommand(cmd, r.lastOut)
 	return true
+}
+
+func (r *archICBReplay) encodeStepBodyIntoBuffer(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
+	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
+		return nil, false
+	}
+	if !r.bindStepOutput(out) {
+		return nil, false
+	}
+	r.prepareStep(inputEmb, pos, pli)
+	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
+	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	return out, true
 }
 
 func (r *archICBReplay) bindStepOutput(out metal.MTLBuffer) bool {
 	if r == nil || !r.hasFinalOut || r.icb == nil || out == nil {
 		return false
+	}
+	if outID := out.GetID(); outID != 0 && r.finalOutBufID == outID {
+		return true
 	}
 	cmd := r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
 	return r.bindStepOutputCommand(cmd, out)
@@ -604,6 +620,7 @@ func (r *archICBReplay) bindStepOutputCommand(cmd metal.MTLIndirectComputeComman
 		return false
 	}
 	setICBKernelBuffer(cmd, out, 0, r.finalOutBind)
+	r.finalOutBufID = out.GetID()
 	return true
 }
 
@@ -624,6 +641,7 @@ func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 // token instead of twice. Returns the device buffer holding this layer-stack's final hidden (r.lastOut),
 // which the caller reads after the command buffer completes. Must run inside an autorelease pool.
 func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte) metal.MTLBuffer {
+	r.bindStepOutput(r.lastOut)
 	r.prepareStep(inputEmb, pos, pli)
 	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
@@ -631,6 +649,7 @@ func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, input
 }
 
 func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, readResult bool) []byte {
+	r.bindStepOutput(r.lastOut)
 	return r.stepBodyResultWithResources(inputEmb, pos, pli, readResult, r.residentRes, r.residentResIDs)
 }
 
@@ -743,6 +762,7 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 // chained-GPU path: produced on-GPU by the prior step's encNextInputsGPU). It rebinds the caches for
 // `pos` and replays — no host emb/pli write — returning lastOut (the post-stack hidden).
 func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder, pos int) metal.MTLBuffer {
+	r.bindStepOutput(r.lastOut)
 	r.prepareStepRebind(pos)
 	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {

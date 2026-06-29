@@ -2732,7 +2732,22 @@ func (s *ArchSession) stepSampleTopKCandidatesInPool(id int32, params model.Samp
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBody(enc, emb, s.pos, pli)
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if out, ok := icb.encodeStepBodyIntoBuffer(enc, emb, s.pos, pli, pinned.buf); ok {
+				lastOut = out
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
+		}
 		scratch, ok, err = s.headEnc.encodeTopKCandidates(enc, lastOut, params.TopK, params.SuppressTokens, false)
 		if !ok || err != nil {
 			endEncodingFast(enc)
@@ -2745,7 +2760,12 @@ func (s *ArchSession) stepSampleTopKCandidatesInPool(id int32, params model.Samp
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		var readOK bool
 		logits, ids, readOK, err = s.headEnc.readTopKCandidatesInto(scratch, params.TopK, s.sampleCandidateLogits, s.sampleCandidateIDs)
 		s.sampleCandidateLogits, s.sampleCandidateIDs = logits, ids
@@ -2826,7 +2846,22 @@ func (s *ArchSession) stepSampleTopKTokenInPool(id int32, params model.SamplePar
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBody(enc, emb, s.pos, pli)
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if out, ok := icb.encodeStepBodyIntoBuffer(enc, emb, s.pos, pli, pinned.buf); ok {
+				lastOut = out
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
+		}
 		scratch, ok, err = s.headEnc.encodeTopKSample(enc, lastOut, params, draw, history, false)
 		if !ok || err != nil {
 			endEncodingFast(enc)
@@ -2839,7 +2874,12 @@ func (s *ArchSession) stepSampleTopKTokenInPool(id int32, params model.SamplePar
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		token = scratch.token()
 		s.headEnc.putTopKScratch(scratch)
 		scratch = nil
@@ -2936,7 +2976,22 @@ func (s *ArchSession) stepSampleLogitsTokenInPool(id int32, params model.SampleP
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBody(enc, emb, s.pos, pli)
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if out, ok := icb.encodeStepBodyIntoBuffer(enc, emb, s.pos, pli, pinned.buf); ok {
+				lastOut = out
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
+		}
 		scratch, ok, err = s.headEnc.encodeLogitsSample(enc, lastOut, params, draw, history)
 		if !ok || err != nil {
 			endEncodingFast(enc)
@@ -2949,7 +3004,12 @@ func (s *ArchSession) stepSampleLogitsTokenInPool(id int32, params model.SampleP
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		token = scratch.token()
 		s.headEnc.putGreedyScratch(scratch)
 		scratch = nil

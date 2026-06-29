@@ -2354,6 +2354,82 @@ func TestArchSessionStepSampleQuantICBMatchesSerial(t *testing.T) {
 	})
 }
 
+func TestArchSessionStepSampleQuantICBWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	t.Run("logits-token", func(t *testing.T) {
+		control := newQuantICBAllocationSession(t, 32)
+		candidate := newQuantICBAllocationSession(t, 32)
+		params := model.SampleParams{Temperature: 0.8, MinP: 0.02, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+		history := []int32{4, 5, 5, 31}
+		draw := float32(0.37)
+		wantHidden, wantToken, ok, err := control.stepSampleLogitsTokenInPool(9, params, draw, history)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleLogitsTokenInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x7e}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotToken, ok, err := candidate.stepSampleLogitsTokenInPool(9, params, draw, history)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleLogitsTokenInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || gotToken != wantToken {
+			t.Fatal("sampled logits-token path read retained hidden from lastOutPtr instead of direct output")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("sampled logits-token path returned transient hidden instead of retained backing")
+		}
+	})
+	t.Run("topk-token", func(t *testing.T) {
+		control := newQuantICBAllocationSession(t, 32)
+		candidate := newQuantICBAllocationSession(t, 32)
+		params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+		history := []int32{4, 5, 5, 31}
+		draw := float32(0.42)
+		wantHidden, wantToken, ok, err := control.stepSampleTopKTokenInPool(9, params, draw, history)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleTopKTokenInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x6d}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotToken, ok, err := candidate.stepSampleTopKTokenInPool(9, params, draw, history)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleTopKTokenInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || gotToken != wantToken {
+			t.Fatal("sampled TopK-token path read retained hidden from lastOutPtr instead of direct output")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("sampled TopK-token path returned transient hidden instead of retained backing")
+		}
+	})
+	t.Run("topk-candidates", func(t *testing.T) {
+		control := newQuantICBAllocationSession(t, 32)
+		candidate := newQuantICBAllocationSession(t, 32)
+		params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}}
+		wantHidden, wantLogits, wantIDs, ok, err := control.stepSampleTopKCandidatesInPool(9, params)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleTopKCandidatesInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x5c}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotLogits, gotIDs, ok, err := candidate.stepSampleTopKCandidatesInPool(9, params)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleTopKCandidatesInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || !bytes.Equal(gotLogits, wantLogits) || !idsEqual(gotIDs, wantIDs) {
+			t.Fatal("sampled TopK-candidate path read retained hidden from lastOutPtr instead of direct output")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("sampled TopK-candidate path returned transient hidden instead of retained backing")
+		}
+	})
+}
+
 func TestArchSessionStepSampleLogitsTokenICBUsesGPUNextInputs(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
