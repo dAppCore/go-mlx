@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -46,6 +47,10 @@ type MoELayerWeights struct {
 // transient; the local dense weights are fixed per layer and stay resident like the
 // selected expert weights.
 func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, error) {
+	return mlpTransformBF16Into(nil, x, wGate, wUp, wDown, dModel, dFF)
+}
+
+func mlpTransformBF16Into(out []byte, x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -58,10 +63,16 @@ func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, err
 	if len(wDown) != dModel*dFF*bf16Size {
 		return nil, core.NewError("native.mlpTransformBF16: wDown must be dModel*dFF bf16 bytes")
 	}
-	if dModel == 0 || dFF == 0 {
-		return make([]byte, dModel*bf16Size), nil
+	outLen := dModel * bf16Size
+	if cap(out) < outLen {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
 	}
-	out := make([]byte, dModel*bf16Size)
+	if dModel == 0 || dFF == 0 {
+		clear(out)
+		return out, nil
+	}
 
 	var encErr error
 	withAutoreleasePool(func() {
@@ -78,6 +89,12 @@ func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, err
 		}
 		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		msc := scratch.mlp
+		outBuf := msc.down
+		directOut := false
+		if tmp, ok := scratch.outputView(out); ok {
+			outBuf = tmp
+			directOut = true
+		}
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -93,14 +110,16 @@ func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, err
 			enc.EndEncoding()
 			return
 		}
-		if encErr = encGemvBF16(enc, wdBuf, msc.gated, msc.down, dModel, dFF); encErr != nil {
+		if encErr = encGemvBF16(enc, wdBuf, msc.gated, outBuf, dModel, dFF); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
+		}
 	})
 	return out, encErr
 }
@@ -750,6 +769,10 @@ type mlpTransformScratch struct {
 	dModel, dFF int
 	x           *pinnedNoCopyBytes
 	mlp         mlpScratch
+	outViewPtr  uintptr
+	outViewLen  int
+	outView     metal.MTLBuffer
+	outPinned   *pinnedNoCopyBytes
 }
 
 var mlpTransformScratchPool sync.Pool
@@ -800,7 +823,46 @@ func (s *mlpTransformScratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	s.closeOutputView()
 	s.dModel, s.dFF = 0, 0
+}
+
+func (s *mlpTransformScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outPinned != nil {
+		s.outPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outPinned = nil
+}
+
+func (s *mlpTransformScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outPinned = pinned
+	return buf, true
 }
 
 type mlpTransformMegaScratch struct {

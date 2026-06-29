@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"unsafe"
@@ -175,6 +176,45 @@ func TestMLPTransformBF16AllocationBudget(t *testing.T) {
 	}
 	if allocs > 582 {
 		t.Fatalf("mlpTransformBF16 allocations = %.0f, want <= 582", allocs)
+	}
+}
+
+func TestMLPTransformBF16WritesDirectlyToReturnedOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 17))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 19))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 23))
+
+	scratch, err := getMLPTransformScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformScratch: %v", err)
+	}
+	scratchOut := unsafe.Slice((*byte)(scratch.mlp.down.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x7d}, len(scratchOut))
+	copy(scratchOut, sentinel)
+	putMLPTransformScratch(scratch)
+
+	got, err := mlpTransformBF16(x, wGate, wUp, wDown, dModel, dFF)
+	if err != nil {
+		t.Fatalf("mlpTransformBF16: %v", err)
+	}
+	want, err := mlpTransformBF16Into(make([]byte, dModel*bf16Size), x, wGate, wUp, wDown, dModel, dFF)
+	if err != nil {
+		t.Fatalf("mlpTransformBF16Into reference: %v", err)
+	}
+	eqBytes(t, "mlpTransformBF16 direct output", got, want)
+
+	scratch, err = getMLPTransformScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformScratch after call: %v", err)
+	}
+	defer putMLPTransformScratch(scratch)
+	scratchOut = unsafe.Slice((*byte)(scratch.mlp.down.Contents()), dModel*bf16Size)
+	if !bytes.Equal(scratchOut, sentinel) {
+		t.Fatal("mlpTransformBF16 wrote through pooled scratch output instead of returned output")
 	}
 }
 
