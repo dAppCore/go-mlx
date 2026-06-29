@@ -284,6 +284,55 @@ func TestMoEExpertsQuantFusedGateUpAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMoEExpertsQuantFusedGateUpIntoWritesDirectlyToCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, groupSize, bits = 4, 2, 64, 128, 32, 4
+	gate, up, down := quantMoEExpertsFixture(t, numExperts, dModel, dFF, groupSize, bits)
+	gateUp := fusedGateUpQuantForBench(gate, up, numExperts, dFF, dModel, groupSize, bits)
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	want, err := MoEExpertsQuantFusedGateUp(x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuantFusedGateUp: %v", err)
+	}
+
+	scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch: %v", err)
+	}
+	accBytes := unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x6d}, len(accBytes))
+	copy(accBytes, sentinel)
+	putMoEExpertsScratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := MoEExpertsQuantFusedGateUpInto(out, x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuantFusedGateUpInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MoEExpertsQuantFusedGateUpInto did not reuse caller-owned output backing")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("MoEExpertsQuantFusedGateUpInto != default fused gate/up path")
+	}
+
+	scratch, err = getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch after call: %v", err)
+	}
+	defer putMoEExpertsScratch(scratch)
+	accBytes = unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	if !bytes.Equal(accBytes, sentinel) {
+		t.Fatal("MoEExpertsQuantFusedGateUpInto wrote through pooled accumulator instead of caller output")
+	}
+}
+
 func TestMLPTransformQuantAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

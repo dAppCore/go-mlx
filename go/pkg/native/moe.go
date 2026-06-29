@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -47,6 +48,7 @@ func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLB
 type moeExpertsScratch struct {
 	dModel, dFF, topK int
 	x, weights        *pinnedNoCopyBytes
+	outPinned         *pinnedNoCopyBytes
 	mlp               mlpScratch
 	scaled, acc       metal.MTLBuffer
 }
@@ -117,6 +119,34 @@ func (s *moeExpertsScratch) Close() {
 		s.weights.Close()
 		s.weights = nil
 	}
+	if s.outPinned != nil {
+		s.outPinned.Close()
+		s.outPinned = nil
+	}
+}
+
+func (s *moeExpertsScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	if s.outPinned != nil && len(s.outPinned.bytes) == len(out) && &s.outPinned.bytes[0] == &out[0] {
+		return s.outPinned.buf, true
+	}
+	if s.outPinned != nil {
+		s.outPinned.Close()
+		s.outPinned = nil
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outPinned = pinned
+	return buf, true
 }
 
 // MoEExperts runs the expert branch of a gemma4 MoE layer: for each of the topK
@@ -316,6 +346,14 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 // separate gate/up expert tensors. It keeps the fused tensor resident and addresses
 // gate/up halves by byte offset, avoiding loader-time split copies.
 func MoEExpertsQuantFusedGateUp(x []byte, idx []int32, weights []byte, gateUp, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return moeExpertsQuantFusedGateUpInto(nil, x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits, false)
+}
+
+func MoEExpertsQuantFusedGateUpInto(out []byte, x []byte, idx []int32, weights []byte, gateUp, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return moeExpertsQuantFusedGateUpInto(out, x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits, true)
+}
+
+func moeExpertsQuantFusedGateUpInto(out []byte, x []byte, idx []int32, weights []byte, gateUp, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -340,11 +378,18 @@ func MoEExpertsQuantFusedGateUp(x []byte, idx []int32, weights []byte, gateUp, d
 			return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: expert index out of range")
 		}
 	}
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if topK == 0 {
-		return make([]byte, dModel*bf16Size), nil
+		clear(out)
+		return out, nil
 	}
 
-	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
@@ -365,6 +410,13 @@ func MoEExpertsQuantFusedGateUp(x []byte, idx []int32, weights []byte, gateUp, d
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				acc = tmp
+				directOut = true
+			}
+		}
 		gateUpPackedBuf, gateUpScalesBuf, gateUpBiasesBuf := quantWeightViews(gateUp)
 		downPackedBuf, downScalesBuf, downBiasesBuf := quantWeightViews(down)
 
@@ -401,7 +453,9 @@ func MoEExpertsQuantFusedGateUp(x []byte, idx []int32, weights []byte, gateUp, d
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*byte)(acc.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(scratch.acc.Contents()), len(out)))
+		}
 	})
 	return out, encErr
 }

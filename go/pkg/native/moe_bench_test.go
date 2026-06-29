@@ -69,3 +69,27 @@ func BenchmarkMoEExpertsQuantFusedGateUpTop2Of4(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkMoEExpertsQuantFusedGateUpIntoTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const numExperts, topK, dModel, dFF, groupSize, bits = 4, 2, 64, 128, 32, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	gate, up, down := quantMoEExpertsFixture(b, numExperts, dModel, dFF, groupSize, bits)
+	gateUp := fusedGateUpQuantForBench(gate, up, numExperts, dFF, dModel, groupSize, bits)
+	out := make([]byte, dModel*bf16Size)
+	b.SetBytes(int64(len(x) + len(gateUp.Packed) + len(down.Packed)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := MoEExpertsQuantFusedGateUpInto(out, x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MoEExpertsQuantFusedGateUpInto(out, x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, groupSize, bits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
