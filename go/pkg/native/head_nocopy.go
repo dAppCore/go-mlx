@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -65,6 +66,10 @@ type headGreedyScratch struct {
 	vocabCapacity           int
 	logits                  metal.MTLBuffer
 	logitsPtr               *byte
+	logitsOutView           metal.MTLBuffer
+	logitsOutViewPtr        uintptr
+	logitsOutViewLen        int
+	logitsOutViewPinned     *pinnedNoCopyBytes
 	softcapA, softcapB      metal.MTLBuffer
 	suppressCapacity        int
 	suppress                metal.MTLBuffer
@@ -317,6 +322,18 @@ func (h *headEncoder) encodeBufferIntoPool(hiddenBuf metal.MTLBuffer, skipSoftca
 	scratch := h.getGreedyScratch(1, true, h.softCap > 0 && !skipSoftcap && h.vocab > 0)
 	normed := scratch.normed
 	logits := scratch.logits
+	outLen := h.vocab * bf16Size
+	directOut := false
+	if len(out) >= outLen {
+		out = out[:outLen]
+	}
+	if len(out) == outLen {
+		tmp, ok := scratch.logitsOutputView(out)
+		if ok {
+			logits = tmp
+			directOut = true
+		}
+	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	sink := encObjectSink{enc: enc}
@@ -375,7 +392,9 @@ func (h *headEncoder) encodeBufferIntoPool(hiddenBuf metal.MTLBuffer, skipSoftca
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)
 	waitUntilCompletedFast(cb)
-	copy(out, unsafe.Slice(scratch.logitsPtr, h.vocab*bf16Size))
+	if !directOut {
+		copy(out, unsafe.Slice(scratch.logitsPtr, h.vocab*bf16Size))
+	}
 	h.putGreedyScratch(scratch)
 	return nil
 }
@@ -425,6 +444,44 @@ func (h *headEncoder) putGreedyScratch(s *headGreedyScratch) {
 	if s != nil && s.tileValues != nil && s.tileIndices != nil && s.outToken != nil && s.outTokenPtr != nil && s.sampleParams != nil && s.sampleParamsPtr != nil && s.normed != nil {
 		h.greedyScratch.Put(s)
 	}
+}
+
+func (s *headGreedyScratch) closeLogitsOutputView() {
+	if s == nil {
+		return
+	}
+	if s.logitsOutViewPinned != nil {
+		s.logitsOutViewPinned.Close()
+	}
+	s.logitsOutViewPtr = 0
+	s.logitsOutViewLen = 0
+	s.logitsOutView = nil
+	s.logitsOutViewPinned = nil
+}
+
+func (s *headGreedyScratch) logitsOutputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.logitsOutView != nil && s.logitsOutViewPtr == ptr && s.logitsOutViewLen == len(out) {
+		return s.logitsOutView, true
+	}
+	s.closeLogitsOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.logitsOutViewPtr = ptr
+	s.logitsOutViewLen = len(out)
+	s.logitsOutView = buf
+	s.logitsOutViewPinned = pinned
+	return buf, true
 }
 
 func (h *headEncoder) directGreedyUsable() bool {

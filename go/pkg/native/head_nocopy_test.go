@@ -239,17 +239,16 @@ func TestNewHeadEncoderNilShardBuffersBuildsOwnedBF16Head(t *testing.T) {
 	}
 }
 
-func TestHeadEncoderEncodeReusesFullLogitsScratch(t *testing.T) {
+func TestHeadEncoderEncodeIntoWritesCallerOutputWithoutTouchingPooledLogits(t *testing.T) {
 	requireNativeRuntime(t)
 
 	const dModel, vocab = 64, 19
 	const eps = float32(1e-6)
-	const softCap = float32(2)
 	hidden := toBF16Bytes(syntheticFloat32(dModel, 61))
 	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 67))
 	head := toBF16Bytes(syntheticFloat32(vocab*dModel, 71))
 
-	h, err := newHeadEncoder(nil, finalNorm, head, nil, nil, dModel, vocab, 0, 0, eps, softCap, false)
+	h, err := newHeadEncoder(nil, finalNorm, head, nil, nil, dModel, vocab, 0, 0, eps, 0, false)
 	if err != nil {
 		t.Fatalf("newHeadEncoder owned bf16: %v", err)
 	}
@@ -257,25 +256,41 @@ func TestHeadEncoderEncodeReusesFullLogitsScratch(t *testing.T) {
 		t.Fatal("newHeadEncoder owned bf16 returned nil")
 	}
 
-	scratch := newHeadGreedyScratch(1, dModel, vocab, true, true)
+	want, err := LMHeadBF16(hidden, finalNorm, head, dModel, vocab, eps, 0)
+	if err != nil {
+		t.Fatalf("LMHeadBF16 reference: %v", err)
+	}
+	scratch := newHeadGreedyScratch(1, dModel, vocab, true, false)
 	logitBytes := unsafe.Slice((*byte)(scratch.logits.Contents()), vocab*bf16Size)
 	for i := range logitBytes {
 		logitBytes[i] = 0x7f
 	}
 	h.putGreedyScratch(scratch)
 
-	logits, err := h.encode(hidden, false)
+	out := make([]byte, vocab*bf16Size)
+	logits, err := h.encodeInto(hidden, true, out)
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatalf("encodeInto: %v", err)
 	}
-	reused := h.getGreedyScratch(1, true, true)
+	if len(logits) == 0 || unsafe.Pointer(&logits[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("encodeInto did not return the caller output backing")
+	}
+	if !bytes.Equal(logits, want) {
+		t.Fatalf("encodeInto logits diverged from LMHeadBF16")
+	}
+	reused := h.getGreedyScratch(1, true, false)
 	defer h.putGreedyScratch(reused)
 	if reused.logits != scratch.logits {
 		t.Fatal("encode did not return the seeded full-logits scratch to the pool")
 	}
 	got := unsafe.Slice((*byte)(reused.logits.Contents()), len(logits))
-	if !bytes.Equal(got, logits) {
-		t.Fatal("encode did not write returned logits through the pooled full-logits scratch")
+	if bytes.Equal(got, logits) {
+		t.Fatal("encodeInto still staged logits through the pooled scratch before copying to caller output")
+	}
+	for i, b := range got {
+		if b != 0x7f {
+			t.Fatalf("pooled logits scratch byte %d changed to %#x; want sentinel 0x7f", i, b)
+		}
 	}
 }
 

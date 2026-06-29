@@ -111,6 +111,31 @@ func BenchmarkHeadEncoderBF16FullLogitsGreedySynthetic(b *testing.B) {
 	}
 }
 
+func BenchmarkHeadEncoderBF16FullLogitsCallerOutputGreedySynthetic(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, vocab = 512, 4096
+	h, hidden := bf16HeadEncoderBenchFixture(dModel, vocab)
+	out := make([]byte, vocab*bf16Size)
+	if logits, err := h.encodeInto(hidden, true, out); err != nil {
+		b.Fatal(err)
+	} else if _, err := model.Greedy(logits, vocab); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(vocab * bf16Size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logits, err := h.encodeInto(hidden, true, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := model.Greedy(logits, vocab); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkHeadEncoderBF16DirectGreedySynthetic(b *testing.B) {
 	requireNativeRuntime(b)
 
@@ -210,6 +235,31 @@ func BenchmarkHeadEncoderQuantFullLogitsGreedySynthetic(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		logits, err := h.encode(hidden, true)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := model.Greedy(logits, vocab); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkHeadEncoderQuantFullLogitsCallerOutputGreedySynthetic(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, vocab, groupSize, bits = 512, 4096, 64, 4
+	h, hidden := quantHeadEncoderBenchFixture(dModel, vocab, groupSize, bits)
+	out := make([]byte, vocab*bf16Size)
+	if logits, err := h.encodeInto(hidden, true, out); err != nil {
+		b.Fatal(err)
+	} else if _, err := model.Greedy(logits, vocab); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(vocab * bf16Size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logits, err := h.encodeInto(hidden, true, out)
 		if err != nil {
 			b.Fatal(err)
 		}
