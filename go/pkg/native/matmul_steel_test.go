@@ -119,7 +119,7 @@ func TestMatMulF32IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) 
 	}
 }
 
-func TestMatMulF32NTIntoReusesOutputBackingForSplitK(t *testing.T) {
+func TestMatMulF32NTIntoReusesOutputBackingAndBypassesScratchOutputForSplitK(t *testing.T) {
 	requireNativeRuntime(t)
 
 	const M, K, N = 3, 128, 128
@@ -130,6 +130,13 @@ func TestMatMulF32NTIntoReusesOutputBackingForSplitK(t *testing.T) {
 	}
 	out := syntheticFloat32(M*N, 13)
 	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVFloatScratch(M*N, M*K)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x2b}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
 
 	got, err := MatMulF32NTInto(out, a, b, M, K, N)
 	if err != nil {
@@ -142,6 +149,15 @@ func TestMatMulF32NTIntoReusesOutputBackingForSplitK(t *testing.T) {
 		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 			t.Fatalf("MatMulF32NTInto differs at %d: %v vs %v", i, got[i], want[i])
 		}
+	}
+
+	scratch, err = getQMVFloatScratch(M*N, M*K)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MatMulF32NTInto split-K wrote through pooled scratch output instead of caller output")
 	}
 }
 

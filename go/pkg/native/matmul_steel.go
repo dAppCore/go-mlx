@@ -560,7 +560,7 @@ func matMulF32NTInto(out, a, b []float32, M, K, N int, directOutput bool) error 
 	// (the byte-parity test would catch the mismatch).
 	const splitKThreshold = 1024
 	if dtm*dtn <= splitKThreshold && dtk >= 8 && K >= maxMN {
-		return matMulF32SplitKNTInto(out, a, b, M, K, N)
+		return matMulF32SplitKNTInto(out, a, b, M, K, N, directOutput)
 	}
 	return matMulF32CoreInto(out, a, b, M, K, N, steelNT, true, directOutput)
 }
@@ -609,13 +609,13 @@ func getBlockDims(d0, d1, d2 int) (uint, uint, uint) {
 // GEMM into C_split[p], then the accum kernel sums the partitions into out. b is [N,K].
 func matMulF32SplitKNT(a, b []float32, M, K, N int) ([]float32, error) {
 	out := make([]float32, M*N)
-	if err := matMulF32SplitKNTInto(out, a, b, M, K, N); err != nil {
+	if err := matMulF32SplitKNTInto(out, a, b, M, K, N, false); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func matMulF32SplitKNTInto(out, a, b []float32, M, K, N int) error {
+func matMulF32SplitKNTInto(out, a, b []float32, M, K, N int, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -670,6 +670,13 @@ func matMulF32SplitKNTInto(out, a, b []float32, M, K, N int) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		bBuf := residentFloat32(b)
 		accScratch, err := getMatMulF32SplitKAccumScratch(M, N, partitions)
 		if err != nil {
@@ -704,7 +711,9 @@ func matMulF32SplitKNTInto(out, a, b []float32, M, K, N int) error {
 
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*float32)(unsafe.Pointer(&ioScratch.out.bytes[0])), M*N))
+		if !directOut {
+			copy(out, unsafe.Slice((*float32)(unsafe.Pointer(&ioScratch.out.bytes[0])), M*N))
+		}
 	})
 	return encErr
 }
