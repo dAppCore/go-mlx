@@ -64,6 +64,36 @@ func TestDecodeForwardICBIntoReusesOutputBacking(t *testing.T) {
 	}
 }
 
+func TestDecodeForwardICBCoreScratchOutputViewsUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 64, 1, 1, 64, 128, 1
+	sc := newDecodeForwardICBCoreScratch(dModel, nHeads*headDim, nKV*headDim, dFF, nLayers)
+	t.Cleanup(sc.closeOutputViews)
+
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+	views, ok := sc.outputViews(out, dModel*bf16Size)
+	if !ok {
+		t.Fatal("outputViews did not create no-copy views for caller-owned outputs")
+	}
+	for i := range out {
+		if views[i] == nil || views[i].Contents() != unsafe.Pointer(&out[i][0]) {
+			t.Fatalf("output view %d not backed by caller output slice", i)
+		}
+	}
+	firstID := views[0].GetID()
+	reused, ok := sc.outputViews(out, dModel*bf16Size)
+	if !ok {
+		t.Fatal("outputViews did not reuse no-copy views for unchanged caller outputs")
+	}
+	if reused[0].GetID() != firstID {
+		t.Fatal("outputViews rebuilt an unchanged caller output view")
+	}
+}
+
 func TestDecodeForwardICBAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 

@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 	"unsafe"
@@ -25,6 +26,10 @@ type decodeForwardICBCoreScratch struct {
 	offPtr, nPtr                      *int32
 	kRopeCmd, vCmd                    []metal.MTLIndirectComputeCommand
 	residentRes                       []metal.MTLResource
+	outputViewPtrs                    []uintptr
+	outputViewLens                    []int
+	outputViewBufs                    []metal.MTLBuffer
+	outputViewPinned                  []*pinnedNoCopyBytes
 }
 
 type decodeForwardICBCoreScratchKey struct {
@@ -78,6 +83,80 @@ func (s *decodeForwardICBCoreScratch) matches(dModel, qDim, kvDim, dFF, nLayers 
 		}
 	}
 	return true
+}
+
+func (s *decodeForwardICBCoreScratch) closeOutputViewAt(i int) {
+	if s == nil || i < 0 || i >= len(s.outputViewBufs) {
+		return
+	}
+	if i < len(s.outputViewPinned) && s.outputViewPinned[i] != nil {
+		s.outputViewPinned[i].Close()
+		s.outputViewPinned[i] = nil
+	}
+	s.outputViewPtrs[i] = 0
+	s.outputViewLens[i] = 0
+	s.outputViewBufs[i] = nil
+}
+
+func (s *decodeForwardICBCoreScratch) closeOutputViews() {
+	if s == nil {
+		return
+	}
+	for i := range s.outputViewBufs {
+		s.closeOutputViewAt(i)
+	}
+	s.outputViewPtrs = nil
+	s.outputViewLens = nil
+	s.outputViewBufs = nil
+	s.outputViewPinned = nil
+}
+
+func (s *decodeForwardICBCoreScratch) outputViews(outputs [][]byte, outLen int) ([]metal.MTLBuffer, bool) {
+	if s == nil || outLen <= 0 || len(outputs) == 0 {
+		return nil, false
+	}
+	for i := range outputs {
+		if len(outputs[i]) != outLen {
+			return nil, false
+		}
+	}
+	T := len(outputs)
+	if cap(s.outputViewBufs) < T {
+		s.closeOutputViews()
+		s.outputViewPtrs = make([]uintptr, T)
+		s.outputViewLens = make([]int, T)
+		s.outputViewBufs = make([]metal.MTLBuffer, T)
+		s.outputViewPinned = make([]*pinnedNoCopyBytes, T)
+	} else {
+		for i := T; i < len(s.outputViewBufs); i++ {
+			s.closeOutputViewAt(i)
+		}
+		s.outputViewPtrs = s.outputViewPtrs[:T]
+		s.outputViewLens = s.outputViewLens[:T]
+		s.outputViewBufs = s.outputViewBufs[:T]
+		s.outputViewPinned = s.outputViewPinned[:T]
+	}
+	for i := range outputs {
+		ptr := uintptr(unsafe.Pointer(&outputs[i][0]))
+		if s.outputViewBufs[i] != nil && s.outputViewPtrs[i] == ptr && s.outputViewLens[i] == outLen {
+			continue
+		}
+		s.closeOutputViewAt(i)
+		buf, pinner, noCopy := residentNoCopyBytes(outputs[i])
+		if !noCopy {
+			if pinner != nil {
+				pinner.Unpin()
+			}
+			return nil, false
+		}
+		pinned := &pinnedNoCopyBytes{bytes: outputs[i], buf: buf, pinner: pinner}
+		runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+		s.outputViewPtrs[i] = ptr
+		s.outputViewLens[i] = outLen
+		s.outputViewBufs[i] = buf
+		s.outputViewPinned[i] = pinned
+	}
+	return s.outputViewBufs, true
 }
 
 func decodeForwardICBCoreScratchPoolFor(dModel, qDim, kvDim, dFF, nLayers int) *sync.Pool {
@@ -276,6 +355,7 @@ func decodeForwardICBCore(
 		kRopeCmd := sc.kRopeCmd[:nLayers]
 		vCmd := sc.vCmd[:nLayers]
 		log2base := float32(math.Log2(float64(base)))
+		var finalOutCmd metal.MTLIndirectComputeCommand
 
 		for li := 0; li < nLayers; li++ {
 			opBase := opsPerLayer * li
@@ -332,12 +412,29 @@ func decodeForwardICBCore(
 				setBin(cmd(21), mulPSO, gelu, up, gated, cntFFB, dFF)
 			}
 			recordProj(li, cmd(dpIdx), gated, down, 0, projDown) // Wdown
-			setBin(cmd(dpIdx+1), addPSO, hBuf, down, outBuf, addModelB, dModel)
+			c = cmd(dpIdx + 1)
+			setBin(c, addPSO, hBuf, down, outBuf, addModelB, dModel)
+			if li == nLayers-1 {
+				finalOutCmd = c
+			}
 		}
 
 		lastOut := ping[nLayers%2] // residual stream output after N ping-pong swaps
 		ping0Ptr := (*byte)(ping[0].Contents())
 		lastOutPtr := (*byte)(lastOut.Contents())
+		var directOutputViews []metal.MTLBuffer
+		directOutput := false
+		if useCallerOut && finalOutCmd != nil {
+			if views, ok := sc.outputViews(outputs, outLen); ok {
+				directOutputViews = views
+				directOutput = true
+				resident = append(resident, directOutputViews...)
+			} else {
+				sc.closeOutputViews()
+			}
+		} else {
+			sc.closeOutputViews()
+		}
 		if cap(sc.residentRes) < len(resident) {
 			sc.residentRes = make([]metal.MTLResource, len(resident))
 		}
@@ -365,6 +462,9 @@ func decodeForwardICBCore(
 				setICBKernelBuffer(kRopeCmd[li], kCaches[li], rowOff, 1)
 				setICBKernelBuffer(vCmd[li], vCaches[li], rowOff, vOutBind)
 			}
+			if directOutput {
+				setICBKernelBuffer(finalOutCmd, directOutputViews[t], 0, 2)
+			}
 			copy(unsafe.Slice(ping0Ptr, dModel*bf16Size), inputs[t])
 
 			cb := commandBufferFast(queue)
@@ -377,7 +477,9 @@ func decodeForwardICBCore(
 			if profileForward {
 				profForwardGPUSec += float64(cb.GPUEndTime() - cb.GPUStartTime())
 			}
-			copy(outputs[t], unsafe.Slice(lastOutPtr, dModel*bf16Size))
+			if !directOutput {
+				copy(outputs[t], unsafe.Slice(lastOutPtr, dModel*bf16Size))
+			}
 		}
 	})
 	return outputs, nil
