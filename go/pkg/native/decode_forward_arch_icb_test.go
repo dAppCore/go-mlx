@@ -176,6 +176,33 @@ func TestArchICBReplayScratchOutputViewsUseCallerBacking(t *testing.T) {
 	}
 }
 
+func TestArchICBReplayDirectOutputResourcesIncludeCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 64, 1, 1, 64, 128, 1
+	sc := newArchICBReplayScratch(dModel, nHeads*headDim, nKV*headDim, dFF, dFF, nLayers, 0, 0, true, false)
+	t.Cleanup(sc.closeOutputViews)
+	base := []metal.MTLResource{scratchBF16(1)}
+	r := &archICBReplay{scratch: sc, residentRes: base, hasFinalOut: true}
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+
+	views, resources, ids, ok := r.directOutputResources(out, dModel*bf16Size)
+	if !ok {
+		t.Fatal("directOutputResources did not create caller-backed output resources")
+	}
+	if len(views) != len(out) || len(resources) != len(base)+len(out) || len(ids) != len(resources) {
+		t.Fatalf("directOutputResources sizes views=%d resources=%d ids=%d", len(views), len(resources), len(ids))
+	}
+	for i := range out {
+		if views[i] == nil || views[i].Contents() != unsafe.Pointer(&out[i][0]) {
+			t.Fatalf("direct output view %d not backed by caller output slice", i)
+		}
+	}
+}
+
 // TestDecodeForwardArchICB gates the arch-driven cache-grow ICB (the encode-bypass
 // replay) against the proven re-encode arch forward DecodeForwardArch — byte-for-byte
 // across every arch axis: all-owner/global, KV-share, sliding-window, and KV-share +

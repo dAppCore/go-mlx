@@ -540,6 +540,19 @@ func (r *archICBReplay) bindStepOutput(out metal.MTLBuffer) bool {
 	return r.bindStepOutputCommand(cmd, out)
 }
 
+func (r *archICBReplay) directOutputResources(outputs [][]byte, outLen int) ([]metal.MTLBuffer, []metal.MTLResource, []objc.ID, bool) {
+	if r == nil || r.scratch == nil || !r.hasFinalOut {
+		return nil, nil, nil, false
+	}
+	views, ok := r.scratch.outputViews(outputs, outLen)
+	if !ok {
+		r.scratch.closeOutputViews()
+		return nil, nil, nil, false
+	}
+	resources, ids := r.scratch.outputResidentResources(r.residentRes, r.residentResIDs, views)
+	return views, resources, ids, true
+}
+
 func (r *archICBReplay) bindStepOutputCommand(cmd metal.MTLIndirectComputeCommand, out metal.MTLBuffer) bool {
 	if r == nil || !r.hasFinalOut || cmd == nil || out == nil {
 		return false
@@ -727,13 +740,11 @@ func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCalle
 	var directOutputViews []metal.MTLBuffer
 	directOutput := false
 	residentRes, residentIDs := r.residentRes, r.residentResIDs
-	if useCallerOut && r.scratch != nil && r.hasFinalOut {
-		if views, ok := r.scratch.outputViews(outputs, outLen); ok {
+	if useCallerOut {
+		if views, resources, ids, ok := r.directOutputResources(outputs, outLen); ok {
 			directOutputViews = views
 			directOutput = true
-			residentRes, residentIDs = r.scratch.outputResidentResources(r.residentRes, r.residentResIDs, directOutputViews)
-		} else {
-			r.scratch.closeOutputViews()
+			residentRes, residentIDs = resources, ids
 		}
 	} else if r.scratch != nil {
 		r.scratch.closeOutputViews()
@@ -799,8 +810,34 @@ func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byt
 		rr.copyLastOutInto(out)
 		return out
 	}
+	var directOutputViews [2][]metal.MTLBuffer
+	var directResidentRes [2][]metal.MTLResource
+	var directResidentIDs [2][]objc.ID
+	directOutput := false
+	if useCallerOut {
+		if views0, resources0, ids0, ok0 := r.directOutputResources(outputs, outLen); ok0 {
+			if views1, resources1, ids1, ok1 := r2.directOutputResources(outputs, outLen); ok1 {
+				directOutput = true
+				directOutputViews = [2][]metal.MTLBuffer{views0, views1}
+				directResidentRes = [2][]metal.MTLResource{resources0, resources1}
+				directResidentIDs = [2][]objc.ID{ids0, ids1}
+			}
+		}
+	} else {
+		if r.scratch != nil {
+			r.scratch.closeOutputViews()
+		}
+		if r2.scratch != nil {
+			r2.scratch.closeOutputViews()
+		}
+	}
 	var coreErr error
 	withAutoreleasePool(func() {
+		var directOutputCmds [2]metal.MTLIndirectComputeCommand
+		if directOutput {
+			directOutputCmds[0] = r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+			directOutputCmds[1] = r2.icb.IndirectComputeCommandAtIndex(uint(r2.finalOutIdx))
+		}
 		var prev *archICBReplay
 		var prevCB metal.MTLCommandBufferObject
 		var prevT int
@@ -820,22 +857,34 @@ func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byt
 				}
 				pli = p
 			}
+			slot := t % 2
+			if directOutput {
+				rr.bindStepOutputCommand(directOutputCmds[slot], directOutputViews[slot][t])
+			}
 			rr.prepareStep(inputs[t], t, pli)
 			cb := commandBufferFast(queue)
 			enc := computeCommandEncoderFast(cb)
-			enc.UseResourcesCountUsage(rr.residentRes, uint(len(rr.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			if directOutput {
+				useResourcesIDsFast(enc, directResidentRes[slot], directResidentIDs[slot], metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			} else {
+				enc.UseResourcesCountUsage(rr.residentRes, uint(len(rr.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			}
 			enc.ExecuteCommandsInBufferWithRange(rr.icb, rr.rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb) // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
 			if prevReady {
 				waitUntilCompletedFast(prevCB)
-				outputs[prevT] = readOut(prev, outputs[prevT])
+				if !directOutput {
+					outputs[prevT] = readOut(prev, outputs[prevT])
+				}
 			}
 			prev, prevCB, prevT, prevReady = rr, cb, t, true
 		}
 		if prevReady {
 			waitUntilCompletedFast(prevCB)
-			outputs[prevT] = readOut(prev, outputs[prevT])
+			if !directOutput {
+				outputs[prevT] = readOut(prev, outputs[prevT])
+			}
 		}
 	})
 	if coreErr != nil {

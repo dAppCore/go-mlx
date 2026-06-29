@@ -41,6 +41,34 @@ func TestDecodeForwardArchICBQuantAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestDecodeForwardArchICBQuantIntoAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	const groupSize, bits = 64, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)}
+	outputs := make([][]byte, len(inputs))
+	for i := range outputs {
+		outputs[i] = make([]byte, dModel*bf16Size)
+	}
+	if _, err := DecodeForwardArchICBQuantInto(outputs, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+		t.Fatalf("DecodeForwardArchICBQuantInto warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, forwardErr = DecodeForwardArchICBQuantInto(outputs, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardArchICBQuantInto: %v", forwardErr)
+	}
+	if allocs > 1780 {
+		t.Fatalf("DecodeForwardArchICBQuantInto allocations = %.0f, want <= 1780", allocs)
+	}
+}
+
 func TestDecodeForwardArchICBQuantIntoReusesOutputBacking(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -71,6 +99,45 @@ func TestDecodeForwardArchICBQuantIntoReusesOutputBacking(t *testing.T) {
 			t.Fatalf("DecodeForwardArchICBQuantInto token %d did not reuse caller-owned output backing", tok)
 		}
 		eqBytes(t, "DecodeForwardArchICBQuantInto token", got[tok], want[tok])
+	}
+}
+
+func TestDecodeForwardArchICBQuantIntoPipelinedReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 8
+	const groupSize, bits = 64, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(4, dModel)
+	layers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)}
+	oldPipe := pipelinedBatchDisabled
+	pipelinedBatchDisabled = true
+	want, err := DecodeForwardArchICBQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	pipelinedBatchDisabled = oldPipe
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant serial reference: %v", err)
+	}
+	out := make([][]byte, len(inputs))
+	ptrs := make([]unsafe.Pointer, len(inputs))
+	for tok := range out {
+		out[tok] = bytes.Repeat([]byte{byte(0xa5 + tok)}, dModel*bf16Size)
+		ptrs[tok] = unsafe.Pointer(&out[tok][0])
+	}
+
+	pipelinedBatchDisabled = false
+	got, err := DecodeForwardArchICBQuantInto(out, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	pipelinedBatchDisabled = oldPipe
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuantInto pipelined: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DecodeForwardArchICBQuantInto pipelined returned %d outputs, want %d", len(got), len(want))
+	}
+	for tok := range want {
+		if len(got[tok]) != dModel*bf16Size || unsafe.Pointer(&got[tok][0]) != ptrs[tok] {
+			t.Fatalf("DecodeForwardArchICBQuantInto pipelined token %d did not reuse caller-owned output backing", tok)
+		}
+		eqBytes(t, "DecodeForwardArchICBQuantInto pipelined token", got[tok], want[tok])
 	}
 }
 

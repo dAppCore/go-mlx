@@ -728,7 +728,9 @@ func decodeForwardArchICBQuantInto(
 	if coreErr != nil {
 		return nil, coreErr
 	}
+	defer r.releaseScratch()
 	if r2 != nil {
+		defer r2.releaseScratch()
 		return r.runBatchPipelinedInto(r2, outputs, inputs, useCallerOut)
 	}
 	return r.runBatchInto(outputs, inputs, useCallerOut)
