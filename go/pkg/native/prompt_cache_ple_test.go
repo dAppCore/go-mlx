@@ -6,6 +6,7 @@ package native
 
 import (
 	"bytes"
+	"runtime"
 	"testing"
 
 	"dappco.re/go/mlx/pkg/model"
@@ -119,6 +120,44 @@ func TestPrefillCachedIDsPLEUsesGPUNextInputs(t *testing.T) {
 	}
 	if !bytes.Equal(chainedHidden, serialHidden) {
 		t.Fatal("GPU-input cached prefix produced different continuation hidden than host-input prefix")
+	}
+}
+
+func TestStepIDRetainedGPUInputsWritesRetainedHiddenDirectly(t *testing.T) {
+	requireNativeRuntime(t)
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() { chainedGPUInputsDisabled = oldChainDisabled }()
+	chainedGPUInputsDisabled = false
+
+	control := newPromptCachePLEFixture(t)
+	candidate := newPromptCachePLEFixture(t)
+	if candidate.encNextInputsGPU == nil || candidate.state.icb == nil {
+		t.Fatal("PLE fixture did not wire GPU next-inputs seam")
+	}
+
+	wantHidden, ok, err := control.stepIDRetainedGPUInputsInPool(5)
+	if err != nil || !ok {
+		t.Fatalf("control stepIDRetainedGPUInputsInPool ok=%v err=%v", ok, err)
+	}
+	if len(control.retainedHidden) == 0 {
+		t.Fatal("control did not retain GPU-input hidden")
+	}
+
+	poison := bytes.Repeat([]byte{0x6d}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poison[0]
+	gotHidden, ok, err := candidate.stepIDRetainedGPUInputsInPool(5)
+	runtime.KeepAlive(poison)
+	if err != nil || !ok {
+		t.Fatalf("candidate stepIDRetainedGPUInputsInPool ok=%v err=%v", ok, err)
+	}
+	if !bytes.Equal(gotHidden, wantHidden) {
+		t.Fatal("GPU-input retained step read hidden from lastOutPtr instead of direct retained output")
+	}
+	if !bytes.Equal(candidate.retainedHidden, wantHidden) {
+		t.Fatal("GPU-input retained boundary differs from direct hidden")
+	}
+	if candidate.retainedHiddenBuffer() == nil {
+		t.Fatal("GPU-input retained hidden is not backed by the pinned no-copy buffer")
 	}
 }
 

@@ -401,15 +401,36 @@ func (s *ArchSession) stepIDRetainedGPUInputsInPool(id int32) ([]byte, bool, err
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		if _, err = s.encodeStepBodyFromGPUInputsInPool(enc, id); err != nil {
-			endEncodingFast(enc)
-			return
+		var directHidden []byte
+		directOut := false
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			var directOK bool
+			_, directOK, err = s.encodeStepBodyFromGPUInputsIntoBufferInPool(enc, id, pinned.buf)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
+			if directOK {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			if _, err = s.encodeStepBodyFromGPUInputsInPool(enc, id); err != nil {
+				endEncodingFast(enc)
+				return
+			}
 		}
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		s.pos++
-		s.rememberRetainedHiddenFrom(s.state.icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(s.state.icb.lastOutPtr)
+		}
 	})
 	if err != nil {
 		return nil, true, err
