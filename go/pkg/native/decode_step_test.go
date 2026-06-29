@@ -192,6 +192,38 @@ func TestAttentionStepKVIntoUsesCallerBackingAndBypassesScratchOutput(t *testing
 	}
 }
 
+func TestAttentionStepKVIntoBypassesScratchKVCache(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+
+	wantK := append([]byte(nil), kCache...)
+	wantV := append([]byte(nil), vCache...)
+	want, err := AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, wantK, wantV, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("AttentionStepKV: %v", err)
+	}
+
+	kSentinel, vSentinel := seedAttentionKVScratch(t, len(kCache), len(vCache), 0x6a, 0x6b)
+	gotK := append([]byte(nil), kCache...)
+	gotV := append([]byte(nil), vCache...)
+	out := make([]byte, dModel*bf16Size)
+	got, err := AttentionStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, gotK, gotV, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("AttentionStepKVInto: %v", err)
+	}
+	eqBytes(t, "AttentionStepKVInto no-copy KV out", got, want)
+	eqBytes(t, "AttentionStepKVInto no-copy KV kCache", gotK, wantK)
+	eqBytes(t, "AttentionStepKVInto no-copy KV vCache", gotV, wantV)
+	assertAttentionKVScratchUntouched(t, len(kCache), len(vCache), kSentinel, vSentinel)
+}
+
 func TestAttentionStepKVAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -356,6 +388,38 @@ func TestDecodeStepKVIntoUsesCallerBackingAndBypassesScratchOutput(t *testing.T)
 	}
 }
 
+func TestDecodeStepKVIntoBypassesScratchKVCache(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+
+	wantK := append([]byte(nil), kCache...)
+	wantV := append([]byte(nil), vCache...)
+	want, err := DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, wantK, wantV, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeStepKV: %v", err)
+	}
+
+	kSentinel, vSentinel := seedAttentionKVScratch(t, len(kCache), len(vCache), 0x6c, 0x6d)
+	gotK := append([]byte(nil), kCache...)
+	gotV := append([]byte(nil), vCache...)
+	out := make([]byte, dModel*bf16Size)
+	got, err := DecodeStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, gotK, gotV, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeStepKVInto: %v", err)
+	}
+	eqBytes(t, "DecodeStepKVInto no-copy KV out", got, want)
+	eqBytes(t, "DecodeStepKVInto no-copy KV kCache", gotK, wantK)
+	eqBytes(t, "DecodeStepKVInto no-copy KV vCache", gotV, wantV)
+	assertAttentionKVScratchUntouched(t, len(kCache), len(vCache), kSentinel, vSentinel)
+}
+
 func TestDecodeStepKVAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -383,5 +447,40 @@ func TestDecodeStepKVAllocationBudget(t *testing.T) {
 	}
 	if allocs > 45 {
 		t.Fatalf("DecodeStepKV allocations = %.0f, want <= 45", allocs)
+	}
+}
+
+func seedAttentionKVScratch(t *testing.T, kBytes, vBytes int, kFill, vFill byte) ([]byte, []byte) {
+	t.Helper()
+	scratch, err := getAttentionBlockKVScratch(kBytes, vBytes)
+	if err != nil {
+		t.Fatalf("getAttentionBlockKVScratch: %v", err)
+	}
+	kSentinel := make([]byte, kBytes)
+	vSentinel := make([]byte, vBytes)
+	for i := range kSentinel {
+		kSentinel[i] = kFill
+	}
+	for i := range vSentinel {
+		vSentinel[i] = vFill
+	}
+	copy(scratch.k.bytes, kSentinel)
+	copy(scratch.v.bytes, vSentinel)
+	putAttentionBlockKVScratch(scratch)
+	return kSentinel, vSentinel
+}
+
+func assertAttentionKVScratchUntouched(t *testing.T, kBytes, vBytes int, wantK, wantV []byte) {
+	t.Helper()
+	reused, err := getAttentionBlockKVScratch(kBytes, vBytes)
+	if err != nil {
+		t.Fatalf("getAttentionBlockKVScratch reused: %v", err)
+	}
+	defer putAttentionBlockKVScratch(reused)
+	if !bytes.Equal(reused.k.bytes[:len(wantK)], wantK) {
+		t.Fatal("step KV path still staged kCache through pooled scratch")
+	}
+	if !bytes.Equal(reused.v.bytes[:len(wantV)], wantV) {
+		t.Fatal("step KV path still staged vCache through pooled scratch")
 	}
 }

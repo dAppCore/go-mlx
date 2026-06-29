@@ -17,12 +17,15 @@ func BenchmarkDecodeStepKV64x128(b *testing.B) {
 	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
 	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
 	_ = qDim
+	kc := append([]byte(nil), kCache...)
+	vc := append([]byte(nil), vCache...)
+	if _, err := DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
 	b.SetBytes(int64(len(x) + len(kCache) + len(vCache)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kc := append([]byte(nil), kCache...)
-		vc := append([]byte(nil), vCache...)
 		if _, err := DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err != nil {
 			b.Fatal(err)
 		}
@@ -40,12 +43,15 @@ func BenchmarkDecodeStepKVInto64x128(b *testing.B) {
 	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
 	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
 	out := make([]byte, dModel*bf16Size)
+	kc := append([]byte(nil), kCache...)
+	vc := append([]byte(nil), vCache...)
+	if _, err := DecodeStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
 	b.SetBytes(int64(len(x) + len(kCache) + len(vCache)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kc := append([]byte(nil), kCache...)
-		vc := append([]byte(nil), vCache...)
 		if _, err := DecodeStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err != nil {
 			b.Fatal(err)
 		}
@@ -62,12 +68,15 @@ func BenchmarkAttentionStepKV64x128(b *testing.B) {
 	x := toBF16Bytes(syntheticFloat32(dModel, 5))
 	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
 	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+	kc := append([]byte(nil), kCache...)
+	vc := append([]byte(nil), vCache...)
+	if _, err := AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
 	b.SetBytes(int64(len(x) + len(kCache) + len(vCache)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kc := append([]byte(nil), kCache...)
-		vc := append([]byte(nil), vCache...)
 		if _, err := AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps); err != nil {
 			b.Fatal(err)
 		}
@@ -85,12 +94,15 @@ func BenchmarkAttentionStepKVInto64x128(b *testing.B) {
 	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
 	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
 	out := make([]byte, dModel*bf16Size)
+	kc := append([]byte(nil), kCache...)
+	vc := append([]byte(nil), vCache...)
+	if _, err := AttentionStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
 	b.SetBytes(int64(len(x) + len(kCache) + len(vCache)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kc := append([]byte(nil), kCache...)
-		vc := append([]byte(nil), vCache...)
 		if _, err := AttentionStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kc, vc, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps); err != nil {
 			b.Fatal(err)
 		}

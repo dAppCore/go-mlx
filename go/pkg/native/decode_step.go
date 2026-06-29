@@ -491,10 +491,21 @@ func AttentionStepKVInto(out []byte, x, attnNormW, wQ, wK, wV, wO, kCache, vCach
 			return
 		}
 		defer putAttentionBlockKVScratch(kvScratch)
-		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
-		if err != nil {
-			encErr = err
-			return
+		var kBuf, vBuf metal.MTLBuffer
+		directKV := false
+		if callerOut {
+			kBuf, vBuf, directKV, err = kvScratch.buffersNoCopy(kCache, vCache)
+			if err != nil {
+				encErr = err
+				return
+			}
+		}
+		if !directKV {
+			kBuf, vBuf, err = kvScratch.buffers(kCache, vCache)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		offBuf := scalarI32(int32(pos))
 		sc := getAttnScratch(dModel, qDim, kvDim, nHeads, 0)
@@ -512,9 +523,11 @@ func AttentionStepKVInto(out []byte, x, attnNormW, wQ, wK, wV, wO, kCache, vCach
 		if !directOut {
 			copy(out, unsafe.Slice((*byte)(hBuf.Contents()), len(out)))
 		}
-		// reflect the grown cache rows back to the caller's slices
-		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
-		copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))
+		if !directKV {
+			// reflect the grown cache rows back to the caller's slices
+			copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
+			copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))
+		}
 	})
 	return out, encErr
 }
@@ -591,10 +604,21 @@ func DecodeStepKVInto(
 			return
 		}
 		defer putAttentionBlockKVScratch(kvScratch)
-		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
-		if err != nil {
-			encErr = err
-			return
+		var kBuf, vBuf metal.MTLBuffer
+		directKV := false
+		if callerOut {
+			kBuf, vBuf, directKV, err = kvScratch.buffersNoCopy(kCache, vCache)
+			if err != nil {
+				encErr = err
+				return
+			}
+		}
+		if !directKV {
+			kBuf, vBuf, err = kvScratch.buffers(kCache, vCache)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		mnwBuf := residentBytes(mlpNormW)
 		offBuf := scalarI32(int32(pos))
@@ -621,8 +645,10 @@ func DecodeStepKVInto(
 		if !directOut {
 			copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
 		}
-		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
-		copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))
+		if !directKV {
+			copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
+			copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))
+		}
 	})
 	return out, encErr
 }

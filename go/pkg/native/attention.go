@@ -30,6 +30,14 @@ func sharedBytes(b []byte) metal.MTLBuffer {
 type attentionBlockKVScratch struct {
 	kBytes, vBytes int
 	k, v           *pinnedNoCopyBytes
+	kViewPtr       uintptr
+	kViewLen       int
+	kView          metal.MTLBuffer
+	kViewPinned    *pinnedNoCopyBytes
+	vViewPtr       uintptr
+	vViewLen       int
+	vView          metal.MTLBuffer
+	vViewPinned    *pinnedNoCopyBytes
 }
 
 type attentionBlockKVScratchKey struct {
@@ -96,7 +104,28 @@ func (s *attentionBlockKVScratch) Close() {
 		s.v.Close()
 		s.v = nil
 	}
+	s.closeCacheViews()
 	s.kBytes, s.vBytes = 0, 0
+}
+
+func (s *attentionBlockKVScratch) closeCacheViews() {
+	if s == nil {
+		return
+	}
+	if s.kViewPinned != nil {
+		s.kViewPinned.Close()
+	}
+	if s.vViewPinned != nil {
+		s.vViewPinned.Close()
+	}
+	s.kViewPtr = 0
+	s.kViewLen = 0
+	s.kView = nil
+	s.kViewPinned = nil
+	s.vViewPtr = 0
+	s.vViewLen = 0
+	s.vView = nil
+	s.vViewPinned = nil
 }
 
 func (s *attentionBlockKVScratch) buffers(kCache, vCache []byte) (metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -115,6 +144,56 @@ func (s *attentionBlockKVScratch) buffers(kCache, vCache []byte) (metal.MTLBuffe
 		return nil, nil, err
 	}
 	return kBuf, vBuf, nil
+}
+
+func (s *attentionBlockKVScratch) buffersNoCopy(kCache, vCache []byte) (metal.MTLBuffer, metal.MTLBuffer, bool, error) {
+	if s == nil || s.k == nil || s.v == nil {
+		return nil, nil, false, core.NewError("native.attentionBlockKVScratch.buffersNoCopy: scratch is nil")
+	}
+	if len(kCache) != s.kBytes || len(vCache) != s.vBytes {
+		return nil, nil, false, core.NewError("native.attentionBlockKVScratch.buffersNoCopy: cache length mismatch")
+	}
+	if len(kCache) == 0 || len(vCache) == 0 {
+		return nil, nil, false, core.NewError("native.attentionBlockKVScratch.buffersNoCopy: cache slices are empty")
+	}
+	kPtr := uintptr(unsafe.Pointer(&kCache[0]))
+	vPtr := uintptr(unsafe.Pointer(&vCache[0]))
+	if s.kView != nil && s.vView != nil &&
+		s.kViewPtr == kPtr && s.kViewLen == len(kCache) &&
+		s.vViewPtr == vPtr && s.vViewLen == len(vCache) {
+		return s.kView, s.vView, true, nil
+	}
+	s.closeCacheViews()
+	kBuf, kPinner, kNoCopy := residentNoCopyBytes(kCache)
+	if !kNoCopy {
+		if kPinner != nil {
+			kPinner.Unpin()
+		}
+		return nil, nil, false, nil
+	}
+	vBuf, vPinner, vNoCopy := residentNoCopyBytes(vCache)
+	if !vNoCopy {
+		if kPinner != nil {
+			kPinner.Unpin()
+		}
+		if vPinner != nil {
+			vPinner.Unpin()
+		}
+		return nil, nil, false, nil
+	}
+	kPinned := &pinnedNoCopyBytes{bytes: kCache, buf: kBuf, pinner: kPinner}
+	vPinned := &pinnedNoCopyBytes{bytes: vCache, buf: vBuf, pinner: vPinner}
+	runtime.SetFinalizer(kPinned, (*pinnedNoCopyBytes).Close)
+	runtime.SetFinalizer(vPinned, (*pinnedNoCopyBytes).Close)
+	s.kViewPtr = kPtr
+	s.kViewLen = len(kCache)
+	s.kView = kBuf
+	s.kViewPinned = kPinned
+	s.vViewPtr = vPtr
+	s.vViewLen = len(vCache)
+	s.vView = vBuf
+	s.vViewPinned = vPinned
+	return kBuf, vBuf, true, nil
 }
 
 func withPinnedNoCopyBytes(b []byte, fn func(metal.MTLBuffer) error) error {
