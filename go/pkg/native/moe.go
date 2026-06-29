@@ -160,6 +160,14 @@ func (s *moeExpertsScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 // [numExperts × dModel × dFF]; x is dModel bf16, idx topK int32, weights topK bf16.
 // Byte-for-byte against a composed reference of the parity-proven ops in the tests.
 func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExperts, topK, dModel, dFF int) ([]byte, error) {
+	return moeExpertsInto(nil, x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF, false)
+}
+
+func MoEExpertsInto(out []byte, x []byte, idx []int32, weights, gateW, upW, downW []byte, numExperts, topK, dModel, dFF int) ([]byte, error) {
+	return moeExpertsInto(out, x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF, true)
+}
+
+func moeExpertsInto(out []byte, x []byte, idx []int32, weights, gateW, upW, downW []byte, numExperts, topK, dModel, dFF int, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -178,11 +186,18 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 			return nil, core.NewError("native.MoEExperts: expert index out of range")
 		}
 	}
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if topK == 0 {
-		return make([]byte, dModel*bf16Size), nil
+		clear(out)
+		return out, nil
 	}
 
-	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
@@ -203,6 +218,13 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				acc = tmp
+				directOut = true
+			}
+		}
 		gateBuf, upBuf, downBuf := residentBytes(gateW), residentBytes(upW), residentBytes(downW)
 
 		cb := commandBufferFast(queue)
@@ -236,7 +258,9 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*byte)(acc.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(scratch.acc.Contents()), len(out)))
+		}
 	})
 	return out, encErr
 }

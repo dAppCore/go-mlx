@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"unsafe"
@@ -149,5 +150,53 @@ func TestMoEExpertsAllocationBudget(t *testing.T) {
 	}
 	if allocs > 30 {
 		t.Fatalf("MoEExperts allocations = %.0f, want <= 30", allocs)
+	}
+}
+
+func TestMoEExpertsIntoWritesDirectlyToCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF = 4, 2, 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	gateW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 53))
+	upW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 71))
+	downW := toBF16Bytes(syntheticFloat32(numExperts*dModel*dFF, 47))
+	want, err := MoEExperts(x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF)
+	if err != nil {
+		t.Fatalf("MoEExperts: %v", err)
+	}
+
+	scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch: %v", err)
+	}
+	accBytes := unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0xb6}, len(accBytes))
+	copy(accBytes, sentinel)
+	putMoEExpertsScratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := MoEExpertsInto(out, x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF)
+	if err != nil {
+		t.Fatalf("MoEExpertsInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MoEExpertsInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "MoEExpertsInto direct output", got, want)
+
+	scratch, err = getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch after call: %v", err)
+	}
+	defer putMoEExpertsScratch(scratch)
+	accBytes = unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	if !bytes.Equal(accBytes, sentinel) {
+		t.Fatal("MoEExpertsInto wrote through pooled accumulator instead of caller output")
 	}
 }
