@@ -297,12 +297,33 @@ func (s *ArchSession) prefillCachedIDs(ids []int32) error {
 		} else {
 			embs = make([][]byte, len(ids))
 		}
-		for i, id := range ids {
-			emb, err := s.embed(id)
-			if err != nil {
-				return err
+		if s.canUseEmbedScratch() {
+			rowBytes := s.arch.Hidden * bf16Size
+			need := len(ids) * rowBytes
+			if cap(s.embedScratch) < need {
+				s.embedScratch = make([]byte, need)
+			} else {
+				s.embedScratch = s.embedScratch[:need]
 			}
-			embs[i] = emb
+			for i, id := range ids {
+				dst := s.embedScratch[i*rowBytes : (i+1)*rowBytes]
+				emb, err := s.embedInto(dst, id)
+				if err != nil {
+					return err
+				}
+				if len(emb) != rowBytes {
+					return core.NewError("native.prefillCachedIDs: embedInto returned wrong hidden size")
+				}
+				embs[i] = emb
+			}
+		} else {
+			for i, id := range ids {
+				emb, err := s.embed(id)
+				if err != nil {
+					return err
+				}
+				embs[i] = emb
+			}
 		}
 		var ok bool
 		var err error

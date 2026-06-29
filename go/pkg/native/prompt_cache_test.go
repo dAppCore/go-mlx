@@ -6,6 +6,7 @@ package native
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"unsafe"
 
@@ -637,6 +638,42 @@ func TestWarmPromptCacheReusesResidentIDBacking(t *testing.T) {
 	}
 	if after := unsafe.Pointer(&sess.cachedIDs[0]); after != before {
 		t.Fatalf("resident id backing changed from %p to %p", before, after)
+	}
+}
+
+func TestPrefillCachedIDsUsesEmbedInto(t *testing.T) {
+	requireNativeRuntime(t)
+	control := newSessionStateFixture(t)
+	candidate := newSessionStateFixture(t)
+	control.state.icb = nil
+	candidate.state.icb = nil
+	prefix := []int32{1, 2, 3, 4, 5}
+
+	if err := control.prefillCachedIDs(prefix); err != nil {
+		t.Fatalf("control prefillCachedIDs: %v", err)
+	}
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, errors.New("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	if err := candidate.prefillCachedIDs(prefix); err != nil {
+		t.Fatalf("candidate prefillCachedIDs: %v", err)
+	}
+
+	var want, got []byte
+	var err error
+	withAutoreleasePool(func() {
+		want, err = control.stepIDInPool(6)
+		if err != nil {
+			return
+		}
+		got, err = candidate.stepIDInPool(6)
+	})
+	if err != nil {
+		t.Fatalf("post-prefill stepIDInPool: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("embedInto prefillCachedIDs cache differs from allocating reference")
 	}
 }
 
