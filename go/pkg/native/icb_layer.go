@@ -402,6 +402,17 @@ func DecodeTokenICB(
 	base, scale float32, offset int, eps float32,
 	replays int,
 ) ([]byte, error) {
+	return DecodeTokenICBInto(nil, x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, kvLen, dFF, nLayers, base, scale, offset, eps, replays)
+}
+
+// DecodeTokenICBInto runs DecodeTokenICB and writes into caller-owned bf16 output when possible.
+func DecodeTokenICBInto(
+	out []byte,
+	x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, kvLen, dFF, nLayers int,
+	base, scale float32, offset int, eps float32,
+	replays int,
+) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -423,6 +434,13 @@ func DecodeTokenICB(
 	}
 	if len(kCache) != nKVHeads*kvLen*headDim*bf16Size || len(vCache) != nKVHeads*kvLen*headDim*bf16Size {
 		return nil, core.NewError("native.DecodeTokenICB: kCache/vCache size mismatch")
+	}
+	outLen := dModel * bf16Size
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
 	}
 
 	rmsPSO, err := pipelineForICB("rmsbfloat16")
@@ -485,7 +503,6 @@ func DecodeTokenICB(
 		opsPerLayer, dpIdx = 12, 10
 	}
 
-	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
@@ -498,6 +515,15 @@ func DecodeTokenICB(
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		// Odd layer counts finish in xB; even counts finish in xA, which must be
+		// seeded with the input token, so only xB can safely alias caller output.
+		if callerOut && nLayers%2 == 1 {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				xB = tmp
+				directOut = true
+			}
 		}
 		// --- weight / KV / gelu-const data buffers (shared across layers) ---
 		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
@@ -665,10 +691,12 @@ func DecodeTokenICB(
 			commitCommandBufferFast(cb)
 			waitUntilCompletedFast(cb)
 		}
-		if lastOut.GetID() == ioScratch.x.buf.GetID() {
-			copy(out, ioScratch.x.bytes[:len(out)])
-		} else {
-			copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			if lastOut.GetID() == ioScratch.x.buf.GetID() {
+				copy(out, ioScratch.x.bytes[:len(out)])
+			} else {
+				copy(out, ioScratch.out.bytes[:len(out)])
+			}
 		}
 	})
 	return out, encErr

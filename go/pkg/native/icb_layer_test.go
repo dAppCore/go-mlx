@@ -143,6 +143,54 @@ func TestDecodeTokenICBOneLayerMatchesDecodeLayer(t *testing.T) {
 	eqBytes(t, "DecodeTokenICB", got, want)
 }
 
+func TestDecodeTokenICBIntoUsesCallerBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 2, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+	want, err := DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps)
+	if err != nil {
+		t.Fatalf("DecodeLayer: %v", err)
+	}
+
+	scratch, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := make([]byte, dModel*bf16Size)
+	for i := range sentinel {
+		sentinel[i] = 0x7e
+	}
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	got, err := DecodeTokenICBInto(out, x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, 1, base, scale, offset, eps, 1)
+	if err != nil {
+		t.Fatalf("DecodeTokenICBInto: %v", err)
+	}
+	if len(got) == 0 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("DecodeTokenICBInto did not return the caller output backing")
+	}
+	eqBytes(t, "DecodeTokenICBInto", got, want)
+
+	reused, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch reused: %v", err)
+	}
+	defer putQMVBF16Scratch(reused)
+	if reused.out != scratch.out {
+		t.Fatal("DecodeTokenICBInto did not return the seeded scratch to the pool")
+	}
+	if !bytes.Equal(reused.out.bytes[:len(sentinel)], sentinel) {
+		t.Fatal("DecodeTokenICBInto still staged output through pooled scratch")
+	}
+}
+
 func TestDecodeTokenICBKeepsFixedWeightsResident(t *testing.T) {
 	requireNativeRuntime(t)
 
