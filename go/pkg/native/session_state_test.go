@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"reflect"
 	"testing"
 	"unsafe"
@@ -1348,6 +1349,83 @@ func TestArchSessionRestoreKVRootSnapshotContinuesFromNativeLayerSlabs(t *testin
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("restored GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func TestArchSessionRestoreKVRootSnapshotContinuesFromFloat32LayerSlabs(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := saved.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	for idx := range snapshot.Layers {
+		layer := &snapshot.Layers[idx]
+		layer.KeyDType = "float32"
+		layer.KeyBytes = bf16RawToF32Raw(layer.KeyBytes)
+		layer.ValueDType = "float32"
+		layer.ValueBytes = bf16RawToF32Raw(layer.ValueBytes)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKV(snapshot); err != nil {
+		t.Fatalf("RestoreKV(float32 slabs): %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+	got, err := restored.GenerateFromCache(3, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after RestoreKV(float32 slabs): %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("float32-restored GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func bf16RawToF32Raw(src []byte) []byte {
+	out := make([]byte, len(src)/bf16Size*4)
+	for i := 0; i < len(src)/bf16Size; i++ {
+		f := bf16ToF32(src[i*bf16Size], src[i*bf16Size+1])
+		binary.LittleEndian.PutUint32(out[i*4:i*4+4], math.Float32bits(f))
+	}
+	return out
+}
+
+func TestNativeKVRawToBF16ConvertsRawDTypes(t *testing.T) {
+	rawF16 := make([]byte, 4)
+	binary.LittleEndian.PutUint16(rawF16[0:2], 0x3c00) // 1.0
+	binary.LittleEndian.PutUint16(rawF16[2:4], 0xc000) // -2.0
+	gotF16 := make([]byte, 4)
+	if err := nativeKVRawToBF16(gotF16, rawF16, "float16"); err != nil {
+		t.Fatalf("nativeKVRawToBF16(float16): %v", err)
+	}
+	if got := []float32{bf16ToF32(gotF16[0], gotF16[1]), bf16ToF32(gotF16[2], gotF16[3])}; got[0] != 1 || got[1] != -2 {
+		t.Fatalf("float16 conversion = %v, want [1 -2]", got)
+	}
+
+	rawF32 := make([]byte, 8)
+	binary.LittleEndian.PutUint32(rawF32[0:4], math.Float32bits(3.5))
+	binary.LittleEndian.PutUint32(rawF32[4:8], math.Float32bits(-4.25))
+	gotF32 := make([]byte, 4)
+	if err := nativeKVRawToBF16(gotF32, rawF32, "float32"); err != nil {
+		t.Fatalf("nativeKVRawToBF16(float32): %v", err)
+	}
+	if got := []float32{bf16ToF32(gotF32[0], gotF32[1]), bf16ToF32(gotF32[2], gotF32[3])}; got[0] != 3.5 || got[1] != -4.25 {
+		t.Fatalf("float32 conversion = %v, want [3.5 -4.25]", got)
 	}
 }
 

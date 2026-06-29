@@ -5,10 +5,13 @@
 package native
 
 import (
+	"encoding/binary"
+	"math"
 	"strings"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/safetensors"
 )
 
 const nativeKVSnapshotDTypeBF16 = "bfloat16"
@@ -622,18 +625,18 @@ func nativeKVLayerSnapshotSlabs(layer kv.LayerSnapshot, view sessionStateLayerVi
 		return nil, nil, 0, core.NewError("native.RestoreKV: unsupported turboquant KV payload")
 	}
 	if len(layer.KeyBytes) > 0 || len(layer.ValueBytes) > 0 {
-		keySeq, err := nativeKVValidateLayerRaw(layer.KeyBytes, layer.KeyDType, layer.KeyShape, view)
+		keySlab, keySeq, err := nativeKVLayerRawSlabBF16(layer.KeyBytes, layer.KeyDType, layer.KeyShape, view)
 		if err != nil {
 			return nil, nil, 0, core.E("native.RestoreKV", "native layer key", err)
 		}
-		valueSeq, err := nativeKVValidateLayerRaw(layer.ValueBytes, layer.ValueDType, layer.ValueShape, view)
+		valueSlab, valueSeq, err := nativeKVLayerRawSlabBF16(layer.ValueBytes, layer.ValueDType, layer.ValueShape, view)
 		if err != nil {
 			return nil, nil, 0, core.E("native.RestoreKV", "native layer value", err)
 		}
 		if keySeq != valueSeq {
 			return nil, nil, 0, core.NewError("native.RestoreKV: layer key/value window mismatch")
 		}
-		return layer.KeyBytes, layer.ValueBytes, keySeq, nil
+		return keySlab, valueSlab, keySeq, nil
 	}
 	return nativeKVHeadSnapshotSlabs(layer, view)
 }
@@ -658,24 +661,33 @@ func nativeKVLayerHasPayload(layer kv.LayerSnapshot) bool {
 	return false
 }
 
-func nativeKVValidateLayerRaw(raw []byte, dtype string, shape []int32, view sessionStateLayerView) (int, error) {
+func nativeKVLayerRawSlabBF16(raw []byte, dtype string, shape []int32, view sessionStateLayerView) ([]byte, int, error) {
 	if len(raw) == 0 || len(shape) != 4 {
-		return 0, core.NewError("missing native BF16 slab")
+		return nil, 0, core.NewError("missing native slab")
 	}
-	if !nativeKVIsBF16DType(dtype) {
-		return 0, core.NewError("unsupported native dtype")
+	_, bytesPerValue, ok := nativeKVRawDType(dtype)
+	if !ok {
+		return nil, 0, core.NewError("unsupported native dtype")
 	}
 	if shape[0] != 1 || int(shape[1]) != view.kvHeads || int(shape[3]) != view.headDim {
-		return 0, core.NewError("native slab shape mismatch")
+		return nil, 0, core.NewError("native slab shape mismatch")
 	}
 	tokenCount := int(shape[2])
 	if tokenCount <= 0 {
-		return 0, core.NewError("native slab token count invalid")
+		return nil, 0, core.NewError("native slab token count invalid")
 	}
-	if len(raw) != tokenCount*view.rowBytes {
-		return 0, core.NewError("native slab byte length mismatch")
+	elements := tokenCount * view.kvHeads * view.headDim
+	if len(raw) != elements*bytesPerValue {
+		return nil, 0, core.NewError("native slab byte length mismatch")
 	}
-	return tokenCount, nil
+	if nativeKVIsBF16DType(dtype) {
+		return raw, tokenCount, nil
+	}
+	out := make([]byte, elements*bf16Size)
+	if err := nativeKVRawToBF16(out, raw, dtype); err != nil {
+		return nil, 0, err
+	}
+	return out, tokenCount, nil
 }
 
 func nativeKVHeadSnapshotSlabs(layer kv.LayerSnapshot, view sessionStateLayerView) ([]byte, []byte, int, error) {
@@ -725,10 +737,11 @@ func nativeKVHeadSnapshotSeqLen(values []float32, raw []byte, dtype string, head
 		return 0, core.NewError("invalid head dim")
 	}
 	if len(raw) > 0 {
-		if !nativeKVIsBF16DType(dtype) {
+		_, bytesPerValue, ok := nativeKVRawDType(dtype)
+		if !ok {
 			return 0, core.NewError("unsupported head raw dtype")
 		}
-		rowBytes := headDim * bf16Size
+		rowBytes := headDim * bytesPerValue
 		if len(raw)%rowBytes != 0 {
 			return 0, core.NewError("head raw byte length mismatch")
 		}
@@ -749,11 +762,11 @@ func nativeKVFillHeadBF16(dst []byte, values []float32, raw []byte, dtype string
 		return core.NewError("native.RestoreKV: destination size mismatch")
 	}
 	if len(raw) > 0 {
-		if !nativeKVIsBF16DType(dtype) || len(raw) != want {
+		_, bytesPerValue, ok := nativeKVRawDType(dtype)
+		if !ok || len(raw) != tokenCount*headDim*bytesPerValue {
 			return core.NewError("native.RestoreKV: raw head payload mismatch")
 		}
-		copy(dst, raw)
-		return nil
+		return nativeKVRawToBF16(dst, raw, dtype)
 	}
 	if len(values) != tokenCount*headDim {
 		return core.NewError("native.RestoreKV: float32 head payload mismatch")
@@ -806,10 +819,45 @@ func nativeKVLayerSlabToTokenRows(dst, src []byte, tokenCount, heads, headDim in
 }
 
 func nativeKVIsBF16DType(dtype string) bool {
+	canonical, _, ok := nativeKVRawDType(dtype)
+	return ok && canonical == nativeKVSnapshotDTypeBF16
+}
+
+func nativeKVRawDType(dtype string) (string, int, bool) {
 	switch strings.ToLower(dtype) {
 	case "bfloat16", "bf16":
-		return true
+		return nativeKVSnapshotDTypeBF16, bf16Size, true
+	case "float16", "f16":
+		return "float16", 2, true
+	case "float32", "f32":
+		return "float32", 4, true
 	default:
-		return false
+		return "", 0, false
 	}
+}
+
+func nativeKVRawToBF16(dst, raw []byte, dtype string) error {
+	canonical, bytesPerValue, ok := nativeKVRawDType(dtype)
+	if !ok || len(dst)%bf16Size != 0 || len(raw) != len(dst)/bf16Size*bytesPerValue {
+		return core.NewError("native.RestoreKV: raw payload size mismatch")
+	}
+	switch canonical {
+	case nativeKVSnapshotDTypeBF16:
+		copy(dst, raw)
+	case "float16":
+		for i := 0; i < len(dst)/bf16Size; i++ {
+			v := safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
+			h := f32ToBF16(v)
+			dst[i*bf16Size], dst[i*bf16Size+1] = byte(h), byte(h>>8)
+		}
+	case "float32":
+		for i := 0; i < len(dst)/bf16Size; i++ {
+			v := math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4 : i*4+4]))
+			h := f32ToBF16(v)
+			dst[i*bf16Size], dst[i*bf16Size+1] = byte(h), byte(h>>8)
+		}
+	default:
+		return core.NewError("native.RestoreKV: unsupported raw dtype")
+	}
+	return nil
 }

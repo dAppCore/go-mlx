@@ -14,4 +14,4 @@ Remaining feature tasks:
 
 - First-draft no-copy/fused routing into session/replay hot paths that still submit/read back per op.
 - First-draft MoE router/expert GPU flow that removes host readbacks while preserving parity.
-- Finish KV cache parity for fixed, paged, rotating/sliding, and restore helpers beyond trusted-prefix suffix restore plus raw BF16/float32 slab restore.
+- Finish remaining KV cache parity for fixed, paged, rotating/sliding, restore helpers, and TurboQuant payload restore.
