@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // stepFixture builds synthetic bf16 inputs for the KV-cache decode step. GQA is
@@ -240,6 +242,62 @@ func TestDecodeStepKV(t *testing.T) {
 	eqBytes(t, "DecodeStepKV kCache", kGot, kRef)
 	eqBytes(t, "DecodeStepKV vCache", vGot, vRef)
 	t.Logf("DecodeStepKV(pos=%d): full real layer == AttentionStepKV ▸ proven MLPBlockBF16 (byte-identical), cache grown", pos)
+}
+
+func TestDecodeStepKVIntoUsesCallerBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+
+	wantK := append([]byte(nil), kCache...)
+	wantV := append([]byte(nil), vCache...)
+	want, err := DecodeStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, wantK, wantV, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeStepKV: %v", err)
+	}
+
+	scratch, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := make([]byte, dModel*bf16Size)
+	for i := range sentinel {
+		sentinel[i] = 0x7d
+	}
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	gotK := append([]byte(nil), kCache...)
+	gotV := append([]byte(nil), vCache...)
+	out := make([]byte, dModel*bf16Size)
+	got, err := DecodeStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, gotK, gotV, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeStepKVInto: %v", err)
+	}
+	if len(got) == 0 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("DecodeStepKVInto did not return the caller output backing")
+	}
+	eqBytes(t, "DecodeStepKVInto out", got, want)
+	eqBytes(t, "DecodeStepKVInto kCache", gotK, wantK)
+	eqBytes(t, "DecodeStepKVInto vCache", gotV, wantV)
+
+	reused, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch reused: %v", err)
+	}
+	defer putQMVBF16Scratch(reused)
+	if reused.out != scratch.out {
+		t.Fatal("DecodeStepKVInto did not return the seeded scratch to the pool")
+	}
+	if !bytes.Equal(reused.out.bytes[:len(sentinel)], sentinel) {
+		t.Fatal("DecodeStepKVInto still staged output through pooled scratch")
+	}
 }
 
 func TestDecodeStepKVAllocationBudget(t *testing.T) {

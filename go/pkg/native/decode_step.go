@@ -509,6 +509,16 @@ func DecodeStepKV(
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, pos int,
 	base, scale, eps float32,
 ) ([]byte, error) {
+	return DecodeStepKVInto(nil, x, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, pos, base, scale, eps)
+}
+
+// DecodeStepKVInto runs DecodeStepKV and writes into caller-owned bf16 output when possible.
+func DecodeStepKVInto(
+	out []byte,
+	x, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, pos int,
+	base, scale, eps float32,
+) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -522,7 +532,13 @@ func DecodeStepKV(
 		return nil, core.NewError("native.DecodeStepKV: MLP weight size mismatch")
 	}
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
@@ -535,6 +551,13 @@ func DecodeStepKV(
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		nwBuf := residentBytes(attnNormW)
 		proj := bf16Projector{
@@ -575,7 +598,9 @@ func DecodeStepKV(
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+		}
 		copy(kCache, unsafe.Slice((*byte)(kBuf.Contents()), len(kCache)))
 		copy(vCache, unsafe.Slice((*byte)(vBuf.Contents()), len(vCache)))
 	})
