@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"testing"
@@ -177,5 +178,47 @@ func TestLMHeadBF16AllocationBudget(t *testing.T) {
 	})
 	if allocs > 302 {
 		t.Fatalf("LMHeadBF16 allocations = %.0f, want <= 302", allocs)
+	}
+}
+
+func TestLMHeadBF16IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, vocab = 64, 128
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNormW := toBF16Bytes(syntheticFloat32(dModel, 7))
+	outWeight := toBF16Bytes(syntheticFloat32(vocab*dModel, 53))
+	want, err := LMHeadBF16(hidden, finalNormW, outWeight, dModel, vocab, 1e-6, 0)
+	if err != nil {
+		t.Fatalf("LMHeadBF16 reference: %v", err)
+	}
+	out := bytes.Repeat([]byte{0xa5}, vocab*bf16Size)
+
+	scratch, err := getQMVBF16Scratch(vocab, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x4c}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := LMHeadBF16Into(out, hidden, finalNormW, outWeight, dModel, vocab, 1e-6, 0)
+	if err != nil {
+		t.Fatalf("LMHeadBF16Into: %v", err)
+	}
+	if len(got) != len(want) || &got[0] != &out[0] {
+		t.Fatal("LMHeadBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "LMHeadBF16Into", got, want)
+
+	scratch, err = getQMVBF16Scratch(vocab, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("LMHeadBF16Into wrote through pooled scratch output instead of caller output")
 	}
 }

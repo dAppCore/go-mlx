@@ -71,8 +71,9 @@ func GenerateGemma4BF16(g *BF16Model, arch model.Arch, promptIDs []int32, maxNew
 			}
 		}
 		// decode: head → greedy → append → step the new token at the next position.
+		logits := make([]byte, arch.Vocab*bf16Size)
 		for len(gen) < maxNew {
-			logits, err := LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
+			logits, err := LMHeadBF16Into(logits, hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
 			if err != nil {
 				genErr = err
 				return

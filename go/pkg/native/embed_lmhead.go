@@ -70,6 +70,13 @@ func embedTokenBF16Into(dst, table []byte, tok int32, vocab, dModel int, scale f
 // on-device in one command buffer with resident fixed weights; the soft-cap is a host
 // elementwise pass. softCap <= 0 skips the cap.
 func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, softCap float32) ([]byte, error) {
+	return LMHeadBF16Into(nil, hidden, finalNormW, outWeight, dModel, vocab, eps, softCap)
+}
+
+// LMHeadBF16Into is LMHeadBF16 writing into caller-owned logits storage when
+// cap(out) >= vocab*2. The Metal projection binds the result slice directly
+// where possible, so the no-cap decode bookend avoids a scratch-to-result copy.
+func LMHeadBF16Into(out []byte, hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, softCap float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -82,9 +89,15 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 	if len(outWeight) != vocab*dModel*bf16Size {
 		return nil, core.NewError("native.LMHeadBF16: outWeight must be vocab*dModel bf16 bytes")
 	}
-	logits := make([]byte, vocab*bf16Size)
+	outLen := vocab * bf16Size
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if dModel == 0 || vocab == 0 {
-		return logits, nil
+		return out, nil
 	}
 	var encErr error
 	withAutoreleasePool(func() {
@@ -98,6 +111,13 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				logitsBuf = tmp
+				directOut = true
+			}
 		}
 		finalNormBuf := residentBytes(finalNormW)
 		outWeightBuf := residentBytes(outWeight)
@@ -116,19 +136,21 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(logits, ioScratch.out.bytes[:len(logits)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
 	}
 	if softCap > 0 {
 		for i := 0; i < vocab; i++ {
-			v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1])
+			v := bf16ToF32(out[i*bf16Size], out[i*bf16Size+1])
 			capped := softCap * float32(math.Tanh(float64(v/softCap)))
 			h := f32ToBF16(capped)
-			logits[i*bf16Size] = byte(h)
-			logits[i*bf16Size+1] = byte(h >> 8)
+			out[i*bf16Size] = byte(h)
+			out[i*bf16Size+1] = byte(h >> 8)
 		}
 	}
-	return logits, nil
+	return out, nil
 }

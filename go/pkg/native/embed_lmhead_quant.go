@@ -154,6 +154,13 @@ func extractAffineCode(p []byte, bitOff, bits int) uint32 {
 // is byte-parity-gated vs metal.QuantizedMatmul), the soft-cap is a host pass. softCap <= 0
 // skips the cap.
 func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32) ([]byte, error) {
+	return LMHeadQuantInto(nil, hidden, finalNormW, packed, scales, biases, dModel, vocab, groupSize, bits, eps, softCap)
+}
+
+// LMHeadQuantInto is LMHeadQuant writing into caller-owned logits storage when
+// cap(out) >= vocab*2. The quantised projection binds the result slice directly
+// where possible, so the no-cap decode bookend avoids a scratch-to-result copy.
+func LMHeadQuantInto(out []byte, hidden, finalNormW, packed, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -171,9 +178,15 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 	if len(packed) != wantPacked || len(scales) != wantSB || len(biases) != wantSB {
 		return nil, core.NewError("native.LMHeadQuant: packed/scales/biases size mismatch vs vocab·dModel")
 	}
-	logits := make([]byte, vocab*bf16Size)
+	outLen := vocab * bf16Size
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if dModel == 0 || vocab == 0 {
-		return logits, nil
+		return out, nil
 	}
 	var encErr error
 	withAutoreleasePool(func() {
@@ -187,6 +200,13 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				logitsBuf = tmp
+				directOut = true
+			}
 		}
 		finalNormBuf := residentBytes(finalNormW)
 		packedBuf, scalesBuf, biasesBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
@@ -205,18 +225,20 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		copy(logits, ioScratch.out.bytes[:len(logits)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
 	}
 	if softCap > 0 {
 		for i := 0; i < vocab; i++ {
-			v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1])
+			v := bf16ToF32(out[i*bf16Size], out[i*bf16Size+1])
 			h := f32ToBF16(softCap * float32(math.Tanh(float64(v/softCap))))
-			logits[i*bf16Size] = byte(h)
-			logits[i*bf16Size+1] = byte(h >> 8)
+			out[i*bf16Size] = byte(h)
+			out[i*bf16Size+1] = byte(h >> 8)
 		}
 	}
-	return logits, nil
+	return out, nil
 }
