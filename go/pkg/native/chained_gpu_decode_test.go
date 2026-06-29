@@ -169,6 +169,87 @@ func TestChainedGPUDecodeFinalHiddenWritesRetainedHiddenDirectly(t *testing.T) {
 	}
 }
 
+func TestPipelinedGPUDecodeFinalHiddenWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 6
+	prompt := []int32{1, 5, 3, 2}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	pipelinedGPUDecodeEnabled = true
+	chainedGPUInputsDisabled = false
+
+	control, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("control session: %v", err)
+	}
+	candidate, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("candidate session: %v", err)
+	}
+	if candidate.encNextInputsGPU == nil || candidate.state.icb == nil || candidate.recordPeerICB == nil {
+		t.Fatal("fixture did not wire pipelined GPU ICB path")
+	}
+	prepare := func(t *testing.T, sess *ArchSession) []int32 {
+		t.Helper()
+		var first int32
+		withAutoreleasePool(func() {
+			hidden, err := sess.prefillPromptRetainedInPool(prompt)
+			if err != nil {
+				t.Fatalf("prefillPromptRetainedInPool: %v", err)
+			}
+			first, err = sess.headGreedyOrLogits(hidden, nil, nil, nil, true)
+			if err != nil {
+				t.Fatalf("headGreedyOrLogits: %v", err)
+			}
+		})
+		return []int32{first}
+	}
+	controlSeed := prepare(t, control)
+	candidateSeed := prepare(t, candidate)
+	if !idsEqual(candidateSeed, controlSeed) {
+		t.Fatalf("candidate first token = %v, want %v", candidateSeed, controlSeed)
+	}
+
+	wantGen, err := control.generatePipelinedGPUTail(controlSeed, maxNew, -1, nil, nil, false)
+	if err != nil {
+		t.Fatalf("control generatePipelinedGPUTail: %v", err)
+	}
+	if len(control.retainedHidden) == 0 {
+		t.Fatal("control did not retain pipelined final hidden")
+	}
+
+	peer, err := candidate.peerICB()
+	if err != nil {
+		t.Fatalf("candidate peerICB: %v", err)
+	}
+	poisonA := bytes.Repeat([]byte{0x4b}, candidate.arch.Hidden*bf16Size)
+	poisonB := bytes.Repeat([]byte{0x4c}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poisonA[0]
+	peer.lastOutPtr = &poisonB[0]
+	gotGen, err := candidate.generatePipelinedGPUTail(candidateSeed, maxNew, -1, nil, nil, false)
+	runtime.KeepAlive(poisonA)
+	runtime.KeepAlive(poisonB)
+	if err != nil {
+		t.Fatalf("candidate generatePipelinedGPUTail: %v", err)
+	}
+	if !idsEqual(gotGen, wantGen) {
+		t.Fatalf("candidate pipelined tokens = %v, want %v", gotGen, wantGen)
+	}
+	if !bytes.Equal(candidate.retainedHidden, control.retainedHidden) {
+		t.Fatal("pipelined GPU final hidden read from lastOutPtr instead of direct retained output")
+	}
+	if candidate.retainedHiddenBuffer() == nil || unsafe.Pointer(&candidate.retainedHidden[0]) != unsafe.Pointer(&candidate.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("pipelined GPU final hidden is not retained in session no-copy backing")
+	}
+}
+
 // TestChainedGPUDecodeHeadroom measures the per-token GPU-execution span vs wall across a chained-GPU
 // decode — the host/sync gap a submit-ahead pipeline could overlap. Reported at 16 AND 32 layers: the
 // fixed per-token sync is a smaller fraction at depth, so this is the evidence for whether the 2-ICB
@@ -592,6 +673,93 @@ func TestSampledChainedGPUDecodeWritesRetainedHiddenDirectly(t *testing.T) {
 	}
 	if candidate.retainedHiddenBuffer() == nil || unsafe.Pointer(&candidate.retainedHidden[0]) != unsafe.Pointer(&candidate.retainedHiddenPinned.bytes[0]) {
 		t.Fatal("sampled chained GPU final hidden is not retained in session no-copy backing")
+	}
+}
+
+func TestSampledPipelinedGPUDecodeFinalHiddenWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 6
+	prompt := []int32{1, 5, 3, 2}
+	params := model.SampleParams{Temperature: 0.9, TopK: 4, TopP: 0.8}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	pipelinedGPUDecodeEnabled = true
+	chainedGPUInputsDisabled = false
+
+	control, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("control session: %v", err)
+	}
+	candidate, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("candidate session: %v", err)
+	}
+	if candidate.encNextInputsGPU == nil || candidate.state.icb == nil || candidate.recordPeerICB == nil {
+		t.Fatal("fixture did not wire sampled pipelined GPU ICB path")
+	}
+	if !candidate.sampleTopKTokenParamsEligible(params) {
+		t.Skip("device TopK sampled-token path unavailable")
+	}
+	prepare := func(t *testing.T, sess *ArchSession) ([]int32, *model.Sampler) {
+		t.Helper()
+		sampler := model.NewSampler(61)
+		var first int32
+		withAutoreleasePool(func() {
+			hidden, err := sess.prefillPromptRetainedInPool(prompt)
+			if err != nil {
+				t.Fatalf("prefillPromptRetainedInPool: %v", err)
+			}
+			var ok bool
+			first, ok, err = sess.sampleTopKTokenFromHiddenInPool(hidden, params, sampler.Draw(), nil)
+			if err != nil || !ok {
+				t.Fatalf("sampleTopKTokenFromHiddenInPool ok=%v err=%v", ok, err)
+			}
+		})
+		return []int32{first}, sampler
+	}
+	controlSeed, controlSampler := prepare(t, control)
+	candidateSeed, candidateSampler := prepare(t, candidate)
+	if !idsEqual(candidateSeed, controlSeed) {
+		t.Fatalf("candidate first token = %v, want %v", candidateSeed, controlSeed)
+	}
+
+	wantGen, _, err := control.generateSampledPipelinedGPUTail(controlSeed, maxNew, nil, controlSampler, params, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("control generateSampledPipelinedGPUTail: %v", err)
+	}
+	if len(control.retainedHidden) == 0 {
+		t.Fatal("control did not retain sampled pipelined final hidden")
+	}
+
+	peer, err := candidate.peerICB()
+	if err != nil {
+		t.Fatalf("candidate peerICB: %v", err)
+	}
+	poisonA := bytes.Repeat([]byte{0x5b}, candidate.arch.Hidden*bf16Size)
+	poisonB := bytes.Repeat([]byte{0x5c}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poisonA[0]
+	peer.lastOutPtr = &poisonB[0]
+	gotGen, _, err := candidate.generateSampledPipelinedGPUTail(candidateSeed, maxNew, nil, candidateSampler, params, nil, 0, nil)
+	runtime.KeepAlive(poisonA)
+	runtime.KeepAlive(poisonB)
+	if err != nil {
+		t.Fatalf("candidate generateSampledPipelinedGPUTail: %v", err)
+	}
+	if !idsEqual(gotGen, wantGen) {
+		t.Fatalf("candidate sampled pipelined tokens = %v, want %v", gotGen, wantGen)
+	}
+	if !bytes.Equal(candidate.retainedHidden, control.retainedHidden) {
+		t.Fatal("sampled pipelined GPU final hidden read from lastOutPtr instead of direct retained output")
+	}
+	if candidate.retainedHiddenBuffer() == nil || unsafe.Pointer(&candidate.retainedHidden[0]) != unsafe.Pointer(&candidate.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("sampled pipelined GPU final hidden is not retained in session no-copy backing")
 	}
 }
 

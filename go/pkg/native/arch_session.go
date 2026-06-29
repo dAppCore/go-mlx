@@ -2949,6 +2949,16 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLC
 	return lastOut, ok, nil
 }
 
+func (s *ArchSession) encodeStepBodyNoInputRetained(enc metal.MTLComputeCommandEncoder, icb *archICBReplay, pos int) (metal.MTLBuffer, []byte) {
+	if pinned, ok := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); ok && pinned.buf != nil {
+		s.resetRetainedLogits()
+		if out, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, pos, pinned.buf); ok {
+			return out, pinned.bytes[:s.arch.Hidden*bf16Size]
+		}
+	}
+	return icb.encodeStepBodyNoInput(enc, pos), nil
+}
+
 func (s *ArchSession) stepSampleTopKTokenGPUInputsInPool(id int32, params model.SampleParams, draw float32, history []int32) (hidden []byte, token int32, ok bool, err error) {
 	icb := s.state.icb
 	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
@@ -3400,23 +3410,12 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 		// loop's final stepID, and retain that hidden as the session boundary.
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		var directHidden []byte
-		directOut := false
-		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
-			s.resetRetainedLogits()
-			if _, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); ok {
-				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
-				directOut = true
-			}
-		}
-		if !directOut {
-			icb.encodeStepBodyNoInput(enc, s.pos)
-		}
+		_, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
 		s.pos++
-		if directOut {
+		if directHidden != nil {
 			s.retainedHidden = directHidden
 		} else {
 			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
@@ -3459,9 +3458,10 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 	icbs := [2]*archICBReplay{s.state.icb, icbB}
 	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
 	type infl struct {
-		cb      metal.MTLCommandBuffer
-		lastOut *byte
-		scratch *headGreedyScratch
+		cb           metal.MTLCommandBuffer
+		lastOut      *byte
+		directHidden []byte
+		scratch      *headGreedyScratch
 	}
 	var rerr error
 	withAutoreleasePool(func() {
@@ -3485,7 +3485,7 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 			sc[i].out = tgt.pleInput
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+			lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 			scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
 			if !gok || gerr != nil {
 				enc.EndEncoding()
@@ -3501,7 +3501,7 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 			enc.EndEncoding()
 			cb.Commit()
 			s.pos++
-			return infl{cb: cb, lastOut: icb.lastOutPtr, scratch: scratch}, true
+			return infl{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, scratch: scratch}, true
 		}
 
 		read := func(p infl) (int32, bool) {
@@ -3548,7 +3548,11 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 		if valid && !stop && len(gen) < maxNew {
 			gen = append(gen, tk)
 		}
-		s.rememberRetainedHiddenFrom(prev.lastOut)
+		if prev.directHidden != nil {
+			s.retainedHidden = prev.directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(prev.lastOut)
+		}
 	})
 	if rerr != nil {
 		return nil, rerr
@@ -3969,20 +3973,7 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		var stepErr error
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		var directHidden []byte
-		directOut := false
-		var lastOut metal.MTLBuffer
-		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
-			s.resetRetainedLogits()
-			if out, outOK := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); outOK {
-				lastOut = out
-				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
-				directOut = true
-			}
-		}
-		if !directOut {
-			lastOut = icb.encodeStepBodyNoInput(enc, s.pos)
-		}
+		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		if s.sampleTopKTokenParamsEligible(pickParams) {
 			var scratch *headTopKScratch
 			scratch, ok, stepErr = s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
@@ -4034,7 +4025,7 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		if token < 0 || int(token) >= s.arch.Vocab {
 			return gen, history, core.NewError("native.ArchSession.generateSampledChainedGPUTail: sampled invalid token")
 		}
-		if directOut {
+		if directHidden != nil {
 			s.retainedHidden = directHidden
 		} else {
 			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
@@ -4054,23 +4045,12 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 	if cacheFinal && len(gen) > 0 {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		var directHidden []byte
-		directOut := false
-		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
-			s.resetRetainedLogits()
-			if _, outOK := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); outOK {
-				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
-				directOut = true
-			}
-		}
-		if !directOut {
-			icb.encodeStepBodyNoInput(enc, s.pos)
-		}
+		_, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		s.pos++
-		if directOut {
+		if directHidden != nil {
 			s.retainedHidden = directHidden
 		} else {
 			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
@@ -4091,10 +4071,11 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
 
 	type inflightSampledStep struct {
-		cb      metal.MTLCommandBuffer
-		lastOut *byte
-		topK    *headTopKScratch
-		logits  *headGreedyScratch
+		cb           metal.MTLCommandBuffer
+		lastOut      *byte
+		directHidden []byte
+		topK         *headTopKScratch
+		logits       *headGreedyScratch
 	}
 	var rerr error
 
@@ -4144,7 +4125,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 		sc[i].out = tgt.pleInput
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		if s.sampleTopKTokenParamsEligible(pickParams) {
 			scratch, ok, stepErr := s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
 			if !ok || stepErr != nil {
@@ -4167,7 +4148,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb)
 			s.pos++
-			return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, topK: scratch}, true
+			return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, topK: scratch}, true
 		}
 		scratch, ok, stepErr := s.headEnc.encodeLogitsSample(enc, lastOut, pickParams, draw, history)
 		if !ok || stepErr != nil {
@@ -4190,7 +4171,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		s.pos++
-		return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, logits: scratch}, true
+		return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, logits: scratch}, true
 	}
 
 	tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
@@ -4236,7 +4217,11 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	if rerr != nil {
 		return gen, history, rerr
 	}
-	s.rememberRetainedHiddenFrom(prev.lastOut)
+	if prev.directHidden != nil {
+		s.retainedHidden = prev.directHidden
+	} else {
+		s.rememberRetainedHiddenFrom(prev.lastOut)
+	}
 	return gen, history, nil
 }
 
