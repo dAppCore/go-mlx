@@ -120,6 +120,72 @@ func TestQKNormRopeBF16IntoUsesCallerBacking(t *testing.T) {
 	}
 }
 
+func TestQKNormRopeBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const nHeads, headDim, rotaryDim = 8, 256, 128
+	const eps, scale, theta = float32(1e-6), float32(1.0), float32(10000)
+	x := toBF16Bytes(syntheticFloat32(nHeads*headDim, headDim+1))
+	w := toBF16Bytes(syntheticFloat32(headDim, headDim+7))
+	log2Theta := float32(math.Log2(float64(theta)))
+	cases := []struct {
+		name    string
+		periods []float32
+	}{
+		{name: "base"},
+		{name: "freqs", periods: qkNormRopePeriods(rotaryDim, log2Theta)},
+	}
+	for _, c := range cases {
+		want, err := QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, c.periods)
+		if err != nil {
+			t.Fatalf("%s: QKNormRopeBF16: %v", c.name, err)
+		}
+
+		dim := len(x) / bf16Size
+		scratch, err := getQMVBF16Scratch(dim, dim)
+		if err != nil {
+			t.Fatalf("%s: getQMVBF16Scratch: %v", c.name, err)
+		}
+		sentinel := bytes.Repeat([]byte{0x9d}, len(scratch.out.bytes))
+		copy(scratch.out.bytes, sentinel)
+		putQMVBF16Scratch(scratch)
+
+		input, err := newPinnedNoCopyBytes(len(x))
+		if err != nil {
+			t.Fatalf("%s: newPinnedNoCopyBytes input: %v", c.name, err)
+		}
+		defer input.Close()
+		xBuf, err := input.copyBuffer(x)
+		if err != nil {
+			t.Fatalf("%s: copy input buffer: %v", c.name, err)
+		}
+		out, err := newPinnedNoCopyBytes(len(x))
+		if err != nil {
+			t.Fatalf("%s: newPinnedNoCopyBytes output: %v", c.name, err)
+		}
+		defer out.Close()
+
+		if err := qkNormRopeBF16WithBufferOutputInPool(x, xBuf, out.buf, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, c.periods); err != nil {
+			t.Fatalf("%s: qkNormRopeBF16WithBufferOutputInPool: %v", c.name, err)
+		}
+		if !bytes.Equal(out.bytes, want) {
+			t.Fatalf("%s: QKNormRopeBF16 direct Metal output differs from allocating wrapper", c.name)
+		}
+
+		scratch, err = getQMVBF16Scratch(dim, dim)
+		if err != nil {
+			t.Fatalf("%s: getQMVBF16Scratch after call: %v", c.name, err)
+		}
+		defer putQMVBF16Scratch(scratch)
+		if !bytes.Equal(scratch.out.bytes, sentinel) {
+			t.Fatalf("%s: qkNormRopeBF16WithBufferOutputInPool wrote through pooled scratch output", c.name)
+		}
+	}
+}
+
 // TestQKNormRopeBF16ParityComposed is the NUMERICAL gate for the fused per-head QK-norm + RoPE kernel:
 // QKNormRopeBF16(x, w) must track the composed RoPE(RMSNormBF16(x, w, nHeads, headDim)) — across full
 // rotary, partial rotary, and the freqs/YaRN path — at cosine ~1.0. Not bit-exact (the ~1 ULP native

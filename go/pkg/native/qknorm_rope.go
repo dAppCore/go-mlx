@@ -102,6 +102,18 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 }
 
 func QKNormRopeBF16Into(out []byte, x, weight []byte, nHeads, headDim, rotaryDim, offset int, scale, eps, base float32, periods []float32) ([]byte, error) {
+	return qkNormRopeBF16Pooled(out, x, nil, nil, weight, nHeads, headDim, rotaryDim, offset, scale, eps, base, periods, true, true)
+}
+
+func qkNormRopeBF16WithBufferOutputInPool(x []byte, xBuf, outputBuf metal.MTLBuffer, weight []byte, nHeads, headDim, rotaryDim, offset int, scale, eps, base float32, periods []float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.QKNormRopeBF16: output buffer is nil")
+	}
+	_, err := qkNormRopeBF16Pooled(nil, x, xBuf, outputBuf, weight, nHeads, headDim, rotaryDim, offset, scale, eps, base, periods, false, false)
+	return err
+}
+
+func qkNormRopeBF16Pooled(out []byte, x []byte, xBuf, outputBuf metal.MTLBuffer, weight []byte, nHeads, headDim, rotaryDim, offset int, scale, eps, base float32, periods []float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -119,29 +131,40 @@ func QKNormRopeBF16Into(out []byte, x, weight []byte, nHeads, headDim, rotaryDim
 		return nil, err
 	}
 	outLen := len(x)
-	callerOut := cap(out) >= outLen
-	if !callerOut {
+	bufferOut := outputBuf != nil
+	callerOut := !bufferOut && useCallerOut && cap(out) >= outLen
+	if bufferOut {
+		out = nil
+	} else if !callerOut {
 		out = make([]byte, outLen)
 	} else {
 		out = out[:outLen]
 	}
 	var encErr error
-	withAutoreleasePool(func() {
+	run := func() {
 		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
 		if err != nil {
 			encErr = err
 			return
 		}
 		defer putQMVBF16Scratch(scratch)
-		xBuf, oBuf, err := scratch.buffers(x)
-		if err != nil {
-			encErr = err
-			return
+		inputBuf := xBuf
+		output := scratch.out.buf
+		if inputBuf == nil {
+			var err error
+			inputBuf, output, err = scratch.buffers(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		directOut := false
-		if callerOut {
+		if bufferOut {
+			output = outputBuf
+			directOut = true
+		} else if callerOut {
 			if tmp, ok := scratch.outputView(out); ok {
-				oBuf = tmp
+				output = tmp
 				directOut = true
 			}
 		}
@@ -154,14 +177,19 @@ func QKNormRopeBF16Into(out []byte, x, weight []byte, nHeads, headDim, rotaryDim
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		emitQKNormRope(encSink{enc}, pso, xBuf, wBuf, oBuf, 0, 0, 0, offBuf, perBuf, qkRopeDummyBuf(), nHeads, headDim, rotaryDim, eps, scale, base)
+		emitQKNormRope(encSink{enc}, pso, inputBuf, wBuf, output, 0, 0, 0, offBuf, perBuf, qkRopeDummyBuf(), nHeads, headDim, rotaryDim, eps, scale, base)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, scratch.out.bytes[:outLen])
 		}
-	})
+	}
+	if useAutoreleasePool {
+		withAutoreleasePool(run)
+	} else {
+		run()
+	}
 	if encErr != nil {
 		return nil, encErr
 	}
