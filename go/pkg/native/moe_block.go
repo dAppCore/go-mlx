@@ -871,6 +871,10 @@ type mlpTransformMegaScratch struct {
 	gated, out, arrive metal.MTLBuffer
 	outBytes           []byte
 	arrivePtr          *uint32
+	outViewPtr         uintptr
+	outViewLen         int
+	outView            metal.MTLBuffer
+	outPinned          *pinnedNoCopyBytes
 }
 
 var mlpTransformMegaScratchPool sync.Pool
@@ -925,7 +929,46 @@ func (s *mlpTransformMegaScratch) Close() {
 	s.arrive = nil
 	s.outBytes = nil
 	s.arrivePtr = nil
+	s.closeOutputView()
 	s.dModel, s.dFF = 0, 0
+}
+
+func (s *mlpTransformMegaScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outPinned != nil {
+		s.outPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outPinned = nil
+}
+
+func (s *mlpTransformMegaScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outPinned = pinned
+	return buf, true
 }
 
 type quantMLPProjView struct {
@@ -1343,20 +1386,36 @@ func mlpTransformQuantComposedIntoInternal(out []byte, x []byte, gate, up, down 
 }
 
 func mlpTransformQuantMega(x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return mlpTransformQuantMegaIntoInternal(nil, x, gate, up, down, dModel, dFF, groupSize, bits, false)
+}
+
+func mlpTransformQuantMegaInto(out []byte, x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return mlpTransformQuantMegaIntoInternal(out, x, gate, up, down, dModel, dFF, groupSize, bits, true)
+}
+
+func mlpTransformQuantMegaIntoInternal(out []byte, x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != dModel*bf16Size {
 		return nil, core.NewError("native.mlpTransformQuantMega: x must be dModel bf16 bytes")
 	}
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if dModel == 0 || dFF == 0 {
-		return make([]byte, dModel*bf16Size), nil
+		clear(out)
+		return out, nil
 	}
 	gateView, upView, downView, err := mlpTransformQuantViews("native.mlpTransformQuantMega", gate, up, down, dModel, dFF, groupSize, bits)
 	if err != nil {
 		return nil, err
 	}
-	out, ok, err := mlpTransformQuantMegaWithViews(x, gateView, upView, downView, dModel, dFF)
+	out, ok, err := mlpTransformQuantMegaWithViewsInto(out, x, gateView, upView, downView, dModel, dFF, callerOut)
 	if err != nil {
 		return nil, err
 	}
@@ -1386,6 +1445,10 @@ func mlpTransformQuantViews(fn string, gate, up, down QuantWeight, dModel, dFF, 
 }
 
 func mlpTransformQuantMegaWithViews(x []byte, gate, up, down quantMLPProjView, dModel, dFF int) ([]byte, bool, error) {
+	return mlpTransformQuantMegaWithViewsInto(nil, x, gate, up, down, dModel, dFF, false)
+}
+
+func mlpTransformQuantMegaWithViewsInto(out []byte, x []byte, gate, up, down quantMLPProjView, dModel, dFF int, useCallerOut bool) ([]byte, bool, error) {
 	if !ffnMegaSupported(gate, up, down, dModel, dFF) {
 		return nil, false, nil
 	}
@@ -1393,7 +1456,13 @@ func mlpTransformQuantMegaWithViews(x []byte, gate, up, down quantMLPProjView, d
 	if err != nil {
 		return nil, false, nil
 	}
-	out := make([]byte, dModel*bf16Size)
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 
 	var encErr error
 	withAutoreleasePool(func() {
@@ -1410,6 +1479,13 @@ func mlpTransformQuantMegaWithViews(x []byte, gate, up, down quantMLPProjView, d
 		}
 		*scratch.arrivePtr = 0
 		outBuf := scratch.out
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		sink := encSink{enc}
@@ -1417,7 +1493,9 @@ func mlpTransformQuantMegaWithViews(x []byte, gate, up, down quantMLPProjView, d
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.outBytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.outBytes[:len(out)])
+		}
 	})
 	return out, true, encErr
 }

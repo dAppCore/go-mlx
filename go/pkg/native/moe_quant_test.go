@@ -412,6 +412,55 @@ func TestMLPTransformQuantMegaAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMLPTransformQuantMegaWritesDirectlyToCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := ffnMegaPipeline(); err != nil {
+		t.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, groupSize, bits = 256, 512, 64, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+
+	want, err := mlpTransformQuantMega(x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantMega: %v", err)
+	}
+	scratch, err := getMLPTransformMegaScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformMegaScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x42}, len(scratch.outBytes))
+	copy(scratch.outBytes, sentinel)
+	putMLPTransformMegaScratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := mlpTransformQuantMegaInto(out, x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantMegaInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("mlpTransformQuantMegaInto did not reuse caller-owned output backing")
+	}
+	if cosineBF16(got, want) < 0.9999 {
+		t.Fatalf("mlpTransformQuantMegaInto != default mega path: cosine %.6f", cosineBF16(got, want))
+	}
+
+	scratch, err = getMLPTransformMegaScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformMegaScratch after call: %v", err)
+	}
+	defer putMLPTransformMegaScratch(scratch)
+	if !bytes.Equal(scratch.outBytes, sentinel) {
+		t.Fatal("mlpTransformQuantMegaInto wrote through pooled megakernel output instead of caller output")
+	}
+}
+
 func TestMLPTransformQuantLargeAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

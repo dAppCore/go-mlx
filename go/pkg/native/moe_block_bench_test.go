@@ -137,6 +137,33 @@ func BenchmarkMLPTransformQuantMega256x512(b *testing.B) {
 	benchmarkMLPTransformQuantVariant(b, 256, 512, 64, 4, mlpTransformQuantMega)
 }
 
+func BenchmarkMLPTransformQuantMegaInto256x512(b *testing.B) {
+	requireNativeRuntime(b)
+	if _, err := ffnMegaPipeline(); err != nil {
+		b.Skipf("ffn megakernel unavailable: %v", err)
+	}
+
+	const dModel, dFF, groupSize, bits = 256, 512, 64, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(b, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(b, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(b, dModel, dFF, groupSize, bits, 37)
+	out := make([]byte, dModel*bf16Size)
+	b.SetBytes(int64(len(x) + len(gate.Packed) + len(up.Packed) + len(down.Packed)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := mlpTransformQuantMegaInto(out, x, gate, up, down, dModel, dFF, groupSize, bits); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := mlpTransformQuantMegaInto(out, x, gate, up, down, dModel, dFF, groupSize, bits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMoEBlockQuantTop2Of4(b *testing.B) {
 	requireNativeRuntime(b)
 
