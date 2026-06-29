@@ -3969,7 +3969,20 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		var stepErr error
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+		var directHidden []byte
+		directOut := false
+		var lastOut metal.MTLBuffer
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if out, outOK := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); outOK {
+				lastOut = out
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut = icb.encodeStepBodyNoInput(enc, s.pos)
+		}
 		if s.sampleTopKTokenParamsEligible(pickParams) {
 			var scratch *headTopKScratch
 			scratch, ok, stepErr = s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
@@ -4021,7 +4034,11 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		if token < 0 || int(token) >= s.arch.Vocab {
 			return gen, history, core.NewError("native.ArchSession.generateSampledChainedGPUTail: sampled invalid token")
 		}
-		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		}
 		gen = append(gen, token)
 		if params.RepeatPenalty > 1 {
 			history = append(history, token)
@@ -4037,12 +4054,27 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 	if cacheFinal && len(gen) > 0 {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		icb.encodeStepBodyNoInput(enc, s.pos)
+		var directHidden []byte
+		directOut := false
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if _, outOK := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); outOK {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			icb.encodeStepBodyNoInput(enc, s.pos)
+		}
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		s.pos++
-		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		}
 	}
 	return gen, history, nil
 }

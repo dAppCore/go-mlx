@@ -515,6 +515,86 @@ func TestSampledChainedGPUDecodeStagesTailFromDeviceToken(t *testing.T) {
 	}
 }
 
+func TestSampledChainedGPUDecodeWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 5
+	prompt := []int32{1, 5, 3, 2}
+	params := model.SampleParams{Temperature: 0.9, TopK: 4, TopP: 0.8}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	pipelinedGPUDecodeEnabled = false
+	chainedGPUInputsDisabled = false
+
+	control, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("control session: %v", err)
+	}
+	candidate, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("candidate session: %v", err)
+	}
+	if candidate.encNextInputsGPU == nil || candidate.state.icb == nil {
+		t.Fatal("fixture did not wire sampled chained GPU ICB path")
+	}
+	if !candidate.sampleTopKTokenParamsEligible(params) {
+		t.Skip("device TopK sampled-token path unavailable")
+	}
+	prepare := func(t *testing.T, sess *ArchSession) ([]int32, *model.Sampler) {
+		t.Helper()
+		sampler := model.NewSampler(27)
+		var first int32
+		withAutoreleasePool(func() {
+			hidden, err := sess.prefillPromptRetainedInPool(prompt)
+			if err != nil {
+				t.Fatalf("prefillPromptRetainedInPool: %v", err)
+			}
+			var ok bool
+			first, ok, err = sess.sampleTopKTokenFromHiddenInPool(hidden, params, sampler.Draw(), nil)
+			if err != nil || !ok {
+				t.Fatalf("sampleTopKTokenFromHiddenInPool ok=%v err=%v", ok, err)
+			}
+		})
+		return []int32{first}, sampler
+	}
+	controlSeed, controlSampler := prepare(t, control)
+	candidateSeed, candidateSampler := prepare(t, candidate)
+	if !idsEqual(candidateSeed, controlSeed) {
+		t.Fatalf("candidate first token = %v, want %v", candidateSeed, controlSeed)
+	}
+
+	wantGen, _, err := control.generateSampledChainedGPUTail(controlSeed, maxNew, nil, controlSampler, params, nil, true, 0, nil)
+	if err != nil {
+		t.Fatalf("control generateSampledChainedGPUTail: %v", err)
+	}
+	if len(control.retainedHidden) == 0 {
+		t.Fatal("control did not retain sampled final hidden")
+	}
+
+	poison := bytes.Repeat([]byte{0x2d}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poison[0]
+	gotGen, _, err := candidate.generateSampledChainedGPUTail(candidateSeed, maxNew, nil, candidateSampler, params, nil, true, 0, nil)
+	runtime.KeepAlive(poison)
+	if err != nil {
+		t.Fatalf("candidate generateSampledChainedGPUTail: %v", err)
+	}
+	if !idsEqual(gotGen, wantGen) {
+		t.Fatalf("candidate sampled tokens = %v, want %v", gotGen, wantGen)
+	}
+	if !bytes.Equal(candidate.retainedHidden, control.retainedHidden) {
+		t.Fatal("sampled chained GPU hidden read from lastOutPtr instead of direct retained output")
+	}
+	if candidate.retainedHiddenBuffer() == nil || unsafe.Pointer(&candidate.retainedHidden[0]) != unsafe.Pointer(&candidate.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("sampled chained GPU final hidden is not retained in session no-copy backing")
+	}
+}
+
 func TestPipelinedSampledGPUDecodeMatchesChained(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
