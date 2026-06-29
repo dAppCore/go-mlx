@@ -530,19 +530,24 @@ func MatMulF32NT(a, b []float32, M, K, N int) ([]float32, error) {
 
 // MatMulF32NTInto is MatMulF32NT with caller-owned output storage when cap(out) >= M*N.
 func MatMulF32NTInto(out, a, b []float32, M, K, N int) ([]float32, error) {
+	return matMulF32NTIntoPublic(out, a, b, M, K, N, true)
+}
+
+func matMulF32NTIntoPublic(out, a, b []float32, M, K, N int, directOutput bool) ([]float32, error) {
 	outLen := M * N
-	if cap(out) < outLen {
+	callerOut := cap(out) >= outLen
+	if !callerOut {
 		out = make([]float32, outLen)
 	} else {
 		out = out[:outLen]
 	}
-	if err := matMulF32NTInto(out, a, b, M, K, N); err != nil {
+	if err := matMulF32NTInto(out, a, b, M, K, N, directOutput && callerOut); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func matMulF32NTInto(out, a, b []float32, M, K, N int) error {
+func matMulF32NTInto(out, a, b []float32, M, K, N int, directOutput bool) error {
 	dtm, dtn, dtk := (M+15)/16, (N+15)/16, K/16
 	maxMN := M
 	if N > maxMN {
@@ -557,7 +562,7 @@ func matMulF32NTInto(out, a, b []float32, M, K, N int) error {
 	if dtm*dtn <= splitKThreshold && dtk >= 8 && K >= maxMN {
 		return matMulF32SplitKNTInto(out, a, b, M, K, N)
 	}
-	return matMulF32CoreInto(out, a, b, M, K, N, steelNT, true, false)
+	return matMulF32CoreInto(out, a, b, M, K, N, steelNT, true, directOutput)
 }
 
 func nextPow2(n int) int {

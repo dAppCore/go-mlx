@@ -145,6 +145,48 @@ func TestMatMulF32NTIntoReusesOutputBackingForSplitK(t *testing.T) {
 	}
 }
 
+func TestMatMulF32NTIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 16, 64, 137
+	a, b := matMulF32NTFixture(M, K, N)
+	want, err := MatMulF32NT(a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32NT reference: %v", err)
+	}
+	out := syntheticFloat32(M*N, 17)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getMatMulF32SteelScratch(M, K, N, K, steelNT)
+	if err != nil {
+		t.Fatalf("getMatMulF32SteelScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x9d}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putMatMulF32SteelScratch(scratch)
+
+	got, err := MatMulF32NTInto(out, a, b, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulF32NTInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatMulF32NTInto did not reuse caller-owned output backing")
+	}
+	for i := range want {
+		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+			t.Fatalf("MatMulF32NTInto differs at %d: %v vs %v", i, got[i], want[i])
+		}
+	}
+
+	scratch, err = getMatMulF32SteelScratch(M, K, N, K, steelNT)
+	if err != nil {
+		t.Fatalf("getMatMulF32SteelScratch after call: %v", err)
+	}
+	defer putMatMulF32SteelScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MatMulF32NTInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
 // TestMatMulF32 asserts native.MatMulF32 (the fused steel GEMM wrapper) is BYTE-IDENTICAL to
 // pkg/metal.Matmul on float32 arrays across shapes — the parity_test.go pattern. This is the f32
 // matmul the Conformer audio attention needs (the bf16 gemv-loop matches metal for bf16 but NOT for

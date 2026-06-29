@@ -196,7 +196,7 @@ func matRowsF32Into(out, w, in []float32, L, outDim, inDim int) error {
 	if L == 0 || outDim == 0 || inDim == 0 {
 		return nil
 	}
-	return matMulF32NTInto(out, in, w, L, inDim, outDim)
+	return matMulF32NTInto(out, in, w, L, inDim, outDim, false)
 }
 
 // bf16HeadF32 reads one [L,headDim] head out of a [heads,L,headDim] bf16 buffer as fp32.

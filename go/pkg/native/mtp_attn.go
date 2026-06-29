@@ -136,7 +136,7 @@ func SDPACausalBF16Into(out, q, k, v []byte, H, Hkv, qL, kL, D int, scale float3
 
 		// scores = (qh · khᵀ)·scale, causal-masked: [qL, kL].
 		var err error
-		scores, err = MatMulF32NTInto(scores, qh, kh, qL, D, kL)
+		scores, err = matMulF32NTIntoPublic(scores, qh, kh, qL, D, kL, false)
 		if err != nil {
 			return nil, err
 		}
