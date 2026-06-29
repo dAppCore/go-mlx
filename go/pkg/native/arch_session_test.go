@@ -2593,6 +2593,132 @@ func TestArchSessionStepSampleTopKCandidatesICBUsesGPUNextInputs(t *testing.T) {
 	}
 }
 
+func TestArchSessionStepSampleGPUInputsICBWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 2, 256, 32, 0)
+	prepare := func(t *testing.T) *ArchSession {
+		t.Helper()
+		sess, err := NewArchQuantSession(g, arch, 16)
+		if err != nil {
+			t.Fatalf("NewArchQuantSession: %v", err)
+		}
+		if sess.encNextInputsGPU == nil {
+			t.Fatal("fixture did not wire GPU next-inputs seam")
+		}
+		for _, id := range []int32{1, 5, 3} {
+			if _, err := sess.stepID(id); err != nil {
+				t.Fatalf("prefix stepID(%d): %v", id, err)
+			}
+		}
+		sess.embed = func(int32) ([]byte, error) {
+			return nil, errors.New("host embed should not be called")
+		}
+		sess.embedInto = nil
+		sess.perLayerInput = func(int32, []byte) ([]byte, error) {
+			return nil, errors.New("host PLE should not be called")
+		}
+		return sess
+	}
+
+	t.Run("logits-token", func(t *testing.T) {
+		control := prepare(t)
+		candidate := prepare(t)
+		params := model.SampleParams{Temperature: 0.8, MinP: 0.02, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+		history := []int32{4, 5, 5, 31}
+		draw := float32(0.37)
+		wantHidden, wantToken, ok, err := control.stepSampleLogitsTokenInPool(9, params, draw, history)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleLogitsTokenInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x7e}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotToken, ok, err := candidate.stepSampleLogitsTokenInPool(9, params, draw, history)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleLogitsTokenInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || gotToken != wantToken {
+			t.Fatal("GPU-input sampled logits-token path read retained hidden from lastOutPtr")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("GPU-input sampled logits-token path returned transient hidden")
+		}
+	})
+	t.Run("topk-token", func(t *testing.T) {
+		control := prepare(t)
+		candidate := prepare(t)
+		params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+		history := []int32{4, 5, 5, 31}
+		draw := float32(0.42)
+		wantHidden, wantToken, ok, err := control.stepSampleTopKTokenInPool(9, params, draw, history)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleTopKTokenInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x6d}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotToken, ok, err := candidate.stepSampleTopKTokenInPool(9, params, draw, history)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleTopKTokenInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || gotToken != wantToken {
+			t.Fatal("GPU-input sampled TopK-token path read retained hidden from lastOutPtr")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("GPU-input sampled TopK-token path returned transient hidden")
+		}
+	})
+	t.Run("topk-candidates", func(t *testing.T) {
+		control := prepare(t)
+		candidate := prepare(t)
+		params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}}
+		wantHidden, wantLogits, wantIDs, ok, err := control.stepSampleTopKCandidatesInPool(9, params)
+		if err != nil || !ok {
+			t.Fatalf("control stepSampleTopKCandidatesInPool ok=%v err=%v", ok, err)
+		}
+		poison := bytes.Repeat([]byte{0x5c}, candidate.arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		gotHidden, gotLogits, gotIDs, ok, err := candidate.stepSampleTopKCandidatesInPool(9, params)
+		runtime.KeepAlive(poison)
+		if err != nil || !ok {
+			t.Fatalf("candidate stepSampleTopKCandidatesInPool ok=%v err=%v", ok, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) || !bytes.Equal(gotLogits, wantLogits) || !idsEqual(gotIDs, wantIDs) {
+			t.Fatal("GPU-input sampled TopK-candidate path read retained hidden from lastOutPtr")
+		}
+		if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+			t.Fatal("GPU-input sampled TopK-candidate path returned transient hidden")
+		}
+	})
+}
+
+func TestArchSessionStepGreedyICBWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	control := newQuantICBAllocationSession(t, 32)
+	candidate := newQuantICBAllocationSession(t, 32)
+	wantToken, wantHidden, ok, err := control.stepGreedyInPool(9, nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("control stepGreedyInPool ok=%v err=%v", ok, err)
+	}
+	poison := bytes.Repeat([]byte{0x4b}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poison[0]
+	gotToken, gotHidden, ok, err := candidate.stepGreedyInPool(9, nil, nil)
+	runtime.KeepAlive(poison)
+	if err != nil || !ok {
+		t.Fatalf("candidate stepGreedyInPool ok=%v err=%v", ok, err)
+	}
+	if gotToken != wantToken || !bytes.Equal(gotHidden, wantHidden) {
+		t.Fatal("greedy ICB path read retained hidden from lastOutPtr")
+	}
+	if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&gotHidden[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+		t.Fatal("greedy ICB path returned transient hidden")
+	}
+}
+
 func TestArchSessionStepSampleTopKTokenICBMatchesSerial(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

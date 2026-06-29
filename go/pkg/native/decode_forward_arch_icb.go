@@ -783,6 +783,31 @@ func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder
 	return r.lastOut
 }
 
+func (r *archICBReplay) encodeStepBodyNoInputIntoBuffer(enc metal.MTLComputeCommandEncoder, pos int, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
+	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
+		return nil, false
+	}
+	if !r.bindStepOutput(out) {
+		return nil, false
+	}
+	r.prepareStepRebind(pos)
+	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
+	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	if fineGrainedReplay && len(r.barrierOps) > 0 {
+		start := r.rng.Location
+		for _, b := range r.barrierOps {
+			bb := uint(b)
+			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			start = bb
+		}
+		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		return out, true
+	}
+	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	return out, true
+}
+
 // runBatchInto replays the recorded ICB across a whole T-token sequence — the batch
 // encode-bypass, one autorelease pool for the run. PLE tensors are computed per
 // token from the recorded runtime's batch token ids.

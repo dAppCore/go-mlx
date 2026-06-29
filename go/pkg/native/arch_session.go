@@ -2789,11 +2789,30 @@ func (s *ArchSession) stepSampleTopKCandidatesGPUInputsInPool(id int32, params m
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		var lastOut metal.MTLBuffer
-		lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
-		if err != nil {
-			endEncodingFast(enc)
-			return
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			var directOK bool
+			lastOut, directOK, err = s.encodeStepBodyFromGPUInputsIntoBufferInPool(enc, id, pinned.buf)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
+			if directOK {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
 		}
 		scratch, ok, err = s.headEnc.encodeTopKCandidates(enc, lastOut, params.TopK, params.SuppressTokens, false)
 		if !ok || err != nil {
@@ -2807,7 +2826,12 @@ func (s *ArchSession) stepSampleTopKCandidatesGPUInputsInPool(id int32, params m
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		var readOK bool
 		logits, ids, readOK, err = s.headEnc.readTopKCandidatesInto(scratch, params.TopK, s.sampleCandidateLogits, s.sampleCandidateIDs)
 		s.sampleCandidateLogits, s.sampleCandidateIDs = logits, ids
@@ -2909,6 +2933,22 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsInPool(enc metal.MTLComputeComm
 	return icb.encodeStepBodyNoInput(enc, s.pos), nil
 }
 
+func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLComputeCommandEncoder, id int32, out metal.MTLBuffer) (metal.MTLBuffer, bool, error) {
+	icb := s.state.icb
+	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
+		return nil, false, core.NewError("native.ArchSession.encodeStepBodyFromGPUInputsIntoBufferInPool: GPU inputs unavailable")
+	}
+	sc := s.gpuTailPLScratchBuffer(0)
+	sc.out = icb.pleInput
+	tokBuf := s.nextInputTokenBuffer(id)
+	if err := s.encNextInputsGPU(enc, tokBuf, icb.ping0, sc); err != nil {
+		return nil, false, err
+	}
+	enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+	lastOut, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, out)
+	return lastOut, ok, nil
+}
+
 func (s *ArchSession) stepSampleTopKTokenGPUInputsInPool(id int32, params model.SampleParams, draw float32, history []int32) (hidden []byte, token int32, ok bool, err error) {
 	icb := s.state.icb
 	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
@@ -2919,11 +2959,30 @@ func (s *ArchSession) stepSampleTopKTokenGPUInputsInPool(id int32, params model.
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		var lastOut metal.MTLBuffer
-		lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
-		if err != nil {
-			endEncodingFast(enc)
-			return
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			var directOK bool
+			lastOut, directOK, err = s.encodeStepBodyFromGPUInputsIntoBufferInPool(enc, id, pinned.buf)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
+			if directOK {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
 		}
 		scratch, ok, err = s.headEnc.encodeTopKSample(enc, lastOut, params, draw, history, false)
 		if !ok || err != nil {
@@ -2937,7 +2996,12 @@ func (s *ArchSession) stepSampleTopKTokenGPUInputsInPool(id int32, params model.
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		token = scratch.token()
 		s.headEnc.putTopKScratch(scratch)
 		scratch = nil
@@ -3034,11 +3098,30 @@ func (s *ArchSession) stepSampleLogitsTokenGPUInputsInPool(id int32, params mode
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		var lastOut metal.MTLBuffer
-		lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
-		if err != nil {
-			endEncodingFast(enc)
-			return
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			var directOK bool
+			lastOut, directOK, err = s.encodeStepBodyFromGPUInputsIntoBufferInPool(enc, id, pinned.buf)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
+			if directOK {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut, err = s.encodeStepBodyFromGPUInputsInPool(enc, id)
+			if err != nil {
+				endEncodingFast(enc)
+				return
+			}
 		}
 		scratch, ok, err = s.headEnc.encodeLogitsSample(enc, lastOut, params, draw, history)
 		if !ok || err != nil {
@@ -3052,7 +3135,12 @@ func (s *ArchSession) stepSampleLogitsTokenGPUInputsInPool(id int32, params mode
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		token = scratch.token()
 		s.headEnc.putGreedyScratch(scratch)
 		scratch = nil
@@ -3090,7 +3178,22 @@ func (s *ArchSession) stepGreedyInPool(id int32, emb []byte, suppress []int32) (
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		lastOut := icb.encodeStepBody(enc, emb, s.pos, pli)
+		var (
+			lastOut      metal.MTLBuffer
+			directHidden []byte
+			directOut    bool
+		)
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if out, ok := icb.encodeStepBodyIntoBuffer(enc, emb, s.pos, pli, pinned.buf); ok {
+				lastOut = out
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
+		}
 		scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
 		if !gok || gerr != nil {
 			endEncodingFast(enc)
@@ -3104,7 +3207,12 @@ func (s *ArchSession) stepGreedyInPool(id int32, emb []byte, suppress []int32) (
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		token = scratch.token()
-		hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+			hidden = directHidden
+		} else {
+			hidden = s.retainHiddenReadbackFrom(icb.lastOutPtr)
+		}
 		s.headEnc.putGreedyScratch(scratch)
 		ok = true
 	})
