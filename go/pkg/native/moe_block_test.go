@@ -243,6 +243,49 @@ func TestMoEBlockBF16AllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMoEBlockBF16IntoWritesDirectlyToCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := *buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 3)
+	want, err := MoEBlockBF16(h, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("MoEBlockBF16: %v", err)
+	}
+
+	scratch, err := getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putMoEBlockBF16Scratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := MoEBlockBF16Into(out, h, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("MoEBlockBF16Into: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MoEBlockBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "MoEBlockBF16Into direct output", got, want)
+
+	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
+	}
+	defer putMoEBlockBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MoEBlockBF16Into wrote through pooled block output instead of caller output")
+	}
+}
+
 func TestMoEBlockBF16AfterRouterRejectsInvalidInputs(t *testing.T) {
 	requireNativeRuntime(t)
 
