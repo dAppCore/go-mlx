@@ -184,6 +184,27 @@ func BenchmarkMoEBlockQuantTop2Of4(b *testing.B) {
 	}
 }
 
+func BenchmarkMoEBlockQuantIntoTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := quantMoELayerWeightsGuard(b, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	out := make([]byte, dModel*bf16Size)
+	b.SetBytes(int64(len(h) + len(w.LocalGate.Packed) + len(w.ExpGate.Packed)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := MoEBlockQuantInto(out, h, w, dModel, dFF, 1e-5); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MoEBlockQuantInto(out, h, w, dModel, dFF, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMoEBlockQuantPinnedInputTop2Of4(b *testing.B) {
 	requireNativeRuntime(b)
 
