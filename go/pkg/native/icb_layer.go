@@ -35,6 +35,17 @@ func DecodeLayerICB(
 	base, scale float32, offset int, eps float32,
 	replays int,
 ) ([]byte, error) {
+	return DecodeLayerICBInto(nil, x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, kvLen, dFF, base, scale, offset, eps, replays)
+}
+
+// DecodeLayerICBInto runs DecodeLayerICB and writes into caller-owned bf16 output when possible.
+func DecodeLayerICBInto(
+	out []byte,
+	x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, kvLen, dFF int,
+	base, scale float32, offset int, eps float32,
+	replays int,
+) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -53,6 +64,13 @@ func DecodeLayerICB(
 	}
 	if len(kCache) != nKVHeads*kvLen*headDim*bf16Size || len(vCache) != nKVHeads*kvLen*headDim*bf16Size {
 		return nil, core.NewError("native.DecodeLayerICB: kCache/vCache size mismatch")
+	}
+	outLen := dModel * bf16Size
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
 	}
 
 	// ICB-capable pipelines. gemv tiles depend on (inDim, outDim) so there are
@@ -118,7 +136,6 @@ func DecodeLayerICB(
 		nCmds, dpIdx = 12, 10
 	}
 
-	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVBF16Scratch(dModel, dModel)
@@ -131,6 +148,13 @@ func DecodeLayerICB(
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
 		}
 		// --- data buffers ---
 		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
@@ -346,7 +370,9 @@ func DecodeLayerICB(
 			commitCommandBufferFast(cb)
 			waitUntilCompletedFast(cb)
 		}
-		copy(out, ioScratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, ioScratch.out.bytes[:len(out)])
+		}
 	})
 	return out, encErr
 }
