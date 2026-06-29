@@ -453,6 +453,38 @@ func (s *archICBReplayScratch) outputResidentResources(base []metal.MTLResource,
 	return s.outputResidentRes, s.outputResidentIDs
 }
 
+func (s *archICBReplayScratch) outputResidentResource(base []metal.MTLResource, baseIDs []objc.ID, view metal.MTLBuffer) ([]metal.MTLResource, []objc.ID) {
+	if s == nil || view == nil {
+		return nil, nil
+	}
+	n := len(base) + 1
+	if cap(s.outputResidentRes) < n {
+		s.outputResidentRes = make([]metal.MTLResource, n)
+	} else {
+		s.outputResidentRes = s.outputResidentRes[:n]
+	}
+	copy(s.outputResidentRes, base)
+	s.outputResidentRes[len(base)] = view
+	if cap(s.outputResidentIDs) < n {
+		s.outputResidentIDs = make([]objc.ID, n)
+	} else {
+		s.outputResidentIDs = s.outputResidentIDs[:n]
+	}
+	if len(baseIDs) == len(base) {
+		copy(s.outputResidentIDs, baseIDs)
+	} else {
+		for i, res := range base {
+			if res != nil {
+				s.outputResidentIDs[i] = res.GetID()
+			} else {
+				s.outputResidentIDs[i] = 0
+			}
+		}
+	}
+	s.outputResidentIDs[len(base)] = view.GetID()
+	return s.outputResidentRes, s.outputResidentIDs
+}
+
 func (r *archICBReplay) releaseScratch() {
 	if r != nil && r.scratch != nil {
 		putArchICBReplayScratch(r.scratch)
@@ -530,6 +562,20 @@ func (r *archICBReplay) stepBodyInto(inputEmb []byte, pos int, pli []byte, out [
 	r.stepBodyResult(inputEmb, pos, pli, false)
 	r.copyLastOutInto(out)
 	return out
+}
+
+func (r *archICBReplay) stepBodyIntoBuffer(inputEmb []byte, pos int, pli []byte, out metal.MTLBuffer) bool {
+	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
+		return false
+	}
+	cmd := r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+	if !r.bindStepOutputCommand(cmd, out) {
+		return false
+	}
+	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
+	r.stepBodyResultWithResources(inputEmb, pos, pli, false, residentRes, residentIDs)
+	r.bindStepOutputCommand(cmd, r.lastOut)
+	return true
 }
 
 func (r *archICBReplay) bindStepOutput(out metal.MTLBuffer) bool {

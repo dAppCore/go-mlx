@@ -274,6 +274,24 @@ func (s *ArchSession) retainHiddenReadbackFrom(ptr *byte) []byte {
 	return s.retainedHidden
 }
 
+func (s *ArchSession) retainHiddenDirectFromICB(icb *archICBReplay, emb []byte, pos int, pli []byte) ([]byte, bool) {
+	if s == nil || icb == nil {
+		return nil, false
+	}
+	n := s.arch.Hidden * bf16Size
+	pinned, ok := s.ensureRetainedHiddenPinned(n)
+	if !ok || pinned.buf == nil {
+		return nil, false
+	}
+	s.resetRetainedLogits()
+	h := pinned.bytes[:n]
+	if !icb.stepBodyIntoBuffer(emb, pos, pli, pinned.buf) {
+		return nil, false
+	}
+	s.retainedHidden = h
+	return h, true
+}
+
 func (s *ArchSession) headLogitsScratch(hidden []byte, skipSoftcap bool) ([]byte, error) {
 	if s.headEnc == nil {
 		return s.head(hidden, skipSoftcap)
@@ -1470,11 +1488,15 @@ func (s *ArchSession) stepIDInPool(id int32) ([]byte, error) {
 	_ptICB := ptStart()
 	if s.state.icb != nil && !icbDisabledForTest { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
 		icb := s.state.icb
-		if icb.lastOutPtr == nil {
-			icb.cacheLastOutContents()
+		if direct, ok := s.retainHiddenDirectFromICB(icb, emb, s.pos, pli); ok {
+			h = direct
+		} else {
+			if icb.lastOutPtr == nil {
+				icb.cacheLastOutContents()
+			}
+			icb.stepBodyNoResult(emb, s.pos, pli)
+			h = s.retainHiddenReadbackFrom(icb.lastOutPtr)
 		}
-		icb.stepBodyNoResult(emb, s.pos, pli)
-		h = s.retainHiddenReadbackFrom(icb.lastOutPtr)
 		if h == nil {
 			h = make([]byte, s.arch.Hidden*bf16Size)
 			icb.copyLastOutInto(h)
@@ -1506,11 +1528,15 @@ func (s *ArchSession) stepIDRetainedInPool(id int32) ([]byte, error) {
 	_ptICB := ptStart()
 	if s.state.icb != nil && !icbDisabledForTest {
 		icb := s.state.icb
-		if icb.lastOutPtr == nil {
-			icb.cacheLastOutContents()
+		if direct, ok := s.retainHiddenDirectFromICB(icb, emb, s.pos, pli); ok {
+			h = direct
+		} else {
+			if icb.lastOutPtr == nil {
+				icb.cacheLastOutContents()
+			}
+			icb.stepBodyNoResult(emb, s.pos, pli)
+			h = s.retainHiddenReadbackFrom(icb.lastOutPtr)
 		}
-		icb.stepBodyNoResult(emb, s.pos, pli)
-		h = s.retainHiddenReadbackFrom(icb.lastOutPtr)
 		if h == nil {
 			h = make([]byte, s.arch.Hidden*bf16Size)
 			icb.copyLastOutInto(h)

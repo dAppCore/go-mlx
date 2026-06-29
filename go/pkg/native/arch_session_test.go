@@ -2775,6 +2775,44 @@ func TestArchSessionStepIDRetainedInPoolNonICBReturnsRetainedHidden(t *testing.T
 	}
 }
 
+func TestArchSessionStepIDRetainedInPoolICBWritesRetainedHiddenDirectly(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := icbSessionStateFixture(t)
+	control := newICBSessionStateFixture(t, g, arch, maxLen)
+	candidate := newICBSessionStateFixture(t, g, arch, maxLen)
+	if candidate.state.icb == nil {
+		t.Fatal("fixture must exercise ICB replay")
+	}
+
+	var want, got []byte
+	var err error
+	withAutoreleasePool(func() {
+		want, err = control.stepIDRetainedInPool(1)
+		if err != nil {
+			return
+		}
+		poison := bytes.Repeat([]byte{0x7e}, arch.Hidden*bf16Size)
+		candidate.state.icb.lastOutPtr = &poison[0]
+		got, err = candidate.stepIDRetainedInPool(1)
+		runtime.KeepAlive(poison)
+	})
+	if err != nil {
+		t.Fatalf("stepIDRetainedInPool: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("ICB retained step returned empty hidden")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("ICB retained step read from lastOutPtr instead of writing into retained hidden directly")
+	}
+	if len(candidate.retainedHidden) == 0 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&candidate.retainedHidden[0]) {
+		t.Fatal("ICB retained step returned a transient hidden copy instead of retained hidden backing")
+	}
+	if candidate.retainedHiddenBuffer() == nil {
+		t.Fatal("ICB retained step did not keep a pinned retained hidden buffer")
+	}
+}
+
 func TestArchSessionStepSampleLogitsTokenICBMatchesSerial(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
