@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 func TestDecodeForwardICBMatchesReencode(t *testing.T) {
@@ -27,6 +29,38 @@ func TestDecodeForwardICBMatchesReencode(t *testing.T) {
 	}
 	for i := range want {
 		eqBytes(t, "DecodeForwardICB token", got[i], want[i])
+	}
+}
+
+func TestDecodeForwardICBIntoReusesOutputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	want, err := DecodeForwardICB(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardICB reference: %v", err)
+	}
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+	ptrs := []unsafe.Pointer{unsafe.Pointer(&out[0][0]), unsafe.Pointer(&out[1][0])}
+
+	got, err := DecodeForwardICBInto(out, inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardICBInto: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DecodeForwardICBInto returned %d outputs, want %d", len(got), len(want))
+	}
+	for tok := range want {
+		if len(got[tok]) != dModel*bf16Size || unsafe.Pointer(&got[tok][0]) != ptrs[tok] {
+			t.Fatalf("DecodeForwardICBInto token %d did not reuse caller-owned output backing", tok)
+		}
+		eqBytes(t, "DecodeForwardICBInto token", got[tok], want[tok])
 	}
 }
 

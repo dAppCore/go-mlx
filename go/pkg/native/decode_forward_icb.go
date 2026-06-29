@@ -127,12 +127,14 @@ func putDecodeForwardICBCoreScratch(s *decodeForwardICBCoreScratch) {
 // replays is cheap and takes effect. So per token only offBuf, nBuf and each
 // layer's two cache-write offsets (K-RoPE @ idx 1, V projection @ vOutBind) change.
 func decodeForwardICBCore(
+	outputs [][]byte,
 	inputs [][]byte,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen int,
 	base, scale, eps float32,
+	useCallerOut bool,
 ) ([][]byte, error) {
 	nLayers, T := len(anwBufs), len(inputs)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
@@ -172,9 +174,18 @@ func decodeForwardICBCore(
 		}
 	}
 
-	outputs := make([][]byte, T)
+	outLen := dModel * bf16Size
+	if cap(outputs) < T {
+		outputs = make([][]byte, T)
+	} else {
+		outputs = outputs[:T]
+	}
 	for i := range outputs {
-		outputs[i] = make([]byte, dModel*bf16Size)
+		if useCallerOut && cap(outputs[i]) >= outLen {
+			outputs[i] = outputs[i][:outLen]
+			continue
+		}
+		outputs[i] = make([]byte, outLen)
 	}
 	withAutoreleasePool(func() {
 		sc := getDecodeForwardICBCoreScratch(dModel, qDim, kvDim, dFF, nLayers)
@@ -380,6 +391,26 @@ func DecodeForwardICB(
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
+	return decodeForwardICBInto(nil, inputs, layers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, false)
+}
+
+// DecodeForwardICBInto is DecodeForwardICB with caller-owned per-token output
+// storage. Output slices with enough capacity are reused for the final host
+// readback, avoiding per-token output allocation in streaming callers.
+func DecodeForwardICBInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+) ([][]byte, error) {
+	return decodeForwardICBInto(outputs, inputs, layers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, true)
+}
+
+func decodeForwardICBInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+	useCallerOut bool,
+) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -433,7 +464,6 @@ func DecodeForwardICB(
 		return nil, err
 	}
 
-	var outputs [][]byte
 	var coreErr error
 	withAutoreleasePool(func() {
 		anwBufs := make([]metal.MTLBuffer, nLayers)
@@ -488,7 +518,7 @@ func DecodeForwardICB(
 				setGemv(c, psoD, l.wd, vec, out, outOff, dFF, dModel, bmD, bnD, smD, tmD)
 			}
 		}
-		outputs, coreErr = decodeForwardICBCore(inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps)
+		outputs, coreErr = decodeForwardICBCore(outputs, inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps, useCallerOut)
 	})
 	if coreErr != nil {
 		return nil, coreErr

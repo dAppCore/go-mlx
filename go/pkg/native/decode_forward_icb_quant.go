@@ -106,6 +106,26 @@ func DecodeForwardICBQuant(
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
+	return decodeForwardICBQuantInto(nil, inputs, qlayers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, false)
+}
+
+// DecodeForwardICBQuantInto is DecodeForwardICBQuant with caller-owned per-token
+// output storage. Output slices with enough capacity are reused for the final
+// host readback, avoiding per-token output allocation in streaming callers.
+func DecodeForwardICBQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+) ([][]byte, error) {
+	return decodeForwardICBQuantInto(outputs, inputs, qlayers, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, base, scale, eps, true)
+}
+
+func decodeForwardICBQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	base, scale, eps float32,
+	useCallerOut bool,
+) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -183,7 +203,6 @@ func DecodeForwardICBQuant(
 		}
 	}
 
-	var outputs [][]byte
 	var coreErr error
 	withAutoreleasePool(func() {
 		anwBufs := setup.anwBufs
@@ -255,7 +274,7 @@ func DecodeForwardICBQuant(
 				setQMV(c, psoFor(l.d, dModel, dFF), l.d, vec, out, outOff, dFF, dModel)
 			}
 		}
-		outputs, coreErr = decodeForwardICBCore(inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps)
+		outputs, coreErr = decodeForwardICBCore(outputs, inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps, useCallerOut)
 	})
 	if coreErr != nil {
 		return nil, coreErr
