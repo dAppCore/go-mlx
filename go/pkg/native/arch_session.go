@@ -3400,12 +3400,27 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 		// loop's final stepID, and retain that hidden as the session boundary.
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		icb.encodeStepBodyNoInput(enc, s.pos)
+		var directHidden []byte
+		directOut := false
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK && pinned.buf != nil {
+			s.resetRetainedLogits()
+			if _, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, pinned.buf); ok {
+				directHidden = pinned.bytes[:s.arch.Hidden*bf16Size]
+				directOut = true
+			}
+		}
+		if !directOut {
+			icb.encodeStepBodyNoInput(enc, s.pos)
+		}
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
 		s.pos++
-		s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		if directOut {
+			s.retainedHidden = directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
+		}
 	})
 	if rerr != nil {
 		return nil, rerr

@@ -5,9 +5,12 @@
 package native
 
 import (
+	"bytes"
 	"os"
+	"runtime"
 	"testing"
 	"time"
+	"unsafe"
 
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -90,6 +93,80 @@ func TestChainedGPUDecodeMatchesHost(t *testing.T) {
 		}
 	}
 	t.Logf("chained-GPU decode matches host embed/PLE path: %v", gpuGen)
+}
+
+func TestChainedGPUDecodeFinalHiddenWritesRetainedHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 2, 256, 32, 0)
+	const maxLen, maxNew = 16, 4
+	prompt := []int32{1, 5, 3, 2}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	pipelinedGPUDecodeEnabled = false
+	chainedGPUInputsDisabled = false
+
+	control, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("control session: %v", err)
+	}
+	candidate, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("candidate session: %v", err)
+	}
+	if candidate.encNextInputsGPU == nil || candidate.state.icb == nil {
+		t.Fatal("fixture did not wire chained GPU ICB path")
+	}
+	prepare := func(t *testing.T, sess *ArchSession) []int32 {
+		t.Helper()
+		var first int32
+		withAutoreleasePool(func() {
+			hidden, err := sess.prefillPromptRetainedInPool(prompt)
+			if err != nil {
+				t.Fatalf("prefillPromptRetainedInPool: %v", err)
+			}
+			first, err = sess.headGreedyOrLogits(hidden, nil, nil, nil, true)
+			if err != nil {
+				t.Fatalf("headGreedyOrLogits: %v", err)
+			}
+		})
+		return []int32{first}
+	}
+	controlSeed := prepare(t, control)
+	candidateSeed := prepare(t, candidate)
+	if !idsEqual(candidateSeed, controlSeed) {
+		t.Fatalf("candidate first token = %v, want %v", candidateSeed, controlSeed)
+	}
+
+	wantGen, err := control.generateChainedGPUTail(controlSeed, maxNew, -1, nil, nil, false)
+	if err != nil {
+		t.Fatalf("control generateChainedGPUTail: %v", err)
+	}
+	if len(control.retainedHidden) == 0 {
+		t.Fatal("control did not retain final hidden")
+	}
+
+	poison := bytes.Repeat([]byte{0x3a}, candidate.arch.Hidden*bf16Size)
+	candidate.state.icb.lastOutPtr = &poison[0]
+	gotGen, err := candidate.generateChainedGPUTail(candidateSeed, maxNew, -1, nil, nil, false)
+	runtime.KeepAlive(poison)
+	if err != nil {
+		t.Fatalf("candidate generateChainedGPUTail: %v", err)
+	}
+	if !idsEqual(gotGen, wantGen) {
+		t.Fatalf("candidate tokens = %v, want %v", gotGen, wantGen)
+	}
+	if !bytes.Equal(candidate.retainedHidden, control.retainedHidden) {
+		t.Fatal("chained GPU final hidden read from lastOutPtr instead of direct retained output")
+	}
+	if candidate.retainedHiddenBuffer() == nil || unsafe.Pointer(&candidate.retainedHidden[0]) != unsafe.Pointer(&candidate.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("chained GPU final hidden is not retained in session no-copy backing")
+	}
 }
 
 // TestChainedGPUDecodeHeadroom measures the per-token GPU-execution span vs wall across a chained-GPU
