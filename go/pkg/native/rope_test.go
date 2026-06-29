@@ -4,7 +4,11 @@
 
 package native
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+	"unsafe"
+)
 
 func TestRoPEOffsetZeroIsIdentity(t *testing.T) {
 	requireNativeRuntime(t)
@@ -22,6 +26,46 @@ func TestRoPERejectsShapeMismatch(t *testing.T) {
 
 	if _, err := RoPE([]float32{1, 2, 3}, 1, 2, 4, 10000, 1, 0, false); err == nil {
 		t.Fatal("expected RoPE to reject input length mismatch")
+	}
+}
+
+func TestRoPEIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, headDim = 1, 8, 64
+	x := syntheticFloat32(batch*nHeads*headDim, 3)
+	want, err := RoPE(x, batch, nHeads, headDim, 10000, 1, 17, false)
+	if err != nil {
+		t.Fatalf("RoPE reference: %v", err)
+	}
+	out := syntheticFloat32(len(x), 11)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVFloatScratch(len(x), len(x))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x8e}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
+
+	got, err := RoPEInto(out, x, batch, nHeads, headDim, 10000, 1, 17, false)
+	if err != nil {
+		t.Fatalf("RoPEInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("RoPEInto did not reuse caller-owned output backing")
+	}
+	if !bytes.Equal(float32Bytes(got), float32Bytes(want)) {
+		t.Fatal("RoPEInto output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVFloatScratch(len(x), len(x))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("RoPEInto wrote through pooled scratch output instead of caller output")
 	}
 }
 

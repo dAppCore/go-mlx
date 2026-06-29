@@ -85,22 +85,47 @@ func ropePipeline(name string, traditional bool) (metal.MTLComputePipelineState,
 // pre-logged (log2) exactly as MLX does. float32. Byte-for-byte parity with
 // pkg/metal.RoPE is gated in parity_test.go.
 func RoPE(x []float32, b, nHeads, headDim int, base, scale float32, offset int, traditional bool) ([]float32, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]float32, len(x))
+	if err := ropeInto(out, x, b, nHeads, headDim, base, scale, offset, traditional, false); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+// RoPEInto is RoPE with caller-owned output storage when cap(out) is large enough.
+func RoPEInto(out, x []float32, b, nHeads, headDim int, base, scale float32, offset int, traditional bool) ([]float32, error) {
+	outLen := len(x)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]float32, outLen)
+	} else {
+		out = out[:outLen]
+	}
+	if err := ropeInto(out, x, b, nHeads, headDim, base, scale, offset, traditional, callerOut); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func ropeInto(out, x []float32, b, nHeads, headDim int, base, scale float32, offset int, traditional, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(x) != b*nHeads*headDim {
-		return nil, core.NewError("native.RoPE: len(x) must equal b*nHeads*headDim (T=1)")
+		return core.NewError("native.RoPE: len(x) must equal b*nHeads*headDim (T=1)")
+	}
+	if len(out) != len(x) {
+		return core.NewError("native.RoPE: len(out) must equal len(x)")
 	}
 	if headDim == 0 || nHeads == 0 || b == 0 {
-		return make([]float32, len(x)), nil
+		return nil
 	}
 
 	pso, err := ropePipeline("rope_single_float32", traditional)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	out := make([]float32, len(x))
 	var encErr error
 	withAutoreleasePool(func() {
 		ioScratch, err := getQMVFloatScratch(len(x), len(x))
@@ -114,6 +139,13 @@ func RoPE(x []float32, b, nHeads, headDim int, base, scale float32, offset int, 
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		offBuf := scalarI32(int32(offset))
 		logBase := float32(math.Log2(float64(base)))
 
@@ -124,10 +156,12 @@ func RoPE(x []float32, b, nHeads, headDim int, base, scale float32, offset int, 
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(float32Bytes(out), ioScratch.out.bytes[:len(x)*4])
+		if !directOut {
+			copy(float32Bytes(out), ioScratch.out.bytes[:len(x)*4])
+		}
 	})
 	if encErr != nil {
-		return nil, encErr
+		return encErr
 	}
-	return out, nil
+	return nil
 }
