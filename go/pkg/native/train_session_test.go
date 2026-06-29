@@ -5,6 +5,7 @@
 package native
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -143,6 +144,39 @@ func TestForwardCaptureHiddens(t *testing.T) {
 	t.Logf("block-forward VERIFIED: host f32 multi-head layer forward tracks the engine bf16 forward within %.4g rel-L2 on layers fed real activations — the backward over these is sound", worstDeep)
 }
 
+func TestForwardCaptureHiddensUsesEmbedInto(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	ids := []int32{1, 2, 3, 4, 5}
+	control := mk()
+	wantEmbeds, wantLayers, err := control.ForwardCaptureHiddens(ids)
+	if err != nil {
+		t.Fatalf("control ForwardCaptureHiddens: %v", err)
+	}
+
+	candidate := mk()
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, errors.New("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	gotEmbeds, gotLayers, err := candidate.ForwardCaptureHiddens(ids)
+	if err != nil {
+		t.Fatalf("candidate ForwardCaptureHiddens: %v", err)
+	}
+	if len(gotEmbeds) != len(wantEmbeds) {
+		t.Fatalf("got %d embeddings, want %d", len(gotEmbeds), len(wantEmbeds))
+	}
+	for i := range wantEmbeds {
+		eqBytes(t, "ForwardCaptureHiddens embedInto embedding", gotEmbeds[i], wantEmbeds[i])
+	}
+	if len(gotLayers) != len(wantLayers) {
+		t.Fatalf("got %d layer tensors, want %d", len(gotLayers), len(wantLayers))
+	}
+	for i := range wantLayers {
+		eqBytes(t, "ForwardCaptureHiddens embedInto layer tensor", gotLayers[i], wantLayers[i])
+	}
+}
+
 func TestForwardCaptureHiddensICBReplay(t *testing.T) {
 	requireNativeRuntime(t)
 	g, arch, maxLen := icbSessionStateFixture(t)
@@ -176,4 +210,37 @@ func TestForwardCaptureHiddensICBReplay(t *testing.T) {
 	}
 	gotLast := perLayer[nL-1][(T-1)*rowBytes:]
 	eqBytes(t, "ICB captured final-layer last-token hidden vs ordinary ICB forward", gotLast, lastHidden)
+}
+
+func TestForwardCaptureHiddensICBUsesEmbedInto(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := icbSessionStateFixture(t)
+	ids := []int32{1, 5, 3, 2}
+	control := newICBSessionStateFixture(t, g, arch, maxLen)
+	wantEmbeds, wantLayers, err := control.ForwardCaptureHiddens(ids)
+	if err != nil {
+		t.Fatalf("control ForwardCaptureHiddens ICB: %v", err)
+	}
+
+	candidate := newICBSessionStateFixture(t, g, arch, maxLen)
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, errors.New("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	gotEmbeds, gotLayers, err := candidate.ForwardCaptureHiddens(ids)
+	if err != nil {
+		t.Fatalf("candidate ForwardCaptureHiddens ICB: %v", err)
+	}
+	if len(gotEmbeds) != len(wantEmbeds) {
+		t.Fatalf("ICB got %d embeddings, want %d", len(gotEmbeds), len(wantEmbeds))
+	}
+	for i := range wantEmbeds {
+		eqBytes(t, "ForwardCaptureHiddens ICB embedInto embedding", gotEmbeds[i], wantEmbeds[i])
+	}
+	if len(gotLayers) != len(wantLayers) {
+		t.Fatalf("ICB got %d layer tensors, want %d", len(gotLayers), len(wantLayers))
+	}
+	for i := range wantLayers {
+		eqBytes(t, "ForwardCaptureHiddens ICB embedInto layer tensor", gotLayers[i], wantLayers[i])
+	}
 }

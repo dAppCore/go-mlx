@@ -44,13 +44,28 @@ func (s *ArchSession) ForwardCaptureHiddens(ids []int32) (embeds [][]byte, perLa
 
 	s.pos = 0 // forward the whole sequence from scratch (training re-prefills each step)
 	embeds = make([][]byte, T)
+	rowBytes := s.arch.Hidden * bf16Size
+	var embedSlab []byte
+	if s.canUseEmbedScratch() {
+		embedSlab = make([]byte, T*rowBytes)
+	}
 	for t, id := range ids {
-		emb, e := s.embed(id)
+		var emb []byte
+		var e error
+		if embedSlab != nil {
+			row := embedSlab[t*rowBytes : (t+1)*rowBytes]
+			emb, e = s.embedInto(row, id)
+			if e == nil && len(emb) != rowBytes {
+				e = core.NewError("native.ForwardCaptureHiddens: embedInto returned wrong hidden size")
+			}
+		} else {
+			emb, e = s.embed(id)
+		}
 		if e != nil {
 			return nil, nil, e
 		}
 		embeds[t] = emb
-		if _, e := s.stepID(id); e != nil {
+		if _, e := s.StepWithID(id, emb); e != nil {
 			return nil, nil, e
 		}
 	}
@@ -59,7 +74,6 @@ func (s *ArchSession) ForwardCaptureHiddens(ids []int32) (embeds [][]byte, perLa
 	if len(capturedLayerHiddens) != T*N {
 		return nil, nil, core.NewError("native.ForwardCaptureHiddens: capture count mismatch (per-layer capture not wired?)")
 	}
-	rowBytes := s.arch.Hidden * bf16Size
 	perLayerOut = make([][]byte, N)
 	for l := 0; l < N; l++ {
 		buf := make([]byte, T*rowBytes)
@@ -79,8 +93,22 @@ func (s *ArchSession) forwardCaptureHiddensICB(ids []int32, T, N int) (embeds []
 	for l := 0; l < N; l++ {
 		perLayerOut[l] = make([]byte, T*rowBytes)
 	}
+	var embedSlab []byte
+	if s.canUseEmbedScratch() {
+		embedSlab = make([]byte, T*rowBytes)
+	}
 	for t, id := range ids {
-		emb, e := s.embed(id)
+		var emb []byte
+		var e error
+		if embedSlab != nil {
+			row := embedSlab[t*rowBytes : (t+1)*rowBytes]
+			emb, e = s.embedInto(row, id)
+			if e == nil && len(emb) != rowBytes {
+				e = core.NewError("native.ForwardCaptureHiddens: ICB embedInto returned wrong hidden size")
+			}
+		} else {
+			emb, e = s.embed(id)
+		}
 		if e != nil {
 			return nil, nil, e
 		}
