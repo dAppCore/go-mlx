@@ -286,6 +286,58 @@ func TestMoEBlockBF16IntoWritesDirectlyToCallerOutput(t *testing.T) {
 	}
 }
 
+func TestMoEBlockBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := *buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 3)
+	want, err := MoEBlockBF16(h, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("MoEBlockBF16: %v", err)
+	}
+
+	scratch, err := getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x3c}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putMoEBlockBF16Scratch(scratch)
+
+	input, err := newPinnedNoCopyBytes(len(h))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes input: %v", err)
+	}
+	defer input.Close()
+	hBuf, err := input.copyBuffer(h)
+	if err != nil {
+		t.Fatalf("copy input buffer: %v", err)
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes output: %v", err)
+	}
+	defer out.Close()
+
+	if err := moeBlockBF16WithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("moeBlockBF16WithBufferOutputInPool: %v", err)
+	}
+	eqBytes(t, "MoEBlockBF16 direct Metal output", out.bytes, want)
+
+	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
+	}
+	defer putMoEBlockBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("moeBlockBF16WithBufferOutputInPool wrote through pooled block output")
+	}
+}
+
 func TestMoEBlockBF16AfterRouterRejectsInvalidInputs(t *testing.T) {
 	requireNativeRuntime(t)
 

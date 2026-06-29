@@ -810,17 +810,15 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 			waitUntilCompletedFast(cb)
 			hostH := s.bufferBytes(s.hBuf, s.dModel*bf16Size)
 			hostHBuf := s.hBuf
-			var res []byte
 			var err error
 			if moeQ != nil {
-				res, err = moeBlockQuantWithBufferInPool(hostH, hostHBuf, *moeQ, s.dModel, s.dFF, s.eps)
+				err = moeBlockQuantWithBufferOutputInPool(hostH, hostHBuf, out, *moeQ, s.dModel, s.dFF, s.eps)
 			} else {
-				res, err = moeBlockBF16WithBufferInPool(hostH, hostHBuf, *moeW, s.dModel, s.dFF, s.eps)
+				err = moeBlockBF16WithBufferOutputInPool(hostH, hostHBuf, out, *moeW, s.dModel, s.dFF, s.eps)
 			}
 			if err != nil {
 				return nil, err
 			}
-			copy(s.bufferBytes(out, s.dModel*bf16Size), res)
 			cb = commandBufferFast(queue)
 			enc = computeCommandEncoderFast(cb)
 		} else {

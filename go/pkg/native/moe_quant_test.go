@@ -703,6 +703,60 @@ func TestMoEBlockQuantIntoWritesDirectlyToCallerOutput(t *testing.T) {
 	}
 }
 
+func TestMoEBlockQuantWithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	want, err := MoEBlockQuant(h, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("MoEBlockQuant: %v", err)
+	}
+
+	scratch, err := getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xc3}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putMoEBlockBF16Scratch(scratch)
+
+	input, err := newPinnedNoCopyBytes(len(h))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes input: %v", err)
+	}
+	defer input.Close()
+	hBuf, err := input.copyBuffer(h)
+	if err != nil {
+		t.Fatalf("copy input buffer: %v", err)
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes output: %v", err)
+	}
+	defer out.Close()
+
+	if err := moeBlockQuantWithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("moeBlockQuantWithBufferOutputInPool: %v", err)
+	}
+	if cosineBF16(out.bytes, want) < 0.9999 {
+		t.Fatalf("MoEBlockQuant direct Metal output != default quant block path: cosine %.6f", cosineBF16(out.bytes, want))
+	}
+
+	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
+	}
+	defer putMoEBlockBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("moeBlockQuantWithBufferOutputInPool wrote through pooled block output")
+	}
+}
+
 func TestMoEBlockQuantAfterRouterLargeLocalAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

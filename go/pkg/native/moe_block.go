@@ -491,22 +491,30 @@ func moeBlockBF16AfterRouter(h []byte, idx []int32, weights []byte, weightBuf me
 }
 
 func moeBlockBF16AfterRouterWithBuffer(h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, false)
+	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, nil, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, false)
 }
 
 func moeBlockBF16AfterRouterWithBufferInPool(h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
+	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, nil, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
 }
 
 func moeBlockBF16AfterRouterWithBufferInto(out []byte, h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, out, idx, weights, weightBuf, w, dModel, dFF, eps, true, true)
+	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, out, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, true)
 }
 
 func moeBlockBF16AfterRouterWithBufferIntoInPool(out []byte, h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, out, idx, weights, weightBuf, w, dModel, dFF, eps, false, true)
+	return moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, out, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, true)
 }
 
-func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
+func moeBlockBF16AfterRouterWithBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.moeBlockBF16AfterRouter: output buffer is nil")
+	}
+	_, err := moeBlockBF16AfterRouterWithBufferPooled(h, hBuf, nil, outputBuf, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
+	return err
+}
+
+func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, outputBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	expertDFF, numExperts, topK := w.ExpertDFF, w.NumExperts, w.TopK
 	size := dModel * bf16Size
 	if len(h) != size {
@@ -533,14 +541,23 @@ func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out
 			return nil, core.NewError("native.moeBlockBF16AfterRouter: expert index out of range")
 		}
 	}
-	callerOut := useCallerOut && cap(out) >= size
-	if callerOut {
+	bufferOut := outputBuf != nil
+	callerOut := !bufferOut && useCallerOut && cap(out) >= size
+	if bufferOut {
+		out = nil
+	} else if callerOut {
 		out = out[:size]
 	} else {
 		out = make([]byte, size)
 	}
 	if dModel == 0 || dFF == 0 || expertDFF == 0 {
-		clear(out)
+		if bufferOut && size > 0 {
+			clear(unsafe.Slice((*byte)(outputBuf.Contents()), size))
+			return nil, nil
+		}
+		if !bufferOut {
+			clear(out)
+		}
 		return out, nil
 	}
 
@@ -619,11 +636,14 @@ func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out
 			clear(unsafe.Slice((*byte)(scratch.expertAcc.Contents()), size))
 		}
 		msc := scratch.mlp
-		outBuf := scratch.out.buf
+		finalOutBuf := scratch.out.buf
 		directOut := false
-		if callerOut {
+		if bufferOut {
+			finalOutBuf = outputBuf
+			directOut = true
+		} else if callerOut {
 			if tmp, ok := scratch.outputView(out); ok {
-				outBuf = tmp
+				finalOutBuf = tmp
 				directOut = true
 			}
 		}
@@ -711,7 +731,7 @@ func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out
 		emitRMS(scratch.expertAcc, post2Buf.buf, scratch.expertNormed, post2Buf.off)
 		emitAdd(scratch.localNormed, scratch.expertNormed, scratch.combined)
 		emitRMS(scratch.combined, postBuf.buf, scratch.ffResidual, postBuf.off)
-		emitAdd(inputBuf, scratch.ffResidual, outBuf)
+		emitAdd(inputBuf, scratch.ffResidual, finalOutBuf)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
@@ -760,6 +780,33 @@ func moeBlockBF16WithBufferInto(out []byte, h []byte, hBuf metal.MTLBuffer, w Mo
 
 func moeBlockBF16WithBufferInPool(h []byte, hBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
 	return moeBlockBF16WithBufferPooled(h, hBuf, w, dModel, dFF, eps, false)
+}
+
+func moeBlockBF16WithBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.MoEBlockBF16: output buffer is nil")
+	}
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	if len(h) != dModel*bf16Size {
+		return core.NewError("native.MoEBlockBF16: h must be dModel bf16 bytes")
+	}
+	numExperts, topK := w.NumExperts, w.TopK
+
+	if idx, weights, weightBuf, routerScratch, ok, err := moeRouterBF16DeviceTopKNoCopyWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.RouterW, w.PerExpertScale, numExperts, topK, dModel, eps); ok || err != nil {
+		if err != nil {
+			return err
+		}
+		err = moeBlockBF16AfterRouterWithBufferOutputInPool(h, hBuf, outputBuf, idx, weights, weightBuf, w, dModel, dFF, eps)
+		putRouterDeviceScratch(routerScratch)
+		return err
+	}
+	idx, weights, err := MoERouter(h, w.RouterNormWScaled, w.RouterW, w.PerExpertScale, numExperts, topK, dModel, eps)
+	if err != nil {
+		return err
+	}
+	return moeBlockBF16AfterRouterWithBufferOutputInPool(h, hBuf, outputBuf, idx, weights, nil, w, dModel, dFF, eps)
 }
 
 func moeBlockBF16WithBufferPooled(h []byte, hBuf metal.MTLBuffer, w MoELayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool) ([]byte, error) {
@@ -1104,22 +1151,30 @@ func moeBlockQuantAfterRouter(h []byte, idx []int32, weights []byte, weightBuf m
 }
 
 func moeBlockQuantAfterRouterWithBuffer(h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, false)
+	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, nil, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, false)
 }
 
 func moeBlockQuantAfterRouterWithBufferInPool(h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
+	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, nil, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
 }
 
 func moeBlockQuantAfterRouterWithBufferInto(out []byte, h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, out, idx, weights, weightBuf, w, dModel, dFF, eps, true, true)
+	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, out, nil, idx, weights, weightBuf, w, dModel, dFF, eps, true, true)
 }
 
 func moeBlockQuantAfterRouterWithBufferIntoInPool(out []byte, h []byte, hBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
-	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, out, idx, weights, weightBuf, w, dModel, dFF, eps, false, true)
+	return moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, out, nil, idx, weights, weightBuf, w, dModel, dFF, eps, false, true)
 }
 
-func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
+func moeBlockQuantAfterRouterWithBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.moeBlockQuantAfterRouter: output buffer is nil")
+	}
+	_, err := moeBlockQuantAfterRouterWithBufferPooled(h, hBuf, nil, outputBuf, idx, weights, weightBuf, w, dModel, dFF, eps, false, false)
+	return err
+}
+
+func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, outputBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	expertDFF, numExperts, topK := w.ExpertDFF, w.NumExperts, w.TopK
 	size := dModel * bf16Size
 	if len(h) != size {
@@ -1196,14 +1251,23 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		}
 	}
 
-	callerOut := useCallerOut && cap(out) >= size
-	if callerOut {
+	bufferOut := outputBuf != nil
+	callerOut := !bufferOut && useCallerOut && cap(out) >= size
+	if bufferOut {
+		out = nil
+	} else if callerOut {
 		out = out[:size]
 	} else {
 		out = make([]byte, size)
 	}
 	if dModel == 0 || dFF == 0 || expertDFF == 0 {
-		clear(out)
+		if bufferOut && size > 0 {
+			clear(unsafe.Slice((*byte)(outputBuf.Contents()), size))
+			return nil, nil
+		}
+		if !bufferOut {
+			clear(out)
+		}
 		return out, nil
 	}
 	qmvPSO := func(outDim, inDim, groupSize, bits int) (metal.MTLComputePipelineState, error) {
@@ -1312,11 +1376,14 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 			}
 			*scratch.localMegaArrivePtr = 0
 		}
-		outBuf := scratch.out.buf
+		finalOutBuf := scratch.out.buf
 		directOut := false
-		if callerOut {
+		if bufferOut {
+			finalOutBuf = outputBuf
+			directOut = true
+		} else if callerOut {
 			if tmp, ok := scratch.outputView(out); ok {
-				outBuf = tmp
+				finalOutBuf = tmp
 				directOut = true
 			}
 		}
@@ -1407,7 +1474,7 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		emitRMS(scratch.expertAcc, post2Buf.buf, scratch.expertNormed, post2Buf.off)
 		emitAdd(scratch.localNormed, scratch.expertNormed, scratch.combined)
 		emitRMS(scratch.combined, postBuf.buf, scratch.ffResidual, postBuf.off)
-		emitAdd(inputBuf, scratch.ffResidual, outBuf)
+		emitAdd(inputBuf, scratch.ffResidual, finalOutBuf)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
@@ -1700,6 +1767,33 @@ func moeBlockQuantWithBufferInto(out []byte, h []byte, hBuf metal.MTLBuffer, w M
 
 func moeBlockQuantWithBufferInPool(h []byte, hBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
 	return moeBlockQuantWithBufferPooled(h, hBuf, w, dModel, dFF, eps, false)
+}
+
+func moeBlockQuantWithBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.MoEBlockQuant: output buffer is nil")
+	}
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	if len(h) != dModel*bf16Size {
+		return core.NewError("native.MoEBlockQuant: h must be dModel bf16 bytes")
+	}
+	numExperts, topK := w.NumExperts, w.TopK
+
+	if idx, weights, weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKNoCopyWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps); ok || err != nil {
+		if err != nil {
+			return err
+		}
+		err = moeBlockQuantAfterRouterWithBufferOutputInPool(h, hBuf, outputBuf, idx, weights, weightBuf, w, dModel, dFF, eps)
+		putRouterDeviceScratch(routerScratch)
+		return err
+	}
+	idx, weights, err := moeRouterQuantWithViews(h, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
+	if err != nil {
+		return err
+	}
+	return moeBlockQuantAfterRouterWithBufferOutputInPool(h, hBuf, outputBuf, idx, weights, nil, w, dModel, dFF, eps)
 }
 
 func moeBlockQuantWithBufferPooled(h []byte, hBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool) ([]byte, error) {

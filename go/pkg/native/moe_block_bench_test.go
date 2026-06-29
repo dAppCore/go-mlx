@@ -76,6 +76,40 @@ func BenchmarkMoEBlockBF16PinnedInputTop2Of4(b *testing.B) {
 	}
 }
 
+func BenchmarkMoEBlockBF16BufferOutputTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := moeLayerWeightsFixture(numExperts, topK, dModel, dFF, expertDFF, 3)
+	input, err := newPinnedNoCopyBytes(len(h))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer input.Close()
+	hBuf, err := input.copyBuffer(h)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer out.Close()
+	b.SetBytes(int64(len(h) + len(w.WGate) + len(w.ExpGateW)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if err := moeBlockBF16WithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, 1e-5); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := moeBlockBF16WithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMLPTransformBF1664x128(b *testing.B) {
 	requireNativeRuntime(b)
 
@@ -250,6 +284,40 @@ func BenchmarkMoEBlockQuantPinnedInputTop2Of4(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := moeBlockQuantWithBuffer(h, hBuf, w, dModel, dFF, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMoEBlockQuantBufferOutputTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := quantMoELayerWeightsGuard(b, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+	input, err := newPinnedNoCopyBytes(len(h))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer input.Close()
+	hBuf, err := input.copyBuffer(h)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer out.Close()
+	b.SetBytes(int64(len(h) + len(w.LocalGate.Packed) + len(w.ExpGate.Packed)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if err := moeBlockQuantWithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, 1e-5); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := moeBlockQuantWithBufferOutputInPool(h, hBuf, out.buf, w, dModel, dFF, 1e-5); err != nil {
 			b.Fatal(err)
 		}
 	}
