@@ -113,6 +113,18 @@ func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSiz
 }
 
 func RMSQMVFastBF16Into(out []byte, x, normW, wq, scales, biases []byte, outDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
+	return rmsQMVFastBF16Pooled(out, x, nil, nil, normW, wq, scales, biases, outDim, inDim, groupSize, bits, eps, true, true)
+}
+
+func rmsQMVFastBF16WithBufferOutputInPool(x []byte, xBuf, outputBuf metal.MTLBuffer, normW, wq, scales, biases []byte, outDim, inDim, groupSize, bits int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.RMSQMVFastBF16: output buffer is nil")
+	}
+	_, err := rmsQMVFastBF16Pooled(nil, x, xBuf, outputBuf, normW, wq, scales, biases, outDim, inDim, groupSize, bits, eps, false, false)
+	return err
+}
+
+func rmsQMVFastBF16Pooled(out []byte, x []byte, xBuf, outputBuf metal.MTLBuffer, normW, wq, scales, biases []byte, outDim, inDim, groupSize, bits int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -128,14 +140,17 @@ func RMSQMVFastBF16Into(out []byte, x, normW, wq, scales, biases []byte, outDim,
 	}
 
 	outLen := outDim * bf16Size
-	callerOut := cap(out) >= outLen
-	if !callerOut {
+	bufferOut := outputBuf != nil
+	callerOut := !bufferOut && useCallerOut && cap(out) >= outLen
+	if bufferOut {
+		out = nil
+	} else if !callerOut {
 		out = make([]byte, outLen)
 	} else {
 		out = out[:outLen]
 	}
 	var encErr error
-	withAutoreleasePool(func() {
+	run := func() {
 		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
 		nwBuf := residentBytes(normW)
 		scratch, err := getQMVBF16Scratch(outDim, inDim)
@@ -144,29 +159,42 @@ func RMSQMVFastBF16Into(out []byte, x, normW, wq, scales, biases []byte, outDim,
 			return
 		}
 		defer putQMVBF16Scratch(scratch)
-		xBuf, outBuf, err := scratch.buffers(x)
-		if err != nil {
-			encErr = err
-			return
+		inputBuf := xBuf
+		finalOutBuf := scratch.out.buf
+		if inputBuf == nil {
+			var err error
+			inputBuf, finalOutBuf, err = scratch.buffers(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		directOut := false
-		if callerOut {
+		if bufferOut {
+			finalOutBuf = outputBuf
+			directOut = true
+		} else if callerOut {
 			if tmp, ok := scratch.outputView(out); ok {
-				outBuf = tmp
+				finalOutBuf = tmp
 				directOut = true
 			}
 		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		emitRMSQMV(encSink{enc}, pso, wBuf, 0, sBuf, 0, bBuf, 0, xBuf, outBuf, 0, nwBuf, 0, inDim, outDim, eps)
+		emitRMSQMV(encSink{enc}, pso, wBuf, 0, sBuf, 0, bBuf, 0, inputBuf, finalOutBuf, 0, nwBuf, 0, inDim, outDim, eps)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, scratch.out.bytes[:outLen])
 		}
-	})
+	}
+	if useAutoreleasePool {
+		withAutoreleasePool(run)
+	} else {
+		run()
+	}
 	if encErr != nil {
 		return nil, encErr
 	}

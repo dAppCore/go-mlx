@@ -88,6 +88,60 @@ func TestRMSQMVFastBF16IntoUsesCallerBacking(t *testing.T) {
 	}
 }
 
+func TestRMSQMVFastBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const outDim, inDim, groupSize, bits = 256, 1536, 64, 4
+	const eps = float32(1e-6)
+	x, normW, qw := rmsQMVFixture(t, outDim, inDim, groupSize, bits)
+	want, err := RMSQMVFastBF16(x, normW, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("RMSQMVFastBF16: %v", err)
+	}
+
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x5a}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	input, err := newPinnedNoCopyBytes(len(x))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes input: %v", err)
+	}
+	defer input.Close()
+	xBuf, err := input.copyBuffer(x)
+	if err != nil {
+		t.Fatalf("copy input buffer: %v", err)
+	}
+	out, err := newPinnedNoCopyBytes(outDim * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes output: %v", err)
+	}
+	defer out.Close()
+
+	if err := rmsQMVFastBF16WithBufferOutputInPool(x, xBuf, out.buf, normW, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, groupSize, bits, eps); err != nil {
+		t.Fatalf("rmsQMVFastBF16WithBufferOutputInPool: %v", err)
+	}
+	if !bytes.Equal(out.bytes, want) {
+		t.Fatal("RMSQMVFastBF16 direct Metal output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("rmsQMVFastBF16WithBufferOutputInPool wrote through pooled scratch output")
+	}
+}
+
 // TestRMSQMVFastBF16ParityComposed is the NUMERICAL gate for the fused rms-norm + affine_qmv_fast
 // kernel — the matmul-fusion tier. RMSQMVFastBF16(x, normW, W) must track the composed
 // QMVBF16(RMSNormBF16(x, normW), W) at cosine ~1.0. The qmv arithmetic is byte-identical (bfloat16_t ==
