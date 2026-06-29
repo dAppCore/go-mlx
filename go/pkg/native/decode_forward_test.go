@@ -108,6 +108,33 @@ func TestDecodeForwardIntoReusesOutputBacking(t *testing.T) {
 	}
 }
 
+func TestDecodeForwardIntoAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	outputs := make([][]byte, len(inputs))
+	for i := range outputs {
+		outputs[i] = make([]byte, dModel*bf16Size)
+	}
+	if _, err := DecodeForwardInto(outputs, inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps); err != nil {
+		t.Fatalf("DecodeForwardInto warmup: %v", err)
+	}
+
+	var forwardErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		_, forwardErr = DecodeForwardInto(outputs, inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	})
+	if forwardErr != nil {
+		t.Fatalf("DecodeForwardInto: %v", forwardErr)
+	}
+	if allocs > 250 {
+		t.Fatalf("DecodeForwardInto allocations = %.0f, want <= 250", allocs)
+	}
+}
+
 func TestDecodeForwardKeepsFixedWeightsResident(t *testing.T) {
 	requireNativeRuntime(t)
 
