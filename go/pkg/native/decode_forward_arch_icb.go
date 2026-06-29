@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 	"unsafe"
@@ -204,6 +205,9 @@ type archICBReplay struct {
 	ping0, lastOut, pleInput          metal.MTLBuffer
 	ping0Ptr, pleInputPtr             *byte
 	lastOutPtr                        *byte
+	finalOutIdx                       int
+	finalOutBind                      uint
+	hasFinalOut                       bool
 	hasPLE                            bool
 	plePliDim                         int
 	pleRuntime                        *archDecodePLEInputs
@@ -230,6 +234,12 @@ type archICBReplayScratch struct {
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx      []int
 	barrierOps, rowBytes                   []int
 	residentRes                            []metal.MTLResource
+	outputViewPtrs                         []uintptr
+	outputViewLens                         []int
+	outputViewBufs                         []metal.MTLBuffer
+	outputViewPinned                       []*pinnedNoCopyBytes
+	outputResidentRes                      []metal.MTLResource
+	outputResidentIDs                      []objc.ID
 }
 
 var archICBReplayScratchPool sync.Pool
@@ -329,6 +339,120 @@ func putArchICBReplayScratch(s *archICBReplayScratch) {
 	}
 }
 
+func (s *archICBReplayScratch) closeOutputViewAt(i int) {
+	if s == nil || i < 0 || i >= len(s.outputViewBufs) {
+		return
+	}
+	if i < len(s.outputViewPinned) && s.outputViewPinned[i] != nil {
+		s.outputViewPinned[i].Close()
+		s.outputViewPinned[i] = nil
+	}
+	s.outputViewPtrs[i] = 0
+	s.outputViewLens[i] = 0
+	s.outputViewBufs[i] = nil
+}
+
+func (s *archICBReplayScratch) closeOutputViews() {
+	if s == nil {
+		return
+	}
+	for i := range s.outputViewBufs {
+		s.closeOutputViewAt(i)
+	}
+	s.outputViewPtrs = nil
+	s.outputViewLens = nil
+	s.outputViewBufs = nil
+	s.outputViewPinned = nil
+}
+
+func (s *archICBReplayScratch) outputViews(outputs [][]byte, outLen int) ([]metal.MTLBuffer, bool) {
+	if s == nil || outLen <= 0 || len(outputs) == 0 {
+		return nil, false
+	}
+	for i := range outputs {
+		if len(outputs[i]) != outLen {
+			return nil, false
+		}
+	}
+	T := len(outputs)
+	if cap(s.outputViewBufs) < T {
+		s.closeOutputViews()
+		s.outputViewPtrs = make([]uintptr, T)
+		s.outputViewLens = make([]int, T)
+		s.outputViewBufs = make([]metal.MTLBuffer, T)
+		s.outputViewPinned = make([]*pinnedNoCopyBytes, T)
+	} else {
+		for i := T; i < len(s.outputViewBufs); i++ {
+			s.closeOutputViewAt(i)
+		}
+		s.outputViewPtrs = s.outputViewPtrs[:T]
+		s.outputViewLens = s.outputViewLens[:T]
+		s.outputViewBufs = s.outputViewBufs[:T]
+		s.outputViewPinned = s.outputViewPinned[:T]
+	}
+	for i := range outputs {
+		ptr := uintptr(unsafe.Pointer(&outputs[i][0]))
+		if s.outputViewBufs[i] != nil && s.outputViewPtrs[i] == ptr && s.outputViewLens[i] == outLen {
+			continue
+		}
+		s.closeOutputViewAt(i)
+		buf, pinner, noCopy := residentNoCopyBytes(outputs[i])
+		if !noCopy {
+			if pinner != nil {
+				pinner.Unpin()
+			}
+			return nil, false
+		}
+		pinned := &pinnedNoCopyBytes{bytes: outputs[i], buf: buf, pinner: pinner}
+		runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+		s.outputViewPtrs[i] = ptr
+		s.outputViewLens[i] = outLen
+		s.outputViewBufs[i] = buf
+		s.outputViewPinned[i] = pinned
+	}
+	return s.outputViewBufs, true
+}
+
+func (s *archICBReplayScratch) outputResidentResources(base []metal.MTLResource, baseIDs []objc.ID, views []metal.MTLBuffer) ([]metal.MTLResource, []objc.ID) {
+	if s == nil || len(views) == 0 {
+		return nil, nil
+	}
+	n := len(base) + len(views)
+	if cap(s.outputResidentRes) < n {
+		s.outputResidentRes = make([]metal.MTLResource, n)
+	} else {
+		s.outputResidentRes = s.outputResidentRes[:n]
+	}
+	copy(s.outputResidentRes, base)
+	for i, view := range views {
+		s.outputResidentRes[len(base)+i] = view
+	}
+	if cap(s.outputResidentIDs) < n {
+		s.outputResidentIDs = make([]objc.ID, n)
+	} else {
+		s.outputResidentIDs = s.outputResidentIDs[:n]
+	}
+	if len(baseIDs) == len(base) {
+		copy(s.outputResidentIDs, baseIDs)
+	} else {
+		for i, res := range base {
+			if res != nil {
+				s.outputResidentIDs[i] = res.GetID()
+			} else {
+				s.outputResidentIDs[i] = 0
+			}
+		}
+	}
+	for i, view := range views {
+		if view != nil {
+			s.outputResidentIDs[len(base)+i] = view.GetID()
+		} else {
+			s.outputResidentIDs[len(base)+i] = 0
+		}
+	}
+	return s.outputResidentRes, s.outputResidentIDs
+}
+
 func (r *archICBReplay) releaseScratch() {
 	if r != nil && r.scratch != nil {
 		putArchICBReplayScratch(r.scratch)
@@ -408,6 +532,30 @@ func (r *archICBReplay) stepBodyInto(inputEmb []byte, pos int, pli []byte, out [
 	return out
 }
 
+func (r *archICBReplay) bindStepOutput(out metal.MTLBuffer) bool {
+	if r == nil || !r.hasFinalOut || r.icb == nil || out == nil {
+		return false
+	}
+	cmd := r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+	return r.bindStepOutputCommand(cmd, out)
+}
+
+func (r *archICBReplay) bindStepOutputCommand(cmd metal.MTLIndirectComputeCommand, out metal.MTLBuffer) bool {
+	if r == nil || !r.hasFinalOut || cmd == nil || out == nil {
+		return false
+	}
+	setICBKernelBuffer(cmd, out, 0, r.finalOutBind)
+	return true
+}
+
+func (r *archICBReplay) stepBodyDirectOutput(inputEmb []byte, pos int, pli []byte, out []byte, outCmd metal.MTLIndirectComputeCommand, outBuf metal.MTLBuffer, residentRes []metal.MTLResource, residentIDs []objc.ID) []byte {
+	if !r.bindStepOutputCommand(outCmd, outBuf) {
+		return r.stepBodyInto(inputEmb, pos, pli, out)
+	}
+	r.stepBodyResultWithResources(inputEmb, pos, pli, false, residentRes, residentIDs)
+	return out
+}
+
 func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 	r.stepBodyResult(inputEmb, pos, pli, false)
 }
@@ -424,10 +572,14 @@ func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, input
 }
 
 func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, readResult bool) []byte {
+	return r.stepBodyResultWithResources(inputEmb, pos, pli, readResult, r.residentRes, r.residentResIDs)
+}
+
+func (r *archICBReplay) stepBodyResultWithResources(inputEmb []byte, pos int, pli []byte, readResult bool, residentRes []metal.MTLResource, residentIDs []objc.ID) []byte {
 	r.prepareStep(inputEmb, pos, pli)
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
-	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		// replay barrier-free ICB ranges with an encoder memory barrier at each recorded dep point —
 		// resource-scoped coherency instead of the coarse all-prior drain.
@@ -572,8 +724,26 @@ func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCalle
 		}
 		outputs[t] = make([]byte, outLen)
 	}
+	var directOutputViews []metal.MTLBuffer
+	directOutput := false
+	residentRes, residentIDs := r.residentRes, r.residentResIDs
+	if useCallerOut && r.scratch != nil && r.hasFinalOut {
+		if views, ok := r.scratch.outputViews(outputs, outLen); ok {
+			directOutputViews = views
+			directOutput = true
+			residentRes, residentIDs = r.scratch.outputResidentResources(r.residentRes, r.residentResIDs, directOutputViews)
+		} else {
+			r.scratch.closeOutputViews()
+		}
+	} else if r.scratch != nil {
+		r.scratch.closeOutputViews()
+	}
 	var coreErr error
 	withAutoreleasePool(func() {
+		var directOutputCmd metal.MTLIndirectComputeCommand
+		if directOutput {
+			directOutputCmd = r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+		}
 		for t := range inputs {
 			var pli []byte
 			if r.hasPLE {
@@ -587,6 +757,10 @@ func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCalle
 					return
 				}
 				pli = p
+			}
+			if directOutput {
+				outputs[t] = r.stepBodyDirectOutput(inputs[t], t, pli, outputs[t], directOutputCmd, directOutputViews[t], residentRes, residentIDs)
+				continue
 			}
 			outputs[t] = r.stepBodyInto(inputs[t], t, pli, outputs[t])
 		}
@@ -1219,6 +1393,9 @@ func recordArchICB(
 		// per-layer offsets uneven, but the count is uniform so the running counter stays
 		// aligned). The barrier on every command but the first makes execution sequential.
 		opIdx := 0
+		finalOutIdx := -1
+		finalOutBind := uint(0)
+		hasFinalOut := false
 		barrierOps := sc.barrierOps[:0] // op indices that carry a barrier-before — used by the fine-grained replay
 		emit := func() metal.MTLIndirectComputeCommand {
 			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
@@ -1378,12 +1555,20 @@ func recordArchICB(
 			}
 			recordProj(li, emitFFN(), gated, down, 0, projDown)
 			if hasPF && useFusedResRMS { // fused: outBuf = hBuf + rms(Wdown·…) — one op, one fewer barrier
-				setRMSResidual(emit(), down, postFFBufs[li], hBuf, outBuf)
+				c := emit()
+				setRMSResidual(c, down, postFFBufs[li], hBuf, outBuf)
+				if li == nLayers-1 {
+					finalOutIdx, finalOutBind, hasFinalOut = opIdx-1, 3, true
+				}
 			} else {
 				if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
 					setRMS(emit(), down, postFFBufs[li], down)
 				}
-				setBin(emit(), addPSO, hBuf, down, outBuf, dModel)
+				c := emit()
+				setBin(c, addPSO, hBuf, down, outBuf, dModel)
+				if li == nLayers-1 {
+					finalOutIdx, finalOutBind, hasFinalOut = opIdx-1, 2, true
+				}
 			}
 			if hasPLE {
 				ple.recordGate(li, emit(), outBuf, pleGate)
@@ -1411,10 +1596,18 @@ func recordArchICB(
 				// (the PLE post-norm residual stays un-fused: the fused kernel diverges ~2 ULP from the
 				// PerLayerInputGate* re-encode / its CPU reference on the dModel axis — byte-parity-hostile.)
 				setRMS(emit(), pleProj, ple.postNormBufs[li], pleNorm)
-				setBin(emit(), addPSO, outBuf, pleNorm, outBuf, dModel)
+				c := emit()
+				setBin(c, addPSO, outBuf, pleNorm, outBuf, dModel)
+				if li == nLayers-1 {
+					finalOutIdx, finalOutBind, hasFinalOut = opIdx-1, 2, true
+				}
 			}
 			if hasLayerScalar {
-				setBin(emit(), mulPSO, outBuf, layerScalarFor(li), outBuf, dModel)
+				c := emit()
+				setBin(c, mulPSO, outBuf, layerScalarFor(li), outBuf, dModel)
+				if li == nLayers-1 {
+					finalOutIdx, finalOutBind, hasFinalOut = opIdx-1, 2, true
+				}
 			}
 		}
 		// the per-layer op-count is invariant to dFF (the gelu/no-gelu + owner/sharer branches
@@ -1465,6 +1658,7 @@ func recordArchICB(
 			kCaches: kCaches, vCaches: vCaches,
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
 			ping: ping, ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
+			finalOutIdx: finalOutIdx, finalOutBind: finalOutBind, hasFinalOut: hasFinalOut,
 			hasPLE: hasPLE, plePliDim: plePliDim, pleRuntime: pleRuntime,
 			opsPerLayer: uint(opsPerLayer),
 			rowBytes:    rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,

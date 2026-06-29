@@ -146,6 +146,36 @@ func TestDecodeForwardArchICBIntoReusesOutputBacking(t *testing.T) {
 	}
 }
 
+func TestArchICBReplayScratchOutputViewsUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 64, 1, 1, 64, 128, 1
+	sc := newArchICBReplayScratch(dModel, nHeads*headDim, nKV*headDim, dFF, dFF, nLayers, 0, 0, true, false)
+	t.Cleanup(sc.closeOutputViews)
+
+	out := [][]byte{
+		bytes.Repeat([]byte{0xa5}, dModel*bf16Size),
+		bytes.Repeat([]byte{0x5a}, dModel*bf16Size),
+	}
+	views, ok := sc.outputViews(out, dModel*bf16Size)
+	if !ok {
+		t.Fatal("arch outputViews did not create no-copy views for caller-owned outputs")
+	}
+	for i := range out {
+		if views[i] == nil || views[i].Contents() != unsafe.Pointer(&out[i][0]) {
+			t.Fatalf("arch output view %d not backed by caller output slice", i)
+		}
+	}
+	firstID := views[0].GetID()
+	reused, ok := sc.outputViews(out, dModel*bf16Size)
+	if !ok {
+		t.Fatal("arch outputViews did not reuse no-copy views for unchanged caller outputs")
+	}
+	if reused[0].GetID() != firstID {
+		t.Fatal("arch outputViews rebuilt an unchanged caller output view")
+	}
+}
+
 // TestDecodeForwardArchICB gates the arch-driven cache-grow ICB (the encode-bypass
 // replay) against the proven re-encode arch forward DecodeForwardArch — byte-for-byte
 // across every arch axis: all-owner/global, KV-share, sliding-window, and KV-share +
