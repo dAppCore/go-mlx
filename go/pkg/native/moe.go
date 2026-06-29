@@ -248,6 +248,14 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 // (gate/up: dModel→dFF, down: dFF→dModel) and accumulates weights[i]·downᵢ — the quant sibling
 // of MoEExperts, encQMVBF16 in place of encGemvBF16. groupSize/bits are the checkpoint's quant.
 func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return moeExpertsQuantInto(nil, x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits, false)
+}
+
+func MoEExpertsQuantInto(out []byte, x []byte, idx []int32, weights []byte, gate, up, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return moeExpertsQuantInto(out, x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits, true)
+}
+
+func moeExpertsQuantInto(out []byte, x []byte, idx []int32, weights []byte, gate, up, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -272,11 +280,18 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 			return nil, core.NewError("native.MoEExpertsQuant: expert index out of range")
 		}
 	}
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if topK == 0 {
-		return make([]byte, dModel*bf16Size), nil
+		clear(out)
+		return out, nil
 	}
 
-	out := make([]byte, dModel*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
@@ -297,6 +312,13 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				acc = tmp
+				directOut = true
+			}
+		}
 		// Bind each batched [numExperts x ...] expert tensor once and address selected experts by
 		// qmv byte offsets. This preserves the resident/no-copy shape needed by loader-backed MoE
 		// weights and avoids creating one retained Metal buffer per selected expert slice.
@@ -336,7 +358,9 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*byte)(acc.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(scratch.acc.Contents()), len(out)))
+		}
 	})
 	return out, encErr
 }

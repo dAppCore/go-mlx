@@ -197,6 +197,54 @@ func TestMoEExpertsQuantAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMoEExpertsQuantIntoWritesDirectlyToCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, groupSize, bits = 4, 2, 64, 128, 32, 4
+	gate, up, down := quantMoEExpertsFixture(t, numExperts, dModel, dFF, groupSize, bits)
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	want, err := MoEExpertsQuant(x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuant: %v", err)
+	}
+
+	scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch: %v", err)
+	}
+	accBytes := unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x4e}, len(accBytes))
+	copy(accBytes, sentinel)
+	putMoEExpertsScratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := MoEExpertsQuantInto(out, x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuantInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MoEExpertsQuantInto did not reuse caller-owned output backing")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("MoEExpertsQuantInto != default split quant expert path")
+	}
+
+	scratch, err = getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch after call: %v", err)
+	}
+	defer putMoEExpertsScratch(scratch)
+	accBytes = unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
+	if !bytes.Equal(accBytes, sentinel) {
+		t.Fatal("MoEExpertsQuantInto wrote through pooled accumulator instead of caller output")
+	}
+}
+
 func TestMoEExpertsQuantFusedGateUpMatchesSplitExperts(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
