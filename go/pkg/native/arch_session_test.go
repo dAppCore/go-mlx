@@ -358,6 +358,49 @@ func TestArchSessionPrefillRetainedTokensBatchedDenseMatchesSerial(t *testing.T)
 	}
 }
 
+func TestArchSessionPrefillRetainedTokensBatchedDenseUsesEmbedInto(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	ids := []int32{1, 5, 3, 9}
+	control, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession control: %v", err)
+	}
+	candidate, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession candidate: %v", err)
+	}
+	control.state.icb = nil
+	candidate.state.icb = nil
+
+	want, ok, err := control.prefillRetainedTokensBatchedDense(ids, "test")
+	if err != nil {
+		t.Fatalf("control prefillRetainedTokensBatchedDense: %v", err)
+	}
+	if !ok {
+		t.Fatal("control prefillRetainedTokensBatchedDense declined dense fixture")
+	}
+
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, errors.New("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	got, ok, err := candidate.prefillRetainedTokensBatchedDense(ids, "test")
+	if err != nil {
+		t.Fatalf("candidate prefillRetainedTokensBatchedDense: %v", err)
+	}
+	if !ok {
+		t.Fatal("candidate prefillRetainedTokensBatchedDense declined dense fixture")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("embedInto dense prefill hidden differs from allocating reference")
+	}
+}
+
 func TestArchSessionPrefillRetainedTokensBatchedDenseReusesHiddenReadback(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

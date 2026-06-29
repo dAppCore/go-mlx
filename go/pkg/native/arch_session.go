@@ -1150,12 +1150,33 @@ func (s *ArchSession) prefillRetainedTokensBatchedDense(ids []int32, scope strin
 	} else {
 		embs = make([][]byte, len(ids))
 	}
-	for i, id := range ids {
-		emb, err := s.embed(id)
-		if err != nil {
-			return nil, false, err
+	if s.canUseEmbedScratch() {
+		rowBytes := s.arch.Hidden * bf16Size
+		need := len(ids) * rowBytes
+		if cap(s.embedScratch) < need {
+			s.embedScratch = make([]byte, need)
+		} else {
+			s.embedScratch = s.embedScratch[:need]
 		}
-		embs[i] = emb
+		for i, id := range ids {
+			dst := s.embedScratch[i*rowBytes : (i+1)*rowBytes]
+			emb, err := s.embedInto(dst, id)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(emb) != rowBytes {
+				return nil, false, core.NewError("native.prefillRetainedTokensBatchedDense: embedInto returned wrong hidden size")
+			}
+			embs[i] = emb
+		}
+	} else {
+		for i, id := range ids {
+			emb, err := s.embed(id)
+			if err != nil {
+				return nil, false, err
+			}
+			embs[i] = emb
+		}
 	}
 	var (
 		hidden []byte
