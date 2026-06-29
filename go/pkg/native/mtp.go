@@ -301,12 +301,33 @@ func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool
 	} else {
 		embs = make([][]byte, len(batchIDs))
 	}
-	for i, id := range batchIDs {
-		emb, err := s.embed(id)
-		if err != nil {
-			return nil, false, err
+	if s.canUseEmbedScratch() {
+		rowBytes := s.arch.Hidden * bf16Size
+		need := len(batchIDs) * rowBytes
+		if cap(s.embedScratch) < need {
+			s.embedScratch = make([]byte, need)
+		} else {
+			s.embedScratch = s.embedScratch[:need]
 		}
-		embs[i] = emb
+		for i, id := range batchIDs {
+			dst := s.embedScratch[i*rowBytes : (i+1)*rowBytes]
+			emb, err := s.embedInto(dst, id)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(emb) != rowBytes {
+				return nil, false, core.NewError("native.MTPDecode: embedInto returned wrong hidden size")
+			}
+			embs[i] = emb
+		}
+	} else {
+		for i, id := range batchIDs {
+			emb, err := s.embed(id)
+			if err != nil {
+				return nil, false, err
+			}
+			embs[i] = emb
+		}
 	}
 	var (
 		hiddens [][]byte

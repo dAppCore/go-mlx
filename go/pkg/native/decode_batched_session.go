@@ -254,12 +254,33 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 	} else {
 		embs = make([][]byte, len(ids))
 	}
-	for i, id := range ids {
-		e, eerr := s.embed(id)
-		if eerr != nil {
-			return nil, false, eerr
+	if s.canUseEmbedScratch() {
+		rowBytes := s.arch.Hidden * bf16Size
+		need := len(ids) * rowBytes
+		if cap(s.embedScratch) < need {
+			s.embedScratch = make([]byte, need)
+		} else {
+			s.embedScratch = s.embedScratch[:need]
 		}
-		embs[i] = e
+		for i, id := range ids {
+			dst := s.embedScratch[i*rowBytes : (i+1)*rowBytes]
+			emb, eerr := s.embedInto(dst, id)
+			if eerr != nil {
+				return nil, false, eerr
+			}
+			if len(emb) != rowBytes {
+				return nil, false, core.NewError("native.verifyBatched: embedInto returned wrong hidden size")
+			}
+			embs[i] = emb
+		}
+	} else {
+		for i, id := range ids {
+			e, eerr := s.embed(id)
+			if eerr != nil {
+				return nil, false, eerr
+			}
+			embs[i] = e
+		}
 	}
 	if s.canUseDirectHeadGreedy() {
 		if len(greedys) < len(ids) {

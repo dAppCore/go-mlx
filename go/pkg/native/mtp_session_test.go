@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"testing"
 
 	core "dappco.re/go"
@@ -268,6 +269,71 @@ func TestMTPVerifyBatchedWrapperAndFallback(t *testing.T) {
 		t.Fatal("verifyBatched empty error = nil")
 	} else if ok {
 		t.Fatal("verifyBatched empty ok = true")
+	}
+}
+
+func TestMTPVerifyBatchedUsesEmbedInto(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	control := mk()
+	candidate := mk()
+	for _, sess := range []*ArchSession{control, candidate} {
+		for _, id := range []int32{1, 2, 3} {
+			if _, err := sess.stepID(id); err != nil {
+				t.Fatalf("prefill stepID(%d): %v", id, err)
+			}
+		}
+	}
+	ids := []int32{4, 5, 6, 7}
+	want := make([]int32, len(ids))
+	if _, ok, err := control.verifyBatchedInto(ids, want); err != nil {
+		t.Fatalf("control verifyBatchedInto: %v", err)
+	} else if !ok {
+		t.Fatal("control verifyBatchedInto ok = false")
+	}
+
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, core.NewError("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	got := make([]int32, len(ids))
+	if _, ok, err := candidate.verifyBatchedInto(ids, got); err != nil {
+		t.Fatalf("candidate verifyBatchedInto: %v", err)
+	} else if !ok {
+		t.Fatal("candidate verifyBatchedInto ok = false")
+	}
+	if !mtpIDsEqual(got, want) {
+		t.Fatalf("verifyBatchedInto embedInto greedys %v != allocating reference %v", got, want)
+	}
+}
+
+func TestMTPPrefillPromptUsesEmbedInto(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	control := mk()
+	candidate := mk()
+	ids := []int32{1, 2, 3, 4, 5}
+	want, ok, err := control.prefillMTPPrompt(ids, true)
+	if err != nil {
+		t.Fatalf("control prefillMTPPrompt: %v", err)
+	}
+	if !ok {
+		t.Fatal("control prefillMTPPrompt ok = false")
+	}
+
+	candidate.embed = func(int32) ([]byte, error) {
+		return nil, core.NewError("allocating embed path called")
+	}
+	candidate.embedFuncPtr = 0
+	got, ok, err := candidate.prefillMTPPrompt(ids, true)
+	if err != nil {
+		t.Fatalf("candidate prefillMTPPrompt: %v", err)
+	}
+	if !ok {
+		t.Fatal("candidate prefillMTPPrompt ok = false")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("prefillMTPPrompt embedInto hidden differs from allocating reference")
 	}
 }
 
