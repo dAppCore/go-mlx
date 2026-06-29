@@ -111,3 +111,22 @@ func TestGenerateGemma4BF16(t *testing.T) {
 
 	t.Logf("token loop: %d-token prompt → %d greedy tokens %v (deterministic, in-range, first ≡ manual chain, EOS stops) — embed→decode→lm_head→sample end to end on a real-SDPA gemma4", len(prompt), len(out), out)
 }
+
+func TestGenerateGemma4BF16OneTokenAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	g, arch := gemma4BF16Fixture(t, 64, 1, 1, 64, 128, 32, 1)
+	prompt := []int32{1, 5}
+	if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
+		t.Fatalf("GenerateGemma4BF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(3, func() {
+		if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
+			t.Fatalf("GenerateGemma4BF16: %v", err)
+		}
+	})
+	if allocs > 125 {
+		t.Fatalf("GenerateGemma4BF16 allocations = %.0f, want <= 125", allocs)
+	}
+}

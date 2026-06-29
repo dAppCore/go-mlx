@@ -55,12 +55,13 @@ func GenerateGemma4BF16(g *BF16Model, arch model.Arch, promptIDs []int32, maxNew
 		defer state.Close()
 
 		// step one token id at pos (embed is a pure-host gather; stepToken is the device step).
+		emb := make([]byte, arch.Hidden*bf16Size)
 		step := func(id int32, pos int) ([]byte, error) {
-			embs, err := EmbedTokensBF16(g.Embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
+			_, err := embedTokenBF16Into(emb, g.Embed, id, arch.Vocab, arch.Hidden, embedScale)
 			if err != nil {
 				return nil, err
 			}
-			return state.stepToken(embs[0], pos)
+			return state.stepToken(emb, pos)
 		}
 
 		// prefill the prompt over the growing cache; keep the last token's hidden state.
