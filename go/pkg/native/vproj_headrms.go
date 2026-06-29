@@ -93,6 +93,18 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 }
 
 func VProjHeadRMSBF16Into(out []byte, x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
+	return vProjHeadRMSBF16Pooled(out, x, nil, nil, inNormW, wq, scales, biases, nKVHeads, headDim, inDim, groupSize, bits, eps, true, true)
+}
+
+func vProjHeadRMSBF16WithBufferOutputInPool(x []byte, xBuf, outputBuf metal.MTLBuffer, inNormW, wq, scales, biases []byte, nKVHeads, headDim, inDim, groupSize, bits int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.VProjHeadRMSBF16: output buffer is nil")
+	}
+	_, err := vProjHeadRMSBF16Pooled(nil, x, xBuf, outputBuf, inNormW, wq, scales, biases, nKVHeads, headDim, inDim, groupSize, bits, eps, false, false)
+	return err
+}
+
+func vProjHeadRMSBF16Pooled(out []byte, x []byte, xBuf, outputBuf metal.MTLBuffer, inNormW, wq, scales, biases []byte, nKVHeads, headDim, inDim, groupSize, bits int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -109,14 +121,17 @@ func VProjHeadRMSBF16Into(out []byte, x, inNormW, wq, scales, biases []byte, nKV
 
 	outDim := nKVHeads * headDim
 	outLen := outDim * bf16Size
-	callerOut := cap(out) >= outLen
-	if !callerOut {
+	bufferOut := outputBuf != nil
+	callerOut := !bufferOut && useCallerOut && cap(out) >= outLen
+	if bufferOut {
+		out = nil
+	} else if !callerOut {
 		out = make([]byte, outLen)
 	} else {
 		out = out[:outLen]
 	}
 	var encErr error
-	withAutoreleasePool(func() {
+	run := func() {
 		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
 		nwBuf := residentBytes(inNormW)
 		scratch, err := getQMVBF16Scratch(outDim, inDim)
@@ -125,29 +140,42 @@ func VProjHeadRMSBF16Into(out []byte, x, inNormW, wq, scales, biases []byte, nKV
 			return
 		}
 		defer putQMVBF16Scratch(scratch)
-		xBuf, outBuf, err := scratch.buffers(x)
-		if err != nil {
-			encErr = err
-			return
+		inputBuf := xBuf
+		finalOutBuf := scratch.out.buf
+		if inputBuf == nil {
+			var err error
+			inputBuf, finalOutBuf, err = scratch.buffers(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		directOut := false
-		if callerOut {
+		if bufferOut {
+			finalOutBuf = outputBuf
+			directOut = true
+		} else if callerOut {
 			if tmp, ok := scratch.outputView(out); ok {
-				outBuf = tmp
+				finalOutBuf = tmp
 				directOut = true
 			}
 		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		emitVProjHeadRMS(encSink{enc}, pso, wBuf, sBuf, bBuf, xBuf, nwBuf, outBuf, inDim, nKVHeads, headDim, eps)
+		emitVProjHeadRMS(encSink{enc}, pso, wBuf, sBuf, bBuf, inputBuf, nwBuf, finalOutBuf, inDim, nKVHeads, headDim, eps)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, scratch.out.bytes[:outLen])
 		}
-	})
+	}
+	if useAutoreleasePool {
+		withAutoreleasePool(run)
+	} else {
+		run()
+	}
 	if encErr != nil {
 		return nil, encErr
 	}

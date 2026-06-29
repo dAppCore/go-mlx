@@ -106,6 +106,61 @@ func TestVProjHeadRMSBF16IntoUsesCallerBacking(t *testing.T) {
 	}
 }
 
+func TestVProjHeadRMSBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library not loaded — run `task build:kernels`")
+	}
+
+	const nKVHeads, headDim, inDim, groupSize, bits = 1, 256, 1536, 64, 4
+	const eps = float32(1e-6)
+	fx := newVProjHeadRMSFixture(nKVHeads, headDim, inDim, groupSize, bits)
+	want, err := VProjHeadRMSBF16(fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("VProjHeadRMSBF16: %v", err)
+	}
+
+	outDim := nKVHeads * headDim
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xc7}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	input, err := newPinnedNoCopyBytes(len(fx.x))
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes input: %v", err)
+	}
+	defer input.Close()
+	xBuf, err := input.copyBuffer(fx.x)
+	if err != nil {
+		t.Fatalf("copy input buffer: %v", err)
+	}
+	out, err := newPinnedNoCopyBytes(outDim * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes output: %v", err)
+	}
+	defer out.Close()
+
+	if err := vProjHeadRMSBF16WithBufferOutputInPool(fx.x, xBuf, out.buf, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps); err != nil {
+		t.Fatalf("vProjHeadRMSBF16WithBufferOutputInPool: %v", err)
+	}
+	if !bytes.Equal(out.bytes, want) {
+		t.Fatal("VProjHeadRMSBF16 direct Metal output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("vProjHeadRMSBF16WithBufferOutputInPool wrote through pooled scratch output")
+	}
+}
+
 // TestVProjHeadRMSBF16ParityComposed gates the fused V-path kernel (input-rms → V-proj → value-norm)
 // against the composed RMSNormBF16(QMVBF16(RMSNormBF16(x, inNormW)), ones, nKVHeads, headDim). Cosine
 // ~1.0 (lockstep: the per-thread dot + the two rms reductions differ in summation order, ~1 ULP). A
