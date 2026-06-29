@@ -5,6 +5,8 @@
 package native
 
 import (
+	"sync"
+
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
@@ -46,6 +48,79 @@ type QuantizedLayerWeights struct {
 	// MoE, when non-nil (gemma4 26B-A4B), replaces the dense MLP half with the 4-bit dual-branch
 	// MoEBlockQuant for this layer; the dense MLPNormW/Gate/Up/Down are then unused.
 	MoE *MoEQuantLayerWeights
+}
+
+type decodeForwardQuantLayerBufs struct {
+	anw, mnw, pan, pfn, qn, kn metal.MTLBuffer
+	kCache, vCache             metal.MTLBuffer
+}
+
+type decodeForwardQuantLayerScratch struct {
+	lb      []decodeForwardQuantLayerBufs
+	projs   []qmvProjector
+	kCaches []metal.MTLBuffer
+	vCaches []metal.MTLBuffer
+	kBytes  []uint
+	vBytes  []uint
+}
+
+var decodeForwardQuantLayerScratchPool sync.Pool
+
+func newDecodeForwardQuantLayerScratch(nLayers int) *decodeForwardQuantLayerScratch {
+	return &decodeForwardQuantLayerScratch{
+		lb:      make([]decodeForwardQuantLayerBufs, nLayers),
+		projs:   make([]qmvProjector, nLayers),
+		kCaches: make([]metal.MTLBuffer, nLayers),
+		vCaches: make([]metal.MTLBuffer, nLayers),
+		kBytes:  make([]uint, nLayers),
+		vBytes:  make([]uint, nLayers),
+	}
+}
+
+func (s *decodeForwardQuantLayerScratch) fits(nLayers int) bool {
+	return s != nil &&
+		cap(s.lb) >= nLayers && cap(s.projs) >= nLayers &&
+		cap(s.kCaches) >= nLayers && cap(s.vCaches) >= nLayers &&
+		cap(s.kBytes) >= nLayers && cap(s.vBytes) >= nLayers
+}
+
+func (s *decodeForwardQuantLayerScratch) reset(nLayers int) *decodeForwardQuantLayerScratch {
+	clear(s.lb)
+	clear(s.projs)
+	s.lb = s.lb[:nLayers]
+	s.projs = s.projs[:nLayers]
+	s.kCaches = s.kCaches[:nLayers]
+	s.vCaches = s.vCaches[:nLayers]
+	s.kBytes = s.kBytes[:nLayers]
+	s.vBytes = s.vBytes[:nLayers]
+	return s
+}
+
+func (s *decodeForwardQuantLayerScratch) kvCache(li int, cacheBytes uint) (metal.MTLBuffer, metal.MTLBuffer) {
+	if s.kCaches[li] == nil || s.kBytes[li] != cacheBytes {
+		s.kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+		s.kBytes[li] = cacheBytes
+	}
+	if s.vCaches[li] == nil || s.vBytes[li] != cacheBytes {
+		s.vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+		s.vBytes[li] = cacheBytes
+	}
+	return s.kCaches[li], s.vCaches[li]
+}
+
+func getDecodeForwardQuantLayerScratch(nLayers int) *decodeForwardQuantLayerScratch {
+	if v := decodeForwardQuantLayerScratchPool.Get(); v != nil {
+		if s, ok := v.(*decodeForwardQuantLayerScratch); ok && s.fits(nLayers) {
+			return s.reset(nLayers)
+		}
+	}
+	return newDecodeForwardQuantLayerScratch(nLayers)
+}
+
+func putDecodeForwardQuantLayerScratch(s *decodeForwardQuantLayerScratch) {
+	if s != nil {
+		decodeForwardQuantLayerScratchPool.Put(s.reset(0))
+	}
 }
 
 // DecodeForwardQuant is DecodeForward with 4-bit-quantised projections: identical
@@ -106,9 +181,10 @@ func DecodeForwardQuant(
 	var encErr error
 	withAutoreleasePool(func() {
 		// per-layer resident: bf16 norms + the quantised projector + growing caches
-		type layerBufs struct{ anw, mnw, pan, pfn, qn, kn, kCache, vCache metal.MTLBuffer }
-		lb := make([]layerBufs, nLayers)
-		projs := make([]qmvProjector, nLayers)
+		layerScratch := getDecodeForwardQuantLayerScratch(nLayers)
+		defer putDecodeForwardQuantLayerScratch(layerScratch)
+		lb := layerScratch.lb
+		projs := layerScratch.projs
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		residentView := func(b []byte) bufView { return bufView{buf: residentBytes(b)} }
 		residentOrNil := func(b []byte) metal.MTLBuffer {
@@ -122,12 +198,12 @@ func DecodeForwardQuant(
 		}
 		for li := range qlayers {
 			ql := qlayers[li]
-			lb[li] = layerBufs{
+			kCache, vCache := layerScratch.kvCache(li, cacheBytes)
+			lb[li] = decodeForwardQuantLayerBufs{
 				anw: residentBytes(ql.AttnNormW), mnw: residentBytes(ql.MLPNormW),
 				pan: residentOrNil(ql.PostAttnNormW), pfn: residentOrNil(ql.PostFFNormW),
 				qn: residentOrNil(ql.QNormW), kn: residentOrNil(ql.KNormW),
-				kCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
-				vCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
+				kCache: kCache, vCache: vCache,
 			}
 			projs[li] = qmvProjector{
 				q: mkW(ql.Q), k: mkW(ql.K), v: mkW(ql.V), o: mkW(ql.O),
@@ -137,9 +213,11 @@ func DecodeForwardQuant(
 			}
 		}
 
-		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
-		msc := newMLPScratch(dModel, dFF)
-		sc := newDecodeForwardStepScratch(dModel)
+		coreScratch := getDecodeForwardCoreScratch(dModel, qDim, kvDim, nHeads, dFF)
+		defer putDecodeForwardCoreScratch(coreScratch)
+		asc := coreScratch.asc
+		msc := coreScratch.msc
+		sc := coreScratch.step
 
 		for t := 0; t < T; t++ {
 			sc.seed(t, inputs[t])
