@@ -136,6 +136,62 @@ func TestAttentionStepKV(t *testing.T) {
 	t.Logf("AttentionStepKV(pos=%d, GQA %d/%d): cache append + grown-window attention byte-identical to proven ops", pos, nHeads, nKV)
 }
 
+func TestAttentionStepKVIntoUsesCallerBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 1, 1, 64, 4, 1, 128
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	kvDim := nKV * headDim
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(maxLen*kvDim, 11))
+
+	wantK := append([]byte(nil), kCache...)
+	wantV := append([]byte(nil), vCache...)
+	want, err := AttentionStepKV(x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, wantK, wantV, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("AttentionStepKV: %v", err)
+	}
+
+	scratch, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := make([]byte, dModel*bf16Size)
+	for i := range sentinel {
+		sentinel[i] = 0x7c
+	}
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	gotK := append([]byte(nil), kCache...)
+	gotV := append([]byte(nil), vCache...)
+	out := make([]byte, dModel*bf16Size)
+	got, err := AttentionStepKVInto(out, x, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, gotK, gotV, dModel, nHeads, nKV, headDim, maxLen, pos, base, scale, eps)
+	if err != nil {
+		t.Fatalf("AttentionStepKVInto: %v", err)
+	}
+	if len(got) == 0 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("AttentionStepKVInto did not return the caller output backing")
+	}
+	eqBytes(t, "AttentionStepKVInto out", got, want)
+	eqBytes(t, "AttentionStepKVInto kCache", gotK, wantK)
+	eqBytes(t, "AttentionStepKVInto vCache", gotV, wantV)
+
+	reused, err := getQMVBF16Scratch(dModel, dModel)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch reused: %v", err)
+	}
+	defer putQMVBF16Scratch(reused)
+	if reused.out != scratch.out {
+		t.Fatal("AttentionStepKVInto did not return the seeded scratch to the pool")
+	}
+	if !bytes.Equal(reused.out.bytes[:len(sentinel)], sentinel) {
+		t.Fatal("AttentionStepKVInto still staged output through pooled scratch")
+	}
+}
+
 func TestAttentionStepKVAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
