@@ -310,6 +310,52 @@ func TestMLPTransformQuantAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMLPTransformQuantComposedWritesDirectlyToReturnedOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, groupSize, bits = 64, 128, 32, 4
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gate := quantWeightFixture(t, dFF, dModel, groupSize, bits, 3)
+	up := quantWeightFixture(t, dFF, dModel, groupSize, bits, 31)
+	down := quantWeightFixture(t, dModel, dFF, groupSize, bits, 37)
+
+	want, err := mlpTransformQuantComposed(x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantComposed: %v", err)
+	}
+	scratch, err := getMLPTransformScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformScratch: %v", err)
+	}
+	scratchOut := unsafe.Slice((*byte)(scratch.mlp.down.Contents()), dModel*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x9c}, len(scratchOut))
+	copy(scratchOut, sentinel)
+	putMLPTransformScratch(scratch)
+
+	out := make([]byte, dModel*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	got, err := mlpTransformQuantComposedInto(out, x, gate, up, down, dModel, dFF, groupSize, bits)
+	if err != nil {
+		t.Fatalf("mlpTransformQuantComposedInto: %v", err)
+	}
+	if len(got) != dModel*bf16Size || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("mlpTransformQuantComposedInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "mlpTransformQuantComposed direct output", got, want)
+
+	scratch, err = getMLPTransformScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformScratch after call: %v", err)
+	}
+	defer putMLPTransformScratch(scratch)
+	scratchOut = unsafe.Slice((*byte)(scratch.mlp.down.Contents()), dModel*bf16Size)
+	if !bytes.Equal(scratchOut, sentinel) {
+		t.Fatal("mlpTransformQuantComposed wrote through pooled scratch output instead of returned output")
+	}
+}
+
 func TestMLPTransformQuantMegaMatchesTransform(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()

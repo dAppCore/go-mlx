@@ -1310,20 +1310,36 @@ func mlpTransformQuant(x []byte, gate, up, down QuantWeight, dModel, dFF, groupS
 }
 
 func mlpTransformQuantComposed(x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return mlpTransformQuantComposedIntoInternal(nil, x, gate, up, down, dModel, dFF, groupSize, bits, false)
+}
+
+func mlpTransformQuantComposedInto(out []byte, x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	return mlpTransformQuantComposedIntoInternal(out, x, gate, up, down, dModel, dFF, groupSize, bits, true)
+}
+
+func mlpTransformQuantComposedIntoInternal(out []byte, x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int, useCallerOut bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != dModel*bf16Size {
 		return nil, core.NewError("native.mlpTransformQuant: x must be dModel bf16 bytes")
 	}
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	if dModel == 0 || dFF == 0 {
-		return make([]byte, dModel*bf16Size), nil
+		clear(out)
+		return out, nil
 	}
 	gateView, upView, downView, err := mlpTransformQuantViews("native.mlpTransformQuant", gate, up, down, dModel, dFF, groupSize, bits)
 	if err != nil {
 		return nil, err
 	}
-	return mlpTransformQuantComposedWithViews(x, gateView, upView, downView, dModel, dFF)
+	return mlpTransformQuantComposedWithViewsInto(out, x, gateView, upView, downView, dModel, dFF, callerOut)
 }
 
 func mlpTransformQuantMega(x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
@@ -1407,7 +1423,17 @@ func mlpTransformQuantMegaWithViews(x []byte, gate, up, down quantMLPProjView, d
 }
 
 func mlpTransformQuantComposedWithViews(x []byte, gate, up, down quantMLPProjView, dModel, dFF int) ([]byte, error) {
-	out := make([]byte, dModel*bf16Size)
+	return mlpTransformQuantComposedWithViewsInto(nil, x, gate, up, down, dModel, dFF, false)
+}
+
+func mlpTransformQuantComposedWithViewsInto(out []byte, x []byte, gate, up, down quantMLPProjView, dModel, dFF int, useCallerOut bool) ([]byte, error) {
+	outLen := dModel * bf16Size
+	callerOut := useCallerOut && cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	gatePSO, err := pipelineFor(qmvBF16KernelName(dFF, dModel, gate.groupSize, gate.bits))
 	if err != nil {
 		return nil, err
@@ -1443,6 +1469,14 @@ func mlpTransformQuantComposedWithViews(x []byte, gate, up, down quantMLPProjVie
 			return
 		}
 		msc := scratch.mlp
+		outBuf := msc.down
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -1458,11 +1492,13 @@ func mlpTransformQuantComposedWithViews(x []byte, gate, up, down quantMLPProjVie
 			endEncodingFast(enc)
 			return
 		}
-		emitQMV(sink, downPSO, down.packed.buf, down.packed.off, down.scales.buf, down.scales.off, down.biases.buf, down.biases.off, msc.gated, msc.down, 0, dFF, dModel)
+		emitQMV(sink, downPSO, down.packed.buf, down.packed.off, down.scales.buf, down.scales.off, down.biases.buf, down.biases.off, msc.gated, outBuf, 0, dFF, dModel)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
+		if !directOut {
+			copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
+		}
 	})
 	return out, encErr
 }
