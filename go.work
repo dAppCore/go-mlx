@@ -10,6 +10,7 @@ use (
 	./external/go-i18n/go
 	./external/go-inference/go
 	./external/go-io/go
+	./external/go-log/go
 	./external/go-ml/go
 	./go
 )

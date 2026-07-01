@@ -136,7 +136,7 @@ func LoadModelAsTextModel(modelPath string, opts ...LoadOption) (inference.TextM
 	return &metaladapter{model: nativeModel, schedulerMaxConcurrent: cfg.ParallelSlots}, nil
 }
 
-func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
+func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) core.Result {
 	loadOptions := inference.ApplyLoadOpts(opts)
 	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
 	if partialOffloadUnsupported {
@@ -168,9 +168,9 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 		WiredLimitBytes:      plan.WiredLimitBytes,
 	})
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
-	return &metaladapter{model: model, schedulerMaxConcurrent: parallelSlots}, nil
+	return core.Ok(&metaladapter{model: model, schedulerMaxConcurrent: parallelSlots})
 }
 
 type metaladapter struct {
@@ -233,12 +233,12 @@ func inferenceMessagesCarryImages(messages []inference.Message) bool {
 	return false
 }
 
-func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
 	classifications := make([]inference.ClassifyResult, len(results))
 	for index, result := range results {
@@ -247,14 +247,14 @@ func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opt
 			Logits: result.Logits,
 		}
 	}
-	return classifications, nil
+	return core.Ok(classifications)
 }
 
-func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
 	batchResults := make([]inference.BatchResult, len(results))
 	for index, result := range results {
@@ -264,7 +264,7 @@ func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string
 		}
 		batchResults[index] = inference.BatchResult{Tokens: tokens, Err: result.Err}
 	}
-	return batchResults, nil
+	return core.Ok(batchResults)
 }
 
 func (adapter *metaladapter) Metrics() inference.GenerateMetrics {
@@ -311,5 +311,5 @@ func (adapter *metaladapter) InspectAttention(ctx context.Context, prompt string
 	}, nil
 }
 
-func (adapter *metaladapter) Err() error   { return adapter.model.Err() }
-func (adapter *metaladapter) Close() error { return adapter.model.Close() }
+func (adapter *metaladapter) Err() core.Result   { return core.ResultOf(nil, adapter.model.Err()) }
+func (adapter *metaladapter) Close() core.Result { return core.ResultOf(nil, adapter.model.Close()) }

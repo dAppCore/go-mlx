@@ -157,14 +157,14 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	}
 
 	run(8, nil) // warm the kernels — first call pays compilation + allocation
-	if err := tm.Err(); err != nil {
-		core.Print(stderr, "%s generate: warm: %v", cliName(), err)
+	if r := tm.Err(); !r.OK {
+		core.Print(stderr, "%s generate: warm: %v", cliName(), r.Error())
 		return 1
 	}
 	var out []byte
 	n, prefill, decode := run(*maxTokens, &out)
-	if err := tm.Err(); err != nil {
-		core.Print(stderr, "%s generate: %v", cliName(), err)
+	if r := tm.Err(); !r.OK {
+		core.Print(stderr, "%s generate: %v", cliName(), r.Error())
 		return 1
 	}
 	if n < 2 {
@@ -255,7 +255,6 @@ type nativeGenerateStateModel interface {
 	inference.TextModel
 	Info() inference.ModelInfo
 	NewSession() metal.SessionHandle
-	Close() error
 }
 
 func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
@@ -283,7 +282,7 @@ func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storeP
 	}
 	nativeState, ok := tm.(nativeGenerateStateModel)
 	if !ok {
-		if closer, closeOK := tm.(interface{ Close() error }); closeOK {
+		if closer, closeOK := tm.(interface{ Close() core.Result }); closeOK {
 			_ = closer.Close()
 		}
 		core.Print(stderr, "%s generate: native state model does not support sessions", cliName())

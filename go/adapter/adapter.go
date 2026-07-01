@@ -27,6 +27,22 @@ var errCallbackNil = core.NewError("adapter: token callback is nil")
 // the wrapped model does not implement inference.AttentionInspector.
 var errInspectUnsupported = core.NewError("adapter: wrapped model does not support attention inspection")
 
+// resultErr converts a failed core.Result (r.OK == false) from model.Err() /
+// model.Close() into a plain error for this package's error-returning API.
+// It unwraps to the original error Value rather than returning r itself:
+// Result satisfies the error interface (it has an Error() string method), so
+// returning r directly would compile, but it would box a distinct error value
+// — breaking core.Is / errors.Is and equality checks callers make against the
+// model's original error. Falls back to a fresh error carrying the same
+// message text on the (contractually unreachable) case where Value isn't an
+// error.
+func resultErr(r core.Result) error {
+	if err, ok := r.Value.(error); ok {
+		return err
+	}
+	return core.NewError(r.Error())
+}
+
 // GenOpts controls buffered adapter generation.
 type GenOpts struct {
 	MaxTokens int
@@ -83,7 +99,10 @@ func (a *Adapter) Close() error {
 	}
 	model := a.model
 	a.model = nil
-	return model.Close()
+	if r := model.Close(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
 }
 
 // Generate collects a streamed response into a single string.
@@ -109,8 +128,8 @@ func (a *Adapter) Generate(ctx context.Context, prompt string, opts GenOpts) (Re
 	for token := range model.Generate(ctx, prompt, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := model.Err(); err != nil {
-		return Result{Text: builder.String()}, err
+	if r := model.Err(); !r.OK {
+		return Result{Text: builder.String()}, resultErr(r)
 	}
 
 	metrics := model.Metrics()
@@ -146,7 +165,10 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return model.Err()
+	if r := model.Err(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
 }
 
 // Chat collects a streamed chat response into a single string.
@@ -167,8 +189,8 @@ func (a *Adapter) Chat(ctx context.Context, messages []inference.Message, opts G
 	for token := range model.Chat(ctx, messages, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := model.Err(); err != nil {
-		return Result{Text: builder.String()}, err
+	if r := model.Err(); !r.OK {
+		return Result{Text: builder.String()}, resultErr(r)
 	}
 
 	metrics := model.Metrics()
@@ -204,7 +226,10 @@ func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, 
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return model.Err()
+	if r := model.Err(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
 }
 
 // InspectAttention delegates to the underlying model when supported.

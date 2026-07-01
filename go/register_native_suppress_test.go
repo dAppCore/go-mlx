@@ -90,7 +90,7 @@ func TestNativeTextModelGreedyHonoursSuppressTokens(t *testing.T) {
 	for tok := range nativeModel.Generate(context.Background(), "hello", inference.WithMaxTokens(1), inference.WithSuppressTokens(12)) {
 		got = append(got, tok.ID)
 	}
-	if err := nativeModel.Err(); err != nil {
+	if err := resultError(nativeModel.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if want := []int32{13}; !reflect.DeepEqual(got, want) {
@@ -117,7 +117,7 @@ func TestNativeTextModelGreedyMinTokensBeforeStopSuppressesFirstStop(t *testing.
 	for tok := range nativeModel.Generate(context.Background(), "hello", inference.WithMaxTokens(1), inference.WithStopTokens(12), inference.WithMinTokensBeforeStop(1)) {
 		got = append(got, tok.ID)
 	}
-	if err := nativeModel.Err(); err != nil {
+	if err := resultError(nativeModel.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if want := []int32{13}; !reflect.DeepEqual(got, want) {

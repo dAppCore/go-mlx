@@ -576,7 +576,7 @@ func TestNativeTextModelChatImagesNotSilentlyDropped_Bad(t *testing.T) {
 	}}, inference.WithMaxTokens(1)) {
 		t.Fatal("Chat yielded a token for an image message, want a capability error")
 	}
-	err = model.Err()
+	err = resultError(model.Err())
 	if err == nil {
 		t.Fatal("Chat Err() = nil for image message, want capability error")
 	}
@@ -708,7 +708,7 @@ func TestNativeTextModelChatImagesPrefillsProjectedFeatures_Good(t *testing.T) {
 	}}, inference.WithMaxTokens(1)) {
 		got = append(got, tok.ID)
 	}
-	if err := model.Err(); err != nil {
+	if err := resultError(model.Err()); err != nil {
 		t.Fatalf("Chat Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{3}) {
@@ -762,7 +762,7 @@ func TestNativeTextModelChatImagesCachesProjectedFeatures_Good(t *testing.T) {
 	for turn := 0; turn < 2; turn++ {
 		for range model.Chat(context.Background(), messages, inference.WithMaxTokens(1)) {
 		}
-		if err := model.Err(); err != nil {
+		if err := resultError(model.Err()); err != nil {
 			t.Fatalf("turn %d Chat Err: %v", turn+1, err)
 		}
 	}
@@ -2213,7 +2213,7 @@ func TestNativeSpeculativeTextModelGenerateUsesNativeGemma4Assistant(t *testing.
 	if targetSession.closeCalls != 1 {
 		t.Fatalf("target session close calls = %d, want 1", targetSession.closeCalls)
 	}
-	if err := spec.Close(); err != nil {
+	if err := resultError(spec.Close()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 }
@@ -2245,7 +2245,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantRepeatPenaltyFallsBack(t *test
 	for token := range spec.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithTemperature(0), inference.WithRepeatPenalty(2)) {
 		out = append(out, token)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("repeat-penalty fallback Err = %v", err)
 	}
 	if assistantCalled {
@@ -2290,7 +2290,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantProbeSinkFallsBack(t *testing.
 	for token := range spec.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithTemperature(0)) {
 		out = append(out, token)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("probe-sink fallback Err = %v", err)
 	}
 	if assistantCalled {
@@ -2359,7 +2359,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptCache(t *testing
 	for token := range spec.Generate(context.Background(), "hello", inference.WithMaxTokens(1), inference.WithTemperature(0)) {
 		out = append(out, token)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Generate Err = %v", err)
 	}
 	if got := nativeSessionTextTokenText(out); got != " hello" {
@@ -2424,7 +2424,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptPrefix(t *testin
 
 	for range spec.Generate(context.Background(), "hello hello", inference.WithMaxTokens(1), inference.WithTemperature(0)) {
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Generate Err = %v", err)
 	}
 	if targetTM.opens != 1 {
@@ -2479,7 +2479,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUpdatesWarmPromptPrefixCacheEn
 
 	for range spec.Generate(context.Background(), "hello hello", inference.WithMaxTokens(1), inference.WithTemperature(0)) {
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Generate Err = %v", err)
 	}
 	entries, err := spec.CacheEntries(context.Background(), nil)

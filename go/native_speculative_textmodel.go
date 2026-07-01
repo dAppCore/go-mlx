@@ -27,6 +27,29 @@ type nativeSpeculativeTextModel struct {
 	mtpMetrics *metal.MTPMetrics
 }
 
+// errCoreResultFailed is the fallback resultError returns when a failed
+// core.Result carries a Value that is not an error. Contractually
+// unreachable for the inference.TextModel Err()/Close() paths (which always
+// Fail with an error), but keeps resultError total.
+var errCoreResultFailed = core.NewError("mlx: core.Result reported failure without an error value")
+
+// resultError collapses a core.Result back to a plain error for the go-mlx
+// bridge APIs that still return error: nil when the Result is OK, otherwise
+// the unwrapped underlying error (identity preserved for core.Is / errors.Is),
+// falling back to errCoreResultFailed when a failed Result carries no error
+// value. Mirrors the per-package resultError helpers used across go-mlx after
+// the inference.TextModel Err()/Close()/Classify()/BatchGenerate() migration to
+// core.Result.
+func resultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return errCoreResultFailed
+}
+
 // LoadNativeSpeculativePairAsTextModel loads two no-cgo native text models and
 // serves target generation through pkg/native's MTP target/draft verifier.
 func LoadNativeSpeculativePairAsTextModel(targetPath, draftPath string, opts ...LoadOption) (inference.TextModel, error) {
@@ -44,7 +67,7 @@ func LoadNativeSpeculativePairAsTextModelBlock(targetPath, draftPath string, dra
 	}
 	target, ok := targetTM.(*nativeTextModel)
 	if !ok {
-		closeErr := targetTM.Close()
+		closeErr := resultError(targetTM.Close())
 		return nil, core.ErrorJoin(core.NewError("mlx: native speculative target is not a native text model"), closeErr)
 	}
 	if draftBlock <= 0 {
@@ -52,12 +75,12 @@ func LoadNativeSpeculativePairAsTextModelBlock(targetPath, draftPath string, dra
 	}
 	if isGemma4AssistantDraft(draftPath) {
 		if err := validateNativeSpeculativeAssistantTokenizer(target.tok, draftPath); err != nil {
-			closeErr := target.Close()
+			closeErr := resultError(target.Close())
 			return nil, core.ErrorJoin(err, closeErr)
 		}
 		assistant, err := native.LoadGemma4AssistantPairDirs(targetPath, draftPath)
 		if err != nil {
-			closeErr := target.Close()
+			closeErr := resultError(target.Close())
 			return nil, core.ErrorJoin(err, closeErr)
 		}
 		return &nativeSpeculativeTextModel{
@@ -68,12 +91,12 @@ func LoadNativeSpeculativePairAsTextModelBlock(targetPath, draftPath string, dra
 	}
 	draftTM, err := LoadNativeTextModel(draftPath, opts...)
 	if err != nil {
-		closeErr := target.Close()
+		closeErr := resultError(target.Close())
 		return nil, core.ErrorJoin(err, closeErr)
 	}
 	draft, ok := draftTM.(*nativeTextModel)
 	if !ok {
-		closeErr := core.ErrorJoin(target.Close(), draftTM.Close())
+		closeErr := core.ErrorJoin(resultError(target.Close()), resultError(draftTM.Close()))
 		return nil, core.ErrorJoin(core.NewError("mlx: native speculative draft is not a native text model"), closeErr)
 	}
 	return &nativeSpeculativeTextModel{
@@ -241,19 +264,19 @@ func (s *nativeSpeculativeTextModel) MTPMetrics() *metal.MTPMetrics {
 	return &clone
 }
 
-func (s *nativeSpeculativeTextModel) Close() error {
+func (s *nativeSpeculativeTextModel) Close() core.Result {
 	if s == nil {
-		return nil
+		return core.Ok(nil)
 	}
 	var err error
 	if s.nativeTextModel != nil {
-		err = core.ErrorJoin(err, s.nativeTextModel.Close())
+		err = core.ErrorJoin(err, resultError(s.nativeTextModel.Close()))
 	}
 	if s.draft != nil && s.draft != s.nativeTextModel {
-		err = core.ErrorJoin(err, s.draft.Close())
+		err = core.ErrorJoin(err, resultError(s.draft.Close()))
 	}
 	if s.nativeAssistant != nil {
 		err = core.ErrorJoin(err, s.nativeAssistant.Close())
 	}
-	return err
+	return core.ResultOf(nil, err)
 }

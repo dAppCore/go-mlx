@@ -19,7 +19,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	openaicompat "dappco.re/go/inference/openai"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // --- Health -----------------------------------------------------------------

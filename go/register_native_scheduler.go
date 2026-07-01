@@ -8,6 +8,7 @@ import (
 	"context"
 	"iter"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/scheduler"
 )
@@ -67,11 +68,11 @@ func (base nativeSchedulerBase) Chat(ctx context.Context, messages []inference.M
 	return base.model.Chat(ctx, messages, opts...)
 }
 
-func (base nativeSchedulerBase) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (base nativeSchedulerBase) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	return base.model.Classify(ctx, prompts, opts...)
 }
 
-func (base nativeSchedulerBase) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (base nativeSchedulerBase) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	return base.model.BatchGenerate(ctx, prompts, opts...)
 }
 
@@ -87,10 +88,10 @@ func (base nativeSchedulerBase) Metrics() inference.GenerateMetrics {
 	return base.model.Metrics()
 }
 
-func (base nativeSchedulerBase) Err() error {
+func (base nativeSchedulerBase) Err() core.Result {
 	return base.model.Err()
 }
 
-func (base nativeSchedulerBase) Close() error {
+func (base nativeSchedulerBase) Close() core.Result {
 	return base.model.Close()
 }

@@ -19,9 +19,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	anthropiccompat "dappco.re/go/inference/anthropic"
-	ollamacompat "dappco.re/go/inference/ollama"
-	openaicompat "dappco.re/go/inference/openai"
+	anthropiccompat "dappco.re/go/inference/provider/anthropic"
+	ollamacompat "dappco.re/go/inference/provider/ollama"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // Sinks defeat compiler DCE.

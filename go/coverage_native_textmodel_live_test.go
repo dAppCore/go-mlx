@@ -74,7 +74,7 @@ func TestNativeTextModel_GenerateChatStreamLiveModel(t *testing.T) {
 	for token := range native.Generate(ctx, "The capital of France is") {
 		gen.WriteString(token.Text)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	t.Logf("native Generate -> %q", gen.String())
@@ -91,7 +91,7 @@ func TestNativeTextModel_GenerateChatStreamLiveModel(t *testing.T) {
 		[]inference.Message{{Role: "user", Content: "Say the word ready."}}) {
 		reply.WriteString(token.Text)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Chat Err: %v", err)
 	}
 	t.Logf("native Chat -> %q", reply.String())
@@ -101,7 +101,7 @@ func TestNativeTextModel_GenerateChatStreamLiveModel(t *testing.T) {
 	for token := range native.Generate(ctx, "A short story:", inference.WithTemperature(0.7), inference.WithMaxTokens(12)) {
 		sampled.WriteString(token.Text)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("sampled Generate Err: %v", err)
 	}
 	t.Logf("native sampled Generate -> %q", sampled.String())

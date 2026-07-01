@@ -34,7 +34,7 @@ func TestSpeculativeServeStreaming_LiveModel(t *testing.T) {
 		t.Fatalf("LoadSpeculativePairAsTextModel: %v", err)
 	}
 	defer func() {
-		if closeErr := tm.Close(); closeErr != nil {
+		if closeErr := resultError(tm.Close()); closeErr != nil {
 			t.Errorf("Close: %v", closeErr)
 		}
 	}()
@@ -49,7 +49,7 @@ func TestSpeculativeServeStreaming_LiveModel(t *testing.T) {
 	for range tm.Chat(context.Background(), messages, inference.WithMaxTokens(200)) {
 		arrivals = append(arrivals, time.Since(start))
 	}
-	if err := tm.Err(); err != nil {
+	if err := resultError(tm.Err()); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
 	if len(arrivals) < 30 {

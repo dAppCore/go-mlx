@@ -77,7 +77,7 @@ func Example_metalbackendAvailable() {
 
 func Example_metalbackendLoadModel() {
 	backend := &metalbackend{}
-	model, err := backend.LoadModel("/models/gemma4")
+	model, err := castTextModel(backend.LoadModel("/models/gemma4"))
 	if err != nil {
 		return
 	}
@@ -116,7 +116,7 @@ func Example_metaladapterClassify() {
 	}
 	defer model.Close()
 
-	_, _ = model.Classify(context.Background(), []string{"adapter quality improved"})
+	_, _ = castClassify(model.Classify(context.Background(), []string{"adapter quality improved"}))
 }
 
 func Example_metaladapterBatchGenerate() {
@@ -126,10 +126,10 @@ func Example_metaladapterBatchGenerate() {
 	}
 	defer model.Close()
 
-	_, _ = model.BatchGenerate(context.Background(), []string{
+	_, _ = castBatch(model.BatchGenerate(context.Background(), []string{
 		"Summarise the adapter change:",
 		"Write a regression note:",
-	})
+	}))
 }
 
 func Example_metaladapterMetrics() {

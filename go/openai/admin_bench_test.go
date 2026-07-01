@@ -21,7 +21,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	openaicompat "dappco.re/go/inference/openai"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // Sinks defeat compiler DCE.
@@ -183,12 +183,12 @@ func (m *adminBenchMockModel) Chat(context.Context, []inference.Message, ...infe
 	return func(func(inference.Token) bool) {}
 }
 
-func (m *adminBenchMockModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (m *adminBenchMockModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (m *adminBenchMockModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (m *adminBenchMockModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (m *adminBenchMockModel) ModelType() string { return "mock" }
@@ -196,8 +196,8 @@ func (m *adminBenchMockModel) Info() inference.ModelInfo {
 	return inference.ModelInfo{Architecture: "qwen3"}
 }
 func (m *adminBenchMockModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
-func (m *adminBenchMockModel) Err() error                         { return nil }
-func (m *adminBenchMockModel) Close() error                       { return nil }
+func (m *adminBenchMockModel) Err() core.Result                   { return core.Ok(nil) }
+func (m *adminBenchMockModel) Close() core.Result                 { return core.Ok(nil) }
 
 func (m *adminBenchMockModel) CacheEntries(context.Context, map[string]string) ([]inference.CacheBlockRef, error) {
 	return append([]inference.CacheBlockRef(nil), m.entries...), nil

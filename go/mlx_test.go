@@ -181,7 +181,7 @@ func TestLoadModel_Generate_Good(t *testing.T) {
 		count++
 		t.Logf("[%d] %q", tok.ID, tok.Text)
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 	if count == 0 {
@@ -222,7 +222,7 @@ func TestGemma3_1B_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestGemma3_1B_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -348,7 +348,7 @@ func TestQwen2_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -385,7 +385,7 @@ func TestQwen2_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -438,7 +438,7 @@ func TestLlama_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -530,7 +530,7 @@ func TestGenerate_Metrics_Good(t *testing.T) {
 	for range m.Generate(ctx, "Hello world", inference.WithMaxTokens(8)) {
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -586,7 +586,7 @@ func TestClassify_Batch_Good(t *testing.T) {
 	}
 
 	start := time.Now()
-	results, err := m.Classify(ctx, prompts)
+	results, err := castClassify(m.Classify(ctx, prompts))
 	dur := time.Since(start)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
@@ -617,7 +617,7 @@ func TestClassify_WithLogits_Good(t *testing.T) {
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
-	results, err := m.Classify(ctx, []string{"Hello world"}, inference.WithLogits())
+	results, err := castClassify(m.Classify(ctx, []string{"Hello world"}, inference.WithLogits()))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestBatchGenerate_Good(t *testing.T) {
 	}
 
 	start := time.Now()
-	results, err := m.BatchGenerate(ctx, prompts, inference.WithMaxTokens(16))
+	results, err := castBatch(m.BatchGenerate(ctx, prompts, inference.WithMaxTokens(16)))
 	dur := time.Since(start)
 	if err != nil {
 		t.Fatalf("BatchGenerate: %v", err)
@@ -697,7 +697,7 @@ func TestLlama_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -718,7 +718,7 @@ func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {
 	}
 
 	modelPath := gemma3ModelPath(t)
-	m, err := b.LoadModel(modelPath)
+	m, err := castTextModel(b.LoadModel(modelPath))
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
@@ -766,4 +766,41 @@ func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {
 
 	t.Logf("AttentionSnapshot: arch=%s layers=%d heads=%d seq=%d dim=%d",
 		snap.Architecture, snap.NumLayers, snap.NumHeads, snap.SeqLen, snap.HeadDim)
+}
+
+// resultError collapses a core.Result into the plain error these external
+// tests were written against: nil when OK, otherwise the unwrapped underlying
+// error (identity preserved for core.Is). The package-local twin of the
+// internal mlx.resultError, needed because this external test package cannot
+// reach the unexported helper after the inference.TextModel
+// Err()/Close()/Classify()/BatchGenerate() → core.Result migration.
+func resultError(r core.Result) error {
+	if r.OK {
+		return nil
+	}
+	if err, ok := r.Value.(error); ok {
+		return err
+	}
+	return core.NewError("mlx_test: core.Result reported failure without an error value")
+}
+
+// castClassify unpacks the migrated Classify core.Result into the
+// (results, error) pair the call sites expect.
+func castClassify(r core.Result) ([]inference.ClassifyResult, error) {
+	results, _ := r.Value.([]inference.ClassifyResult)
+	return results, resultError(r)
+}
+
+// castBatch unpacks the migrated BatchGenerate core.Result into
+// ([]inference.BatchResult, error).
+func castBatch(r core.Result) ([]inference.BatchResult, error) {
+	results, _ := r.Value.([]inference.BatchResult)
+	return results, resultError(r)
+}
+
+// castTextModel unpacks the migrated Backend.LoadModel core.Result into
+// (inference.TextModel, error).
+func castTextModel(r core.Result) (inference.TextModel, error) {
+	model, _ := r.Value.(inference.TextModel)
+	return model, resultError(r)
 }

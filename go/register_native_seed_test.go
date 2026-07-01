@@ -57,7 +57,7 @@ func TestNativeTextModelSampledHonoursSeed(t *testing.T) {
 	for tok := range nativeModel.Generate(context.Background(), "hello", inference.WithMaxTokens(8), inference.WithTemperature(1), inference.WithSeed(123)) {
 		got = append(got, tok.ID)
 	}
-	if err := nativeModel.Err(); err != nil {
+	if err := resultError(nativeModel.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if want := expectedSeededSampleIDs(123, 8); !reflect.DeepEqual(got, want) {

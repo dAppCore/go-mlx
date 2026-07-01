@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	openaicompat "dappco.re/go/inference/openai"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // The /v1/responses streaming hot path builds each "response.output_text.delta"

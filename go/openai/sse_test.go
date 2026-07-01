@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	ollamacompat "dappco.re/go/inference/ollama"
-	openaicompat "dappco.re/go/inference/openai"
+	ollamacompat "dappco.re/go/inference/provider/ollama"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // writeSSEData / writeSSEEvent must produce byte-identical frames to the

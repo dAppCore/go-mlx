@@ -55,19 +55,19 @@ func (model *stubTextModel) Chat(_ context.Context, _ []inference.Message, _ ...
 	}
 }
 
-func (model *stubTextModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (model *stubTextModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (model *stubTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (model *stubTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (model *stubTextModel) ModelType() string                  { return "stub" }
 func (model *stubTextModel) Info() inference.ModelInfo          { return inference.ModelInfo{} }
 func (model *stubTextModel) Metrics() inference.GenerateMetrics { return model.metrics }
-func (model *stubTextModel) Err() error                         { return model.err }
-func (model *stubTextModel) Close() error                       { return model.closeErr }
+func (model *stubTextModel) Err() core.Result                   { return core.ResultOf(nil, model.err) }
+func (model *stubTextModel) Close() core.Result                 { return core.ResultOf(nil, model.closeErr) }
 func (model *stubTextModel) InspectAttention(context.Context, string, ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
 	return model.attention, nil
 }
@@ -80,17 +80,17 @@ func (model *plainTextModel) Generate(_ context.Context, _ string, _ ...inferenc
 func (model *plainTextModel) Chat(_ context.Context, _ []inference.Message, _ ...inference.GenerateOption) iter.Seq[inference.Token] {
 	return func(yield func(inference.Token) bool) {}
 }
-func (model *plainTextModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (model *plainTextModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
-func (model *plainTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (model *plainTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 func (model *plainTextModel) ModelType() string                  { return "plain" }
 func (model *plainTextModel) Info() inference.ModelInfo          { return inference.ModelInfo{} }
 func (model *plainTextModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
-func (model *plainTextModel) Err() error                         { return nil }
-func (model *plainTextModel) Close() error                       { return nil }
+func (model *plainTextModel) Err() core.Result                   { return core.Ok(nil) }
+func (model *plainTextModel) Close() core.Result                 { return core.Ok(nil) }
 
 // --- New ---------------------------------------------------------------
 

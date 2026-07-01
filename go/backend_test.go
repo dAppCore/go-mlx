@@ -2099,12 +2099,12 @@ func (backend *stubBackend) Name() string { return "metal" }
 func (backend *stubBackend) Available() bool {
 	return true
 }
-func (backend *stubBackend) LoadModel(path string, _ ...inference.LoadOption) (inference.TextModel, error) {
+func (backend *stubBackend) LoadModel(path string, _ ...inference.LoadOption) core.Result {
 	backend.loadPath = path
 	if backend.loadErr != nil {
-		return nil, backend.loadErr
+		return core.Fail(backend.loadErr)
 	}
-	return backend.model, nil
+	return core.Ok(backend.model)
 }
 
 func TestNewMLXBackend_Good(t *testing.T) {

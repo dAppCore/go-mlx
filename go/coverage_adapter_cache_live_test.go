@@ -89,7 +89,7 @@ func TestNativeTextModel_ClassifyBatchLiveModel(t *testing.T) {
 	defer done()
 	ctx := context.Background()
 
-	results, err := native.Classify(ctx, []string{"The sky is", "Two plus two is"})
+	results, err := castClassify(native.Classify(ctx, []string{"The sky is", "Two plus two is"}))
 	if err != nil {
 		t.Fatalf("native Classify: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestNativeTextModel_ClassifyBatchLiveModel(t *testing.T) {
 		t.Logf("native Classify[%d] -> %q", i, r.Token.Text)
 	}
 
-	batch, err := native.BatchGenerate(ctx, []string{"Hello there"}, inference.WithMaxTokens(6))
+	batch, err := castBatch(native.BatchGenerate(ctx, []string{"Hello there"}, inference.WithMaxTokens(6)))
 	if err != nil {
 		t.Fatalf("native BatchGenerate: %v", err)
 	}

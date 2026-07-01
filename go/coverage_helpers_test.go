@@ -35,7 +35,7 @@ func (emptyPieceTokenizer) Decode(ids []int32) string {
 	}
 	return b.String()
 }
-func (t emptyPieceTokenizer) DecodeOne(id int32) string { return t.Decode([]int32{id}) }
+func (t emptyPieceTokenizer) DecodeOne(id int32) string  { return t.Decode([]int32{id}) }
 func (emptyPieceTokenizer) TokenID(string) (int32, bool) { return 0, false }
 func (emptyPieceTokenizer) IDToken(int32) string         { return "" }
 func (emptyPieceTokenizer) BOS() int32                   { return 1 }
@@ -275,4 +275,30 @@ func TestMLXAllocatorDelegations(t *testing.T) {
 	if err := SeedRandom(42); err != nil {
 		t.Fatalf("SeedRandom(42) error = %v", err)
 	}
+}
+
+// castClassify unpacks the core.Result returned by the migrated
+// inference.TextModel.Classify into the (results, error) pair the tests were
+// written against — results is the []inference.ClassifyResult payload (nil on
+// failure, via the comma-ok assertion) and error is resultError's unwrapped
+// failure (nil when OK). Keeps the call sites' control flow byte-identical
+// after the Err/Close/Classify/BatchGenerate → core.Result migration.
+func castClassify(r core.Result) ([]inference.ClassifyResult, error) {
+	results, _ := r.Value.([]inference.ClassifyResult)
+	return results, resultError(r)
+}
+
+// castBatch is castClassify for BatchGenerate — unpacks the core.Result into
+// the ([]inference.BatchResult, error) pair the tests expect.
+func castBatch(r core.Result) ([]inference.BatchResult, error) {
+	results, _ := r.Value.([]inference.BatchResult)
+	return results, resultError(r)
+}
+
+// castTextModel unpacks the core.Result returned by the migrated
+// inference.Backend.LoadModel into the (inference.TextModel, error) pair the
+// tests expect — the model payload (nil on failure) and resultError's error.
+func castTextModel(r core.Result) (inference.TextModel, error) {
+	model, _ := r.Value.(inference.TextModel)
+	return model, resultError(r)
 }

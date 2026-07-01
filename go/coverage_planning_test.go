@@ -115,7 +115,7 @@ func TestNativeTextModel_EmptyPromptFastPaths(t *testing.T) {
 	// prompts — the empty-prompt result paths are reachable without a model.
 	m := &nativeTextModel{modelType: "gemma4", info: inference.ModelInfo{Architecture: "gemma4"}}
 
-	results, err := m.Classify(context.Background(), nil)
+	results, err := castClassify(m.Classify(context.Background(), nil))
 	if err != nil {
 		t.Fatalf("Classify(empty): %v", err)
 	}
@@ -123,7 +123,7 @@ func TestNativeTextModel_EmptyPromptFastPaths(t *testing.T) {
 		t.Fatalf("Classify(empty) = %v, want empty", results)
 	}
 
-	batch, err := m.BatchGenerate(context.Background(), nil)
+	batch, err := castBatch(m.BatchGenerate(context.Background(), nil))
 	if err != nil {
 		t.Fatalf("BatchGenerate(empty): %v", err)
 	}
@@ -138,10 +138,10 @@ func TestNativeTextModel_EmptyPromptFastPaths(t *testing.T) {
 	if m.Info().Architecture != "gemma4" {
 		t.Fatalf("Info architecture = %q", m.Info().Architecture)
 	}
-	if m.Err() != nil {
-		t.Fatalf("Err on fresh model = %v", m.Err())
+	if resultError(m.Err()) != nil {
+		t.Fatalf("Err on fresh model = %v", resultError(m.Err()))
 	}
-	if err := m.Close(); err != nil {
+	if err := resultError(m.Close()); err != nil {
 		t.Fatalf("Close = %v", err)
 	}
 	_ = m.Metrics()

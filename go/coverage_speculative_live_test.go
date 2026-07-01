@@ -74,7 +74,7 @@ func TestSpeculativeTextModel_LivePair(t *testing.T) {
 		inference.WithMaxTokens(24), inference.WithEnableThinking(&off)) {
 		gen.WriteString(token.Text)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	t.Logf("speculative Generate -> %q", gen.String())
@@ -100,7 +100,7 @@ func TestSpeculativeTextModel_LivePair(t *testing.T) {
 		inference.WithMaxTokens(32), inference.WithEnableThinking(&off)) {
 		reply.WriteString(token.Text)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Chat Err: %v", err)
 	}
 	if reply.Len() == 0 {
@@ -126,7 +126,7 @@ func TestSpeculativeTextModel_FallbackLane(t *testing.T) {
 		inference.WithEnableThinking(&off)) {
 		gen.WriteString(token.Text)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("fallback Generate Err: %v", err)
 	}
 	t.Logf("speculative fallback Generate -> %q", gen.String())

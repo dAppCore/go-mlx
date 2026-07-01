@@ -12,9 +12,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	anthropiccompat "dappco.re/go/inference/anthropic"
-	ollamacompat "dappco.re/go/inference/ollama"
-	openaicompat "dappco.re/go/inference/openai"
+	anthropiccompat "dappco.re/go/inference/provider/anthropic"
+	ollamacompat "dappco.re/go/inference/provider/ollama"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 func TestOpenai_NewResolver_Good(t *testing.T) {
@@ -56,12 +56,12 @@ func (m *openAIMockModel) Chat(context.Context, []inference.Message, ...inferenc
 	return m.seq()
 }
 
-func (m *openAIMockModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (m *openAIMockModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (m *openAIMockModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (m *openAIMockModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (m *openAIMockModel) ModelType() string { return "mock" }
@@ -73,8 +73,8 @@ func (m *openAIMockModel) Info() inference.ModelInfo {
 	return inference.ModelInfo{Architecture: arch, QuantBits: m.quantBits}
 }
 func (m *openAIMockModel) Metrics() inference.GenerateMetrics { return m.metrics }
-func (m *openAIMockModel) Err() error                         { return m.err }
-func (m *openAIMockModel) Close() error                       { return nil }
+func (m *openAIMockModel) Err() core.Result                   { return core.ResultOf(nil, m.err) }
+func (m *openAIMockModel) Close() core.Result                 { return core.Ok(nil) }
 
 func (m *openAIMockModel) Embed(_ context.Context, req inference.EmbeddingRequest) (*inference.EmbeddingResult, error) {
 	return &inference.EmbeddingResult{
@@ -520,12 +520,12 @@ func (m *openAITextOnlyModel) Chat(context.Context, []inference.Message, ...infe
 	return func(func(inference.Token) bool) {}
 }
 
-func (m *openAITextOnlyModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (m *openAITextOnlyModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (m *openAITextOnlyModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (m *openAITextOnlyModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (m *openAITextOnlyModel) ModelType() string { return "text-only" }
@@ -533,8 +533,8 @@ func (m *openAITextOnlyModel) Info() inference.ModelInfo {
 	return inference.ModelInfo{Architecture: "qwen3"}
 }
 func (m *openAITextOnlyModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
-func (m *openAITextOnlyModel) Err() error                         { return nil }
-func (m *openAITextOnlyModel) Close() error                       { return nil }
+func (m *openAITextOnlyModel) Err() core.Result                   { return core.Ok(nil) }
+func (m *openAITextOnlyModel) Close() core.Result                 { return core.Ok(nil) }
 
 func TestOpenAI_Responses_Good_UsesSchedulerModel(t *testing.T) {
 	model := &openAISchedulerModel{openAIMockModel: openAIMockModel{

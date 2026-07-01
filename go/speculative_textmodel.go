@@ -183,8 +183,8 @@ func (s *speculativeTextModel) MTPMetrics() *metal.MTPMetrics {
 }
 
 // Close releases both the target and the attached assistant drafter.
-func (s *speculativeTextModel) Close() error {
-	return s.pair.Close()
+func (s *speculativeTextModel) Close() core.Result {
+	return core.ResultOf(nil, s.pair.Close())
 }
 
 // IsSpeculativeTextModel reports whether tm is the MTP pair lane — callers

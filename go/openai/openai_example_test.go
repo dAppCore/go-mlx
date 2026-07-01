@@ -10,8 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference"
-	openaicompat "dappco.re/go/inference/openai"
+	openaicompat "dappco.re/go/inference/provider/openai"
 	"dappco.re/go/mlx/openai"
 )
 
@@ -28,19 +29,19 @@ func (exampleModel) Chat(context.Context, []inference.Message, ...inference.Gene
 	return func(yield func(inference.Token) bool) { yield(inference.Token{Text: "Hello"}) }
 }
 
-func (exampleModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (exampleModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (exampleModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (exampleModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (exampleModel) ModelType() string                  { return "example" }
 func (exampleModel) Info() inference.ModelInfo          { return inference.ModelInfo{Architecture: "qwen3"} }
 func (exampleModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
-func (exampleModel) Err() error                         { return nil }
-func (exampleModel) Close() error                       { return nil }
+func (exampleModel) Err() core.Result                   { return core.Ok(nil) }
+func (exampleModel) Close() core.Result                 { return core.Ok(nil) }
 
 // ExampleNewResolver shows the lazy Metal-backed resolver NewHandler / NewMux
 // build on: it names the backend and remembers the model path, loading the

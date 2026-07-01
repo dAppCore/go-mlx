@@ -54,7 +54,7 @@ func TestNativeTextModel_TypeAndInfo_Good(t *testing.T) {
 	if info := m.Info(); info.Architecture != "gemma4" || info.VocabSize != 262144 {
 		t.Fatalf("Info = %+v, want gemma4/262144", info)
 	}
-	if err := m.Close(); err != nil { // Close is a documented no-op.
+	if err := resultError(m.Close()); err != nil { // Close is a documented no-op.
 		t.Fatalf("Close = %v, want nil", err)
 	}
 }
@@ -303,8 +303,8 @@ func (s *nativeEvalTextSession) StepWithID(id int32, emb []byte) ([]byte, error)
 func TestNativeTextModel_ErrAndMetrics_Good(t *testing.T) {
 	m := &nativeTextModel{}
 	// Fresh model: no error, zero metrics.
-	if m.Err() != nil {
-		t.Fatalf("fresh Err = %v, want nil", m.Err())
+	if resultError(m.Err()) != nil {
+		t.Fatalf("fresh Err = %v, want nil", resultError(m.Err()))
 	}
 	if (m.Metrics() != inference.GenerateMetrics{}) {
 		t.Fatalf("fresh Metrics = %+v, want zero", m.Metrics())
@@ -313,12 +313,12 @@ func TestNativeTextModel_ErrAndMetrics_Good(t *testing.T) {
 	// setMetrics records a successful run and clears any prior error; the
 	// tokens/sec is genTokens/total.
 	m.setErr(coreError("boom"))
-	if m.Err() == nil {
+	if resultError(m.Err()) == nil {
 		t.Fatal("Err after setErr = nil, want error")
 	}
 	m.setMetrics(10, 20, time.Second)
-	if m.Err() != nil {
-		t.Fatalf("Err after setMetrics = %v, want cleared", m.Err())
+	if resultError(m.Err()) != nil {
+		t.Fatalf("Err after setMetrics = %v, want cleared", resultError(m.Err()))
 	}
 	got := m.Metrics()
 	if got.PromptTokens != 10 || got.GeneratedTokens != 20 {

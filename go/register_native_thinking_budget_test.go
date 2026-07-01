@@ -125,7 +125,7 @@ func TestNativeTextModelThinkingBudgetForcesCommittedClose(t *testing.T) {
 	for tok := range nativeModel.Generate(context.Background(), "hello", inference.WithMaxTokens(5), inference.WithThinkingBudget(2)) {
 		got = append(got, tok.ID)
 	}
-	if err := nativeModel.Err(); err != nil {
+	if err := resultError(nativeModel.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	want := []int32{20, 1, 2, 21, 4}
@@ -159,7 +159,7 @@ func TestNativeTextModelThinkingBudgetUsesTransformedPromptCache(t *testing.T) {
 	for tok := range nativeModel.Generate(context.Background(), "hello", inference.WithMaxTokens(4), inference.WithThinkingBudget(1)) {
 		got = append(got, tok.ID)
 	}
-	if err := nativeModel.Err(); err != nil {
+	if err := resultError(nativeModel.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	want := []int32{20, 1, 21, 3}

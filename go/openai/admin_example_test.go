@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"dappco.re/go/inference"
-	openaicompat "dappco.re/go/inference/openai"
+	openaicompat "dappco.re/go/inference/provider/openai"
 	"dappco.re/go/mlx/openai"
 )
 

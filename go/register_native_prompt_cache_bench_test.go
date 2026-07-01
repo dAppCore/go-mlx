@@ -80,7 +80,7 @@ func BenchmarkNativeTextModelGenerateChunks(b *testing.B) {
 		for range model.GenerateChunks(ctx, nativePromptCacheBenchChunks(128), inference.WithMaxTokens(2)) {
 			n++
 		}
-		if err := model.Err(); err != nil {
+		if err := resultError(model.Err()); err != nil {
 			b.Fatalf("GenerateChunks: %v", err)
 		}
 		if n == 0 {
@@ -99,7 +99,7 @@ func BenchmarkNativeTextModelGenerateFallbackJoin(b *testing.B) {
 		for range model.Generate(ctx, prompt, inference.WithMaxTokens(2)) {
 			n++
 		}
-		if err := model.Err(); err != nil {
+		if err := resultError(model.Err()); err != nil {
 			b.Fatalf("Generate: %v", err)
 		}
 		if n == 0 {

@@ -70,7 +70,7 @@ func TestMetalAdapter_LiveModelSurface(t *testing.T) {
 	_ = adapter.AcceptsImages()
 
 	// Err — a healthy loaded model reports no error.
-	if err := adapter.Err(); err != nil {
+	if err := resultError(adapter.Err()); err != nil {
 		t.Errorf("Err on a healthy model: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestMetalAdapter_ClassifyLiveModel(t *testing.T) {
 	defer done()
 	ctx := context.Background()
 
-	results, err := adapter.Classify(ctx, []string{"The sky is", "Two plus two is"})
+	results, err := castClassify(adapter.Classify(ctx, []string{"The sky is", "Two plus two is"}))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestMetalAdapter_ClassifyLiveModel(t *testing.T) {
 	}
 
 	// With logits — exercises the ReturnLogits arm and the Logits field copy.
-	withLogits, err := adapter.Classify(ctx, []string{"Hello"}, inference.WithLogits())
+	withLogits, err := castClassify(adapter.Classify(ctx, []string{"Hello"}, inference.WithLogits()))
 	if err != nil {
 		t.Fatalf("Classify(ReturnLogits): %v", err)
 	}
@@ -146,9 +146,9 @@ func TestMetalAdapter_BatchGenerateLiveModel(t *testing.T) {
 	ctx := context.Background()
 	off := false
 
-	results, err := adapter.BatchGenerate(ctx,
+	results, err := castBatch(adapter.BatchGenerate(ctx,
 		[]string{"Say hi.", "Say bye."},
-		inference.WithMaxTokens(6), inference.WithEnableThinking(&off))
+		inference.WithMaxTokens(6), inference.WithEnableThinking(&off)))
 	if err != nil {
 		t.Fatalf("BatchGenerate: %v", err)
 	}

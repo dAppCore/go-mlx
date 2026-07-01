@@ -115,11 +115,10 @@ func requireLiveE2BAdapter(t *testing.T) (*metaladapter, func()) {
 	return adapter, func() { _ = adapter.Close() }
 }
 
-// closeTextModel closes an inference.TextModel when it exposes Close, used on
-// the adapter error path.
+// closeTextModel closes an inference.TextModel, used on the adapter error
+// path. Close is part of the inference.TextModel contract (returning
+// core.Result since the Err/Close migration), so resultError collapses it to
+// the plain error this helper returns.
 func closeTextModel(tm inference.TextModel) error {
-	if closer, ok := tm.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
+	return resultError(tm.Close())
 }

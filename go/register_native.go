@@ -3109,15 +3109,15 @@ func (m *nativeTextModel) setSessionMetrics(promptTokens, genTokens int, prefill
 // Classify samples one token per prompt (greedy) — the prefill-only fast path
 // approximated over the contract (the contract has no batched prefill; one short
 // Generate per prompt).
-func (m *nativeTextModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (m *nativeTextModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if len(prompts) == 0 {
-		return []inference.ClassifyResult{}, nil
+		return core.Ok([]inference.ClassifyResult{})
 	}
 	if m == nil || m.tm == nil || m.tok == nil {
-		return nil, core.NewError("mlx.nativeTextModel.Classify: model is not initialised")
+		return core.Fail(core.NewError("mlx.nativeTextModel.Classify: model is not initialised"))
 	}
 	start := time.Now()
 	cfg := inference.ApplyGenerateOpts(opts)
@@ -3131,26 +3131,26 @@ func (m *nativeTextModel) Classify(ctx context.Context, prompts []string, opts .
 	sampler := model.NewSampler(nativeSamplerSeed(cfg))
 	for i := range encoded {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return core.Fail(err)
 		}
 		logits, err := nativePromptLogits(m.tm, encoded[i])
 		if err != nil {
-			return nil, err
+			return core.Fail(err)
 		}
 		id, err := sampler.Sample(logits, m.tm.Vocab(), model.SampleParams{Temperature: cfg.Temperature, TopK: cfg.TopK, TopP: cfg.TopP, MinP: cfg.MinP, SuppressTokens: cfg.SuppressTokens})
 		if err != nil {
-			return nil, err
+			return core.Fail(err)
 		}
 		results[i] = inference.ClassifyResult{Token: inference.Token{ID: id, Text: m.tok.DecodeToken(id)}}
 		if cfg.ReturnLogits {
 			results[i].Logits, err = nativeBF16LogitsToF32(logits, m.tm.Vocab())
 			if err != nil {
-				return nil, err
+				return core.Fail(err)
 			}
 		}
 	}
 	m.setClassifyMetrics(totalPromptTokens, len(results), time.Since(start))
-	return results, nil
+	return core.Ok(results)
 }
 
 func nativePromptLogits(tm model.TokenModel, ids []int32) ([]byte, error) {
@@ -3265,7 +3265,7 @@ func (m *nativeTextModel) setBatchGenerateMetrics(promptTokens, generatedTokens 
 
 // BatchGenerate runs one Generate per prompt (the contract is single-sequence; no
 // true batching — that is a pkg/metal scheduler feature).
-func (m *nativeTextModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (m *nativeTextModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -3283,7 +3283,7 @@ func (m *nativeTextModel) BatchGenerate(ctx context.Context, prompts []string, o
 			toks = append(toks, tok)
 		}
 		totalGenerated += len(toks)
-		err := m.Err()
+		err := resultError(m.Err())
 		if batchErr == nil {
 			batchErr = err
 		}
@@ -3292,7 +3292,7 @@ func (m *nativeTextModel) BatchGenerate(ctx context.Context, prompts []string, o
 	if len(prompts) > 0 {
 		m.setBatchGenerateMetrics(totalPromptTokens, totalGenerated, time.Since(totalStart), batchErr)
 	}
-	return results, nil
+	return core.Ok(results)
 }
 
 func (m *nativeTextModel) ModelType() string { return m.modelType }
@@ -3349,18 +3349,18 @@ func (m *nativeTextModel) Metrics() inference.GenerateMetrics {
 	return m.lastMetrics
 }
 
-func (m *nativeTextModel) Err() error {
+func (m *nativeTextModel) Err() core.Result {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.lastErr
+	return core.ResultOf(nil, m.lastErr)
 }
 
 // Close releases any retained prompt-cache session. The resident weights live
 // for the process in the serve shape; a warmed cache session is explicit mutable
 // state and should be dropped on teardown or hot-swap.
-func (m *nativeTextModel) Close() error {
+func (m *nativeTextModel) Close() core.Result {
 	if m == nil {
-		return nil
+		return core.Ok(nil)
 	}
 	m.mu.Lock()
 	m.visionCache = nil
@@ -3372,7 +3372,7 @@ func (m *nativeTextModel) Close() error {
 	m.mu.Unlock()
 	if err := closeNativeTokenModel(tm); err != nil {
 		_ = nativeRemoveAll(adapterPack)
-		return err
+		return core.Fail(err)
 	}
-	return nativeRemoveAll(adapterPack)
+	return core.ResultOf(nil, nativeRemoveAll(adapterPack))
 }

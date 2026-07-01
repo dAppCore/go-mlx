@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	ollamacompat "dappco.re/go/inference/ollama"
+	ollamacompat "dappco.re/go/inference/provider/ollama"
 )
 
 // The Ollama streaming paths (/api/chat, /api/generate) build each per-token

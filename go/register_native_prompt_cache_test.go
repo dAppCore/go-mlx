@@ -336,7 +336,7 @@ func TestNativeTextModelWarmPromptCacheUsesCachedSession(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(session.generated, promptIDs) {
@@ -378,7 +378,7 @@ func TestNativeTextModelWarmPromptCacheUsesCachedSampledSession(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(3), inference.WithTemperature(0.8), inference.WithTopK(5), inference.WithStopTokens(11)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{9, 10}) {
@@ -421,7 +421,7 @@ func TestNativeTextModelWarmPromptCacheMinTokensBeforeStopUsesCachedGreedyStages
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithStopTokens(7), inference.WithMinTokensBeforeStop(1)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{8, 7}) {
@@ -679,7 +679,7 @@ func TestNativeTextModelGenerateChunksUsesChunkTokenStream(t *testing.T) {
 	for tok := range native.GenerateChunks(context.Background(), iter.Seq[string](chunks), inference.WithMaxTokens(2)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("GenerateChunks Err: %v", err)
 	}
 	if !reflect.DeepEqual(session.generated, want) {
@@ -725,7 +725,7 @@ func TestNativeTextModelChatChunksUsesFormattedChunkStream(t *testing.T) {
 	for tok := range native.ChatChunks(context.Background(), messages, chunkBytes, inference.WithMaxTokens(2)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("ChatChunks Err: %v", err)
 	}
 	if !reflect.DeepEqual(session.generated, want) {
@@ -759,7 +759,7 @@ func TestNativeTextModelStreamsCachedGreedyTokensAsDecoded(t *testing.T) {
 		got = append(got, tok.ID)
 		break
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{7}) {
@@ -792,7 +792,7 @@ func TestNativeTextModelCachedGreedyHonoursStopTokens(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithStopTokens(7)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{7}) {
@@ -820,7 +820,7 @@ func TestNativeTextModelStreamsUncachedGreedyTokensAsDecoded(t *testing.T) {
 		got = append(got, tok.ID)
 		break
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{12}) {
@@ -850,7 +850,7 @@ func TestNativeTextModelUncachedGreedyHonoursStopTokens(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithStopTokens(12)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{12}) {
@@ -878,7 +878,7 @@ func TestNativeTextModelSampledHonoursMultipleStopTokensBeforeFullDecode(t *test
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(4), inference.WithTemperature(1), inference.WithStopTokens(0, 2)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{0}) {
@@ -906,7 +906,7 @@ func TestNativeTextModelSampledUsesNativeSessionFastPath(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(4), inference.WithTemperature(0.8), inference.WithTopK(5), inference.WithStopTokens(11)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{2, 3}) {
@@ -946,7 +946,7 @@ func TestNativeTextModelGreedyHonoursRepeatPenalty(t *testing.T) {
 	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithRepeatPenalty(2)) {
 		got = append(got, tok.ID)
 	}
-	if err := native.Err(); err != nil {
+	if err := resultError(native.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if !reflect.DeepEqual(got, []int32{1, 2}) {
@@ -972,7 +972,7 @@ func TestNativeTextModelClassifyReturnsLogits(t *testing.T) {
 		maxLen: 32,
 	}
 
-	results, err := native.Classify(context.Background(), []string{"hello"}, inference.WithLogits())
+	results, err := castClassify(native.Classify(context.Background(), []string{"hello"}, inference.WithLogits()))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestNativeTextModelClassifyHonoursSuppressTokens(t *testing.T) {
 		maxLen: 32,
 	}
 
-	results, err := native.Classify(context.Background(), []string{"hello"}, inference.WithSuppressTokens(2))
+	results, err := castClassify(native.Classify(context.Background(), []string{"hello"}, inference.WithSuppressTokens(2)))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -1030,7 +1030,7 @@ func TestNativeTextModelClassifyUpdatesMetrics(t *testing.T) {
 	prompts := []string{"hello", "world"}
 	wantPromptTokens := len(tok.Encode(prompts[0])) + len(tok.Encode(prompts[1]))
 
-	if _, err := native.Classify(context.Background(), prompts, inference.WithLogits()); err != nil {
+	if err := resultError(native.Classify(context.Background(), prompts, inference.WithLogits())); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	metrics := native.Metrics()
@@ -1065,7 +1065,7 @@ func TestNativeTextModelBatchGenerateUpdatesBatchMetrics(t *testing.T) {
 	prompts := []string{"hello", "world"}
 	wantPromptTokens := len(tok.Encode(prompts[0])) + len(tok.Encode(prompts[1]))
 
-	results, err := native.BatchGenerate(context.Background(), prompts, inference.WithMaxTokens(2))
+	results, err := castBatch(native.BatchGenerate(context.Background(), prompts, inference.WithMaxTokens(2)))
 	if err != nil {
 		t.Fatalf("BatchGenerate: %v", err)
 	}

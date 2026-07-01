@@ -22,7 +22,7 @@ func TestMetalBackendLoadModel_ForwardsCPUDeviceWhenGPULayersZero_Good(t *testin
 	}
 
 	backend := &metalbackend{}
-	if _, err := backend.LoadModel("/tmp/model", inference.WithGPULayers(0)); err != nil {
+	if err := resultError(backend.LoadModel("/tmp/model", inference.WithGPULayers(0))); err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	if got.Device != metal.DeviceCPU {
@@ -41,7 +41,7 @@ func TestMetalBackendLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 	}
 
 	backend := &metalbackend{}
-	if _, err := backend.LoadModel("/tmp/model", inference.WithParallelSlots(4)); err != nil {
+	if err := resultError(backend.LoadModel("/tmp/model", inference.WithParallelSlots(4))); err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	if got.ParallelSlots != 4 {
@@ -71,7 +71,7 @@ func TestMetalBackendLoadModel_ForwardsPlannerCacheMode_Good(t *testing.T) {
 	}
 
 	backend := &metalbackend{}
-	if _, err := backend.LoadModel("/tmp/model"); err != nil {
+	if err := resultError(backend.LoadModel("/tmp/model")); err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	if got.CachePolicy != string(memory.KVCacheRotating) || got.KVCacheMode != string(memory.KVCacheModeDefault) {

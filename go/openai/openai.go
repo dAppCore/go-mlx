@@ -17,10 +17,10 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	anthropiccompat "dappco.re/go/inference/anthropic"
-	ollamacompat "dappco.re/go/inference/ollama"
-	openaicompat "dappco.re/go/inference/openai"
 	"dappco.re/go/inference/parser"
+	anthropiccompat "dappco.re/go/inference/provider/anthropic"
+	ollamacompat "dappco.re/go/inference/provider/ollama"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 // NewResolver returns a resolver that lazily loads modelPath through the
@@ -151,8 +151,8 @@ func serveOpenAIResponse(w http.ResponseWriter, ctx context.Context, model infer
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
 		return
 	}
-	if err := model.Err(); err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
+	if result := model.Err(); !result.OK {
+		writeOpenAIError(w, http.StatusInternalServerError, result.Error(), "model")
 		return
 	}
 	visible, thought := parseOpenAIModelOutput(model, tokens, openAITokensText(tokens))
@@ -656,8 +656,8 @@ func (h *anthropicMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
 		return
 	}
-	if err := model.Err(); err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
+	if result := model.Err(); !result.OK {
+		writeOpenAIError(w, http.StatusInternalServerError, result.Error(), "model")
 		return
 	}
 	visible, _ := parseOpenAIModelOutput(model, tokens, openAITokensText(tokens))
@@ -821,8 +821,8 @@ func (h *ollamaChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
 		return
 	}
-	if err := model.Err(); err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
+	if result := model.Err(); !result.OK {
+		writeOpenAIError(w, http.StatusInternalServerError, result.Error(), "model")
 		return
 	}
 	visible, _ := parseOpenAIModelOutput(model, tokens, openAITokensText(tokens))
@@ -852,8 +852,8 @@ func (h *ollamaGenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
 		return
 	}
-	if err := model.Err(); err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "model")
+	if result := model.Err(); !result.OK {
+		writeOpenAIError(w, http.StatusInternalServerError, result.Error(), "model")
 		return
 	}
 	visible, _ := parseOpenAIModelOutput(model, tokens, openAITokensText(tokens))
