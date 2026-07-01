@@ -214,7 +214,12 @@ type archICBReplay struct {
 	pleRuntime                        *archDecodePLEInputs
 	opsPerLayer                       uint
 	rowBytes                          []int // per-layer KV cache row stride (nKVHeads·hd·bf16Size) — gemma4 global layers are wider
-	slidingWindow, dModel             int
+	cacheRows                         []int // per-layer physical row CAPACITY of kCaches[li]/vCaches[li] (bufferLength/rowBytes).
+	// A sliding owner allocated at slidingWindow rows (the bounded-memory fix) makes this a
+	// ring; a global (or not-yet-bounded) owner allocated at maxLen makes pos%cacheRows a
+	// no-op (pos < maxLen always), so prepareStepRebind is byte-identical to the old
+	// unconditional linear write/read in that case.
+	slidingWindow, dModel int
 }
 
 type archICBReplayScratch struct {
@@ -233,7 +238,7 @@ type archICBReplayScratch struct {
 	hBufs                                  []metal.MTLBuffer
 	offBuf, nGlobalBuf, nSlidingBuf        metal.MTLBuffer
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx      []int
-	barrierOps, rowBytes                   []int
+	barrierOps, rowBytes, cacheRows        []int
 	residentRes                            []metal.MTLResource
 	residentResIDs                         []objc.ID
 	outputViewPtrs                         []uintptr
@@ -274,6 +279,7 @@ func newArchICBReplayScratch(dModel, maxQd, maxKvd, maxDFF, maxGelu, nLayers, pl
 		sdpaIdx:     make([]int, nLayers),
 		barrierOps:  make([]int, 0, nLayers*24),
 		rowBytes:    make([]int, nLayers),
+		cacheRows:   make([]int, nLayers),
 		residentRes: make([]metal.MTLResource, 0, nLayers*48+96),
 	}
 	for i := range s.hBufs {
@@ -308,7 +314,7 @@ func (s *archICBReplayScratch) matches(dModel, maxQd, maxKvd, maxDFF, maxGelu, n
 		s.ping[0] == nil || s.ping[1] == nil || s.offBuf == nil || s.nGlobalBuf == nil || s.nSlidingBuf == nil {
 		return false
 	}
-	if len(s.hBufs) != nLayers || len(s.kRopeIdx) != nLayers || len(s.vIdx) != nLayers || len(s.vNormIdx) != nLayers || len(s.sdpaIdx) != nLayers || len(s.rowBytes) != nLayers {
+	if len(s.hBufs) != nLayers || len(s.kRopeIdx) != nLayers || len(s.vIdx) != nLayers || len(s.vNormIdx) != nLayers || len(s.sdpaIdx) != nLayers || len(s.rowBytes) != nLayers || len(s.cacheRows) != nLayers {
 		return false
 	}
 	for _, h := range s.hBufs {
@@ -747,7 +753,17 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 			// IndirectComputeCommandAtIndex is a pool-scoped view that does NOT survive the
 			// record pool's drain, but the icb + its recorded commands persist — so rebind by
 			// op index. (The buffers + the icb are device.New*-owned, hence retained.)
+			//
+			// rowOff wraps into the owner's ACTUAL cache capacity, not the absolute position:
+			// a sliding owner allocated at slidingWindow rows (the bounded-memory fix) turns
+			// this into the ring write, evicting the slot that just left the window; an owner
+			// still allocated at the full maxLen (global layers, or any not-yet-bounded caller)
+			// has cacheRows>pos always, so pos%cacheRows==pos — byte-identical to the old
+			// unconditional linear write.
 			rowOff := uint(pos * r.rowBytes[li]) // per-layer: global layers' rows are wider (larger head_dim)
+			if rows := r.cacheRows[li]; rows > 0 {
+				rowOff = uint((pos % rows) * r.rowBytes[li])
+			}
 			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.kRopeIdx[li])), r.kCaches[li], rowOff, r.kRopeBind)
 			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.vIdx[li])), r.vCaches[li], rowOff, r.vOutBind)
 			if r.hasValueNorm {
@@ -758,7 +774,17 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 		}
 		if r.specs[li].Attention == model.SlidingAttention {
 			own := r.specs[li].KVShareFrom
-			slideOff := uint(start * r.rowBytes[own]) // read the owner's cache at its row stride
+			// A bounded ring (owner capacity <= slidingWindow) always attends from slot 0: once
+			// the ring is full the whole physical buffer IS the live window (rows in slot order,
+			// not chronological order — sound because softmax is permutation-invariant and every
+			// cached row carries its own absolute-position RoPE baked in at write time; the same
+			// reasoning the non-ICB sliding ring already relies on). An owner still on the linear
+			// maxLen buffer keeps the old absolute offset into its untouched history.
+			ownStart := start
+			if rows := r.cacheRows[own]; rows > 0 && rows <= r.slidingWindow {
+				ownStart = 0
+			}
+			slideOff := uint(ownStart * r.rowBytes[own]) // read the owner's cache at its row stride
 			sd := indirectComputeCommandAtIndexFast(r.icb, uint(r.sdpaIdx[li]))
 			setICBKernelBuffer(sd, r.kCaches[own], slideOff, 1)
 			setICBKernelBuffer(sd, r.vCaches[own], slideOff, 2)
@@ -1791,8 +1817,17 @@ func recordArchICB(
 			plePliDim, pleRuntime = ple.pliDim, ple.runtime
 		}
 		rowBytesByLayer := sc.rowBytes[:nLayers]
+		cacheRowsByLayer := sc.cacheRows[:nLayers]
 		for li := 0; li < nLayers; li++ {
 			rowBytesByLayer[li] = kvdOf(li) * bf16Size
+			cacheRowsByLayer[li] = 0
+			if specs[li].OwnsCache() && kCaches[li] != nil {
+				// Capacity as actually ALLOCATED (rows), not maxLen — a caller that bounded a
+				// sliding owner's buffer to slidingWindow rows gets ring rebind for free;
+				// a caller that kept the old maxLen-sized buffer gets the old linear rebind
+				// (pos%maxLen == pos), byte-identical.
+				cacheRowsByLayer[li] = int(bufferLengthFast(kCaches[li])) / rowBytesByLayer[li]
+			}
 		}
 		r = &archICBReplay{
 			icb: icb, rng: rng, residentRes: residentRes, residentResIDs: residentResIDs,
@@ -1805,7 +1840,7 @@ func recordArchICB(
 			finalOutIdx: finalOutIdx, finalOutBind: finalOutBind, hasFinalOut: hasFinalOut,
 			hasPLE: hasPLE, plePliDim: plePliDim, pleRuntime: pleRuntime,
 			opsPerLayer: uint(opsPerLayer),
-			rowBytes:    rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,
+			rowBytes:    rowBytesByLayer, cacheRows: cacheRowsByLayer, slidingWindow: slidingWindow, dModel: dModel,
 		}
 		r.cacheKVContents()
 		r.cacheStepContents()
@@ -2017,7 +2052,15 @@ func decodeForwardArchICBInto(
 		lb := setup.lb
 		pleLB := setup.pleLB
 		plePostNorms := setup.plePostNorms
-		cacheBytes := uint(maxLen * kvDim * bf16Size)
+		cacheBytesFull := uint(maxLen * kvDim * bf16Size)
+		cacheBytesSliding := cacheBytesFull
+		if slidingWindow > 0 && slidingWindow < maxLen {
+			// Bounded ring — the sliding-window KV memory fix: a sliding owner only ever
+			// attends its own window, so it only ever needs slidingWindow rows of storage.
+			// prepareStepRebind detects the smaller allocation (via the actual buffer length)
+			// and rebinds pos%cacheRows instead of the absolute position.
+			cacheBytesSliding = uint(slidingWindow * kvDim * bf16Size)
+		}
 		// presized to the upper bound (every layer's ≤7 projection buffers, the 16 shared trailing
 		// scalar buffers, plus ≤3 FFN dim scalars per distinct dFF width) so the per-forward build
 		// never geometrically regrows its backing array — K==V layers leave the v-proj slot unused.
@@ -2039,6 +2082,10 @@ func decodeForwardArchICBInto(
 			postFFBufs[li] = residentOrNil(w.PostFFNormW)
 			layerScalarBufs[li] = layerScalarBuf(w.LayerScalarW, dModel)
 			if specs[li].OwnsCache() {
+				cacheBytes := cacheBytesFull
+				if specs[li].Attention != model.GlobalAttention {
+					cacheBytes = cacheBytesSliding
+				}
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}

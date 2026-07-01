@@ -618,6 +618,90 @@ func TestArchSessionPrefillTokensSlidingRingWrapMatchesSerial(t *testing.T) {
 	}
 }
 
+// TestArchQuantSessionICBBoundsSlidingCacheToWindow is the sliding-window KV memory fix gate on
+// the session's ICB fast path (the recorded-replay Step/StepWithID actually use — see
+// newArchQuantSessionShardsWithHead's icbEligible block in arch_session.go). Before the fix, EVERY
+// owning layer's kCaches/vCaches buffer — sliding or global — was allocated at the full maxLen
+// context; a sliding layer only ever attends its own window, so that was O(context) memory for
+// O(window) need. It proves both halves of the gate:
+//
+//   - the memory bound itself: the sliding owner's cacheRows (its buffer's actual row capacity,
+//     computed in recordArchICB from the allocated buffer's length) is arch.SlidingWindow, not
+//     maxLen — a direct, white-box measurement of the allocation, not just an inference from
+//     matching output;
+//   - correctness: archICBReplay.prepareStepRebind's pos%cacheRows ring write/read stays
+//     byte-identical to the re-encode oracle (DecodeForwardArchQuant, reached here by forcing
+//     state.icb nil) for every token — both while pos is still inside the window and once the
+//     ring has slid past it several times over.
+func TestArchQuantSessionICBBoundsSlidingCacheToWindow(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 256
+	const gs, bits = 64, 4
+	const maxLen, window = 20, 4
+
+	build := func(tb testing.TB) *ArchSession {
+		tb.Helper()
+		arch, err := g4.Config{
+			HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+			NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+			VocabSize: vocab, RMSNormEps: 1e-6,
+			Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+		}.Arch()
+		if err != nil {
+			tb.Fatalf("Arch: %v", err)
+		}
+		arch.SlidingWindow = window
+		arch.Layer[0].Attention = model.SlidingAttention
+		lm, err := model.Assemble(quantGemma4Tensors(tb, arch, gs, bits), arch, model.StandardWeightNames())
+		if err != nil {
+			tb.Fatalf("Assemble: %v", err)
+		}
+		g, err := loadedToQuant(lm, gs, bits)
+		if err != nil {
+			tb.Fatalf("loadedToQuant: %v", err)
+		}
+		sess, err := NewArchQuantSession(g, arch, maxLen)
+		if err != nil {
+			tb.Fatalf("NewArchQuantSession: %v", err)
+		}
+		return sess
+	}
+
+	icbSess := build(t)
+	if icbSess.state.icb == nil {
+		t.Skip("ICB replay unavailable for this fixture")
+	}
+	refSess := build(t)
+	refSess.state.icb = nil // force the re-encode path as the byte-identical oracle
+
+	if got := icbSess.state.icb.cacheRows[0]; got != window {
+		t.Fatalf("sliding owner cacheRows = %d, want %d (bounded to SlidingWindow, not maxLen=%d)", got, window, maxLen)
+	}
+
+	// 20 tokens over a window of 4: the ring slides 4x over — well past a single wrap.
+	ids := []int32{1, 5, 3, 9, 4, 2, 7, 6, 3, 1, 8, 2, 5, 9, 3, 6, 1, 4, 7, 2}
+	for i, id := range ids {
+		var icbHidden, refHidden []byte
+		var icbErr, refErr error
+		withAutoreleasePool(func() {
+			icbHidden, icbErr = icbSess.stepIDInPool(id)
+			refHidden, refErr = refSess.stepIDInPool(id)
+		})
+		if icbErr != nil {
+			t.Fatalf("icb stepIDInPool(%d) tok%d: %v", id, i, icbErr)
+		}
+		if refErr != nil {
+			t.Fatalf("ref stepIDInPool(%d) tok%d: %v", id, i, refErr)
+		}
+		if !bytes.Equal(icbHidden, refHidden) {
+			t.Fatalf("tok%d (pos %d, window %d): bounded-ring ICB hidden differs from re-encode oracle", i, i, window)
+		}
+	}
+	t.Logf("sliding owner cache bounded to %d rows (maxLen=%d, %.0fx smaller) — ICB ring replay == re-encode oracle byte-for-byte across %d tokens, inside and past the window", window, maxLen, float64(maxLen)/float64(window), len(ids))
+}
+
 func TestArchSessionPrefillRetainedTokensBatchedDenseReusesHiddenReadback(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

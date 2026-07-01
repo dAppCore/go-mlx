@@ -758,8 +758,16 @@ func decodeForwardArchICBQuantInto(
 	var coreErr error
 	withAutoreleasePool(func() {
 		for li := range specs {
-			if specs[li].OwnsCache() { // per-layer linear cache — global layers' rows are wider (larger head_dim)
-				cacheBytes := uint(maxLen * kvHeadsOf(specs[li], nKVHeads) * headDimOf(specs[li], headDim) * bf16Size)
+			if specs[li].OwnsCache() { // per-layer cache — global layers' rows are wider (larger head_dim)
+				cacheLen := maxLen
+				if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != model.GlobalAttention {
+					// Bounded ring — the sliding-window KV memory fix: a sliding owner only ever
+					// attends its own window, so it only ever needs slidingWindow rows of storage.
+					// prepareStepRebind detects the smaller allocation (via the actual buffer
+					// length) and rebinds pos%cacheRows instead of the absolute position.
+					cacheLen = slidingWindow
+				}
+				cacheBytes := uint(cacheLen * kvHeadsOf(specs[li], nKVHeads) * headDimOf(specs[li], headDim) * bf16Size)
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}

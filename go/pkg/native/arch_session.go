@@ -843,8 +843,19 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 			kCaches := make([]metal.MTLBuffer, len(arch.Layer))
 			vCaches := make([]metal.MTLBuffer, len(arch.Layer))
 			for li := range arch.Layer {
-				if arch.Layer[li].OwnsCache() { // per-layer linear maxLen cache — global layers' rows are wider
-					cacheBytes := uint(maxLen * kvHeadsOf(arch.Layer[li], arch.KVHeads) * headDimOf(arch.Layer[li], arch.HeadDim) * bf16Size)
+				if arch.Layer[li].OwnsCache() { // per-layer cache — global layers' rows are wider
+					cacheLen := maxLen
+					if arch.SlidingWindow > 0 && arch.SlidingWindow < maxLen && arch.Layer[li].Attention != model.GlobalAttention {
+						// Bounded ring — the sliding-window KV memory fix: a sliding owner only
+						// ever attends its own window, so it only ever needs SlidingWindow rows of
+						// storage instead of the full maxLen context (O(window) not O(context)).
+						// archICBReplay.prepareStepRebind detects the smaller allocation (via the
+						// actual buffer length) and rebinds pos%cacheRows instead of the absolute
+						// position — a ring write/read matching the non-ICB sliding cache's own
+						// bounded ring (buildBF16ArchLayerBufsInternal).
+						cacheLen = arch.SlidingWindow
+					}
+					cacheBytes := uint(cacheLen * kvHeadsOf(arch.Layer[li], arch.KVHeads) * headDimOf(arch.Layer[li], arch.HeadDim) * bf16Size)
 					kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 					vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				}
