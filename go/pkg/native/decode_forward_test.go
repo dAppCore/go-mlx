@@ -130,8 +130,8 @@ func TestDecodeForwardIntoAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardInto: %v", forwardErr)
 	}
-	if allocs > 250 {
-		t.Fatalf("DecodeForwardInto allocations = %.0f, want <= 250", allocs)
+	if allocs > 45 {
+		t.Fatalf("DecodeForwardInto allocations = %.0f, want <= 45", allocs)
 	}
 }
 

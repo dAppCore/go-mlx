@@ -23,6 +23,27 @@ import (
 
 func sdpaScale(D int) float32 { return float32(1.0 / math.Sqrt(float64(D))) }
 
+func TestSDPACausalBF16ScratchPoolKeepsShapesResident(t *testing.T) {
+	small := getSDPACausalBF16Scratch(2, 1, 4, 4, 64)
+	putSDPACausalBF16Scratch(small)
+	large := getSDPACausalBF16Scratch(4, 2, 8, 8, 64)
+	putSDPACausalBF16Scratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall := getSDPACausalBF16Scratch(2, 1, 4, 4, 64)
+	defer putSDPACausalBF16Scratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("SDPA causal BF16 scratch pool evicted the small shape after using a larger shape")
+	}
+
+	gotLarge := getSDPACausalBF16Scratch(4, 2, 8, 8, 64)
+	defer putSDPACausalBF16Scratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("SDPA causal BF16 scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
 func TestSDPACausalBF16AllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 

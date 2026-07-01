@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 // perLayerInputGateRef rebuilds the per-layer-input gate from the parity-proven
@@ -26,6 +28,31 @@ func perLayerInputGateRef(t *testing.T, hNext, gateW, perLayerInput, projW, post
 	projected := must(MatVecBF16(projW, multiplied, dModel, pliDim))
 	projNormed := must(RMSNormBF16(projected, postNormW, 1, dModel, eps))
 	return must(AddBF16(hNext, projNormed))
+}
+
+func TestPerLayerInputGateScratchOutputViewReusesPinnedOwnerBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, pliDim = 64, 32
+	pinned, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+
+	scratch := newPerLayerInputGateScratch(dModel, pliDim)
+	defer scratch.Close()
+
+	outBuf, ok := scratch.outputView(pinned.bytes)
+	if !ok {
+		t.Fatal("per-layer input output view did not accept pinned caller bytes")
+	}
+	if got, want := outBuf.GetID(), pinned.buf.GetID(); got != want {
+		t.Fatalf("per-layer input output view buffer id = %d, want pinned owner buffer %d", got, want)
+	}
+	if got, want := uintptr(outBuf.Contents()), uintptr(unsafe.Pointer(&pinned.bytes[0])); got != want {
+		t.Fatalf("per-layer input output view pointer = %#x, want pinned backing %#x", got, want)
+	}
 }
 
 // TestPerLayerInputGate gates the gemma4 per-layer-input gate. PerLayerInputGateBF16
@@ -199,6 +226,8 @@ func TestPerLayerInputGateScratchPoolKeepsDimensionsResident(t *testing.T) {
 	putPerLayerInputGateScratch(small)
 	large := getPerLayerInputGateScratch(128, 64)
 	putPerLayerInputGateScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 	gotSmall := getPerLayerInputGateScratch(64, 32)
 	defer putPerLayerInputGateScratch(gotSmall)
 	if gotSmall != small {
@@ -208,6 +237,38 @@ func TestPerLayerInputGateScratchPoolKeepsDimensionsResident(t *testing.T) {
 	defer putPerLayerInputGateScratch(gotLarge)
 	if gotLarge != large {
 		t.Fatal("gate scratch pool evicted the 128x64 scratch after reusing the 64x32 scratch")
+	}
+}
+
+func TestPerLayerInputGateScratchInputBuffersUseCallerBackingAfterWarmup(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, pliDim = 64, 32
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	scratch := getPerLayerInputGateScratch(dModel, pliDim)
+	defer scratch.Close()
+
+	var hBuf, perLayerBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		var err error
+		hBuf, perLayerBuf, err = scratch.inputBuffers(hNext, perLayerInput)
+		if err != nil {
+			t.Fatalf("scratch.inputBuffers warmup %d: %v", i, err)
+		}
+	}
+	if got, want := uintptr(hBuf.Contents()), uintptr(unsafe.Pointer(&hNext[0])); got != want {
+		t.Fatalf("hNext buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(perLayerBuf.Contents()), uintptr(unsafe.Pointer(&perLayerInput[0])); got != want {
+		t.Fatalf("perLayerInput buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reusedH, reusedPerLayer, err := scratch.inputBuffers(hNext, perLayerInput)
+	if err != nil {
+		t.Fatalf("scratch.inputBuffers reused: %v", err)
+	}
+	if reusedH.GetID() != hBuf.GetID() || reusedPerLayer.GetID() != perLayerBuf.GetID() {
+		t.Fatal("inputBuffers did not reuse cached no-copy input views")
 	}
 }
 

@@ -436,6 +436,251 @@ func TestGenerate_DirectSessionGenerate(t *testing.T) {
 	}
 }
 
+type directSampledStepper struct {
+	calls         *int
+	oneShotCalls  *int
+	steps         *int
+	prompt        *[]int32
+	maxNew        *int
+	stopTokens    *[]int32
+	params        *SampleParams
+	transformSeen *bool
+	yieldSeen     *bool
+	sampler       **Sampler
+}
+
+func (s directSampledStepper) Step([]byte) ([]byte, error) {
+	if s.steps != nil {
+		*s.steps++
+	}
+	return nil, core.NewError("directSampledStepper: Step must not run when GenerateSampledOneShotEach is available")
+}
+
+func (s directSampledStepper) GenerateSampledEach(promptIDs []int32, maxNew int, stopTokens []int32, sampler *Sampler, params SampleParams, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	if s.calls != nil {
+		*s.calls++
+	}
+	return nil, core.NewError("retained GenerateSampledEach must not run when one-shot GenerateSampledOneShotEach is available")
+}
+
+func (s directSampledStepper) GenerateSampledOneShotEach(promptIDs []int32, maxNew int, stopTokens []int32, sampler *Sampler, params SampleParams, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	if s.oneShotCalls != nil {
+		*s.oneShotCalls++
+	}
+	if s.prompt != nil {
+		*s.prompt = append((*s.prompt)[:0], promptIDs...)
+	}
+	if s.maxNew != nil {
+		*s.maxNew = maxNew
+	}
+	if s.stopTokens != nil {
+		*s.stopTokens = append((*s.stopTokens)[:0], stopTokens...)
+	}
+	if s.params != nil {
+		*s.params = params
+	}
+	if s.sampler != nil {
+		*s.sampler = sampler
+	}
+	next := int32(7)
+	if transform != nil {
+		if s.transformSeen != nil {
+			*s.transformSeen = true
+		}
+		next = transform(next)
+	}
+	if yield != nil {
+		if s.yieldSeen != nil {
+			*s.yieldSeen = true
+		}
+		if !yield(next) {
+			return []int32{next}, nil
+		}
+	}
+	return []int32{next, 8}, nil
+}
+
+type directSampledSessionModel struct {
+	counterModel
+	calls         *int
+	oneShotCalls  *int
+	steps         *int
+	heads         *int
+	prompt        *[]int32
+	maxNew        *int
+	stopTokens    *[]int32
+	params        *SampleParams
+	transformSeen *bool
+	yieldSeen     *bool
+	sampler       **Sampler
+}
+
+func (directSampledSessionModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
+	return nil, core.NewError("whole-seq path must not run when a direct sampled session generator is available")
+}
+
+func (m directSampledSessionModel) Head([]byte) ([]byte, error) {
+	if m.heads != nil {
+		*m.heads++
+	}
+	return nil, core.NewError("Head must not run when a direct sampled session generator is available")
+}
+
+func (m directSampledSessionModel) OpenSession() (DecodeStepper, error) {
+	return directSampledStepper{
+		calls: m.calls, oneShotCalls: m.oneShotCalls, steps: m.steps, prompt: m.prompt,
+		maxNew: m.maxNew, stopTokens: m.stopTokens, params: m.params, transformSeen: m.transformSeen,
+		yieldSeen: m.yieldSeen, sampler: m.sampler,
+	}, nil
+}
+
+func TestGenerateSampled_DirectSessionGenerate(t *testing.T) {
+	calls, oneShotCalls, steps, heads := 0, 0, 0, 0
+	maxNew := 0
+	transformSeen, yieldSeen := false, false
+	var prompt, stopTokens, yielded []int32
+	var gotParams SampleParams
+	var gotSampler *Sampler
+	m := directSampledSessionModel{
+		counterModel:  counterModel{vocab: 16, dModel: 4},
+		calls:         &calls,
+		oneShotCalls:  &oneShotCalls,
+		steps:         &steps,
+		heads:         &heads,
+		prompt:        &prompt,
+		maxNew:        &maxNew,
+		stopTokens:    &stopTokens,
+		params:        &gotParams,
+		transformSeen: &transformSeen,
+		yieldSeen:     &yieldSeen,
+		sampler:       &gotSampler,
+	}
+	sampler := NewSampler(42)
+	params := SampleParams{Temperature: 0.7, TopK: 3, TopP: 0.9, MinP: 0.01, MinTokensBeforeStop: 1}
+
+	got, err := GenerateSampledWithStopTokensTransformEach(m, sampler, params, []int32{1, 2, 3}, 6, []int32{4, 5}, func(id int32) int32 {
+		return id + 10
+	}, func(id int32) bool {
+		yielded = append(yielded, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokensTransformEach: %v", err)
+	}
+	if want := []int32{17, 8}; !idsEqual(got, want) {
+		t.Fatalf("direct sampled session returned %v, want %v", got, want)
+	}
+	if oneShotCalls != 1 || calls != 0 {
+		t.Fatalf("direct sampled session calls GenerateSampledOneShotEach=%d GenerateSampledEach=%d, want 1/0", oneShotCalls, calls)
+	}
+	if steps != 0 || heads != 0 {
+		t.Fatalf("fallback path ran: steps=%d heads=%d, want both 0", steps, heads)
+	}
+	if !idsEqual(prompt, []int32{1, 2, 3}) || maxNew != 6 || !idsEqual(stopTokens, []int32{4, 5}) {
+		t.Fatalf("direct sampled args prompt=%v maxNew=%d stopTokens=%v", prompt, maxNew, stopTokens)
+	}
+	if gotSampler != sampler {
+		t.Fatalf("direct sampled sampler = %p, want %p", gotSampler, sampler)
+	}
+	if gotParams.Temperature != params.Temperature || gotParams.TopK != params.TopK || gotParams.TopP != params.TopP || gotParams.MinP != params.MinP || gotParams.MinTokensBeforeStop != params.MinTokensBeforeStop {
+		t.Fatalf("direct sampled params = %+v, want %+v", gotParams, params)
+	}
+	if !transformSeen || !yieldSeen || !idsEqual(yielded, []int32{17}) {
+		t.Fatalf("direct sampled transform/yield seen=%v/%v yielded=%v, want true/true/[17]", transformSeen, yieldSeen, yielded)
+	}
+}
+
+func TestGenerateSampled_DirectSessionGenerateNoEOS(t *testing.T) {
+	calls, oneShotCalls, steps, heads := 0, 0, 0, 0
+	maxNew := 0
+	var prompt, stopTokens []int32
+	var gotParams SampleParams
+	var gotSampler *Sampler
+	m := directSampledSessionModel{
+		counterModel: counterModel{vocab: 16, dModel: 4},
+		calls:        &calls,
+		oneShotCalls: &oneShotCalls,
+		steps:        &steps,
+		heads:        &heads,
+		prompt:       &prompt,
+		maxNew:       &maxNew,
+		stopTokens:   &stopTokens,
+		params:       &gotParams,
+		sampler:      &gotSampler,
+	}
+	sampler := NewSampler(42)
+	params := SampleParams{Temperature: 0.7, TopK: 3, TopP: 0.9, MinP: 0.01, MinTokensBeforeStop: 1}
+
+	got, err := GenerateSampled(m, sampler, params, []int32{1, 2, 3}, 6, -1)
+	if err != nil {
+		t.Fatalf("GenerateSampled: %v", err)
+	}
+	if want := []int32{7, 8}; !idsEqual(got, want) {
+		t.Fatalf("direct sampled session returned %v, want %v", got, want)
+	}
+	if oneShotCalls != 1 || calls != 0 {
+		t.Fatalf("direct sampled session calls GenerateSampledOneShotEach=%d GenerateSampledEach=%d, want 1/0", oneShotCalls, calls)
+	}
+	if steps != 0 || heads != 0 {
+		t.Fatalf("fallback path ran: steps=%d heads=%d, want both 0", steps, heads)
+	}
+	if !idsEqual(prompt, []int32{1, 2, 3}) || maxNew != 6 || len(stopTokens) != 0 {
+		t.Fatalf("direct sampled args prompt=%v maxNew=%d stopTokens=%v", prompt, maxNew, stopTokens)
+	}
+	if gotSampler != sampler {
+		t.Fatalf("direct sampled sampler = %p, want %p", gotSampler, sampler)
+	}
+	if gotParams.Temperature != params.Temperature || gotParams.TopK != params.TopK || gotParams.TopP != params.TopP || gotParams.MinP != params.MinP || gotParams.MinTokensBeforeStop != params.MinTokensBeforeStop {
+		t.Fatalf("direct sampled params = %+v, want %+v", gotParams, params)
+	}
+}
+
+func TestGenerateSampled_DirectSessionGenerateEOS(t *testing.T) {
+	calls, oneShotCalls, steps, heads := 0, 0, 0, 0
+	maxNew := 0
+	var prompt, stopTokens []int32
+	var gotParams SampleParams
+	var gotSampler *Sampler
+	m := directSampledSessionModel{
+		counterModel: counterModel{vocab: 16, dModel: 4},
+		calls:        &calls,
+		oneShotCalls: &oneShotCalls,
+		steps:        &steps,
+		heads:        &heads,
+		prompt:       &prompt,
+		maxNew:       &maxNew,
+		stopTokens:   &stopTokens,
+		params:       &gotParams,
+		sampler:      &gotSampler,
+	}
+	sampler := NewSampler(42)
+	params := SampleParams{Temperature: 0.7, TopK: 3, TopP: 0.9, MinP: 0.01, MinTokensBeforeStop: 4}
+
+	got, err := GenerateSampled(m, sampler, params, []int32{1, 2, 3}, 6, 8)
+	if err != nil {
+		t.Fatalf("GenerateSampled: %v", err)
+	}
+	if want := []int32{7, 8}; !idsEqual(got, want) {
+		t.Fatalf("direct sampled session returned %v, want %v", got, want)
+	}
+	if oneShotCalls != 1 || calls != 0 {
+		t.Fatalf("direct sampled session calls GenerateSampledOneShotEach=%d GenerateSampledEach=%d, want 1/0", oneShotCalls, calls)
+	}
+	if steps != 0 || heads != 0 {
+		t.Fatalf("fallback path ran: steps=%d heads=%d, want both 0", steps, heads)
+	}
+	if !idsEqual(prompt, []int32{1, 2, 3}) || maxNew != 6 || !idsEqual(stopTokens, []int32{8}) {
+		t.Fatalf("direct sampled args prompt=%v maxNew=%d stopTokens=%v", prompt, maxNew, stopTokens)
+	}
+	if gotSampler != sampler {
+		t.Fatalf("direct sampled sampler = %p, want %p", gotSampler, sampler)
+	}
+	params.MinTokensBeforeStop = 0
+	if gotParams.Temperature != params.Temperature || gotParams.TopK != params.TopK || gotParams.TopP != params.TopP || gotParams.MinP != params.MinP || gotParams.MinTokensBeforeStop != params.MinTokensBeforeStop {
+		t.Fatalf("direct sampled params = %+v, want %+v", gotParams, params)
+	}
+}
+
 // idStepper is a stepper that needs the token ID, not just the embedding — the
 // StepWithID feature (per-layer inputs gathered from the id). It records
 // every id it was stepped with AND ignores the embedding, so a passing count proves

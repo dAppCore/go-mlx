@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"testing"
 	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 func TestSDPASingleValueReturnsV(t *testing.T) {
@@ -50,6 +52,8 @@ func TestSDPABF16ScratchPoolKeepsDimensionsResident(t *testing.T) {
 		t.Fatalf("get large SDPA scratch: %v", err)
 	}
 	putSDPABF16Scratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall, err := getSDPABF16Scratch(128, 256, 256, 128)
 	if err != nil {
@@ -67,6 +71,37 @@ func TestSDPABF16ScratchPoolKeepsDimensionsResident(t *testing.T) {
 	defer putSDPABF16Scratch(gotLarge)
 	if gotLarge != large {
 		t.Fatal("SDPA scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestSDPABF16ScratchBuffersUseCallerBackingAfterWarmup(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const b, nHeads, nKV, headDim, kvLen = 1, 2, 1, 64, 5
+	q := toBF16Bytes(syntheticFloat32(b*nHeads*headDim, 3))
+	k := toBF16Bytes(syntheticFloat32(b*nKV*kvLen*headDim, 5))
+	v := toBF16Bytes(syntheticFloat32(b*nKV*kvLen*headDim, 7))
+	outBytes := b * nHeads * headDim * bf16Size
+	scratch, err := getSDPABF16Scratch(len(q), len(k), len(v), outBytes)
+	if err != nil {
+		t.Fatalf("get SDPA scratch: %v", err)
+	}
+	defer putSDPABF16Scratch(scratch)
+	var qBuf, kBuf, vBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		qBuf, kBuf, vBuf, _, err = scratch.buffers(q, k, v)
+		if err != nil {
+			t.Fatalf("SDPA scratch buffers: %v", err)
+		}
+	}
+	if got, want := uintptr(qBuf.Contents()), uintptr(unsafe.Pointer(&q[0])); got != want {
+		t.Fatalf("q buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(kBuf.Contents()), uintptr(unsafe.Pointer(&k[0])); got != want {
+		t.Fatalf("k buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(vBuf.Contents()), uintptr(unsafe.Pointer(&v[0])); got != want {
+		t.Fatalf("v buffer pointer = %#x, want caller backing %#x", got, want)
 	}
 }
 

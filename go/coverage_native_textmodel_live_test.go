@@ -118,3 +118,27 @@ func TestNativeTextModel_GenerateChatStreamLiveModel(t *testing.T) {
 		t.Fatalf("early-break native stream saw %d tokens, want 1", seen)
 	}
 }
+
+// TestNativeTextModel_EvaluateLiveModel drives the no-cgo native eval surface
+// through the same E2B live model as the native generate smoke.
+func TestNativeTextModel_EvaluateLiveModel(t *testing.T) {
+	native, done := requireLiveNativeTextModel(t)
+	defer done()
+
+	report, err := native.Evaluate(context.Background(), newLiveDatasetStream(), inference.EvalConfig{
+		MaxSamples: 1,
+		BatchSize:  1,
+		MaxSeqLen:  64,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if report == nil {
+		t.Fatal("Evaluate returned nil report")
+	}
+	if report.Metrics.Tokens == 0 {
+		t.Errorf("Evaluate report has no token coverage: %+v", report.Metrics)
+	}
+	t.Logf("native Evaluate: samples=%d tokens=%d loss=%.4f ppl=%.4f",
+		report.Metrics.Samples, report.Metrics.Tokens, report.Metrics.Loss, report.Metrics.Perplexity)
+}

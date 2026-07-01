@@ -35,6 +35,7 @@ type sdpa2Pass1Key struct {
 type sdpaBF16Scratch struct {
 	qBytes, kBytes, vBytes, outBytes int
 	q, k, v, out                     *pinnedNoCopyBytes
+	qView, kView, vView              cachedNoCopyBytesView
 	p2PartialBytes, p2SumBytes       int
 	p2Partials, p2Sums, p2Maxs       metal.MTLBuffer
 	outViewPtr                       uintptr
@@ -47,15 +48,42 @@ type sdpaBF16ScratchKey struct {
 	qBytes, kBytes, vBytes, outBytes int
 }
 
-func sdpaBF16ScratchPoolFor(key sdpaBF16ScratchKey) *sync.Pool {
+type sdpaBF16ScratchPool struct {
+	mu    sync.Mutex
+	items []*sdpaBF16Scratch
+}
+
+func sdpaBF16ScratchPoolFor(key sdpaBF16ScratchKey) *sdpaBF16ScratchPool {
 	if v, ok := sdpaBF16ScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*sdpaBF16ScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := new(sdpaBF16ScratchPool)
 	if v, loaded := sdpaBF16ScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*sdpaBF16ScratchPool)
 	}
 	return pool
+}
+
+func (p *sdpaBF16ScratchPool) Get() *sdpaBF16Scratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *sdpaBF16ScratchPool) Put(s *sdpaBF16Scratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 func sdpaBF16ScratchReady(s *sdpaBF16Scratch, key sdpaBF16ScratchKey) bool {
@@ -99,7 +127,7 @@ func newSDPABF16Scratch(qBytes, kBytes, vBytes, outBytes int) (*sdpaBF16Scratch,
 func getSDPABF16Scratch(qBytes, kBytes, vBytes, outBytes int) (*sdpaBF16Scratch, error) {
 	key := sdpaBF16ScratchKey{qBytes: qBytes, kBytes: kBytes, vBytes: vBytes, outBytes: outBytes}
 	pool := sdpaBF16ScratchPoolFor(key)
-	if s, ok := pool.Get().(*sdpaBF16Scratch); ok {
+	if s := pool.Get(); s != nil {
 		if sdpaBF16ScratchReady(s, key) {
 			return s, nil
 		}
@@ -138,6 +166,9 @@ func (s *sdpaBF16Scratch) Close() {
 		s.out.Close()
 		s.out = nil
 	}
+	s.qView.Close()
+	s.kView.Close()
+	s.vView.Close()
 	s.closeOutputView()
 	s.qBytes, s.kBytes, s.vBytes, s.outBytes = 0, 0, 0, 0
 	s.p2Partials, s.p2Sums, s.p2Maxs = nil, nil, nil
@@ -166,6 +197,13 @@ func (s *sdpaBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -189,17 +227,29 @@ func (s *sdpaBF16Scratch) buffers(qb, kb, vb []byte) (metal.MTLBuffer, metal.MTL
 	if len(qb) != s.qBytes || len(kb) != s.kBytes || len(vb) != s.vBytes || len(s.out.bytes) != s.outBytes {
 		return nil, nil, nil, nil, errSDPABF16ScratchDim
 	}
-	qBuf, err := s.q.copyBuffer(qb)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	qBuf, ok := s.qView.buffer(qb)
+	if !ok {
+		var err error
+		qBuf, err = s.q.copyBuffer(qb)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
-	kBuf, err := s.k.copyBuffer(kb)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	kBuf, ok := s.kView.buffer(kb)
+	if !ok {
+		var err error
+		kBuf, err = s.k.copyBuffer(kb)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
-	vBuf, err := s.v.copyBuffer(vb)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	vBuf, ok := s.vView.buffer(vb)
+	if !ok {
+		var err error
+		vBuf, err = s.v.copyBuffer(vb)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
 	return qBuf, kBuf, vBuf, s.out.buf, nil
 }

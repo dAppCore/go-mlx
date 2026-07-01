@@ -21,6 +21,7 @@ const gemma4PerLayerCombineScale = 0.70710678118654752440
 type perLayerInputGateScratch struct {
 	dModel, pliDim                            int
 	hNext, perLayer                           *pinnedNoCopyBytes
+	hNextView, perLayerView                   cachedNoCopyBytesView
 	gate, gelu, multiplied, projected, normed metal.MTLBuffer
 	out                                       metal.MTLBuffer
 	outViewPtr                                uintptr
@@ -33,24 +34,107 @@ type perLayerInputGateScratchKey struct {
 	dModel, pliDim int
 }
 
+type cachedNoCopyBytesView struct {
+	ptr           uintptr
+	len           int
+	buf           metal.MTLBuffer
+	pinned        *pinnedNoCopyBytes
+	candidatePtr  uintptr
+	candidateLen  int
+	candidateHits int
+}
+
+func (v *cachedNoCopyBytesView) Close() {
+	if v == nil {
+		return
+	}
+	v.closePinned()
+	v.candidatePtr = 0
+	v.candidateLen = 0
+	v.candidateHits = 0
+}
+
+func (v *cachedNoCopyBytesView) closePinned() {
+	if v.pinned != nil {
+		v.pinned.Close()
+	}
+	v.ptr = 0
+	v.len = 0
+	v.buf = nil
+	v.pinned = nil
+}
+
+func (v *cachedNoCopyBytesView) buffer(src []byte) (metal.MTLBuffer, bool) {
+	return v.bufferAfterStable(src, 1)
+}
+
+func (v *cachedNoCopyBytesView) bufferAfterStable(src []byte, minHits int) (metal.MTLBuffer, bool) {
+	if v == nil || len(src) == 0 {
+		return nil, false
+	}
+	if minHits < 1 {
+		minHits = 1
+	}
+	ptr := uintptr(unsafe.Pointer(&src[0]))
+	if v.buf != nil && v.ptr == ptr && v.len == len(src) {
+		return v.buf, true
+	}
+	if v.buf != nil {
+		v.closePinned()
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(src); ok {
+		v.candidatePtr = ptr
+		v.candidateLen = len(src)
+		v.candidateHits = minHits
+		v.ptr = ptr
+		v.len = len(src)
+		v.buf = buf
+		v.pinned = nil
+		return buf, true
+	}
+	if v.candidatePtr == ptr && v.candidateLen == len(src) {
+		v.candidateHits++
+	} else {
+		v.candidatePtr = ptr
+		v.candidateLen = len(src)
+		v.candidateHits = 1
+	}
+	if v.candidateHits < minHits {
+		return nil, false
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(src)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: src, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	v.ptr = ptr
+	v.len = len(src)
+	v.buf = buf
+	v.pinned = pinned
+	return buf, true
+}
+
 var perLayerInputGateScratchPools sync.Map
 
-func perLayerInputGateScratchPoolFor(dModel, pliDim int) *sync.Pool {
+func perLayerInputGateScratchPoolFor(dModel, pliDim int) *scratchLIFOPool[*perLayerInputGateScratch] {
 	key := perLayerInputGateScratchKey{dModel: dModel, pliDim: pliDim}
 	if v, ok := perLayerInputGateScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*scratchLIFOPool[*perLayerInputGateScratch])
 	}
-	pool := &sync.Pool{}
+	pool := &scratchLIFOPool[*perLayerInputGateScratch]{}
 	if v, loaded := perLayerInputGateScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*scratchLIFOPool[*perLayerInputGateScratch])
 	}
 	return pool
 }
 
 func getPerLayerInputGateScratch(dModel, pliDim int) *perLayerInputGateScratch {
 	pool := perLayerInputGateScratchPoolFor(dModel, pliDim)
-	if v := pool.Get(); v != nil {
-		s := v.(*perLayerInputGateScratch)
+	if s := pool.Get(); s != nil {
 		if s.dModel == dModel && s.pliDim == pliDim && s.gate != nil && s.out != nil {
 			return s
 		}
@@ -84,6 +168,8 @@ func (s *perLayerInputGateScratch) Close() {
 		s.perLayer.Close()
 		s.perLayer = nil
 	}
+	s.hNextView.Close()
+	s.perLayerView.Close()
 	s.closeOutputView()
 	s.gate, s.gelu, s.multiplied, s.projected, s.normed, s.out = nil, nil, nil, nil, nil, nil
 	s.dModel, s.pliDim = 0, 0
@@ -111,6 +197,13 @@ func (s *perLayerInputGateScratch) outputView(out []byte) (metal.MTLBuffer, bool
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -136,25 +229,31 @@ func (s *perLayerInputGateScratch) inputBuffers(hNext, perLayerInput []byte) (me
 		return nil, nil, core.NewError("native.perLayerInputGateScratch.inputBuffers: input size mismatch")
 	}
 	var err error
-	if s.hNext == nil {
+	hBuf, hNoCopy := s.hNextView.buffer(hNext)
+	if !hNoCopy && s.hNext == nil {
 		s.hNext, err = newPinnedNoCopyBytes(hLen)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	if s.perLayer == nil {
+	perLayerBuf, perLayerNoCopy := s.perLayerView.buffer(perLayerInput)
+	if !perLayerNoCopy && s.perLayer == nil {
 		s.perLayer, err = newPinnedNoCopyBytes(plLen)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	hBuf, err := s.hNext.copyBuffer(hNext)
-	if err != nil {
-		return nil, nil, err
+	if !hNoCopy {
+		hBuf, err = s.hNext.copyBuffer(hNext)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	perLayerBuf, err := s.perLayer.copyBuffer(perLayerInput)
-	if err != nil {
-		return nil, nil, err
+	if !perLayerNoCopy {
+		perLayerBuf, err = s.perLayer.copyBuffer(perLayerInput)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	return hBuf, perLayerBuf, nil
 }

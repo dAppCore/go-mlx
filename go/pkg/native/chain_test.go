@@ -22,8 +22,8 @@ func TestNormProjectAllocationBudget(t *testing.T) {
 			t.Fatalf("NormProject: %v", err)
 		}
 	})
-	if allocs > 303 {
-		t.Fatalf("NormProject allocations = %.0f, want <= 303", allocs)
+	if allocs > 150 {
+		t.Fatalf("NormProject allocations = %.0f, want <= 150", allocs)
 	}
 }
 
@@ -45,8 +45,8 @@ func TestMLPBlockAllocationBudget(t *testing.T) {
 			t.Fatalf("MLPBlock: %v", err)
 		}
 	})
-	if allocs > 1604 {
-		t.Fatalf("MLPBlock allocations = %.0f, want <= 1604", allocs)
+	if allocs > 1140 {
+		t.Fatalf("MLPBlock allocations = %.0f, want <= 1140", allocs)
 	}
 }
 

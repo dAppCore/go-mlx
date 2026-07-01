@@ -49,7 +49,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
 	stateConversations := fs.Bool("state-conversations", true, "conversation continuity: wake each chat from its slept state, append only the new turn, sleep after — no prompt replay (disable with -state-conversations=false)")
 	stateStorePath := fs.String("state-store", "", "conversation state store file (default ~/Lethean/data/state/conversations.kv)")
-	nativeBackend := fs.Bool("native", false, "serve via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine — App-Store-clean, no MTP/prompt-cache yet")
+	nativeBackend := fs.Bool("native", false, "serve via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s serve [--model <path>] [flags]\n", name))
@@ -193,14 +193,15 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// runs the detection ladder over Gemma 4 targets only. The draft block
 	// resolves flag > tuned profile (`lthn-mlx tune`) > engine default.
 	detection := resolveServeDraft(*modelPath, *draftPath, *draftDetect)
-	resolvedBlock, blockNote := resolveServeDraftBlock(ctx, detection, *modelPath, *draftBlock, *noAutoProfile, *profileDir)
-	if *nativeBackend { // the no-cgo contract path has no MTP drafter
-		detection, resolvedBlock, blockNote = mlx.DraftDetection{}, 0, ""
+	if *nativeBackend {
+		detection = resolveNativeServeDraft(*modelPath, *draftPath)
 	}
+	resolvedBlock, blockNote := resolveServeDraftBlock(ctx, detection, *modelPath, *draftBlock, *noAutoProfile, *profileDir)
 	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, resolvedBlock, mlxOpts)
 	if *nativeBackend {
 		hotSwap.setLoader(mlx.LoadNativeTextModel)
-		core.Print(stderr, "%s serve: no-cgo native token-loop contract (pkg/model + pkg/native) — MTP/prompt-cache/continuity off", cliName())
+		hotSwap.setSpeculativeLoader(mlx.LoadNativeSpeculativePairAsTextModelBlock)
+		core.Print(stderr, "%s serve: no-cgo native token-loop contract (pkg/model + pkg/native) — continuity off", cliName())
 	}
 	// Reload symmetry (#92): /v1/admin/serve/reload re-runs the same
 	// reactive ladder over the swapped-in target, honouring the boot
@@ -423,6 +424,18 @@ func resolveServeDraft(modelPath, draftFlag string, detect bool) mlx.DraftDetect
 		explicit = trimmed
 	}
 	return mlx.DetectGemma4DraftPath(modelPath, explicit, opts)
+}
+
+// resolveNativeServeDraft honours explicit native-loadable draft paths but
+// stands auto detection down until pkg/native can load assistant-only drafter
+// packs. Auto currently resolves Gemma 4 assistant/ directories and MTP GGUF
+// files, which belong to the metal pair loader.
+func resolveNativeServeDraft(modelPath, draftFlag string) mlx.DraftDetection {
+	trimmed := core.Trim(draftFlag)
+	if trimmed == "" || trimmed == "auto" {
+		return mlx.DraftDetection{}
+	}
+	return resolveServeDraft(modelPath, trimmed, false)
 }
 
 // speculativeServeNotice reports the ACTIVE MTP pair at boot: which drafter

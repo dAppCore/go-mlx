@@ -69,6 +69,49 @@ const synthTokenizerJSON = `{
 	]
 }`
 
+const synthGemma4TextConfigJSON = `{
+	"model_type": "gemma4_text",
+	"hidden_size": 8,
+	"num_hidden_layers": 2,
+	"intermediate_size": 16,
+	"num_attention_heads": 1,
+	"num_key_value_heads": 1,
+	"head_dim": 4,
+	"global_head_dim": 8,
+	"vocab_size": 10,
+	"max_position_embeddings": 16,
+	"rms_norm_eps": 1e-6,
+	"sliding_window": 4,
+	"sliding_window_pattern": 2,
+	"num_kv_shared_layers": 0,
+	"hidden_size_per_layer_input": 0,
+	"use_double_wide_mlp": false,
+	"layer_types": ["sliding_attention", "full_attention"]
+}`
+
+// writeSyntheticGemma4TextModel writes a complete, loadable 2-layer gemma4_text
+// checkpoint into a fresh temp dir and returns the dir.
+func writeSyntheticGemma4TextModel(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), synthGemma4TextConfigJSON); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	if err := coreio.Local.Write(core.JoinPath(dir, "tokenizer.json"), synthTokenizerJSON); err != nil {
+		t.Fatalf("write tokenizer.json: %v", err)
+	}
+	w := synthGemma4TrunkWeights()
+	defer func() {
+		for _, a := range w {
+			metal.Free(a)
+		}
+	}()
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), w); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	return dir
+}
+
 // writeSyntheticGemma3Model writes a complete, loadable 1-layer gemma3 model
 // (config.json + tokenizer.json + model.safetensors with untied lm_head) into
 // dir. It returns dir. The model is just large enough to load through

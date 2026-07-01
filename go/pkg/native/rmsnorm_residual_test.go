@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 func rmsNormResidualFixture(axisSize int) ([]byte, []byte, []byte) {
@@ -56,6 +58,8 @@ func TestRMSNormResidualScratchPoolKeepsDimensionsResident(t *testing.T) {
 
 	putRMSNormResidualBF16Scratch(small)
 	putRMSNormResidualBF16Scratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall := smallPool.Get()
 	if gotSmall != small {
@@ -98,6 +102,39 @@ func TestRMSNormResidualBF16IntoUsesCallerBacking(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatal("RMSNormResidualBF16Into output differs from allocating wrapper")
+	}
+}
+
+func TestRMSNormResidualScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const axisSize = 1536
+	x, _, res := rmsNormResidualFixture(axisSize)
+	scratch, err := getRMSNormResidualBF16Scratch(axisSize)
+	if err != nil {
+		t.Fatalf("getRMSNormResidualBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	var xBuf, resBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		xBuf, resBuf, _, err = scratch.buffers(x, res)
+		if err != nil {
+			t.Fatalf("scratch.buffers warmup %d: %v", i, err)
+		}
+	}
+	if got, want := uintptr(xBuf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("x buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(resBuf.Contents()), uintptr(unsafe.Pointer(&res[0])); got != want {
+		t.Fatalf("residual buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reusedX, reusedRes, _, err := scratch.buffers(x, res)
+	if err != nil {
+		t.Fatalf("scratch.buffers reused: %v", err)
+	}
+	if reusedX.GetID() != xBuf.GetID() || reusedRes.GetID() != resBuf.GetID() {
+		t.Fatal("scratch.buffers did not reuse cached no-copy input views")
 	}
 }
 

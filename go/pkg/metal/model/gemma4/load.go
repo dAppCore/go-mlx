@@ -14,7 +14,7 @@ import (
 	// Registers the gemma4 chat formatter with the neutral chat dispatcher
 	// whenever the gemma4 model package is built in (serve, training, profiling).
 	// The formatter is pure-Go (cgo-free), so this import adds no cgo here.
-	_ "dappco.re/go/mlx/pkg/metal/model/gemma4/chat"
+	_ "dappco.re/go/mlx/pkg/model/gemma4/chat"
 )
 
 func LoadGemma4(modelPath string) (*Gemma4Model, error) {

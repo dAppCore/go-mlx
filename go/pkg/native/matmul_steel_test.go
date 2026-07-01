@@ -38,6 +38,25 @@ func TestMatMulF32NTAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMatMulF32SteelScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 16, 64, 137
+	a, _ := matMulF32NTFixture(M, K, N)
+	scratch, err := getMatMulF32SteelScratch(M, K, N, K, steelNT)
+	if err != nil {
+		t.Fatalf("get MatMulF32 steel scratch: %v", err)
+	}
+	defer putMatMulF32SteelScratch(scratch)
+	aBuf, _, _, err := scratch.buffers(a)
+	if err != nil {
+		t.Fatalf("MatMulF32 steel scratch buffers: %v", err)
+	}
+	if got, want := uintptr(aBuf.Contents()), uintptr(unsafe.Pointer(&a[0])); got != want {
+		t.Fatalf("A buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+}
+
 func TestSteelGemmPipelineWarmedLookupAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -73,6 +92,74 @@ func TestMatMulF32NTSplitKAllocationBudget(t *testing.T) {
 	})
 	if allocs > 10 {
 		t.Fatalf("MatMulF32NT split-K allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMatMulF32SplitKParamsScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMatMulF32SplitKParamsScratch(3, 128, 128, 4, 1, 2, 384, 64, 4)
+	if err != nil {
+		t.Fatalf("get small MatMulF32 split-K params scratch: %v", err)
+	}
+	putMatMulF32SplitKParamsScratch(small)
+	large, err := getMatMulF32SplitKParamsScratch(5, 256, 160, 5, 1, 4, 800, 64, 4)
+	if err != nil {
+		t.Fatalf("get large MatMulF32 split-K params scratch: %v", err)
+	}
+	putMatMulF32SplitKParamsScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMatMulF32SplitKParamsScratch(3, 128, 128, 4, 1, 2, 384, 64, 4)
+	if err != nil {
+		t.Fatalf("get small MatMulF32 split-K params scratch again: %v", err)
+	}
+	defer putMatMulF32SplitKParamsScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MatMulF32 split-K params scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMatMulF32SplitKParamsScratch(5, 256, 160, 5, 1, 4, 800, 64, 4)
+	if err != nil {
+		t.Fatalf("get large MatMulF32 split-K params scratch again: %v", err)
+	}
+	defer putMatMulF32SplitKParamsScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MatMulF32 split-K params scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
+func TestMatMulF32SplitKAccumScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMatMulF32SplitKAccumScratch(3, 128, 2)
+	if err != nil {
+		t.Fatalf("get small MatMulF32 split-K accum scratch: %v", err)
+	}
+	putMatMulF32SplitKAccumScratch(small)
+	large, err := getMatMulF32SplitKAccumScratch(5, 160, 4)
+	if err != nil {
+		t.Fatalf("get large MatMulF32 split-K accum scratch: %v", err)
+	}
+	putMatMulF32SplitKAccumScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMatMulF32SplitKAccumScratch(3, 128, 2)
+	if err != nil {
+		t.Fatalf("get small MatMulF32 split-K accum scratch again: %v", err)
+	}
+	defer putMatMulF32SplitKAccumScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MatMulF32 split-K accum scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMatMulF32SplitKAccumScratch(5, 160, 4)
+	if err != nil {
+		t.Fatalf("get large MatMulF32 split-K accum scratch again: %v", err)
+	}
+	defer putMatMulF32SplitKAccumScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MatMulF32 split-K accum scratch pool evicted the large shape after reusing the small shape")
 	}
 }
 

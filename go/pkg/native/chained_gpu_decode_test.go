@@ -95,6 +95,116 @@ func TestChainedGPUDecodeMatchesHost(t *testing.T) {
 	t.Logf("chained-GPU decode matches host embed/PLE path: %v", gpuGen)
 }
 
+func TestChainedGPUGenerateOneShotUsesGPUTailWithoutCachingFinalToken(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 2, 256, 32, 0)
+	const maxLen, N = 16, 6
+	prompt := []int32{1, 5, 3, 2}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	oldTiming := pieceTimingOn
+	oldSpan := chainedGPUSpanNs
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+		pieceTimingOn = oldTiming
+		chainedGPUSpanNs = oldSpan
+	}()
+	pipelinedGPUDecodeEnabled = false
+	pieceTimingOn = false
+
+	chainedGPUInputsDisabled = true
+	host, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("host session: %v", err)
+	}
+	hostGen, err := host.GenerateOneShot(prompt, N, -1)
+	if err != nil {
+		t.Fatalf("GenerateOneShot host: %v", err)
+	}
+
+	chainedGPUInputsDisabled = false
+	gpu, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("GPU session: %v", err)
+	}
+	if gpu.encNextInputsGPU == nil || gpu.state.icb == nil {
+		t.Fatal("fixture did not wire chained GPU ICB path")
+	}
+	pieceTimingOn = true
+	chainedGPUSpanNs = 0
+	gpuGen, err := gpu.GenerateOneShot(prompt, N, -1)
+	pieceTimingOn = false
+	if err != nil {
+		t.Fatalf("GenerateOneShot GPU: %v", err)
+	}
+	if !idsEqual(gpuGen, hostGen) {
+		t.Fatalf("one-shot chained GPU tokens = %v, want host %v", gpuGen, hostGen)
+	}
+	if chainedGPUSpanNs <= 0 {
+		t.Fatal("one-shot decode did not enter the chained GPU tail")
+	}
+	if gpu.Pos() != len(prompt)+len(gpuGen)-1 {
+		t.Fatalf("one-shot pos = %d, want prompt plus cached intermediate tokens (%d)", gpu.Pos(), len(prompt)+len(gpuGen)-1)
+	}
+}
+
+func TestPipelinedGPUGenerateOneShotUsesPeerICBWithoutCachingFinalToken(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, N = 24, 8
+	prompt := []int32{1, 5, 3, 2}
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	chainedGPUInputsDisabled = false
+
+	pipelinedGPUDecodeEnabled = false
+	chained, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("chained session: %v", err)
+	}
+	chainedGen, err := chained.GenerateOneShot(prompt, N, -1)
+	if err != nil {
+		t.Fatalf("chained GenerateOneShot: %v", err)
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	pipe, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	if pipe.recordPeerICB == nil {
+		t.Skip("peer ICB recorder unavailable")
+	}
+	pipeGen, err := pipe.GenerateOneShot(prompt, N, -1)
+	if err != nil {
+		t.Fatalf("pipelined GenerateOneShot: %v", err)
+	}
+	if !idsEqual(pipeGen, chainedGen) {
+		t.Fatalf("one-shot pipelined tokens = %v, want chained %v", pipeGen, chainedGen)
+	}
+	if pipe.icbPeer == nil {
+		t.Fatal("one-shot pipelined decode did not record/use the peer ICB")
+	}
+	if pipe.gpuTailPLScratch[0] == nil || pipe.gpuTailPLScratch[1] == nil {
+		t.Fatal("one-shot pipelined decode did not use both session PLE scratch slots")
+	}
+	if pipe.gpuTailPLScratch[0] == pipe.gpuTailPLScratch[1] {
+		t.Fatal("one-shot pipelined decode scratch slots alias")
+	}
+	if pipe.Pos() != len(prompt)+len(pipeGen)-1 {
+		t.Fatalf("one-shot pipelined pos = %d, want prompt plus cached intermediate tokens (%d)", pipe.Pos(), len(prompt)+len(pipeGen)-1)
+	}
+}
+
 func TestChainedGPUDecodeFinalHiddenWritesRetainedHiddenDirectly(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -347,6 +457,45 @@ func TestPipelinedGPUDecodeMatchesChained(t *testing.T) {
 			}
 			t.Logf("pipelined matches chained: %v", pipeGen)
 		})
+	}
+}
+
+func TestChainedGPUDecodeGenerateFromCacheAllocationBudget(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen = 40
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	pipelinedGPUDecodeEnabled = false
+	chainedGPUInputsDisabled = false
+
+	sess, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession: %v", err)
+	}
+	if sess.encNextInputsGPU == nil || sess.state.icb == nil {
+		t.Skip("fixture did not wire chained GPU ICB path")
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3, 2}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	if _, err := sess.GenerateFromCache(2, -1); err != nil {
+		t.Fatalf("GenerateFromCache warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		if _, err := sess.GenerateFromCache(2, -1); err != nil {
+			t.Fatalf("GenerateFromCache: %v", err)
+		}
+	})
+	if allocs > 800 {
+		t.Fatalf("chained GPU GenerateFromCache allocations = %.0f, want <= 800", allocs)
 	}
 }
 
@@ -810,6 +959,62 @@ func TestPipelinedSampledGPUDecodeMatchesChained(t *testing.T) {
 	}
 	if pipe.gpuTailPLScratch[0] == pipe.gpuTailPLScratch[1] {
 		t.Fatal("sampled pipelined GPU tail scratch slots alias")
+	}
+}
+
+func TestPipelinedSampledGPUOneShotUsesPeerICBWithoutCachingFinalToken(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 8
+	prompt := []int32{1, 5, 3, 2}
+	params := model.SampleParams{Temperature: 0.9, TopK: 4, TopP: 0.8}
+
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	chainedGPUInputsDisabled = false
+
+	pipelinedGPUDecodeEnabled = false
+	chained, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("chained session: %v", err)
+	}
+	chainedGen, err := chained.GenerateSampledOneShotEach(prompt, maxNew, nil, model.NewSampler(91), params, nil, nil)
+	if err != nil {
+		t.Fatalf("chained GenerateSampledOneShotEach: %v", err)
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	pipe, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	if pipe.recordPeerICB == nil {
+		t.Skip("peer ICB recorder unavailable")
+	}
+	pipeGen, err := pipe.GenerateSampledOneShotEach(prompt, maxNew, nil, model.NewSampler(91), params, nil, nil)
+	if err != nil {
+		t.Fatalf("pipelined GenerateSampledOneShotEach: %v", err)
+	}
+	if !idsEqual(pipeGen, chainedGen) {
+		t.Fatalf("sampled one-shot pipelined tokens = %v, want chained %v", pipeGen, chainedGen)
+	}
+	if pipe.icbPeer == nil {
+		t.Fatal("sampled one-shot pipelined decode did not record/use the peer ICB")
+	}
+	if pipe.gpuTailPLScratch[0] == nil || pipe.gpuTailPLScratch[1] == nil {
+		t.Fatal("sampled one-shot pipelined GPU tail did not use both session PLE scratch slots")
+	}
+	if pipe.gpuTailPLScratch[0] == pipe.gpuTailPLScratch[1] {
+		t.Fatal("sampled one-shot pipelined GPU tail scratch slots alias")
+	}
+	if pipe.Pos() != len(prompt)+len(pipeGen)-1 {
+		t.Fatalf("sampled one-shot pipelined pos = %d, want prompt plus cached intermediate tokens (%d)", pipe.Pos(), len(prompt)+len(pipeGen)-1)
 	}
 }
 

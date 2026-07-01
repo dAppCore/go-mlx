@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"math"
 	"reflect"
 	"testing"
@@ -48,6 +49,33 @@ func newSessionStateFixture(t testing.TB) *ArchSession {
 		t.Fatalf("NewArchSession: %v", err)
 	}
 	return s
+}
+
+func newSingleLayerSessionStateFixture(t testing.TB) *ArchSession {
+	t.Helper()
+	g, arch, maxLen := sessionStateFixture(t)
+	g.Layers = g.Layers[:1]
+	arch.Layer = arch.Layer[:1]
+	s, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession(single layer): %v", err)
+	}
+	return s
+}
+
+func restoredStateLayerView(t testing.TB, sess *ArchSession, layer int) sessionStateLayerView {
+	t.Helper()
+	views, err := sess.stateLayerViews()
+	if err != nil {
+		t.Fatalf("stateLayerViews: %v", err)
+	}
+	for _, view := range views {
+		if view.layer == layer {
+			return view
+		}
+	}
+	t.Fatalf("stateLayerViews missing layer %d", layer)
+	return sessionStateLayerView{}
 }
 
 func icbSessionStateFixture(t testing.TB) (*QuantModel, model.Arch, int) {
@@ -126,6 +154,15 @@ func TestSessionStateSnapshotCacheViewsUseCachedContentsPointers(t *testing.T) {
 		k, v, kPtr, vPtr, err := s.snapshotCacheViews(li)
 		if err != nil {
 			t.Fatalf("snapshotCacheViews: %v", err)
+		}
+		if cache := s.state.layerPagedKV(li); cache != nil {
+			if k != cache.snapshotK || v != cache.snapshotV {
+				t.Fatal("snapshotCacheViews returned unexpected paged snapshot buffers")
+			}
+			if kPtr != (*byte)(k.Contents()) || vPtr != (*byte)(v.Contents()) {
+				t.Fatal("paged snapshot pointers do not reference Metal buffer contents")
+			}
+			return
 		}
 		if k != s.state.lb[li].kCache || v != s.state.lb[li].vCache {
 			t.Fatal("snapshotCacheViews returned unexpected layer cache buffers")
@@ -269,6 +306,40 @@ func TestSessionStateBlocksRestoreGenerateFromBoundaryLogits(t *testing.T) {
 	}
 	if restored.Pos() != len(prompt)+len(got) {
 		t.Fatalf("restored pos after logit continuation = %d, want %d", restored.Pos(), len(prompt)+len(got))
+	}
+}
+
+func TestSessionStateBlocksRestoreReloadsDevicePagedKV(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreStateBlocks(source); err != nil {
+		t.Fatalf("RestoreStateBlocks: %v", err)
+	}
+	for li, spec := range saved.state.specs {
+		if !spec.OwnsCache() || saved.state.layerPagedKV(li) == nil {
+			continue
+		}
+		_, _, savedK, savedV, err := saved.snapshotCacheViews(li)
+		if err != nil {
+			t.Fatalf("saved snapshotCacheViews L%d: %v", li, err)
+		}
+		_, _, restoredK, restoredV, err := restored.snapshotCacheViews(li)
+		if err != nil {
+			t.Fatalf("restored snapshotCacheViews L%d: %v", li, err)
+		}
+		n := saved.maxLen * kvHeadsOf(spec, saved.arch.KVHeads) * headDimOf(spec, saved.arch.HeadDim) * bf16Size
+		eqBytes(t, core.Sprintf("restored block paged K L%d", li), unsafe.Slice(restoredK, n), unsafe.Slice(savedK, n))
+		eqBytes(t, core.Sprintf("restored block paged V L%d", li), unsafe.Slice(restoredV, n), unsafe.Slice(savedV, n))
 	}
 }
 
@@ -702,6 +773,135 @@ func TestArchSessionRetainedLogitsUsesPinnedNoCopyBuffer(t *testing.T) {
 	}
 }
 
+func TestSessionStateBlockSourceBorrowsRetainedBoundaryNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	if sess.retainedHiddenBuffer() == nil {
+		t.Fatal("prefill did not retain hidden in a pinned no-copy buffer")
+	}
+	source, err := sess.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	if len(source.RetainedHidden) == 0 || len(source.RetainedLogits) == 0 {
+		t.Fatalf("source retained boundary lengths = hidden %d logits %d, want both non-empty", len(source.RetainedHidden), len(source.RetainedLogits))
+	}
+	if unsafe.Pointer(&source.RetainedHidden[0]) != unsafe.Pointer(&sess.retainedHidden[0]) {
+		t.Fatal("StateBlockSource copied retained hidden; want borrowed no-copy boundary")
+	}
+	if unsafe.Pointer(&source.RetainedLogits[0]) != unsafe.Pointer(&sess.retainedLogits[0]) {
+		t.Fatal("StateBlockSource copied retained logits; want borrowed no-copy boundary")
+	}
+}
+
+func TestSessionStateBlockSourceBorrowsCachedPromptBoundaryNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if sess.cachedPromptHiddenBuffer() == nil || sess.cachedPromptLogitsBuffer() == nil {
+		t.Fatal("warm prompt cache did not retain no-copy boundary buffers")
+	}
+	source, err := sess.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+	if len(source.CachedPromptHidden) == 0 || len(source.CachedPromptLogits) == 0 {
+		t.Fatalf("source cached prompt boundary lengths = hidden %d logits %d, want both non-empty", len(source.CachedPromptHidden), len(source.CachedPromptLogits))
+	}
+	if unsafe.Pointer(&source.CachedPromptHidden[0]) != unsafe.Pointer(&sess.cachedPromptHidden[0]) {
+		t.Fatal("StateBlockSource copied cached prompt hidden; want borrowed no-copy boundary")
+	}
+	if unsafe.Pointer(&source.CachedPromptLogits[0]) != unsafe.Pointer(&sess.cachedPromptLogits[0]) {
+		t.Fatal("StateBlockSource copied cached prompt logits; want borrowed no-copy boundary")
+	}
+}
+
+func TestCachedPromptEntryExposesNoCopyBoundaryBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	prompt := []int32{1, 2, 3}
+	hidden := toBF16Bytes(syntheticFloat32(sess.arch.Hidden, 43))
+	logits := toBF16Bytes(syntheticFloat32(sess.arch.Vocab, 44))
+
+	sess.rememberCachedPromptEntry(prompt, hidden, logits)
+	if !bytes.Equal(sess.cachedPromptHidden, hidden) {
+		t.Fatal("cached prompt hidden did not preserve boundary contents")
+	}
+	if !bytes.Equal(sess.cachedPromptLogits, logits) {
+		t.Fatal("cached prompt logits did not preserve boundary contents")
+	}
+	if buf := sess.retainedHiddenBufferFor(sess.cachedPromptHidden); buf == nil {
+		t.Fatal("cached prompt hidden did not expose a no-copy buffer")
+	}
+	if buf := sess.retainedLogitsBufferFor(sess.cachedPromptLogits); buf == nil {
+		t.Fatal("cached prompt logits did not expose a no-copy buffer")
+	}
+}
+
+func TestCachedPromptEntryAliasesRetainedNoCopyBoundaryBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	prompt := []int32{1, 2, 3}
+	hidden := toBF16Bytes(syntheticFloat32(sess.arch.Hidden, 45))
+	logits := toBF16Bytes(syntheticFloat32(sess.arch.Vocab, 46))
+	sess.rememberRetainedHidden(hidden)
+	sess.rememberRetainedLogits(logits)
+	retainedHiddenBuf := sess.retainedHiddenBuffer()
+	retainedLogitsBuf := sess.retainedLogitsBuffer()
+	retainedHiddenPinned := sess.retainedHiddenPinned
+	retainedLogitsPinned := sess.retainedLogitsPinned
+	if retainedHiddenBuf == nil || retainedLogitsBuf == nil {
+		t.Fatal("retained boundary buffers are not pinned no-copy")
+	}
+
+	sess.rememberCachedPromptEntry(prompt, sess.retainedHidden, sess.retainedLogits)
+	if len(sess.cachedPromptHidden) == 0 || unsafe.Pointer(&sess.cachedPromptHidden[0]) != unsafe.Pointer(&sess.retainedHidden[0]) {
+		t.Fatal("cached prompt hidden did not alias retained no-copy hidden")
+	}
+	if len(sess.cachedPromptLogits) == 0 || unsafe.Pointer(&sess.cachedPromptLogits[0]) != unsafe.Pointer(&sess.retainedLogits[0]) {
+		t.Fatal("cached prompt logits did not alias retained no-copy logits")
+	}
+	if sess.retainedHiddenBufferFor(sess.cachedPromptHidden) != retainedHiddenBuf {
+		t.Fatal("cached prompt hidden did not reuse retained hidden no-copy buffer")
+	}
+	if sess.retainedLogitsBufferFor(sess.cachedPromptLogits) != retainedLogitsBuf {
+		t.Fatal("cached prompt logits did not reuse retained logits no-copy buffer")
+	}
+	if sess.cachedPromptHiddenPinned != retainedHiddenPinned || sess.cachedPromptLogitsPinned != retainedLogitsPinned {
+		t.Fatal("cached prompt did not share retained no-copy buffers")
+	}
+	if sess.retainedHiddenPinned != retainedHiddenPinned || sess.retainedLogitsPinned != retainedLogitsPinned {
+		t.Fatal("retained no-copy owners were not preserved for current boundary reuse")
+	}
+	cachedHidden := append([]byte(nil), sess.cachedPromptHidden...)
+	cachedLogits := append([]byte(nil), sess.cachedPromptLogits...)
+	nextHidden := toBF16Bytes(syntheticFloat32(sess.arch.Hidden, 47))
+	nextLogits := toBF16Bytes(syntheticFloat32(sess.arch.Vocab, 48))
+	sess.rememberRetainedHidden(nextHidden)
+	sess.rememberRetainedLogits(nextLogits)
+	if !bytes.Equal(sess.cachedPromptHidden, cachedHidden) {
+		t.Fatal("retained hidden refresh mutated cached prompt hidden")
+	}
+	if !bytes.Equal(sess.cachedPromptLogits, cachedLogits) {
+		t.Fatal("retained logits refresh mutated cached prompt logits")
+	}
+	if len(sess.retainedHidden) == 0 || unsafe.Pointer(&sess.retainedHidden[0]) == unsafe.Pointer(&sess.cachedPromptHidden[0]) {
+		t.Fatal("retained hidden did not detach from cached prompt hidden")
+	}
+	if len(sess.retainedLogits) == 0 || unsafe.Pointer(&sess.retainedLogits[0]) == unsafe.Pointer(&sess.cachedPromptLogits[0]) {
+		t.Fatal("retained logits did not detach from cached prompt logits")
+	}
+}
+
 func TestSessionStateRangeBlocksSkipsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5, 6, 7}
@@ -1039,7 +1239,7 @@ func TestSessionStateRestoreBlockSkipsExpiredSlidingRows(t *testing.T) {
 	}
 }
 
-func TestSessionStateRestoreBlockRejectsFixedMaxSizeMismatch(t *testing.T) {
+func TestSessionStateRestoreBlockRejectsUnlabelledMaxSizeMismatch(t *testing.T) {
 	err := restoreStateBlock(0, 0, 2, 1, []sessionStateLayerView{{
 		layer:      0,
 		cacheIndex: 0,
@@ -1058,7 +1258,6 @@ func TestSessionStateRestoreBlockRejectsFixedMaxSizeMismatch(t *testing.T) {
 		Layers: []SessionStateLayerBlock{{
 			Layer:      0,
 			CacheIndex: 0,
-			CacheMode:  nativeStateCacheModeFixed,
 			MaxSize:    6,
 			KVHeads:    1,
 			HeadDim:    1,
@@ -1068,7 +1267,61 @@ func TestSessionStateRestoreBlockRejectsFixedMaxSizeMismatch(t *testing.T) {
 		}},
 	})
 	if err == nil {
-		t.Fatal("restoreStateBlock fixed max-size mismatch error = nil")
+		t.Fatal("restoreStateBlock unlabelled max-size mismatch error = nil")
+	}
+}
+
+func TestSessionStateRestoreBlockAllowsPortableSourceMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		maxSize int
+	}{
+		{name: "paged", mode: "paged", maxSize: 8},
+		{name: "rotating", mode: "rotating", maxSize: 8},
+		{name: "sliding", mode: "sliding", maxSize: 8},
+		{name: "turboquant", mode: "turboquant", maxSize: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyRows := make([]byte, 8)
+			valueRows := make([]byte, 8)
+			err := restoreStateBlock(0, 0, 2, 1, []sessionStateLayerView{{
+				layer:      0,
+				cacheIndex: 0,
+				cacheMode:  nativeStateCacheModeFixed,
+				maxSize:    4,
+				cacheRows:  4,
+				kvHeads:    1,
+				headDim:    1,
+				rowBytes:   2,
+				keyBytes:   keyRows,
+				valueBytes: valueRows,
+			}}, SessionStateBlock{
+				Index:      0,
+				TokenStart: 0,
+				TokenCount: 2,
+				Layers: []SessionStateLayerBlock{{
+					Layer:      0,
+					CacheIndex: 0,
+					CacheMode:  tc.mode,
+					MaxSize:    tc.maxSize,
+					KVHeads:    1,
+					HeadDim:    1,
+					RowBytes:   2,
+					KeyBytes:   []byte{1, 0, 2, 0},
+					ValueBytes: []byte{11, 0, 12, 0},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("restoreStateBlock portable %s metadata: %v", tc.mode, err)
+			}
+			if !bytes.Equal(keyRows[:4], []byte{1, 0, 2, 0}) {
+				t.Fatalf("restored key rows = %v, want source payload", keyRows)
+			}
+			if !bytes.Equal(valueRows[:4], []byte{11, 0, 12, 0}) {
+				t.Fatalf("restored value rows = %v, want source payload", valueRows)
+			}
+		})
 	}
 }
 
@@ -1091,7 +1344,7 @@ func TestSessionStateRestoreBlockRejectsCacheModeMismatch(t *testing.T) {
 		Layers: []SessionStateLayerBlock{{
 			Layer:      0,
 			CacheIndex: 0,
-			CacheMode:  "paged",
+			CacheMode:  "compaction",
 			MaxSize:    4,
 			KVHeads:    1,
 			HeadDim:    1,
@@ -1352,6 +1605,38 @@ func TestArchSessionRestoreKVRootSnapshotContinuesFromNativeLayerSlabs(t *testin
 	}
 }
 
+func TestArchSessionRestoreKVNativeLayerSlabsAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := saved.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	snapshot.Generated = nil
+	snapshot.LogitShape = nil
+	snapshot.Logits = nil
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKV(snapshot); err != nil {
+		t.Fatalf("RestoreKV warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(5, func() {
+		restoreErr = restored.RestoreKV(snapshot)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreKV: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKV native slab allocations = %.0f, want 0", allocs)
+	}
+}
+
 func TestArchSessionRestoreKVRootSnapshotContinuesFromFloat32LayerSlabs(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5}
@@ -1405,6 +1690,25 @@ func bf16RawToF32Raw(src []byte) []byte {
 	return out
 }
 
+func firstTokensFromLayerSlab(t testing.TB, src []byte, seqLen, tokenCount, heads, headDim int) []byte {
+	t.Helper()
+	if tokenCount <= 0 || tokenCount > seqLen || heads <= 0 || headDim <= 0 {
+		t.Fatalf("invalid layer slab prefix shape seq=%d tokens=%d heads=%d dim=%d", seqLen, tokenCount, heads, headDim)
+	}
+	rowBytes := headDim * bf16Size
+	if len(src) != heads*seqLen*rowBytes {
+		t.Fatalf("layer slab bytes = %d, want %d", len(src), heads*seqLen*rowBytes)
+	}
+	out := make([]byte, heads*tokenCount*rowBytes)
+	for head := 0; head < heads; head++ {
+		srcStart := head * seqLen * rowBytes
+		srcEnd := srcStart + tokenCount*rowBytes
+		dstStart := head * tokenCount * rowBytes
+		copy(out[dstStart:dstStart+tokenCount*rowBytes], src[srcStart:srcEnd])
+	}
+	return out
+}
+
 func TestNativeKVRawToBF16ConvertsRawDTypes(t *testing.T) {
 	rawF16 := make([]byte, 4)
 	binary.LittleEndian.PutUint16(rawF16[0:2], 0x3c00) // 1.0
@@ -1427,6 +1731,464 @@ func TestNativeKVRawToBF16ConvertsRawDTypes(t *testing.T) {
 	if got := []float32{bf16ToF32(gotF32[0], gotF32[1]), bf16ToF32(gotF32[2], gotF32[3])}; got[0] != 3.5 || got[1] != -4.25 {
 		t.Fatalf("float32 conversion = %v, want [3.5 -4.25]", got)
 	}
+}
+
+func TestNativeKVRawDTypeUppercaseAliasesAllocateZero(t *testing.T) {
+	allocs := testing.AllocsPerRun(100, func() {
+		canonical, bytesPerValue, ok := nativeKVRawDType("BF16")
+		if !ok || canonical != nativeKVSnapshotDTypeBF16 || bytesPerValue != bf16Size {
+			t.Fatalf("nativeKVRawDType(BF16) = %q/%d/%v, want %q/%d/true", canonical, bytesPerValue, ok, nativeKVSnapshotDTypeBF16, bf16Size)
+		}
+		canonical, bytesPerValue, ok = nativeKVRawDType("F32")
+		if !ok || canonical != "float32" || bytesPerValue != 4 {
+			t.Fatalf("nativeKVRawDType(F32) = %q/%d/%v, want float32/4/true", canonical, bytesPerValue, ok)
+		}
+	})
+	if allocs > 0 {
+		t.Fatalf("nativeKVRawDType uppercase alias allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestNativeKVLayerSnapshotSlabsRestoresTurboQuantPayload(t *testing.T) {
+	const heads, tokenCount, headDim = 2, 2, 8
+	payload := nativeKVTestTurboQuantZeroPayload(t, heads, tokenCount, headDim)
+	view := sessionStateLayerView{
+		layer:      0,
+		kvHeads:    heads,
+		headDim:    headDim,
+		rowBytes:   heads * headDim * bf16Size,
+		cacheIndex: 0,
+		cacheMode:  "turboquant",
+		cacheRows:  8,
+	}
+
+	keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(kv.LayerSnapshot{
+		Layer:              0,
+		CacheIndex:         0,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{payload},
+	}, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(turboquant): %v", err)
+	}
+	wantBytes := heads * tokenCount * headDim * bf16Size
+	if seqLen != tokenCount || len(keySlab) != wantBytes || len(valueSlab) != wantBytes {
+		t.Fatalf("turboquant slabs seq/bytes = %d/%d/%d, want %d/%d/%d", seqLen, len(keySlab), len(valueSlab), tokenCount, wantBytes, wantBytes)
+	}
+	if !bytes.Equal(keySlab, make([]byte, wantBytes)) || !bytes.Equal(valueSlab, make([]byte, wantBytes)) {
+		t.Fatalf("turboquant zero-norm slabs = key %v value %v, want all zero bf16", keySlab, valueSlab)
+	}
+}
+
+func TestNativeKVLayerSnapshotSlabsDecodesTurboQuantCentroids(t *testing.T) {
+	const heads, tokenCount, headDim = 1, 1, 2
+	payload := nativeKVTestTurboQuantPayload(t, heads, tokenCount, headDim, 1, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			section[0] = 0x03 // two 1-bit centroid codes: [+1,+1]
+		case "key_norms_bf16", "value_norms_bf16":
+			binary.LittleEndian.PutUint16(section[:bf16Size], 0x3f80) // 1.0
+		}
+	})
+	view := sessionStateLayerView{
+		layer:      0,
+		kvHeads:    heads,
+		headDim:    headDim,
+		rowBytes:   heads * headDim * bf16Size,
+		cacheIndex: 0,
+		cacheMode:  "turboquant",
+		cacheRows:  8,
+	}
+
+	keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(kv.LayerSnapshot{
+		Layer:              0,
+		CacheIndex:         0,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{payload},
+	}, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(turboquant non-zero): %v", err)
+	}
+	if seqLen != tokenCount {
+		t.Fatalf("turboquant seqLen = %d, want %d", seqLen, tokenCount)
+	}
+	want := toBF16Bytes([]float32{float32(math.Sqrt2), 0})
+	if !bytes.Equal(keySlab, want) || !bytes.Equal(valueSlab, want) {
+		t.Fatalf("turboquant decoded slabs = key %v value %v, want %v", bf16ToF32Slice(keySlab), bf16ToF32Slice(valueSlab), bf16ToF32Slice(want))
+	}
+}
+
+func TestNativeKVLayerSnapshotSlabsAppliesTurboQuantProdQJLResidual(t *testing.T) {
+	const heads, tokenCount, headDim = 1, 1, 2
+	payload := nativeKVTestTurboQuantPayload(t, heads, tokenCount, headDim, 1, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			section[0] = 0x03 // two 1-bit centroid codes: [+1,+1]
+		case "key_norms_bf16", "value_norms_bf16", "key_residual_norms_bf16":
+			binary.LittleEndian.PutUint16(section[:bf16Size], 0x3f80) // 1.0
+		case "key_qjl_signs":
+			section[0] = 0x01 // signs: [-1,+1]
+		}
+	})
+	view := sessionStateLayerView{
+		layer:      0,
+		kvHeads:    heads,
+		headDim:    headDim,
+		rowBytes:   heads * headDim * bf16Size,
+		cacheIndex: 0,
+		cacheMode:  "turboquant",
+		cacheRows:  8,
+	}
+
+	keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(kv.LayerSnapshot{
+		Layer:              0,
+		CacheIndex:         0,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{payload},
+	}, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(turboquant qjl): %v", err)
+	}
+	if seqLen != tokenCount {
+		t.Fatalf("turboquant seqLen = %d, want %d", seqLen, tokenCount)
+	}
+	base := toBF16Bytes([]float32{float32(math.Sqrt2), 0})
+	if !bytes.Equal(valueSlab, base) {
+		t.Fatalf("turboquant value slab = %v, want MSE base %v", bf16ToF32Slice(valueSlab), bf16ToF32Slice(base))
+	}
+	rotatedSigns := []float64{-1, 1}
+	residual := make([]float64, headDim)
+	nativeTurboQuantKVRotate(residual, rotatedSigns, 124, true)
+	baseF := bf16ToF32Slice(base)
+	scale := 1 / math.Sqrt(float64(headDim))
+	want := toBF16Bytes([]float32{
+		baseF[0] + float32(scale*residual[0]),
+		baseF[1] + float32(scale*residual[1]),
+	})
+	if !bytes.Equal(keySlab, want) {
+		t.Fatalf("turboquant key slab = %v, want QJL residual restore %v", bf16ToF32Slice(keySlab), bf16ToF32Slice(want))
+	}
+}
+
+func TestNativeKVLayerSnapshotSlabsOrdersTurboQuantPagesByTokenOffset(t *testing.T) {
+	const heads, tokenCount, headDim = 1, 1, 2
+	first := nativeKVTestTurboQuantPayloadAt(t, heads, tokenCount, headDim, 1, 0, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			section[0] = 0x03
+		case "key_norms_bf16", "value_norms_bf16":
+			binary.LittleEndian.PutUint16(section[:bf16Size], 0x3f80)
+		}
+	})
+	second := nativeKVTestTurboQuantPayloadAt(t, heads, tokenCount, headDim, 1, 1, nil)
+	view := sessionStateLayerView{
+		layer:      0,
+		kvHeads:    heads,
+		headDim:    headDim,
+		rowBytes:   heads * headDim * bf16Size,
+		cacheIndex: 0,
+		cacheMode:  "turboquant",
+		cacheRows:  8,
+	}
+
+	keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(kv.LayerSnapshot{
+		Layer:              0,
+		CacheIndex:         0,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{second, first},
+	}, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(turboquant reordered): %v", err)
+	}
+	if seqLen != 2 {
+		t.Fatalf("turboquant seqLen = %d, want 2", seqLen)
+	}
+	wantFirst := toBF16Bytes([]float32{float32(math.Sqrt2), 0})
+	want := append(append([]byte(nil), wantFirst...), make([]byte, headDim*bf16Size)...)
+	if !bytes.Equal(keySlab, want) || !bytes.Equal(valueSlab, want) {
+		t.Fatalf("turboquant reordered slabs = key %v value %v, want %v", bf16ToF32Slice(keySlab), bf16ToF32Slice(valueSlab), bf16ToF32Slice(want))
+	}
+}
+
+func TestNativeTurboQuantLayerPayloadsRowsIntoMultiPageAllocationBudget(t *testing.T) {
+	const heads, tokenCount, headDim = 1, 1, 2
+	firstRaw := nativeKVTestTurboQuantPayloadAt(t, heads, tokenCount, headDim, 1, 0, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			section[0] = 0x03
+		case "key_norms_bf16", "value_norms_bf16":
+			binary.LittleEndian.PutUint16(section[:bf16Size], 0x3f80)
+		}
+	})
+	secondRaw := nativeKVTestTurboQuantPayloadAt(t, heads, tokenCount, headDim, 1, 1, nil)
+	first, err := nativeTurboQuantKVParsePayload(firstRaw, 0)
+	if err != nil {
+		t.Fatalf("parse first turboquant payload: %v", err)
+	}
+	second, err := nativeTurboQuantKVParsePayload(secondRaw, 1)
+	if err != nil {
+		t.Fatalf("parse second turboquant payload: %v", err)
+	}
+	payloads := []nativeTurboQuantKVPagePayload{second, first}
+	view := sessionStateLayerView{
+		layer:      0,
+		kvHeads:    heads,
+		headDim:    headDim,
+		rowBytes:   heads * headDim * bf16Size,
+		cacheIndex: 0,
+		cacheMode:  "turboquant",
+		cacheRows:  8,
+	}
+	keyRows := make([]byte, heads*2*headDim*bf16Size)
+	valueRows := make([]byte, heads*2*headDim*bf16Size)
+	rotated := make([]float64, headDim)
+	normalised := make([]float64, headDim)
+	if seqLen, err := nativeTurboQuantKVLayerPayloadsRowsIntoScratch(payloads, view, 0, keyRows, valueRows, rotated, normalised); err != nil {
+		t.Fatalf("warm nativeTurboQuantKVLayerPayloadsRowsIntoScratch: %v", err)
+	} else if seqLen != 2 {
+		t.Fatalf("warm seqLen = %d, want 2", seqLen)
+	}
+
+	var decodeErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		payloads[0], payloads[1] = payloads[1], payloads[0]
+		clear(keyRows)
+		clear(valueRows)
+		_, decodeErr = nativeTurboQuantKVLayerPayloadsRowsIntoScratch(payloads, view, 0, keyRows, valueRows, rotated, normalised)
+	})
+	if decodeErr != nil {
+		t.Fatalf("nativeTurboQuantKVLayerPayloadsRowsIntoScratch: %v", decodeErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("multi-page turboquant decode allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestNativeTurboQuantKVPayloadEstimateCountsSectionsAndPadding(t *testing.T) {
+	const heads, tokenCount, headDim, normalBits = 2, 3, 8, 5
+	raw := nativeKVTestTurboQuantPayload(t, heads, tokenCount, headDim, normalBits, nil)
+	payload, err := nativeTurboQuantKVParsePayload(raw, 0)
+	if err != nil {
+		t.Fatalf("parse turboquant payload: %v", err)
+	}
+	estimate, err := nativeTurboQuantKVPayloadsEstimate([]nativeTurboQuantKVPagePayload{payload})
+	if err != nil {
+		t.Fatalf("nativeTurboQuantKVPayloadsEstimate: %v", err)
+	}
+
+	var sectionBytes uint64
+	for _, section := range payload.Sections {
+		sectionBytes += section.Bytes
+	}
+	if estimate.Pages != 1 {
+		t.Fatalf("estimate pages = %d, want 1", estimate.Pages)
+	}
+	if estimate.PageVectors != heads*tokenCount || estimate.PageElements != heads*tokenCount*headDim {
+		t.Fatalf("estimate vectors/elements = %d/%d, want %d/%d", estimate.PageVectors, estimate.PageElements, heads*tokenCount, heads*tokenCount*headDim)
+	}
+	if estimate.PayloadBytes != sectionBytes {
+		t.Fatalf("estimate payload bytes = %d, want section sum %d", estimate.PayloadBytes, sectionBytes)
+	}
+	if estimate.PaddedPayloadBytes != uint64(len(payload.Data)) {
+		t.Fatalf("estimate padded payload bytes = %d, want data len %d", estimate.PaddedPayloadBytes, len(payload.Data))
+	}
+	if estimate.AlignmentPaddingBytes != uint64(len(payload.Data))-sectionBytes {
+		t.Fatalf("estimate padding bytes = %d, want %d", estimate.AlignmentPaddingBytes, uint64(len(payload.Data))-sectionBytes)
+	}
+	if estimate.FP16BaselineBytes != heads*tokenCount*headDim*2*bf16Size {
+		t.Fatalf("estimate fp16 baseline = %d, want %d", estimate.FP16BaselineBytes, heads*tokenCount*headDim*2*bf16Size)
+	}
+	if estimate.KeyQJLSignBytes == 0 || estimate.KeyResidualNormBytes == 0 || estimate.PayloadSavingsRatio <= 0 {
+		t.Fatalf("estimate side channels/savings = qjl %d residual %d savings %.4f", estimate.KeyQJLSignBytes, estimate.KeyResidualNormBytes, estimate.PayloadSavingsRatio)
+	}
+}
+
+func TestNativeKVValidateLayerMetadataAllowsPortableSourceModes(t *testing.T) {
+	view := sessionStateLayerView{
+		layer:      0,
+		cacheIndex: 3,
+		cacheMode:  nativeStateCacheModeFixed,
+	}
+	for _, mode := range []string{"fixed", "paged", "fp16", "q8", "k-q8-v-q4", "turboquant", "rotating", "sliding"} {
+		layer := kv.LayerSnapshot{
+			Layer:      0,
+			CacheIndex: 3,
+			CacheMode:  mode,
+		}
+		if err := nativeKVValidateLayerMetadata("native.RestoreKV", layer, view); err != nil {
+			t.Fatalf("nativeKVValidateLayerMetadata(%q source): %v", mode, err)
+		}
+	}
+	layer := kv.LayerSnapshot{
+		Layer:      0,
+		CacheIndex: 3,
+		CacheMode:  "compaction",
+	}
+	if err := nativeKVValidateLayerMetadata("native.RestoreKV", layer, view); err == nil {
+		t.Fatal("nativeKVValidateLayerMetadata(compaction source) error = nil, want mismatch")
+	}
+}
+
+func TestNativeKVValidateLayerMetadataAllowsPortableSourceMaxSize(t *testing.T) {
+	view := sessionStateLayerView{
+		layer:      0,
+		cacheIndex: 3,
+		cacheMode:  nativeStateCacheModeFixed,
+		maxSize:    4,
+	}
+	for _, mode := range []string{"fixed", "paged", "rotating", "sliding", "turboquant"} {
+		layer := kv.LayerSnapshot{
+			Layer:      0,
+			CacheIndex: 3,
+			CacheMode:  mode,
+			MaxSize:    8,
+		}
+		if err := nativeKVValidateLayerMetadata("native.RestoreKV", layer, view); err != nil {
+			t.Fatalf("nativeKVValidateLayerMetadata(%q MaxSize source): %v", mode, err)
+		}
+	}
+}
+
+func TestArchSessionRestoreKVAllowsPortableSourceMaxSize(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := sessionStateFixture(t)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+
+	saved, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession(saved): %v", err)
+	}
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := saved.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	if snapshot.Layers[0].CacheMode != nativeStateCacheModeFixed || snapshot.Layers[0].MaxSize != arch.SlidingWindow {
+		t.Fatalf("captured layer 0 metadata = %q/%d, want fixed/%d", snapshot.Layers[0].CacheMode, snapshot.Layers[0].MaxSize, arch.SlidingWindow)
+	}
+	snapshot.Layers[0].CacheMode = "rotating"
+	snapshot.Layers[0].MaxSize = 8
+
+	restored, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession(restored): %v", err)
+	}
+	if err := restored.RestoreKV(snapshot); err != nil {
+		t.Fatalf("RestoreKV portable source max size: %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+
+	got, err := restored.GenerateFromCache(2, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after RestoreKV: %v", err)
+	}
+	cold, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession(cold): %v", err)
+	}
+	want, err := cold.Generate(prompt, 2, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("restored GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func nativeKVTestTurboQuantZeroPayload(t testing.TB, heads, tokenCount, headDim int) []byte {
+	t.Helper()
+	return nativeKVTestTurboQuantPayload(t, heads, tokenCount, headDim, 5, nil)
+}
+
+func nativeKVTestTurboQuantPayload(t testing.TB, heads, tokenCount, headDim, normalBits int, fill func(string, []byte)) []byte {
+	t.Helper()
+	return nativeKVTestTurboQuantPayloadAt(t, heads, tokenCount, headDim, normalBits, 0, fill)
+}
+
+func nativeKVTestTurboQuantPayloadAt(t testing.TB, heads, tokenCount, headDim, normalBits, tokenOffset int, fill func(string, []byte)) []byte {
+	t.Helper()
+	const alignment = 64
+	pageVectors := heads * tokenCount
+	data := make([]byte, 0)
+	sections := make([]map[string]any, 0, 6)
+	addSection := func(name string, byteCount int) {
+		if rem := len(data) % alignment; rem != 0 {
+			data = append(data, make([]byte, alignment-rem)...)
+		}
+		offset := len(data)
+		sections = append(sections, map[string]any{
+			"name":      name,
+			"offset":    offset,
+			"bytes":     byteCount,
+			"alignment": alignment,
+		})
+		data = append(data, make([]byte, byteCount)...)
+		if fill != nil {
+			fill(name, data[offset:offset+byteCount])
+		}
+	}
+	keyCentroidBytes := (headDim*normalBits + 7) / 8
+	qjlBytes := (headDim + 7) / 8
+	valueCentroidBytes := keyCentroidBytes
+	addSection("key_centroids", pageVectors*keyCentroidBytes)
+	addSection("key_qjl_signs", pageVectors*qjlBytes)
+	addSection("key_norms_bf16", pageVectors*bf16Size)
+	addSection("key_residual_norms_bf16", pageVectors*bf16Size)
+	addSection("value_centroids", pageVectors*valueCentroidBytes)
+	addSection("value_norms_bf16", pageVectors*bf16Size)
+	payload := map[string]any{
+		"layout": map[string]any{
+			"version":      1,
+			"codec":        "turboquant-kv-v1",
+			"cache_index":  0,
+			"layer":        0,
+			"layer_type":   "full_attention",
+			"shared_owner": 0,
+			"shape": map[string]any{
+				"batch":    1,
+				"heads":    heads,
+				"seq_len":  tokenCount,
+				"head_dim": headDim,
+			},
+			"token_offset": tokenOffset,
+			"page_tokens":  tokenCount,
+			"page_size":    tokenCount,
+			"key": map[string]any{
+				"algorithm":            "turboquantprod",
+				"normal_bits":          normalBits,
+				"norm_policy":          "explicit-vector-norm-bf16-v1",
+				"residual_norm_policy": "explicit-vector-residual-norm-bf16-v1",
+				"rotation_seed":        2,
+				"qjl_seed":             124,
+				"codebook_id":          "uniform-fwht",
+			},
+			"value": map[string]any{
+				"algorithm":     "turboquantmse",
+				"normal_bits":   normalBits,
+				"norm_policy":   "explicit-vector-norm-bf16-v1",
+				"rotation_seed": 2,
+				"codebook_id":   "uniform-fwht",
+			},
+		},
+		"endian":    "little",
+		"alignment": alignment,
+		"sections":  sections,
+		"data":      data,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal turboquant fixture: %v", err)
+	}
+	return encoded
 }
 
 func TestArchSessionRangeKVBlocksRootSnapshots(t *testing.T) {
@@ -1472,6 +2234,26 @@ func TestArchSessionRangeKVBlocksRootSnapshots(t *testing.T) {
 	}
 	if len(blocks[len(blocks)-1].Snapshot.Logits) != sess.arch.Vocab {
 		t.Fatalf("final block logits = %d, want vocab %d", len(blocks[len(blocks)-1].Snapshot.Logits), sess.arch.Vocab)
+	}
+}
+
+func TestArchSessionKVBlockSourceBorrowsRetainedLogitsNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := sess.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	if len(source.RetainedLogits) == 0 || len(sess.retainedLogits) == 0 {
+		t.Fatalf("retained logits lengths = source %d session %d, want both non-empty", len(source.RetainedLogits), len(sess.retainedLogits))
+	}
+	if unsafe.Pointer(&source.RetainedLogits[0]) != unsafe.Pointer(&sess.retainedLogits[0]) {
+		t.Fatal("KVBlockSource copied retained logits; want borrowed no-copy boundary")
 	}
 }
 
@@ -1536,6 +2318,113 @@ func TestArchSessionRestoreKVBlocksRootSnapshotsContinues(t *testing.T) {
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("restored GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksNativeLayerSlabsAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(len(prompt), kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	block, err := source.Load(0)
+	if err != nil {
+		t.Fatalf("source.Load(0): %v", err)
+	}
+	restored := newSessionStateFixture(t)
+	views, err := restored.stateLayerViews()
+	if err != nil {
+		t.Fatalf("stateLayerViews: %v", err)
+	}
+	if err := restored.restoreKVSnapshotBlockLayers(block, len(prompt), views); err != nil {
+		t.Fatalf("restoreKVSnapshotBlockLayers warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		restoreErr = restored.restoreKVSnapshotBlockLayers(block, len(prompt), views)
+	})
+	if restoreErr != nil {
+		t.Fatalf("restoreKVSnapshotBlockLayers: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKVBlocks native slab allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksNativeSourceAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		restoreErr = restored.RestoreKVBlocks(source)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreKVBlocks: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKVBlocks native source allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksPortableSourceRetainedLogitsAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	blocks := make([]kv.Block, source.BlockCount)
+	for i := range blocks {
+		blocks[i], err = source.Load(i)
+		if err != nil {
+			t.Fatalf("source.Load(%d): %v", i, err)
+		}
+	}
+	source.nativeStateSource = nil
+	source.Load = func(index int) (kv.Block, error) {
+		if index < 0 || index >= len(blocks) {
+			return kv.Block{}, core.NewError("unexpected block index")
+		}
+		return blocks[index], nil
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		restoreErr = restored.RestoreKVBlocks(source)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreKVBlocks: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKVBlocks portable retained-logits allocations = %.0f, want 0", allocs)
 	}
 }
 
@@ -1629,6 +2518,234 @@ func TestArchSessionRestoreKVBlocksSlicesPartialPrefixBlock(t *testing.T) {
 	}
 }
 
+func TestArchSessionRestoreKVBlocksSlicesTurboQuantPrefixBlock(t *testing.T) {
+	requireNativeRuntime(t)
+	restored := newSingleLayerSessionStateFixture(t)
+	source, layer, view := turboQuantPrefixKVBlockSourceFixture(t, restored)
+
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks(turboquant prefix): %v", err)
+	}
+	if restored.Pos() != 1 || !idsEqual(restored.cachedIDs, []int32{11}) {
+		t.Fatalf("restored metadata = pos %d ids %v, want pos 1 ids [11]", restored.Pos(), restored.cachedIDs)
+	}
+	snapshot, err := restored.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions(restored): %v", err)
+	}
+	fullKey, fullValue, seqLen, err := nativeKVLayerSnapshotSlabs(layer, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(source): %v", err)
+	}
+	if seqLen != 2 {
+		t.Fatalf("source seqLen = %d, want 2", seqLen)
+	}
+	wantKey := firstTokensFromLayerSlab(t, fullKey, 2, 1, view.kvHeads, view.headDim)
+	wantValue := firstTokensFromLayerSlab(t, fullValue, 2, 1, view.kvHeads, view.headDim)
+	if !bytes.Equal(snapshot.Layers[0].KeyBytes, wantKey) || !bytes.Equal(snapshot.Layers[0].ValueBytes, wantValue) {
+		t.Fatalf("restored turboquant prefix KV mismatch")
+	}
+}
+
+func TestArchSessionRestoreKVBlocksTurboQuantPrefixAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	restored := newSingleLayerSessionStateFixture(t)
+	source, _, _ := turboQuantPrefixKVBlockSourceFixture(t, restored)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		restoreErr = restored.RestoreKVBlocks(source)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreKVBlocks: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKVBlocks turboquant prefix allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksTurboQuantFullBlockAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	restored := newSingleLayerSessionStateFixture(t)
+	source, _, _ := turboQuantPrefixKVBlockSourceFixture(t, restored)
+	source.PrefixTokens = source.TokenCount
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		restoreErr = restored.RestoreKVBlocks(source)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreKVBlocks: %v", restoreErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("RestoreKVBlocks turboquant full-block allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksTurboQuantPayloadCacheSeesSameBackingMutation(t *testing.T) {
+	requireNativeRuntime(t)
+	restored := newSingleLayerSessionStateFixture(t)
+	view := restoredStateLayerView(t, restored, 0)
+	payload := nativeKVTestTurboQuantPayloadAt(t, view.kvHeads, 2, view.headDim, 1, 0, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			for idx := range section {
+				section[idx] = 0xff
+			}
+		case "key_norms_bf16", "value_norms_bf16":
+			for vector := 0; vector < view.kvHeads*2; vector++ {
+				binary.LittleEndian.PutUint16(section[vector*bf16Size:], 0x3f80)
+			}
+		}
+	})
+	layer := kv.LayerSnapshot{
+		Layer:              view.layer,
+		CacheIndex:         view.cacheIndex,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{payload},
+	}
+	source := KVBlockSource{
+		TokenCount:      2,
+		PrefixTokens:    2,
+		CachedIDs:       []int32{11, 12},
+		BlockCount:      1,
+		FirstBlockIndex: 0,
+	}
+	source.Load = func(index int) (kv.Block, error) {
+		if index != 0 {
+			return kv.Block{}, core.NewError("unexpected block index")
+		}
+		return kv.Block{
+			Index:      0,
+			TokenStart: 0,
+			TokenCount: 2,
+			Snapshot: &kv.Snapshot{
+				Version:       kv.SnapshotVersion,
+				Tokens:        []int32{11, 12},
+				TokenOffset:   2,
+				NumLayers:     1,
+				NumHeads:      view.kvHeads,
+				SeqLen:        2,
+				HeadDim:       view.headDim,
+				NumQueryHeads: restored.arch.Heads,
+				Layers:        []kv.LayerSnapshot{layer},
+			},
+		}, nil
+	}
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+
+	replacement := nativeKVTestTurboQuantPayloadAt(t, view.kvHeads, 2, view.headDim, 1, 0, nil)
+	if len(replacement) != len(payload) {
+		t.Fatalf("replacement payload length = %d, want %d", len(replacement), len(payload))
+	}
+	copy(payload, replacement)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks mutated payload: %v", err)
+	}
+	snapshot, err := restored.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	wantKey, wantValue, seqLen, err := nativeKVLayerSnapshotSlabs(kv.LayerSnapshot{
+		Layer:              view.layer,
+		CacheIndex:         view.cacheIndex,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{replacement},
+	}, view)
+	if err != nil {
+		t.Fatalf("nativeKVLayerSnapshotSlabs(replacement): %v", err)
+	}
+	if seqLen != 2 {
+		t.Fatalf("replacement seqLen = %d, want 2", seqLen)
+	}
+	if !bytes.Equal(snapshot.Layers[0].KeyBytes, wantKey) || !bytes.Equal(snapshot.Layers[0].ValueBytes, wantValue) {
+		t.Fatal("RestoreKVBlocks reused stale parsed TurboQuant payload after same-backing mutation")
+	}
+}
+
+func TestArchSessionTurboQuantKVPayloadEstimateReportsRestoredPayloads(t *testing.T) {
+	requireNativeRuntime(t)
+	restored := newSingleLayerSessionStateFixture(t)
+	source, _, _ := turboQuantPrefixKVBlockSourceFixture(t, restored)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	estimate, err := restored.TurboQuantKVPayloadEstimate()
+	if err != nil {
+		t.Fatalf("TurboQuantKVPayloadEstimate: %v", err)
+	}
+	if estimate == nil {
+		t.Fatal("TurboQuantKVPayloadEstimate = nil, want restored payload accounting")
+	}
+	if estimate.Pages != 1 || estimate.PayloadBytes == 0 || estimate.FP16BaselineBytes == 0 {
+		t.Fatalf("TurboQuantKVPayloadEstimate = %+v, want one non-empty payload estimate", *estimate)
+	}
+	if estimate.KeyQJLSignBytes == 0 || estimate.KeyResidualNormBytes == 0 {
+		t.Fatalf("TurboQuantKVPayloadEstimate side channels = qjl %d residual %d, want both", estimate.KeyQJLSignBytes, estimate.KeyResidualNormBytes)
+	}
+}
+
+func turboQuantPrefixKVBlockSourceFixture(t testing.TB, restored *ArchSession) (KVBlockSource, kv.LayerSnapshot, sessionStateLayerView) {
+	t.Helper()
+	view := restoredStateLayerView(t, restored, 0)
+	payload := nativeKVTestTurboQuantPayloadAt(t, view.kvHeads, 2, view.headDim, 1, 0, func(name string, section []byte) {
+		switch name {
+		case "key_centroids", "value_centroids":
+			for idx := range section {
+				section[idx] = 0xff
+			}
+		case "key_norms_bf16", "value_norms_bf16":
+			for vector := 0; vector < view.kvHeads*2; vector++ {
+				if vector%2 == 0 {
+					binary.LittleEndian.PutUint16(section[vector*bf16Size:], 0x3f80)
+				}
+			}
+		}
+	})
+	layer := kv.LayerSnapshot{
+		Layer:              view.layer,
+		CacheIndex:         view.cacheIndex,
+		CacheMode:          "turboquant",
+		TurboQuantPayloads: [][]byte{payload},
+	}
+	source := KVBlockSource{
+		TokenCount:      2,
+		PrefixTokens:    1,
+		CachedIDs:       []int32{11, 12},
+		BlockCount:      1,
+		FirstBlockIndex: 0,
+	}
+	block := kv.Block{
+		Index:      0,
+		TokenStart: 0,
+		TokenCount: 2,
+		Snapshot: &kv.Snapshot{
+			Version:       kv.SnapshotVersion,
+			Tokens:        []int32{11, 12},
+			TokenOffset:   2,
+			NumLayers:     1,
+			NumHeads:      view.kvHeads,
+			SeqLen:        2,
+			HeadDim:       view.headDim,
+			NumQueryHeads: restored.arch.Heads,
+			Layers:        []kv.LayerSnapshot{layer},
+		},
+	}
+	source.Load = func(index int) (kv.Block, error) {
+		if index != 0 {
+			return kv.Block{}, core.NewError("unexpected block index")
+		}
+		return block, nil
+	}
+	return source, layer, view
+}
+
 func TestArchSessionRestoreKVBlocksRootSnapshotsTrustedPrefix(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5, 6}
@@ -1670,6 +2787,48 @@ func TestArchSessionRestoreKVBlocksRootSnapshotsTrustedPrefix(t *testing.T) {
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("trusted-prefix GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksPortableRootSnapshotsTrustedPrefix(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+	prefix := prompt[:4]
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(saved): %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true, BlockStartToken: len(prefix)})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	source.nativeStateSource = nil
+
+	restored := newSessionStateFixture(t)
+	if err := restored.PrefillTokens(prefix); err != nil {
+		t.Fatalf("PrefillTokens(restored prefix): %v", err)
+	}
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+	got, err := restored.GenerateFromCache(3, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after portable RestoreKVBlocks trusted prefix: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("portable trusted-prefix GenerateFromCache = %v, want cold continuation %v", got, want)
 	}
 }
 
@@ -1839,6 +2998,100 @@ func TestSessionStateRestoresPromptCacheEntry(t *testing.T) {
 	}
 }
 
+func TestSessionStateRestorePreservesPromptCacheNoCopyBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	blob, err := saved.SerializeState()
+	if err != nil {
+		t.Fatalf("SerializeState: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreState(blob); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	if restored.cachedPromptHiddenBuffer() == nil {
+		t.Fatal("RestoreState prompt-cache hidden did not restore a pinned no-copy buffer")
+	}
+	if restored.cachedPromptLogitsBuffer() == nil {
+		t.Fatal("RestoreState prompt-cache logits did not restore a pinned no-copy buffer")
+	}
+	if restored.retainedHiddenBufferFor(restored.cachedPromptHidden) == nil {
+		t.Fatal("RestoreState cached hidden is not reusable by retained-hidden consumers")
+	}
+	if restored.retainedLogitsBufferFor(restored.cachedPromptLogits) == nil {
+		t.Fatal("RestoreState cached logits are not reusable by retained-logits consumers")
+	}
+}
+
+func TestSessionStateRestorePromptCacheEntryAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	blob, err := saved.SerializeState()
+	if err != nil {
+		t.Fatalf("SerializeState: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreState(blob); err != nil {
+		t.Fatalf("RestoreState warmup: %v", err)
+	}
+	var restoreErr error
+	allocs := testing.AllocsPerRun(20, func() {
+		restoreErr = restored.RestoreState(blob)
+	})
+	if restoreErr != nil {
+		t.Fatalf("RestoreState: %v", restoreErr)
+	}
+	if allocs > 16 {
+		t.Fatalf("RestoreState prompt-cache allocations = %.0f, want <= 16", allocs)
+	}
+	if restored.cachedPromptHiddenBuffer() == nil || restored.cachedPromptLogitsBuffer() == nil {
+		t.Fatal("RestoreState allocation run dropped prompt-cache no-copy buffers")
+	}
+}
+
+func TestSessionStateRestoreBlocksPreservesPromptCacheNoCopyBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	source, err := saved.StateBlockSource(2)
+	if err != nil {
+		t.Fatalf("StateBlockSource: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreStateBlocks(source); err != nil {
+		t.Fatalf("RestoreStateBlocks: %v", err)
+	}
+	if restored.cachedPromptHiddenBuffer() == nil {
+		t.Fatal("RestoreStateBlocks prompt-cache hidden did not restore a pinned no-copy buffer")
+	}
+	if restored.cachedPromptLogitsBuffer() == nil {
+		t.Fatal("RestoreStateBlocks prompt-cache logits did not restore a pinned no-copy buffer")
+	}
+	if restored.retainedHiddenBufferFor(restored.cachedPromptHidden) == nil {
+		t.Fatal("RestoreStateBlocks cached hidden is not reusable by retained-hidden consumers")
+	}
+	if restored.retainedLogitsBufferFor(restored.cachedPromptLogits) == nil {
+		t.Fatal("RestoreStateBlocks cached logits are not reusable by retained-logits consumers")
+	}
+}
+
 // TestSessionStateRoundTrip proves native conversation continuity: a session is decoded, snapshotted
 // with SerializeState, and the snapshot is RestoreState'd into a FRESH session — which then continues
 // the conversation TOKEN-IDENTICALLY to the original. This is save/resume across a process restart with
@@ -1996,6 +3249,31 @@ func TestSessionStateRangeBlocksAllocationBudget(t *testing.T) {
 	})
 	if allocs > 0 {
 		t.Fatalf("RangeStateBlocks allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestSessionStateLayerViewsRefreshAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	s := newSessionStateFixture(t)
+	if _, err := s.GenerateCached([]int32{1, 2, 3, 4, 5}, 1, -1); err != nil {
+		t.Fatalf("GenerateCached warmup: %v", err)
+	}
+	if _, err := s.stateLayerViews(); err != nil {
+		t.Fatalf("stateLayerViews warmup: %v", err)
+	}
+	icb := s.state.icb != nil
+	allocs := testing.AllocsPerRun(20, func() {
+		s.stateBlockViewsICB = !icb
+		views, err := s.stateLayerViews()
+		if err != nil {
+			t.Fatalf("stateLayerViews: %v", err)
+		}
+		if len(views) == 0 {
+			t.Fatal("stateLayerViews returned no owner views")
+		}
+	})
+	if allocs > 0 {
+		t.Fatalf("stateLayerViews refresh allocations = %.0f, want 0", allocs)
 	}
 }
 

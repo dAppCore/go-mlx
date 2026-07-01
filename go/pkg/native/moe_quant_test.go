@@ -633,6 +633,144 @@ func TestMLPTransformScratchClose(t *testing.T) {
 	s.Close()
 }
 
+func TestMLPTransformScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMLPTransformScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransform scratch: %v", err)
+	}
+	putMLPTransformScratch(small)
+	large, err := getMLPTransformScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransform scratch: %v", err)
+	}
+	putMLPTransformScratch(large)
+
+	gotSmall, err := getMLPTransformScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransform scratch again: %v", err)
+	}
+	defer putMLPTransformScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MLPTransform scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMLPTransformScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransform scratch again: %v", err)
+	}
+	defer putMLPTransformScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MLPTransform scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
+func TestMLPTransformMegaScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMLPTransformMegaScratch(256, 512)
+	if err != nil {
+		t.Fatalf("get small MLPTransformMega scratch: %v", err)
+	}
+	putMLPTransformMegaScratch(small)
+	large, err := getMLPTransformMegaScratch(384, 768)
+	if err != nil {
+		t.Fatalf("get large MLPTransformMega scratch: %v", err)
+	}
+	putMLPTransformMegaScratch(large)
+
+	gotSmall, err := getMLPTransformMegaScratch(256, 512)
+	if err != nil {
+		t.Fatalf("get small MLPTransformMega scratch again: %v", err)
+	}
+	defer putMLPTransformMegaScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MLPTransformMega scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMLPTransformMegaScratch(384, 768)
+	if err != nil {
+		t.Fatalf("get large MLPTransformMega scratch again: %v", err)
+	}
+	defer putMLPTransformMegaScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MLPTransformMega scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
+func TestMLPTransformScratchInputViewsUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+
+	composed, err := getMLPTransformScratch(dModel, dFF)
+	if err != nil {
+		t.Fatalf("getMLPTransformScratch: %v", err)
+	}
+	defer composed.Close()
+	buf, ok := composed.inputView(x)
+	if !ok {
+		t.Fatal("composed inputView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("composed inputView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := composed.inputView(x)
+	if !ok {
+		t.Fatal("reused composed inputView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("composed inputView did not reuse the cached no-copy buffer")
+	}
+
+	mega, err := getMLPTransformMegaScratch(256, 512)
+	if err != nil {
+		t.Fatalf("getMLPTransformMegaScratch: %v", err)
+	}
+	defer mega.Close()
+	megaX := toBF16Bytes(syntheticFloat32(256, 41))
+	megaBuf, ok := mega.inputView(megaX)
+	if !ok {
+		t.Fatal("mega inputView ok = false")
+	}
+	if got, want := uintptr(megaBuf.Contents()), uintptr(unsafe.Pointer(&megaX[0])); got != want {
+		t.Fatalf("mega inputView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	megaReused, ok := mega.inputView(megaX)
+	if !ok {
+		t.Fatal("reused mega inputView ok = false")
+	}
+	if megaReused.GetID() != megaBuf.GetID() {
+		t.Fatal("mega inputView did not reuse the cached no-copy buffer")
+	}
+}
+
+func TestMoEBlockScratchIndexViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	s, err := newMoEBlockBF16Scratch(64, 128, 96, 2)
+	if err != nil {
+		t.Fatalf("newMoEBlockBF16Scratch: %v", err)
+	}
+	defer s.Close()
+
+	idx := []int32{2, 0}
+	buf, ok := s.indexView(idx)
+	if !ok {
+		t.Fatal("indexView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&idx[0])); got != want {
+		t.Fatalf("indexView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := s.indexView(idx)
+	if !ok {
+		t.Fatal("reused indexView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("indexView did not reuse the cached no-copy buffer")
+	}
+}
+
 func TestMoEBlockQuantAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -653,8 +791,8 @@ func TestMoEBlockQuantAllocationBudget(t *testing.T) {
 	if blockErr != nil {
 		t.Fatalf("MoEBlockQuant: %v", blockErr)
 	}
-	if allocs > 2552 {
-		t.Fatalf("MoEBlockQuant allocations = %.0f, want <= 2552", allocs)
+	if allocs > 10 {
+		t.Fatalf("MoEBlockQuant allocations = %.0f, want <= 10", allocs)
 	}
 }
 
@@ -678,6 +816,7 @@ func TestMoEBlockQuantIntoWritesDirectlyToCallerOutput(t *testing.T) {
 	}
 	sentinel := bytes.Repeat([]byte{0x5a}, len(scratch.out.bytes))
 	copy(scratch.out.bytes, sentinel)
+	seededScratch := scratch
 	putMoEBlockBF16Scratch(scratch)
 
 	out := make([]byte, dModel*bf16Size)
@@ -693,12 +832,7 @@ func TestMoEBlockQuantIntoWritesDirectlyToCallerOutput(t *testing.T) {
 		t.Fatalf("MoEBlockQuantInto != default quant block path: cosine %.6f", cosineBF16(got, want))
 	}
 
-	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
-	if err != nil {
-		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
-	}
-	defer putMoEBlockBF16Scratch(scratch)
-	if !bytes.Equal(scratch.out.bytes, sentinel) {
+	if !bytes.Equal(seededScratch.out.bytes, sentinel) {
 		t.Fatal("MoEBlockQuantInto wrote through pooled block output instead of caller output")
 	}
 }
@@ -723,6 +857,7 @@ func TestMoEBlockQuantWithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.
 	}
 	sentinel := bytes.Repeat([]byte{0xc3}, len(scratch.out.bytes))
 	copy(scratch.out.bytes, sentinel)
+	seededScratch := scratch
 	putMoEBlockBF16Scratch(scratch)
 
 	input, err := newPinnedNoCopyBytes(len(h))
@@ -747,12 +882,7 @@ func TestMoEBlockQuantWithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.
 		t.Fatalf("MoEBlockQuant direct Metal output != default quant block path: cosine %.6f", cosineBF16(out.bytes, want))
 	}
 
-	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
-	if err != nil {
-		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
-	}
-	defer putMoEBlockBF16Scratch(scratch)
-	if !bytes.Equal(scratch.out.bytes, sentinel) {
+	if !bytes.Equal(seededScratch.out.bytes, sentinel) {
 		t.Fatal("moeBlockQuantWithBufferOutputInPool wrote through pooled block output")
 	}
 }
@@ -828,6 +958,190 @@ func TestMoEBlockQuantAfterRouterLargeLocalMatchesComposed(t *testing.T) {
 	}
 	if bytes.Equal(got, h) {
 		t.Fatal("moeBlockQuantAfterRouter large local did not transform the residual")
+	}
+}
+
+func TestGatherQMVBF16ByExpertIndexMatchesSlicedQMV(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, outDim, inDim, groupSize, bits = 4, 3, 64, 96, 32, 4
+	if _, err := gatherQMVBF16SteelPipeline(outDim, inDim, groupSize, bits); err != nil {
+		t.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	idx := []int32{2, 0, 3}
+	w := quantMoELayerWeightsGuard(t, numExperts, 1, inDim, 128, outDim, groupSize, bits).ExpGate
+	x := toBF16Bytes(syntheticFloat32(inDim, 37))
+
+	got, err := gatherQMVBF16ByExpertIndex(x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits)
+	if err != nil {
+		t.Fatalf("gatherQMVBF16ByExpertIndex: %v", err)
+	}
+	want := make([]byte, 0, topK*outDim*bf16Size)
+	expertPacked := outDim * inDim * bits / 8
+	expertSB := outDim * (inDim / groupSize) * bf16Size
+	for _, expert := range idx {
+		e := int(expert)
+		ref, err := QMVBF16(
+			x,
+			w.Packed[e*expertPacked:(e+1)*expertPacked],
+			w.Scales[e*expertSB:(e+1)*expertSB],
+			w.Biases[e*expertSB:(e+1)*expertSB],
+			outDim,
+			inDim,
+			groupSize,
+			bits,
+		)
+		if err != nil {
+			t.Fatalf("sliced QMVBF16 expert %d: %v", e, err)
+		}
+		want = append(want, ref...)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("gathered qmv bytes != sliced QMVBF16")
+	}
+}
+
+func TestGatherQMVBF16ByExpertIndexIntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, outDim, inDim, groupSize, bits = 4, 2, 64, 96, 32, 4
+	if _, err := gatherQMVBF16SteelPipeline(outDim, inDim, groupSize, bits); err != nil {
+		t.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	idx := []int32{1, 3}
+	w := quantMoELayerWeightsGuard(t, numExperts, 1, inDim, 128, outDim, groupSize, bits).ExpGate
+	x := toBF16Bytes(syntheticFloat32(inDim, 41))
+	want, err := gatherQMVBF16ByExpertIndex(x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits)
+	if err != nil {
+		t.Fatalf("gatherQMVBF16ByExpertIndex reference: %v", err)
+	}
+
+	out := bytes.Repeat([]byte{0xa5}, topK*outDim*bf16Size)
+	got, err := gatherQMVBF16ByExpertIndexInto(out, x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits)
+	if err != nil {
+		t.Fatalf("gatherQMVBF16ByExpertIndexInto: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("gatherQMVBF16ByExpertIndexInto len = %d, want %d", len(got), len(out))
+	}
+	if len(got) > 0 && &got[0] != &out[0] {
+		t.Fatal("gatherQMVBF16ByExpertIndexInto did not return caller-owned output backing")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("gatherQMVBF16ByExpertIndexInto output differs from allocating wrapper")
+	}
+}
+
+func TestGatherQMVBF16ByExpertIndexRejectsInvalidExpertIndexBeforeDispatch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	_, err := gatherQMVBF16ByExpertIndex(nil, []int32{4}, QuantWeight{}, 4, 1, 64, 96, 32, 4)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("expert index")) {
+		t.Fatalf("gatherQMVBF16ByExpertIndex invalid index error = %v, want expert index rejection", err)
+	}
+}
+
+func TestMoEBlockQuantAfterRouterDeviceIndexBufferMatchesHostIndex(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	if _, err := gatherQMVBF16SteelPipeline(expertDFF, dModel, groupSize, bits); err != nil {
+		t.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	idx := []int32{2, 0}
+	weights := toBF16Bytes([]float32{0.625, 0.375})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+
+	want, err := moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter host index: %v", err)
+	}
+	idxBytes := unsafe.Slice((*byte)(unsafe.Pointer(&idx[0])), len(idx)*4)
+	idxBuf := sharedBytes(idxBytes)
+	got, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, nil, nil, nil, idx, idxBuf, weights, nil, w, dModel, dFF, eps, false, false)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter device index: %v", err)
+	}
+	if cos := cosineBF16(got, want); cos < 0.9999 {
+		t.Fatalf("device-index MoE block cosine=%.6f vs host-index path", cos)
+	}
+}
+
+func TestMoEBlockQuantAfterRouterDeviceBuffersDoNotNeedHostRouterViews(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	if _, err := gatherQMVBF16SteelPipeline(expertDFF, dModel, groupSize, bits); err != nil {
+		t.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	h := toBF16Bytes(syntheticFloat32(dModel, 31))
+	idx := []int32{3, 1}
+	weights := toBF16Bytes([]float32{0.55, 0.45})
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+
+	want, err := moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter host views: %v", err)
+	}
+	idxBytes := unsafe.Slice((*byte)(unsafe.Pointer(&idx[0])), len(idx)*4)
+	idxBuf := sharedBytes(idxBytes)
+	weightBuf := sharedBytes(weights)
+	got, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, nil, nil, nil, nil, idxBuf, nil, weightBuf, w, dModel, dFF, eps, false, false)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter device buffers without host views: %v", err)
+	}
+	if cos := cosineBF16(got, want); cos < 0.9999 {
+		t.Fatalf("device-buffer-only MoE block cosine=%.6f vs host-view path", cos)
+	}
+}
+
+func TestMoEBlockQuantDeviceRouterBuffersChainWithoutHostViews(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, groupSize, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-5)
+	if _, err := gatherQMVBF16SteelPipeline(expertDFF, dModel, groupSize, bits); err != nil {
+		t.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	h := toBF16Bytes(syntheticFloat32(dModel, 37))
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits)
+
+	idx, weights, err := moeRouterQuantWithViews(h, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
+	if err != nil {
+		t.Fatalf("moeRouterQuantWithViews: %v", err)
+	}
+	want, err := moeBlockQuantAfterRouter(h, idx, weights, nil, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter host route: %v", err)
+	}
+
+	weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKBuffersWithBufferInPool(h, nil, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
+	if err != nil {
+		t.Fatalf("moeRouterQuantDeviceTopKBuffersWithBufferInPool: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected device top-k router to be usable")
+	}
+	defer putRouterDeviceScratch(routerScratch)
+	got, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, nil, nil, nil, nil, routerScratch.idxBuf, nil, weightBuf, w, dModel, dFF, eps, false, false)
+	if err != nil {
+		t.Fatalf("moeBlockQuantAfterRouter device route buffers: %v", err)
+	}
+	if cos := cosineBF16(got, want); cos < 0.9999 {
+		t.Fatalf("device-router-buffer chain cosine=%.6f vs host route", cos)
 	}
 }
 

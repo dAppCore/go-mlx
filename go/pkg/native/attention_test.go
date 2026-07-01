@@ -145,6 +145,8 @@ func TestAttentionBlockKVScratchPoolKeepsDimensionsResident(t *testing.T) {
 		t.Fatalf("get large attention KV scratch: %v", err)
 	}
 	putAttentionBlockKVScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall, err := getAttentionBlockKVScratch(128, 128)
 	if err != nil {
@@ -163,6 +165,82 @@ func TestAttentionBlockKVScratchPoolKeepsDimensionsResident(t *testing.T) {
 	if gotLarge != large {
 		t.Fatal("attention KV scratch pool evicted the large scratch after reusing the small scratch")
 	}
+}
+
+func TestAttentionBlockKVScratchUsesCallerCacheBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen = 64, 1, 1, 64, 3
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, 128, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+	scratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+	if err != nil {
+		t.Fatalf("get attention KV scratch: %v", err)
+	}
+	scratch.closeCacheViews()
+	putAttentionBlockKVScratch(scratch)
+
+	if _, err := AttentionBlock(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, dModel, nHeads, nKV, headDim, kvLen, base, scale, offset, eps); err != nil {
+		t.Fatalf("AttentionBlock: %v", err)
+	}
+
+	gotScratch, err := getAttentionBlockKVScratch(len(kCache), len(vCache))
+	if err != nil {
+		t.Fatalf("get attention KV scratch after call: %v", err)
+	}
+	defer putAttentionBlockKVScratch(gotScratch)
+	if gotScratch != scratch {
+		t.Fatal("AttentionBlock did not reuse the prepared KV scratch")
+	}
+	if gotScratch.kViewPtr != uintptr(unsafe.Pointer(&kCache[0])) || gotScratch.vViewPtr != uintptr(unsafe.Pointer(&vCache[0])) {
+		t.Fatal("AttentionBlock copied KV cache bytes instead of retaining no-copy cache views")
+	}
+	if gotScratch.kViewPinned == nil || gotScratch.vViewPinned == nil {
+		t.Fatal("AttentionBlock did not keep pinned KV cache lifetimes on the scratch")
+	}
+}
+
+func TestAttentionBlockKVScratchReusesPinnedOwnerCacheBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const nKV, headDim, kvLen = 1, 64, 3
+	cacheBytes := nKV * kvLen * headDim * bf16Size
+	kPinned, err := newPinnedNoCopyBytes(cacheBytes)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes(k): %v", err)
+	}
+	vPinned, err := newPinnedNoCopyBytes(cacheBytes)
+	if err != nil {
+		kPinned.Close()
+		t.Fatalf("newPinnedNoCopyBytes(v): %v", err)
+	}
+	t.Cleanup(func() {
+		kPinned.Close()
+		vPinned.Close()
+	})
+
+	scratch, err := getAttentionBlockKVScratch(len(kPinned.bytes), len(vPinned.bytes))
+	if err != nil {
+		t.Fatalf("get attention KV scratch: %v", err)
+	}
+	scratch.closeCacheViews()
+	t.Cleanup(func() {
+		scratch.closeCacheViews()
+		putAttentionBlockKVScratch(scratch)
+	})
+
+	kBuf, vBuf, ok, err := scratch.buffersNoCopy(kPinned.bytes, vPinned.bytes)
+	if err != nil {
+		t.Fatalf("buffersNoCopy: %v", err)
+	}
+	if !ok {
+		t.Fatal("buffersNoCopy did not create no-copy KV cache views")
+	}
+	requirePinnedOwnerBuffer(t, "attention K cache view", kBuf, kPinned)
+	requirePinnedOwnerBuffer(t, "attention V cache view", vBuf, vPinned)
 }
 
 func TestAttentionBlockAllocationBudget(t *testing.T) {

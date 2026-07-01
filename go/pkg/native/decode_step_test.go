@@ -261,6 +261,8 @@ func TestDecodeStepAttentionScratchPoolKeepsDimensionsResident(t *testing.T) {
 	putAttnScratch(small)
 	large := getAttnScratch(160, 160, 80, 5, 10)
 	putAttnScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall := getAttnScratch(96, 96, 48, 3, 6)
 	defer putAttnScratch(gotSmall)
@@ -282,6 +284,8 @@ func TestDecodeStepMLPScratchPoolKeepsDimensionsResident(t *testing.T) {
 	putMLPScratch(small)
 	large := getMLPScratch(160, 320)
 	putMLPScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall := getMLPScratch(96, 192)
 	defer putMLPScratch(gotSmall)

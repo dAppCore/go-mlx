@@ -97,7 +97,7 @@ func rebindCostProbe(M int) (time.Duration, error) {
 		icbDesc.SetInheritPipelineState(false)
 		icbDesc.SetMaxKernelBufferBindCount(4)
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
-		c0 := icb.IndirectComputeCommandAtIndex(0)
+		c0 := indirectComputeCommandAtIndexFast(icb, 0)
 		c0.SetComputePipelineState(pso)
 		c0.SetKernelBufferOffsetAtIndex(a, 0, 0)
 		c0.SetKernelBufferOffsetAtIndex(b, 0, 1)

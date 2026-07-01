@@ -222,6 +222,27 @@ func TestDispatchOnlyFastSendAllocationBudget(t *testing.T) {
 	})
 }
 
+func TestMemoryBarrierFastSendAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	pso, err := pipelineFor("rmsfloat32")
+	if err != nil {
+		t.Fatalf("pipelineFor: %v", err)
+	}
+	withAutoreleasePool(func() {
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		defer enc.EndEncoding()
+		setPSO(enc, pso)
+
+		allocs := testing.AllocsPerRun(128, func() {
+			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+		})
+		if allocs > 2 {
+			t.Fatalf("memory-barrier fast send allocations/run = %.1f, want <= 2", allocs)
+		}
+	})
+}
+
 func TestEncoderScalarBindingsDoNotUseResidentScalarBuffers(t *testing.T) {
 	requireNativeRuntime(t)
 	pso, err := pipelineFor("rmsfloat32")

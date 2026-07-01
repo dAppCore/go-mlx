@@ -138,18 +138,20 @@ func decodeForwardICBQuantInto(
 	}
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	setup := getDecodeForwardICBQuantSetupScratch(nLayers)
-	defer putDecodeForwardICBQuantSetupScratch(setup)
 	for i := range inputs {
 		if len(inputs[i]) != dModel*bf16Size {
+			putDecodeForwardICBQuantSetupScratch(setup)
 			return nil, core.NewError("native.DecodeForwardICBQuant: each input must be dModel bf16 bytes")
 		}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
 		if ql.GroupSize == 0 || ql.Bits == 0 {
+			putDecodeForwardICBQuantSetupScratch(setup)
 			return nil, core.NewError("native.DecodeForwardICBQuant: GroupSize/Bits unset")
 		}
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
+			putDecodeForwardICBQuantSetupScratch(setup)
 			return nil, core.NewError("native.DecodeForwardICBQuant: norm weight size mismatch")
 		}
 		projChecks := setup.projChecks[:0]
@@ -161,6 +163,7 @@ func decodeForwardICBQuantInto(
 		)
 		for _, p := range projChecks {
 			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
+				putDecodeForwardICBQuantSetupScratch(setup)
 				return nil, core.NewError("native.DecodeForwardICBQuant: quantised weight size mismatch")
 			}
 		}
@@ -198,6 +201,7 @@ func decodeForwardICBQuantInto(
 		)
 		for _, p := range projChecks {
 			if err := ensureQMVPSO(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits); err != nil {
+				putDecodeForwardICBQuantSetupScratch(setup)
 				return nil, err
 			}
 		}
@@ -276,6 +280,7 @@ func decodeForwardICBQuantInto(
 		}
 		outputs, coreErr = decodeForwardICBCore(outputs, inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps, useCallerOut)
 	})
+	putDecodeForwardICBQuantSetupScratch(setup)
 	if coreErr != nil {
 		return nil, coreErr
 	}

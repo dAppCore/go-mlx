@@ -139,6 +139,31 @@ func TestHeadScratchCachesSharedContentsPointers(t *testing.T) {
 	}
 }
 
+func TestHeadGreedyScratchLogitsOutputViewReusesPinnedOwnerBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const vocab = 8
+	pinned, err := newPinnedNoCopyBytes(vocab * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+
+	scratch := newHeadGreedyScratch(1, 64, vocab, true, false)
+	defer scratch.closeLogitsOutputView()
+
+	buf, ok := scratch.logitsOutputView(pinned.bytes)
+	if !ok {
+		t.Fatal("logits output view did not accept pinned caller bytes")
+	}
+	if got, want := buf.GetID(), pinned.buf.GetID(); got != want {
+		t.Fatalf("logits output view buffer id = %d, want pinned owner buffer %d", got, want)
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&pinned.bytes[0])); got != want {
+		t.Fatalf("logits output view pointer = %#x, want pinned backing %#x", got, want)
+	}
+}
+
 func TestHeadSamplerScratchUsesPinnedNoCopySuppressHistory(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -236,6 +261,28 @@ func TestNewHeadEncoderNilShardBuffersBuildsOwnedBF16Head(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("owned bf16 direct greedy = %d, want full-logits greedy %d", got, want)
+	}
+}
+
+func TestNewHeadEncoderOwnedBF16HeadUsesResidentBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 19
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 53))
+	head := toBF16Bytes(syntheticFloat32(vocab*dModel, 57))
+
+	h, err := newHeadEncoder(nil, finalNorm, head, nil, nil, dModel, vocab, 0, 0, 1e-6, 0, false)
+	if err != nil {
+		t.Fatalf("newHeadEncoder owned bf16: %v", err)
+	}
+	if h == nil {
+		t.Fatal("newHeadEncoder owned bf16 returned nil")
+	}
+	if got, want := uintptr(h.finalNorm.buf.Contents()), uintptr(unsafe.Pointer(&finalNorm[0])); got != want {
+		t.Fatalf("owned bf16 final norm buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(h.weight.buf.Contents()), uintptr(unsafe.Pointer(&head[0])); got != want {
+		t.Fatalf("owned bf16 head weight buffer pointer = %#x, want caller backing %#x", got, want)
 	}
 }
 
@@ -539,6 +586,21 @@ func TestHeadEncoderSoftcapUsesScalarScaleBuffers(t *testing.T) {
 	}
 }
 
+func TestHeadEncoderHiddenBufferUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	h := &headEncoder{}
+	hidden := toBF16Bytes(syntheticFloat32(64, 3))
+	scratch, buf, err := h.hiddenBuffer(hidden)
+	if err != nil {
+		t.Fatalf("hiddenBuffer: %v", err)
+	}
+	defer h.putHiddenScratch(scratch)
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&hidden[0])); got != want {
+		t.Fatalf("hidden buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+}
+
 func TestHeadEncoderSoftcapEncodeIntoAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -595,6 +657,42 @@ func TestHeadEncoderTopKTokenBufferAllocationBudget(t *testing.T) {
 	})
 	if allocs > 0 {
 		t.Fatalf("TopK token buffer allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestHeadEncoderTopKTokenPrefersFusedQ4Scratch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab, groupSize, bits = 512, 4096, 64, 4
+	const topK = 32
+	if !q4LMHeadTopKUsable(dModel, vocab, groupSize, bits, topK) {
+		t.Skip("fused q4 lm-head top-k custom kernel unavailable")
+	}
+	if !qmvLogitsTopKUsable(dModel, vocab, groupSize, bits, topK) {
+		t.Skip("qmv logits top-k custom kernel unavailable")
+	}
+	h, hidden := quantHeadEncoderBenchFixture(dModel, vocab, groupSize, bits)
+	params := model.SampleParams{Temperature: 1, TopK: topK}
+	hiddenScratch, hiddenBuf, err := h.hiddenBuffer(hidden)
+	if err != nil {
+		t.Fatalf("hiddenBuffer: %v", err)
+	}
+	defer h.putHiddenScratch(hiddenScratch)
+	sampler := model.NewSampler(123)
+	if _, ok, err := h.sampleTopKTokenBufferInPool(hiddenBuf, params, sampler.Draw(), nil); err != nil {
+		t.Fatalf("sampleTopKTokenBufferInPool: %v", err)
+	} else if !ok {
+		t.Fatal("TopK token buffer sampler declined")
+	}
+
+	v := h.topKScratch.Get()
+	if v == nil {
+		t.Fatal("top-k sampler did not return scratch to pool")
+	}
+	scratch := v.(*headTopKScratch)
+	defer h.putTopKScratch(scratch)
+	if scratch.logits != nil {
+		t.Fatal("top-k sampler kept a full-vocab logits scratch; want fused q4 candidates only")
 	}
 }
 

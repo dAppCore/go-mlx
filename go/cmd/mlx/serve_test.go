@@ -77,6 +77,22 @@ func TestResolveServeDraft_FlagSemantics_Good(t *testing.T) {
 	}
 }
 
+// Native MTP currently accepts explicit native-loadable draft models; assistant
+// auto-detection waits for a native assistant-only loader so --native does not
+// fail just because an assistant/ directory sits beside the target.
+func TestResolveNativeServeDraft_ExplicitOnly_Good(t *testing.T) {
+	model := t.TempDir()
+	if det := resolveNativeServeDraft(model, "auto"); det.Active() {
+		t.Fatalf("native auto detection = %+v, want inactive until native assistant loader exists", det)
+	}
+	if det := resolveNativeServeDraft(model, ""); det.Active() {
+		t.Fatalf("native empty draft detection = %+v, want inactive", det)
+	}
+	if det := resolveNativeServeDraft(model, "/draft/native"); det.Source != mlx.DraftSourceFlag || det.DraftPath != "/draft/native" {
+		t.Fatalf("native explicit detection = %+v, want explicit flag path", det)
+	}
+}
+
 // reloadLoadOpts overlays per-reload options on top of the auto-tuned boot
 // options, last-wins, so a reload that carries only ContextLength keeps the
 // boot baseline (Mantis #1785 F-7 N-7).

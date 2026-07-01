@@ -123,19 +123,19 @@ func LMHeadBF16Into(out []byte, hidden, finalNormW, outWeight []byte, dModel, vo
 		outWeightBuf := residentBytes(outWeight)
 		normedBuf := scratchBF16(dModel)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if encErr = encRMSNormBF16(enc, hiddenBuf, finalNormBuf, normedBuf, 0, dModel, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encGemvBF16(enc, outWeightBuf, normedBuf, logitsBuf, vocab, dModel); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, ioScratch.out.bytes[:outLen])
 		}

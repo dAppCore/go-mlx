@@ -41,17 +41,44 @@ type attnScratchKey struct {
 	dModel, qDim, kvDim, nHeads, maxLen int
 }
 
+type attnScratchPool struct {
+	mu    sync.Mutex
+	items []*attnScratch
+}
+
 var attnScratchPools sync.Map
 
-func attnScratchPoolFor(key attnScratchKey) *sync.Pool {
+func attnScratchPoolFor(key attnScratchKey) *attnScratchPool {
 	if v, ok := attnScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*attnScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := new(attnScratchPool)
 	if v, loaded := attnScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*attnScratchPool)
 	}
 	return pool
+}
+
+func (p *attnScratchPool) Get() *attnScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	sc := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return sc
+}
+
+func (p *attnScratchPool) Put(sc *attnScratch) {
+	if sc == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, sc)
+	p.mu.Unlock()
 }
 
 func attnScratchReady(sc *attnScratch, key attnScratchKey) bool {
@@ -92,8 +119,7 @@ func newAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) attnScratch {
 func getAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) *attnScratch {
 	key := attnScratchKey{dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads, maxLen: maxLen}
 	pool := attnScratchPoolFor(key)
-	if v := pool.Get(); v != nil {
-		sc := v.(*attnScratch)
+	if sc := pool.Get(); sc != nil {
 		if attnScratchReady(sc, key) {
 			return sc
 		}
@@ -126,17 +152,44 @@ type mlpScratchKey struct {
 	dModel, dFF int
 }
 
+type mlpScratchPool struct {
+	mu    sync.Mutex
+	items []*mlpScratch
+}
+
 var mlpScratchPools sync.Map
 
-func mlpScratchPoolFor(key mlpScratchKey) *sync.Pool {
+func mlpScratchPoolFor(key mlpScratchKey) *mlpScratchPool {
 	if v, ok := mlpScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*mlpScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := new(mlpScratchPool)
 	if v, loaded := mlpScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*mlpScratchPool)
 	}
 	return pool
+}
+
+func (p *mlpScratchPool) Get() *mlpScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	sc := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return sc
+}
+
+func (p *mlpScratchPool) Put(sc *mlpScratch) {
+	if sc == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, sc)
+	p.mu.Unlock()
 }
 
 func mlpScratchReady(sc *mlpScratch, key mlpScratchKey) bool {
@@ -175,8 +228,7 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 func getMLPScratch(dModel, dFF int) *mlpScratch {
 	key := mlpScratchKey{dModel: dModel, dFF: dFF}
 	pool := mlpScratchPoolFor(key)
-	if v := pool.Get(); v != nil {
-		sc := v.(*mlpScratch)
+	if sc := pool.Get(); sc != nil {
 		if mlpScratchReady(sc, key) {
 			return sc
 		}

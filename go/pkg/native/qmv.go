@@ -11,6 +11,7 @@ import (
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
+	"github.com/tmc/apple/objc"
 )
 
 type qmvKernelNameKey struct {
@@ -30,25 +31,51 @@ var (
 	errQMVBF16ScratchDim  = core.NewError("native.qmvBF16Scratch: dimension mismatch")
 )
 
-func qmvScratchPoolFor(pools *sync.Map, outDim, inDim int) *sync.Pool {
+type qmvScratchPool struct {
+	mu    sync.Mutex
+	items []any
+}
+
+func qmvScratchPoolFor(pools *sync.Map, outDim, inDim int) *qmvScratchPool {
 	key := qmvScratchKey{outDim: outDim, inDim: inDim}
 	if v, ok := pools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*qmvScratchPool)
 	}
-	pool := &sync.Pool{}
+	pool := &qmvScratchPool{}
 	if v, loaded := pools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*qmvScratchPool)
 	}
 	return pool
+}
+
+func (p *qmvScratchPool) Get() any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *qmvScratchPool) Put(s any) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 type qmvFloatScratch struct {
 	inDim, outDim int
 	x, out        *pinnedNoCopyBytes
-	outViewPtr    uintptr
-	outViewLen    int
-	outView       metal.MTLBuffer
-	outViewPinned *pinnedNoCopyBytes
+	xView         cachedNoCopyBytesView
+	outViews      [2]cachedNoCopyBytesView
+	outViewNext   int
 }
 
 func newQMVFloatScratch(outDim, inDim int) (*qmvFloatScratch, error) {
@@ -93,6 +120,7 @@ func (s *qmvFloatScratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	s.xView.Close()
 	if s.out != nil {
 		s.out.Close()
 		s.out = nil
@@ -105,13 +133,10 @@ func (s *qmvFloatScratch) closeOutputView() {
 	if s == nil {
 		return
 	}
-	if s.outViewPinned != nil {
-		s.outViewPinned.Close()
+	for i := range s.outViews {
+		s.outViews[i].Close()
 	}
-	s.outViewPtr = 0
-	s.outViewLen = 0
-	s.outView = nil
-	s.outViewPinned = nil
+	s.outViewNext = 0
 }
 
 func (s *qmvFloatScratch) outputView(out []float32) (metal.MTLBuffer, bool) {
@@ -119,25 +144,29 @@ func (s *qmvFloatScratch) outputView(out []float32) (metal.MTLBuffer, bool) {
 		return nil, false
 	}
 	ptr := uintptr(unsafe.Pointer(&out[0]))
-	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
-		return s.outView, true
-	}
-	s.closeOutputView()
-	outBytes := float32Bytes(out)
-	buf, pinner, noCopy := residentNoCopyBytes(outBytes)
-	if !noCopy {
-		if pinner != nil {
-			pinner.Unpin()
+	byteLen := len(out) * 4
+	for i := range s.outViews {
+		if s.outViews[i].buf != nil && s.outViews[i].ptr == ptr && s.outViews[i].len == byteLen {
+			return s.outViews[i].buf, true
 		}
-		return nil, false
 	}
-	pinned := &pinnedNoCopyBytes{bytes: outBytes, buf: buf, pinner: pinner}
-	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
-	s.outViewPtr = ptr
-	s.outViewLen = len(out)
-	s.outView = buf
-	s.outViewPinned = pinned
-	return buf, true
+	slot := -1
+	for i := range s.outViews {
+		if s.outViews[i].buf == nil {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		slot = s.outViewNext % len(s.outViews)
+		s.outViews[slot].Close()
+	}
+	outBytes := float32Bytes(out)
+	buf, ok := s.outViews[slot].buffer(outBytes)
+	if ok {
+		s.outViewNext = (slot + 1) % len(s.outViews)
+	}
+	return buf, ok
 }
 
 func (s *qmvFloatScratch) buffers(x []float32) (metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -147,9 +176,14 @@ func (s *qmvFloatScratch) buffers(x []float32) (metal.MTLBuffer, metal.MTLBuffer
 	if len(x) != s.inDim || len(s.out.bytes) != s.outDim*4 {
 		return nil, nil, errQMVFloatScratchDim
 	}
-	xBuf, err := s.x.copyBuffer(float32Bytes(x))
-	if err != nil {
-		return nil, nil, err
+	var err error
+	xBytes := float32Bytes(x)
+	xBuf, xNoCopy := s.xView.bufferAfterStable(xBytes, 3)
+	if !xNoCopy {
+		xBuf, err = s.x.copyBuffer(xBytes)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	return xBuf, s.out.buf, nil
 }
@@ -164,10 +198,12 @@ func float32Bytes(x []float32) []byte {
 type qmvBF16Scratch struct {
 	inDim, outDim int
 	x, out        *pinnedNoCopyBytes
+	xView         cachedNoCopyBytesView
 	outViewPtr    uintptr
 	outViewLen    int
 	outView       metal.MTLBuffer
 	outViewPinned *pinnedNoCopyBytes
+	residentIDs   []objc.ID
 }
 
 func newQMVBF16Scratch(outDim, inDim int) (*qmvBF16Scratch, error) {
@@ -212,6 +248,7 @@ func (s *qmvBF16Scratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	s.xView.Close()
 	if s.out != nil {
 		s.out.Close()
 		s.out = nil
@@ -242,6 +279,13 @@ func (s *qmvBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -265,9 +309,16 @@ func (s *qmvBF16Scratch) buffers(x []byte) (metal.MTLBuffer, metal.MTLBuffer, er
 	if len(x) != s.inDim*bf16Size || len(s.out.bytes) != s.outDim*bf16Size {
 		return nil, nil, errQMVBF16ScratchDim
 	}
-	xBuf, err := s.x.copyBuffer(x)
-	if err != nil {
-		return nil, nil, err
+	var err error
+	if xBuf, ok := registeredPinnedNoCopyBytes(x); ok {
+		return xBuf, s.out.buf, nil
+	}
+	xBuf, xNoCopy := s.xView.bufferAfterStable(x, 3)
+	if !xNoCopy {
+		xBuf, err = s.x.copyBuffer(x)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	return xBuf, s.out.buf, nil
 }

@@ -121,7 +121,7 @@ func decodeForwardArchQuantInto(
 			}
 		}
 		for _, p := range projChecks {
-			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
+			if !quantWeightProjectionShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
 				return nil, core.NewError("native.DecodeForwardArchQuant: quantised weight size mismatch")
 			}
 		}
@@ -173,6 +173,14 @@ func quantWeightShapeOK(w QuantWeight, outDim, inDim, groupSize, bits int) bool 
 		len(w.Packed) == outDim*inDim*bits/8 &&
 		len(w.Scales) == outDim*(inDim/groupSize)*bf16Size &&
 		len(w.Biases) == outDim*(inDim/groupSize)*bf16Size
+}
+
+func quantWeightDenseShapeOK(w QuantWeight, outDim, inDim int) bool {
+	return len(w.Packed) == outDim*inDim*bf16Size && len(w.Scales) == 0 && len(w.Biases) == 0
+}
+
+func quantWeightProjectionShapeOK(w QuantWeight, outDim, inDim, groupSize, bits int) bool {
+	return quantWeightDenseShapeOK(w, outDim, inDim) || quantWeightShapeOK(w, outDim, inDim, groupSize, bits)
 }
 
 func quantWeightGeometry(w QuantWeight, groupSize, bits int) (int, int) {
@@ -281,6 +289,9 @@ func buildQuantArchLayerBufsInternal(lb []archLayerBufs, moeQuant []*MoEQuantLay
 	mkW := func(qw QuantWeight) qmvWeight {
 		if len(qw.Packed) == 0 {
 			return qmvWeight{}
+		}
+		if len(qw.Scales) == 0 && len(qw.Biases) == 0 {
+			return qmvWeight{wq: view(qw.Packed)}
 		}
 		return qmvWeight{wq: view4(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
 	}

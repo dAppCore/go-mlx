@@ -502,6 +502,46 @@ func BenchmarkArchSessionPrefillRetainedDense(b *testing.B) {
 			_ = sess.Close()
 		}
 	})
+
+	slidingG, slidingArch := gemma4BF16Fixture(b, 128, 2, 1, 64, 256, 64, 1)
+	slidingArch.SlidingWindow = 4
+	slidingArch.Layer[0].Attention = model.SlidingAttention
+	slidingIDs := []int32{1, 2, 3, 4, 5, 6, 7, 8}
+	b.Run("sliding-serial-steps", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sess, err := NewArchSession(slidingG, slidingArch, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sess.state.icb = nil
+			withAutoreleasePool(func() {
+				for _, id := range slidingIDs {
+					if _, err = sess.stepIDInPool(id); err != nil {
+						return
+					}
+				}
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			_ = sess.Close()
+		}
+	})
+	b.Run("sliding-batched-chunks", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sess, err := NewArchSession(slidingG, slidingArch, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sess.state.icb = nil
+			if _, err := sess.prefillRetainedTokens(slidingIDs, "bench"); err != nil {
+				b.Fatal(err)
+			}
+			_ = sess.Close()
+		}
+	})
 }
 
 func BenchmarkArchSessionAppendGenerateFromCacheSecondTurn(b *testing.B) {
@@ -634,6 +674,37 @@ func BenchmarkArchSessionRepeatPenaltyScratchDuplicateHistory(b *testing.B) {
 		}
 		samplePenaltyBenchSink = out
 		sampleHistoryBenchSink = sess.samplePenaltyIDs
+	}
+}
+
+func BenchmarkArchSessionSampleTokenFromLogitsTopKRepeatPenalty(b *testing.B) {
+	const vocab = 32768
+	logits := make([]byte, vocab*bf16Size)
+	for i := range logits {
+		logits[i] = byte(i)
+	}
+	params := model.SampleParams{Temperature: 1, TopK: 32, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	history := []int32{31, 7, 1024, 7, 2048, -1, vocab + 1, 16384}
+	sess := &ArchSession{arch: model.Arch{Vocab: vocab}}
+	if tok, err := sess.sampleTokenFromLogits(logits, model.NewSampler(1), params, history); err != nil {
+		b.Fatal(err)
+	} else {
+		archSessionSampleTokenBenchSink = tok
+	}
+	if len(sess.sampleCandidateIDs) != params.TopK {
+		b.Fatalf("candidate ids len = %d, want %d", len(sess.sampleCandidateIDs), params.TopK)
+	}
+	if sess.samplePenaltyLogits != nil {
+		b.Fatal("TopK repeat-penalty sampling used vocab-sized repeat-penalty scratch")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tok, err := sess.sampleTokenFromLogits(logits, model.NewSampler(uint64(i+2)), params, history)
+		if err != nil {
+			b.Fatal(err)
+		}
+		archSessionSampleTokenBenchSink = tok
 	}
 }
 
@@ -782,6 +853,41 @@ func BenchmarkArchSessionSampleTopKCandidatesFreshHidden(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		logits, ids, ok, err := sess.sampleTopKCandidatesFromHiddenInPool(hidden, params)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !ok {
+			b.Fatal("sampleTopKCandidates declined")
+		}
+		samplePenaltyBenchSink = logits
+		sampleHistoryBenchSink = ids
+	}
+}
+
+func BenchmarkArchSessionSampleTopKCandidatesFreshHiddenRepeatPenalty(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	g, arch := gemma4BF16Fixture(b, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, 16)
+	if err != nil {
+		b.Fatalf("NewArchSession: %v", err)
+	}
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 49))
+	params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	history := []int32{4, 5, 5, 31}
+	if _, _, ok, err := sess.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, params, history); err != nil {
+		b.Fatalf("sampleTopKCandidates warmup: %v", err)
+	} else if !ok {
+		b.Fatal("sampleTopKCandidates declined")
+	}
+	if sess.samplePenaltyLogits != nil {
+		b.Fatal("TopK candidate repeat-penalty path used vocab-sized repeat-penalty scratch")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logits, ids, ok, err := sess.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, params, history)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1055,6 +1161,32 @@ func BenchmarkArchSessionStepSampleTopKCandidatesICB(b *testing.B) {
 		hidden, logits, ids, ok, err := sess.stepSampleTopKCandidatesInPool(9, params)
 		if err != nil || !ok {
 			b.Fatalf("stepSampleTopKCandidatesInPool ok=%v err=%v", ok, err)
+		}
+		archSessionHiddenBenchSink = hidden
+		samplePenaltyBenchSink = logits
+		sampleHistoryBenchSink = ids
+		b.StopTimer()
+		_ = sess.Close()
+		b.StartTimer()
+	}
+}
+
+func BenchmarkArchSessionStepSampleTopKCandidatesICBRepeatPenalty(b *testing.B) {
+	requireNativeRuntime(b)
+
+	params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	history := []int32{4, 5, 5, 31}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		sess := newQuantICBStepBenchSession(b, 16)
+		if _, _, _, ok, err := sess.stepSampleTopKCandidatesWithHistoryInPool(9, params, history); err != nil || !ok {
+			b.Fatalf("stepSampleTopKCandidatesWithHistoryInPool warmup ok=%v err=%v", ok, err)
+		}
+		b.StartTimer()
+		hidden, logits, ids, ok, err := sess.stepSampleTopKCandidatesWithHistoryInPool(9, params, history)
+		if err != nil || !ok {
+			b.Fatalf("stepSampleTopKCandidatesWithHistoryInPool ok=%v err=%v", ok, err)
 		}
 		archSessionHiddenBenchSink = hidden
 		samplePenaltyBenchSink = logits

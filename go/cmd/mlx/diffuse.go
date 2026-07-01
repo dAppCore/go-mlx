@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	gemma4chat "dappco.re/go/mlx/pkg/metal/model/gemma4/chat"
+	gemma4chat "dappco.re/go/mlx/pkg/model/gemma4/chat"
 )
 
 // runDiffuseCommand generates text through the block-diffusion sampler:

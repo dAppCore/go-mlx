@@ -36,6 +36,8 @@ func TestAssembleVision(t *testing.T) {
 
 	tc := &Gemma4TextConfig{}
 	tc.ModelType = "gemma4"
+	tc.ImageTokenID = 262145
+	tc.VideoTokenID = 258884
 	tc.VisionConfig = &Gemma4VisionConfig{}
 	tc.VisionConfig.NumAttentionHeads = 8
 
@@ -57,6 +59,44 @@ func TestAssembleVision(t *testing.T) {
 	}
 	if v.Projector.Projection.Weight == nil {
 		t.Fatal("projector missing")
+	}
+	if v.Cfg.ImageTokenID != 262145 {
+		t.Fatalf("image token id = %d, want 262145", v.Cfg.ImageTokenID)
+	}
+	if v.Cfg.ImageBeginToken != Gemma4BOIToken || v.Cfg.ImageToken != Gemma4ImageToken || v.Cfg.ImageEndToken != Gemma4EOIToken {
+		t.Fatalf("image prompt tokens = %q/%q/%q", v.Cfg.ImageBeginToken, v.Cfg.ImageToken, v.Cfg.ImageEndToken)
+	}
+	if v.Cfg.VideoTokenID != 258884 || v.Cfg.VideoToken != Gemma4VideoToken {
+		t.Fatalf("video prompt tokens = %d/%q", v.Cfg.VideoTokenID, v.Cfg.VideoToken)
+	}
+}
+
+func TestVisionLinearWithInputDimQuantMetadata(t *testing.T) {
+	const outDim, inDim, groupSize, bits = 8, 64, 16, 4
+	weights := map[string]safetensors.Tensor{
+		"embed_vision.embedding_projection.weight": {
+			Dtype: "U32",
+			Shape: []int{outDim, inDim * bits / 32},
+			Data:  make([]byte, outDim*(inDim*bits/32)*4),
+		},
+		"embed_vision.embedding_projection.scales": {
+			Dtype: "BF16",
+			Shape: []int{outDim, inDim / groupSize},
+			Data:  make([]byte, outDim*(inDim/groupSize)*2),
+		},
+		"embed_vision.embedding_projection.biases": {
+			Dtype: "BF16",
+			Shape: []int{outDim, inDim / groupSize},
+			Data:  make([]byte, outDim*(inDim/groupSize)*2),
+		},
+	}
+
+	lin := visionLinearWithInputDim(weights, inDim, "embed_vision.embedding_projection")
+	if len(lin.Scales) == 0 || len(lin.Biases) == 0 {
+		t.Fatalf("quant vision projector scales/biases missing: %+v", lin)
+	}
+	if lin.OutDim != outDim || lin.InDim != inDim || lin.GroupSize != groupSize || lin.Bits != bits || lin.Kind != "affine" {
+		t.Fatalf("quant vision projector geometry = out:%d in:%d group:%d bits:%d kind:%q", lin.OutDim, lin.InDim, lin.GroupSize, lin.Bits, lin.Kind)
 	}
 }
 

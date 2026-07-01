@@ -7,6 +7,7 @@ package native
 import (
 	"math"
 	"os"
+	"runtime/debug"
 	"testing"
 
 	core "dappco.re/go"
@@ -25,6 +26,10 @@ func requireNativeRuntime(t testing.TB) {
 	if err := ensureInit(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func forceNativeGC() {
+	debug.FreeOSMemory()
 }
 
 func configJSONWithModelType(t testing.TB, cfg interface{}, modelType string) []byte {

@@ -48,12 +48,23 @@ func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLB
 type moeExpertsScratch struct {
 	dModel, dFF, topK int
 	x, weights        *pinnedNoCopyBytes
+	xPinned           *pinnedNoCopyBytes
+	weightsPinned     *pinnedNoCopyBytes
 	outPinned         *pinnedNoCopyBytes
 	mlp               mlpScratch
 	scaled, acc       metal.MTLBuffer
 }
 
-var moeExpertsScratchPool sync.Pool
+type moeExpertsScratchKey struct {
+	dModel, dFF, topK int
+}
+
+var moeExpertsScratchPools sync.Map
+
+type moeExpertsScratchPool struct {
+	mu    sync.Mutex
+	items []*moeExpertsScratch
+}
 
 func newMoEExpertsScratch(dModel, dFF, topK int) (*moeExpertsScratch, error) {
 	x, err := newPinnedNoCopyBytes(dModel * bf16Size)
@@ -77,9 +88,43 @@ func newMoEExpertsScratch(dModel, dFF, topK int) (*moeExpertsScratch, error) {
 	}, nil
 }
 
+func moeExpertsScratchPoolFor(dModel, dFF, topK int) *moeExpertsScratchPool {
+	key := moeExpertsScratchKey{dModel: dModel, dFF: dFF, topK: topK}
+	if v, ok := moeExpertsScratchPools.Load(key); ok {
+		return v.(*moeExpertsScratchPool)
+	}
+	pool := &moeExpertsScratchPool{}
+	if v, loaded := moeExpertsScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*moeExpertsScratchPool)
+	}
+	return pool
+}
+
+func (p *moeExpertsScratchPool) Get() *moeExpertsScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *moeExpertsScratchPool) Put(s *moeExpertsScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
+}
+
 func getMoEExpertsScratch(dModel, dFF, topK int) (*moeExpertsScratch, error) {
-	if v := moeExpertsScratchPool.Get(); v != nil {
-		s := v.(*moeExpertsScratch)
+	pool := moeExpertsScratchPoolFor(dModel, dFF, topK)
+	if s := pool.Get(); s != nil {
 		if s != nil &&
 			s.dModel == dModel &&
 			s.dFF == dFF &&
@@ -103,7 +148,7 @@ func getMoEExpertsScratch(dModel, dFF, topK int) (*moeExpertsScratch, error) {
 
 func putMoEExpertsScratch(s *moeExpertsScratch) {
 	if s != nil && s.x != nil && s.x.buf != nil && s.weights != nil && s.weights.buf != nil && s.mlp.gate != nil && s.mlp.up != nil && s.mlp.gated != nil && s.mlp.down != nil && s.scaled != nil && s.acc != nil {
-		moeExpertsScratchPool.Put(s)
+		moeExpertsScratchPoolFor(s.dModel, s.dFF, s.topK).Put(s)
 	}
 }
 
@@ -115,14 +160,76 @@ func (s *moeExpertsScratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	if s.xPinned != nil {
+		s.xPinned.Close()
+		s.xPinned = nil
+	}
 	if s.weights != nil {
 		s.weights.Close()
 		s.weights = nil
+	}
+	if s.weightsPinned != nil {
+		s.weightsPinned.Close()
+		s.weightsPinned = nil
 	}
 	if s.outPinned != nil {
 		s.outPinned.Close()
 		s.outPinned = nil
 	}
+}
+
+func (s *moeExpertsScratch) inputView(x []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(x) == 0 {
+		return nil, false
+	}
+	if s.xPinned != nil && len(s.xPinned.bytes) == len(x) && &s.xPinned.bytes[0] == &x[0] {
+		return s.xPinned.buf, true
+	}
+	if s.xPinned != nil {
+		s.xPinned.Close()
+		s.xPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(x); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(x)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: x, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.xPinned = pinned
+	return buf, true
+}
+
+func (s *moeExpertsScratch) weightsView(weights []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(weights) == 0 {
+		return nil, false
+	}
+	if s.weightsPinned != nil && len(s.weightsPinned.bytes) == len(weights) && &s.weightsPinned.bytes[0] == &weights[0] {
+		return s.weightsPinned.buf, true
+	}
+	if s.weightsPinned != nil {
+		s.weightsPinned.Close()
+		s.weightsPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(weights); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(weights)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: weights, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.weightsPinned = pinned
+	return buf, true
 }
 
 func (s *moeExpertsScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
@@ -135,6 +242,9 @@ func (s *moeExpertsScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 	if s.outPinned != nil {
 		s.outPinned.Close()
 		s.outPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		return buf, true
 	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
@@ -206,15 +316,21 @@ func moeExpertsInto(out []byte, x []byte, idx []int32, weights, gateW, upW, down
 			return
 		}
 		defer putMoEExpertsScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
-		weightsBuf, err := scratch.weights.copyBuffer(weights)
-		if err != nil {
-			encErr = err
-			return
+		weightsBuf, ok := scratch.weightsView(weights)
+		if !ok {
+			weightsBuf, err = scratch.weights.copyBuffer(weights)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc
@@ -324,15 +440,21 @@ func moeExpertsQuantInto(out []byte, x []byte, idx []int32, weights []byte, gate
 			return
 		}
 		defer putMoEExpertsScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
-		weightsBuf, err := scratch.weights.copyBuffer(weights)
-		if err != nil {
-			encErr = err
-			return
+		weightsBuf, ok := scratch.weightsView(weights)
+		if !ok {
+			weightsBuf, err = scratch.weights.copyBuffer(weights)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc
@@ -446,15 +568,21 @@ func moeExpertsQuantFusedGateUpInto(out []byte, x []byte, idx []int32, weights [
 			return
 		}
 		defer putMoEExpertsScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
-		weightsBuf, err := scratch.weights.copyBuffer(weights)
-		if err != nil {
-			encErr = err
-			return
+		weightsBuf, ok := scratch.weightsView(weights)
+		if !ok {
+			weightsBuf, err = scratch.weights.copyBuffer(weights)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		msc := scratch.mlp
 		downE, scaled, acc := msc.down, scratch.scaled, scratch.acc

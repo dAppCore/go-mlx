@@ -6,11 +6,326 @@ package native
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
+
+func TestNativeTokenModelAcceptsImageInput_Good(t *testing.T) {
+	tm := &NativeTokenModel{}
+	if tm.AcceptsImageInput() {
+		t.Fatal("AcceptsImageInput = true without a vision payload, want false")
+	}
+	tm.vision = &model.LoadedVision{}
+	if !tm.AcceptsImageInput() {
+		t.Fatal("AcceptsImageInput = false with a vision payload, want true")
+	}
+}
+
+func TestNativeTokenModelAcceptsAudioInput_Good(t *testing.T) {
+	tm := &NativeTokenModel{}
+	if tm.AcceptsAudioInput() {
+		t.Fatal("AcceptsAudioInput = true without an audio payload, want false")
+	}
+	tm.audio = &model.LoadedAudio{}
+	if !tm.AcceptsAudioInput() {
+		t.Fatal("AcceptsAudioInput = false with an audio payload, want true")
+	}
+}
+
+func TestNativeVisionFromLoadedMapsPayload_Good(t *testing.T) {
+	loaded := &model.LoadedVision{
+		PatchEmbedding:     []byte{1, 2},
+		PositionEmbeddings: []byte{3, 4},
+		PostLayernorm:      []byte{5, 6},
+		StdBias:            []byte{7, 8},
+		StdScale:           []byte{9, 10},
+		Cfg: model.LoadedVisionConfig{
+			Hidden: 64, PatchDim: 48, NumLayers: 1, NumHeads: 2, NumKVHeads: 1,
+			HeadDim: 32, RopeBase: 100, RMSNormEps: 1e-6, PoolKernel: 3,
+			Standardize: true, EmbeddingScale: 8,
+			ImageTokenID: 262145, ImageBeginToken: "<|image>", ImageToken: "<|image|>", ImageEndToken: "<image|>",
+			VideoTokenID: 258884, VideoToken: "<|video|>",
+		},
+		Layers: []model.LoadedVisionLayer{{
+			InputNorm:    []byte{11},
+			PostAttnNorm: []byte{12},
+			PreFFNorm:    []byte{13},
+			PostFFNorm:   []byte{14},
+			Q:            model.LoadedVisionLinear{Weight: []byte{15}, Bias: []byte{115}},
+			K:            model.LoadedVisionLinear{Weight: []byte{16}, Bias: []byte{116}},
+			V:            model.LoadedVisionLinear{Weight: []byte{17}, Bias: []byte{117}},
+			O:            model.LoadedVisionLinear{Weight: []byte{18}, Bias: []byte{118}},
+			QNorm:        []byte{19},
+			KNorm:        []byte{20},
+			Gate:         model.LoadedVisionLinear{Weight: []byte{21}, Bias: []byte{121}},
+			Up:           model.LoadedVisionLinear{Weight: []byte{22}, Bias: []byte{122}},
+			Down:         model.LoadedVisionLinear{Weight: []byte{23}, Bias: []byte{123}},
+		}},
+		Projector: model.LoadedVisionProjector{
+			Projection: model.LoadedVisionLinear{Weight: []byte{24}, Bias: []byte{124}},
+			Linear1:    model.LoadedVisionLinear{Weight: []byte{25}, Bias: []byte{125}},
+			Linear2:    model.LoadedVisionLinear{Weight: []byte{26}, Bias: []byte{126}},
+		},
+	}
+
+	weights, cfg, ok := nativeVisionFromLoaded(loaded)
+	if !ok {
+		t.Fatal("nativeVisionFromLoaded ok = false, want true")
+	}
+	if cfg.Hidden != 64 || cfg.PatchDim != 48 || cfg.NumLayers != 1 || cfg.NumHeads != 2 || cfg.NumKVHeads != 1 || cfg.HeadDim != 32 {
+		t.Fatalf("native vision cfg = %+v, want loaded geometry", cfg)
+	}
+	if cfg.RopeBase != 100 || cfg.RMSNormEps != 1e-6 || cfg.PoolKernel != 3 || !cfg.Standardize || cfg.EmbeddingScale != 8 {
+		t.Fatalf("native vision cfg extras = %+v, want loaded extras", cfg)
+	}
+	if cfg.ImageTokenID != 262145 || cfg.ImageBeginToken != "<|image>" || cfg.ImageToken != "<|image|>" || cfg.ImageEndToken != "<image|>" {
+		t.Fatalf("native vision prompt metadata = %+v", cfg)
+	}
+	if cfg.VideoTokenID != 258884 || cfg.VideoToken != "<|video|>" {
+		t.Fatalf("native vision video metadata = %+v", cfg)
+	}
+	if weights.PatchEmbedding[0] != 1 || weights.PositionEmbeddings[0] != 3 || weights.PostLayernorm[0] != 5 ||
+		weights.StdBias[0] != 7 || weights.StdScale[0] != 9 {
+		t.Fatalf("native vision top-level weights = %+v", weights)
+	}
+	if len(weights.Layers) != 1 || weights.Layers[0].WQ[0] != 15 || weights.Layers[0].WK[0] != 16 ||
+		weights.Layers[0].WV[0] != 17 || weights.Layers[0].WO[0] != 18 ||
+		weights.Layers[0].WGate[0] != 21 || weights.Layers[0].WUp[0] != 22 || weights.Layers[0].WDown[0] != 23 {
+		t.Fatalf("native vision layer weights = %+v", weights.Layers)
+	}
+	if weights.Layers[0].BQ[0] != 115 || weights.Layers[0].BK[0] != 116 || weights.Layers[0].BV[0] != 117 ||
+		weights.Layers[0].BO[0] != 118 || weights.Layers[0].BGate[0] != 121 || weights.Layers[0].BUp[0] != 122 ||
+		weights.Layers[0].BDown[0] != 123 {
+		t.Fatalf("native vision layer biases = %+v", weights.Layers[0])
+	}
+	if weights.Projector.Projection.Weight[0] != 24 || weights.Projector.Linear1.Weight[0] != 25 || weights.Projector.Linear2.Weight[0] != 26 {
+		t.Fatalf("native vision projector = %+v", weights.Projector)
+	}
+	if weights.Projector.Projection.Bias[0] != 124 || weights.Projector.Linear1.Bias[0] != 125 || weights.Projector.Linear2.Bias[0] != 126 {
+		t.Fatalf("native vision projector biases = %+v", weights.Projector)
+	}
+	loaded.PatchEmbedding[0] = 99
+	if weights.PatchEmbedding[0] != 99 {
+		t.Fatal("native vision converter copied patch embedding, want no-copy alias")
+	}
+}
+
+func TestNativeTokenModelImagePlaceholderBlock_Good(t *testing.T) {
+	tm := &NativeTokenModel{vision: &model.LoadedVision{Cfg: model.LoadedVisionConfig{
+		ImageTokenID: 262145, ImageBeginToken: "<|image>", ImageToken: "<|image|>", ImageEndToken: "<image|>",
+		VideoTokenID: 258884, VideoToken: "<|video|>",
+	}}}
+	if got := tm.ImagePlaceholderTokenID(); got != 262145 {
+		t.Fatalf("ImagePlaceholderTokenID = %d, want 262145", got)
+	}
+	if got := tm.ImagePlaceholderBlock(2); got != "<|image><|image|><|image|><image|>" {
+		t.Fatalf("ImagePlaceholderBlock(2) = %q", got)
+	}
+	if got := tm.ImagePlaceholderBlock(0); got != "" {
+		t.Fatalf("ImagePlaceholderBlock(0) = %q, want empty", got)
+	}
+	if got := tm.VideoPlaceholderTokenID(); got != 258884 {
+		t.Fatalf("VideoPlaceholderTokenID = %d, want 258884", got)
+	}
+	if got := tm.VideoPlaceholderBlock(2); got != "<|image><|video|><|video|><image|>" {
+		t.Fatalf("VideoPlaceholderBlock(2) = %q", got)
+	}
+	if got := tm.VideoPlaceholderBlock(0); got != "" {
+		t.Fatalf("VideoPlaceholderBlock(0) = %q, want empty", got)
+	}
+}
+
+func TestNativeAudioFromLoadedMapsPayload_Good(t *testing.T) {
+	loaded := &model.LoadedAudio{
+		Subsample: model.LoadedAudioSubsample{
+			Conv0: []byte{1}, Norm0W: []byte{2, 0, 3, 0}, Norm0B: []byte{4, 0, 5, 0},
+			Conv1: []byte{6}, Norm1W: []byte{7, 0}, Norm1B: []byte{8, 0},
+			InputProj: model.LoadedAudioLinear{
+				Weight: []byte{9},
+				Clip: model.LoadedAudioClipPair{
+					In: model.LoadedAudioClipBound{Min: -1, Max: 1, Present: true},
+				},
+			},
+		},
+		OutputProj: []byte{10, 0, 11, 0},
+		Projector:  model.LoadedAudioLinear{Weight: []byte{12, 0}},
+		Cfg: model.LoadedAudioConfig{
+			Hidden: 8, FFInter: 16, Channels: 8, KernelSize: 5, Eps: 1e-6, Act: "silu",
+			FFResidual: 0.5, ClipMin: -6, ClipMax: 6, NumHeads: 2, HeadDim: 4,
+			ChunkSize: 3, PastHorizon: 2, FutureHorizon: 1, KScale: 0.5, LogitCap: 50,
+			InvalidLogit: -1e9, OutputDim: 2, AudioTokenID: 77,
+			AudioBeginToken: "<|audio>", AudioToken: "<|audio|>", AudioEndToken: "<audio|>",
+		},
+		Layers: []model.LoadedAudioLayer{{
+			FF1: model.LoadedAudioFeedForward{
+				PreNorm: []byte{13}, PostNorm: []byte{14},
+				FFW1: model.LoadedAudioLinear{Weight: []byte{15}},
+				FFW2: model.LoadedAudioLinear{Weight: []byte{16}},
+			},
+			FF2: model.LoadedAudioFeedForward{
+				PreNorm: []byte{17}, PostNorm: []byte{18},
+				FFW1: model.LoadedAudioLinear{Weight: []byte{19}},
+				FFW2: model.LoadedAudioLinear{Weight: []byte{20}},
+			},
+			Attn: model.LoadedAudioAttention{
+				Q: model.LoadedAudioLinear{Weight: []byte{21}},
+				K: model.LoadedAudioLinear{Weight: []byte{22}},
+				V: model.LoadedAudioLinear{Weight: []byte{23}},
+				Post: model.LoadedAudioLinear{
+					Weight: []byte{24},
+					Clip: model.LoadedAudioClipPair{
+						Out: model.LoadedAudioClipBound{Min: -2, Max: 2, Present: true},
+					},
+				},
+				RelativeKProj: []byte{25},
+				QScalePerDim:  []float32{0.5, 0.6, 0.7, 0.8},
+				PosEmbed:      []float32{1, 2, 3, 4},
+				PosCount:      1,
+			},
+			LConv: model.LoadedAudioLightConv{
+				PreNorm: []byte{26}, ConvNorm: []byte{27},
+				LinearStart:     model.LoadedAudioLinear{Weight: []byte{28}},
+				LinearEnd:       model.LoadedAudioLinear{Weight: []byte{29}},
+				DepthwiseWeight: []byte{30},
+			},
+			NormPreAttn:  []byte{31},
+			NormPostAttn: []byte{32},
+			NormOut:      []byte{33},
+		}},
+	}
+
+	weights, cfg, projector, ok := nativeAudioFromLoaded(loaded, 24, 8)
+	if !ok {
+		t.Fatal("nativeAudioFromLoaded ok = false, want true")
+	}
+	if cfg.Hidden != 8 || cfg.FFInter != 16 || cfg.NumHeads != 2 || cfg.HeadDim != 4 || cfg.PastHorizon != 2 {
+		t.Fatalf("native audio cfg = %+v, want loaded geometry", cfg)
+	}
+	if weights.SubsampleC.Frames != 24 || weights.SubsampleC.MelBins != 8 || weights.SubsampleC.OutC0 != 2 || weights.SubsampleC.OutC1 != 1 {
+		t.Fatalf("native audio subsample cfg = %+v", weights.SubsampleC)
+	}
+	if weights.Subsample.InputProj[0] != 9 || !weights.Subsample.InputProjClip.In.Present {
+		t.Fatalf("native audio subsample weights/clip = %+v", weights.Subsample)
+	}
+	if len(weights.Layers) != 1 || weights.Layers[0].Attn.QProj[0] != 21 || weights.Layers[0].Attn.PostClip.Out.Max != 2 ||
+		weights.Layers[0].LConv.DepthwiseWeight[0] != 30 || weights.Layers[0].NormOut[0] != 33 {
+		t.Fatalf("native audio layer weights = %+v", weights.Layers)
+	}
+	if projector.Weight[0] != 12 {
+		t.Fatalf("projector = %+v, want loaded projector", projector)
+	}
+	loaded.OutputProj[0] = 99
+	if weights.OutputProj[0] != 99 {
+		t.Fatal("native audio converter copied output projection, want no-copy alias")
+	}
+}
+
+func TestNativeTokenModelAudioPlaceholderBlock_Good(t *testing.T) {
+	tm := &NativeTokenModel{audio: &model.LoadedAudio{Cfg: model.LoadedAudioConfig{
+		AudioTokenID: 77, AudioBeginToken: "<|audio>", AudioToken: "<|audio|>", AudioEndToken: "<audio|>",
+	}}}
+	if got := tm.AudioPlaceholderTokenID(); got != 77 {
+		t.Fatalf("AudioPlaceholderTokenID = %d, want 77", got)
+	}
+	if got := tm.AudioPlaceholderBlock(2); got != "<|audio><|audio|><|audio|><audio|>" {
+		t.Fatalf("AudioPlaceholderBlock(2) = %q", got)
+	}
+	if got := tm.AudioSoftTokens(24); got != 6 {
+		t.Fatalf("AudioSoftTokens(24) = %d, want 6", got)
+	}
+	if got := tm.AudioPlaceholderBlock(0); got != "" {
+		t.Fatalf("AudioPlaceholderBlock(0) = %q, want empty", got)
+	}
+}
+
+func TestNativeAudioProjectorNoScaleNormalisesRows_Good(t *testing.T) {
+	rows := []float32{3, 4, 0, 2}
+	got, err := nativeAudioProjector(rows, model.LoadedAudioLinear{}, 2, 0)
+	if err != nil {
+		t.Fatalf("nativeAudioProjector(no projection): %v", err)
+	}
+	want := append([]float32(nil), rows...)
+	rmsNormVec(want[:2], nil, 0)
+	rmsNormVec(want[2:], nil, 0)
+	if !slices.Equal(got, f32ToBf16Slice(want)) {
+		t.Fatalf("nativeAudioProjector(no projection) = %v, want no-scale RMS rows %v", bf16Floats(got), bf16Floats(f32ToBf16Slice(want)))
+	}
+}
+
+func TestNativeAudioProjectorQuantizedRows_Good(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const inDim, outDim, groupSize, bits = 64, 2, 64, 4
+	projector := model.LoadedAudioLinear{
+		Weight:    make([]byte, outDim*(inDim*bits/32)*4),
+		Scales:    toBF16Bytes([]float32{1, 1}),
+		Biases:    toBF16Bytes([]float32{0, 0}),
+		OutDim:    outDim,
+		InDim:     inDim,
+		GroupSize: groupSize,
+		Bits:      bits,
+		Kind:      "affine",
+	}
+	got, err := nativeAudioProjector(syntheticFloat32(inDim, 5), projector, inDim, 1e-6)
+	if err != nil {
+		t.Fatalf("nativeAudioProjector(quant): %v", err)
+	}
+	if len(got) != outDim*bf16Size {
+		t.Fatalf("quant projector bytes = %d, want %d", len(got), outDim*bf16Size)
+	}
+}
+
+func TestNativeTokenModelInjectAudioFeatures_Good(t *testing.T) {
+	const H = 8
+	const audioTok = int32(77)
+	tm := &NativeTokenModel{
+		NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}},
+		audio:         &model.LoadedAudio{Cfg: model.LoadedAudioConfig{AudioTokenID: int(audioTok)}},
+	}
+	tokenIDs := []int32{10, audioTok, 11, audioTok}
+	emb := toBF16Bytes(syntheticFloat32(4*H, 3))
+	feat := toBF16Bytes(syntheticFloat32(2*H, 7))
+	got, err := tm.InjectAudioFeatures(emb, tokenIDs, feat)
+	if err != nil {
+		t.Fatalf("InjectAudioFeatures: %v", err)
+	}
+	g, e, f := bf16Floats(got), bf16Floats(emb), bf16Floats(feat)
+	if !slices.Equal(g[1*H:2*H], f[0:H]) || !slices.Equal(g[3*H:4*H], f[1*H:2*H]) {
+		t.Fatalf("audio rows were not spliced into placeholder slots: got=%v features=%v", g, f)
+	}
+	if !slices.Equal(g[0:H], e[0:H]) || !slices.Equal(g[2*H:3*H], e[2*H:3*H]) {
+		t.Fatalf("ordinary token rows changed: got=%v embeddings=%v", g, e)
+	}
+
+	noAudio := &NativeTokenModel{NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}}}
+	if _, err := noAudio.InjectAudioFeatures(emb, tokenIDs, feat); err == nil {
+		t.Fatal("InjectAudioFeatures without audio payload error = nil")
+	}
+}
+
+func TestNativeTokenModelProjectImageFeatures_Good(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	tm := &NativeTokenModel{vision: &model.LoadedVision{
+		PatchEmbedding: toBF16Bytes([]float32{1, 0, 0, 1}),
+		Cfg: model.LoadedVisionConfig{
+			Hidden: 2, PatchDim: 2, NumHeads: 1, NumKVHeads: 1, HeadDim: 2,
+			RMSNormEps: 1e-6, PoolKernel: 1,
+		},
+	}}
+	got, err := tm.ProjectImageFeatures(toBF16Bytes([]float32{0.75, 0.25, 0.25, 0.75}))
+	if err != nil {
+		t.Fatalf("ProjectImageFeatures: %v", err)
+	}
+	if len(got) != 2*2*2 {
+		t.Fatalf("projected feature bytes = %d, want 8", len(got))
+	}
+}
 
 // TestNativeTokenModel_ContractParity gates the token-loop CONTRACT against the
 // proven native generation loop: model.Generate over a NativeTokenModel
@@ -138,6 +453,66 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 	}
 
 	t.Logf("token-loop contract (incremental session) ≡ native generation ≡ whole-seq: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
+}
+
+func TestNativeTokenModelTopologyCapabilities(t *testing.T) {
+	arch := model.Arch{
+		Hidden:        32,
+		Heads:         16,
+		SlidingWindow: 4096,
+		Layer: []model.LayerSpec{
+			{Attention: model.SlidingAttention, KVShareFrom: 0, CacheIndex: 0},
+			{Attention: model.GlobalAttention, KVShareFrom: 1, CacheIndex: 1},
+			{Attention: model.SlidingAttention, KVShareFrom: 0, CacheIndex: -1},
+		},
+	}
+	tm := &NativeTokenModel{NativeBackend: &NativeBackend{arch: arch}}
+
+	if got := tm.NumLayers(); got != len(arch.Layer) {
+		t.Fatalf("NumLayers() = %d, want %d", got, len(arch.Layer))
+	}
+	if got := tm.NumQueryHeads(); got != arch.Heads {
+		t.Fatalf("NumQueryHeads() = %d, want %d", got, arch.Heads)
+	}
+	reporter, ok := any(tm).(interface {
+		HiddenSize() int
+		QuantBits() int
+		QuantGroup() int
+	})
+	if !ok {
+		t.Fatal("NativeTokenModel does not expose metadata reporter methods")
+	}
+	if got := reporter.HiddenSize(); got != arch.Hidden {
+		t.Fatalf("HiddenSize() = %d, want %d", got, arch.Hidden)
+	}
+	if reporter.QuantBits() != 0 || reporter.QuantGroup() != 0 {
+		t.Fatalf("bf16 quant metadata = %d/%d, want 0/0", reporter.QuantBits(), reporter.QuantGroup())
+	}
+	if !tm.UsesFixedSlidingCache() {
+		t.Fatal("UsesFixedSlidingCache() = false, want true for sliding-window arch")
+	}
+	if !tm.NeedsThoughtChannelSuppressor() {
+		t.Fatal("NeedsThoughtChannelSuppressor() = false, want true at 16 query heads")
+	}
+	if got, want := tm.AttentionCacheLayout(3, 2), []int{0, 1, 0}; !slices.Equal(got, want) {
+		t.Fatalf("AttentionCacheLayout() = %v, want %v", got, want)
+	}
+	if got, want := tm.AttentionCacheLayout(4, 1), []int{0, -1, 0, -1}; !slices.Equal(got, want) {
+		t.Fatalf("AttentionCacheLayout(capped caches) = %v, want %v", got, want)
+	}
+
+	dense := &NativeTokenModel{NativeBackend: &NativeBackend{arch: model.Arch{Heads: 8}}}
+	if dense.UsesFixedSlidingCache() {
+		t.Fatal("dense UsesFixedSlidingCache() = true, want false")
+	}
+	if dense.NeedsThoughtChannelSuppressor() {
+		t.Fatal("dense NeedsThoughtChannelSuppressor() = true, want false below 16 query heads")
+	}
+
+	quant := &NativeTokenModel{NativeBackend: &NativeBackend{arch: arch}, quantBits: 4, quantGroup: 64}
+	if quant.QuantBits() != 4 || quant.QuantGroup() != 64 {
+		t.Fatalf("quant metadata = %d/%d, want 4/64", quant.QuantBits(), quant.QuantGroup())
+	}
 }
 
 func TestNativeBF16TokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {

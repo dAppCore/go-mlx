@@ -212,19 +212,19 @@ func LMHeadQuantInto(out []byte, hidden, finalNormW, packed, scales, biases []by
 		packedBuf, scalesBuf, biasesBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
 		normed := scratchBF16(dModel)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if encErr = encRMSNormBF16(enc, hiddenBuf, finalNormBuf, normed, 0, dModel, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encQMVBF16(enc, packedBuf, scalesBuf, biasesBuf, normed, logitsBuf, 0, 0, 0, 0, vocab, dModel, groupSize, bits); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, ioScratch.out.bytes[:outLen])
 		}

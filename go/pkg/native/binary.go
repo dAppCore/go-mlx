@@ -21,6 +21,7 @@ var (
 type binaryByteScratch struct {
 	byteLen       int
 	a, b          *pinnedNoCopyBytes
+	aView, bView  cachedNoCopyBytesView
 	out           *pinnedNoCopyBytes
 	outViewPtr    uintptr
 	outViewLen    int
@@ -108,6 +109,8 @@ func (s *binaryByteScratch) Close() {
 		s.b.Close()
 		s.b = nil
 	}
+	s.aView.Close()
+	s.bView.Close()
 	if s.out != nil {
 		s.out.Close()
 		s.out = nil
@@ -138,6 +141,13 @@ func (s *binaryByteScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -161,13 +171,20 @@ func (s *binaryByteScratch) buffers(a, b []byte) (metal.MTLBuffer, metal.MTLBuff
 	if len(a) != s.byteLen || len(b) != s.byteLen || len(s.out.bytes) != s.byteLen {
 		return nil, nil, nil, errBinaryByteScratchDim
 	}
-	aBuf, err := s.a.copyBuffer(a)
-	if err != nil {
-		return nil, nil, nil, err
+	var err error
+	aBuf, aNoCopy := s.aView.buffer(a)
+	if !aNoCopy {
+		aBuf, err = s.a.copyBuffer(a)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
-	bBuf, err := s.b.copyBuffer(b)
-	if err != nil {
-		return nil, nil, nil, err
+	bBuf, bNoCopy := s.bView.buffer(b)
+	if !bNoCopy {
+		bBuf, err = s.b.copyBuffer(b)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	return aBuf, bBuf, s.out.buf, nil
 }

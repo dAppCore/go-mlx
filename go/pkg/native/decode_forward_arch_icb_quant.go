@@ -12,7 +12,10 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
-type archICBQuantPSOKey struct{ outDim, inDim, groupSize, bits int }
+type archICBQuantPSOKey struct {
+	outDim, inDim, groupSize, bits int
+	dense                          bool
+}
 
 type archICBQuantProjCheck struct {
 	w           QuantWeight
@@ -269,7 +272,7 @@ func recordArchICBQuant(
 				wantPacked = p.outDim * p.inD * effBits / 8
 				wantSB = p.outDim * (p.inD / effGS) * bf16Size
 			}
-			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
+			if !quantWeightProjectionShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
 				return nil, core.NewError(core.Sprintf("native.DecodeForwardArchICBQuant: %s quant size mismatch — outDim=%d inD=%d bits=%d gs=%d; Packed=%d want %d; Scales=%d want %d; Biases=%d want %d",
 					projNames[pi], p.outDim, p.inD, effBits, effGS, len(p.w.Packed), wantPacked, len(p.w.Scales), wantSB, len(p.w.Biases), wantSB))
 			}
@@ -299,7 +302,24 @@ func recordArchICBQuant(
 		psoByKey[key] = pso
 		return pso, nil
 	}
+	denseGemvPSO := func(outDim, inDim int) (metal.MTLComputePipelineState, error) {
+		key := archICBQuantPSOKey{outDim: outDim, inDim: inDim, dense: true}
+		if pso, ok := psoByKey[key]; ok {
+			return pso, nil
+		}
+		bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+		pso, err := pipelineForICB(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
+		if err != nil {
+			return nil, err
+		}
+		psoByKey[key] = pso
+		return pso, nil
+	}
 	ensureQMVPSO := func(w QuantWeight, outDim, inDim, groupSize, bits int) error {
+		if quantWeightDenseShapeOK(w, outDim, inDim) {
+			_, err := denseGemvPSO(outDim, inDim)
+			return err
+		}
 		groupSize, bits = quantWeightGeometry(w, groupSize, bits)
 		_, err := qmvPSO(outDim, inDim, groupSize, bits)
 		return err
@@ -361,6 +381,9 @@ func recordArchICBQuant(
 			if len(w.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
 				return qmvWeight{}
 			}
+			if len(w.Scales) == 0 && len(w.Biases) == 0 {
+				return qmvWeight{wq: residentView(w.Packed)}
+			}
 			groupSize, bits = quantWeightGeometry(w, groupSize, bits)
 			return qmvWeight{wq: residentView(w.Packed), scales: residentView(w.Scales), biases: residentView(w.Biases), gs: groupSize, bits: bits}
 		}
@@ -373,6 +396,16 @@ func recordArchICBQuant(
 		// Build-on-miss makes the recorder self-sufficient so the two paths cannot diverge; a
 		// genuinely unbuildable geometry sets coreErr (caught after the pool) instead of crashing.
 		psoFor := func(w qmvWeight, outDim, inDim int) metal.MTLComputePipelineState {
+			if w.dense() {
+				pso, err := denseGemvPSO(outDim, inDim)
+				if err != nil {
+					if coreErr == nil {
+						coreErr = core.E("native.recordArchICBQuant", core.Sprintf("gemv pipeline outDim=%d inDim=%d", outDim, inDim), err)
+					}
+					return nil
+				}
+				return pso
+			}
 			pso, err := qmvPSO(outDim, inDim, w.gs, w.bits)
 			if err != nil {
 				if coreErr == nil {
@@ -389,7 +422,13 @@ func recordArchICBQuant(
 		projResident := setup.projResident
 		appendResidentWeight := func(w qmvWeight) {
 			if w.wq.buf != nil { // K==V / KV-shared: no separate weight to make resident
-				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
+				projResident = append(projResident, w.wq.buf)
+				if w.scales.buf != nil {
+					projResident = append(projResident, w.scales.buf)
+				}
+				if w.biases.buf != nil {
+					projResident = append(projResident, w.biases.buf)
+				}
 			}
 		}
 		for li := range qlayers {
@@ -476,6 +515,11 @@ func recordArchICBQuant(
 		// the kDModel/nQDimByHd/… count buffers hold, so they're dropped from the call in favour of the values.
 		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, inDim, outDim int) {
 			if pso == nil { // psoFor failed (coreErr already set) — never msgSend into a nil pipeline state
+				return
+			}
+			if w.dense() {
+				bm, bn, sm, _, tm, _ := gemvTiles(inDim, outDim)
+				emitGemv(fastICBSink{c}, pso, w.wq.buf, w.wq.off, vec, out, outOff, inDim, outDim, bm, bn, sm, tm)
 				return
 			}
 			emitQMV(fastICBSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)

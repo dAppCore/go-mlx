@@ -98,6 +98,10 @@ type nativeGemma4AssistantGenerator interface {
 	GenerateGemma4Assistant(context.Context, *gemma4.Gemma4AssistantPair, string, metal.GenerateConfig, int) (gemma4.Gemma4AssistantGenerateResult, error)
 }
 
+type nativeSpeculativeGenerator interface {
+	GenerateNativeSpeculative(context.Context, NativeModel, string, SpeculativeDecodeConfig) (SpeculativeDecodeResult, bool, error)
+}
+
 var (
 	inspectSpeculativeDraftModelPack = modelinspect.Inspect
 	attachGemma4AssistantDraft       = attachGemma4AssistantDraftToTarget
@@ -147,6 +151,12 @@ func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt st
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if generator, ok := m.model.(nativeSpeculativeGenerator); ok {
+		result, handled, err := generator.GenerateNativeSpeculative(ctx, draft.model, prompt, cfg)
+		if handled || err != nil {
+			return result, err
+		}
 	}
 	generateCfg := cfg.GenerateConfig
 	if generateCfg.MaxTokens == 0 {

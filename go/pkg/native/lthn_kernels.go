@@ -343,6 +343,51 @@ func routerTopKPipeline() (metal.MTLComputePipelineState, error) {
 	return routerTopKPSO, routerTopKPSOErr
 }
 
+type routerTopKScratch struct {
+	numExperts, topK      int
+	scoresView, scaleView cachedNoCopyBytesView
+	idxBuf, weightBuf     metal.MTLBuffer
+}
+
+type routerTopKScratchKey struct {
+	numExperts, topK int
+}
+
+var routerTopKScratchPools sync.Map
+
+func routerTopKScratchPoolFor(numExperts, topK int) *scratchLIFOPool[*routerTopKScratch] {
+	key := routerTopKScratchKey{numExperts: numExperts, topK: topK}
+	if v, ok := routerTopKScratchPools.Load(key); ok {
+		return v.(*scratchLIFOPool[*routerTopKScratch])
+	}
+	p := &scratchLIFOPool[*routerTopKScratch]{}
+	actual, _ := routerTopKScratchPools.LoadOrStore(key, p)
+	return actual.(*scratchLIFOPool[*routerTopKScratch])
+}
+
+func newRouterTopKScratch(numExperts, topK int) *routerTopKScratch {
+	return &routerTopKScratch{
+		numExperts: numExperts,
+		topK:       topK,
+		idxBuf:     device.NewBufferWithLengthOptions(uint(topK*4), metal.MTLResourceStorageModeShared),
+		weightBuf:  scratchBF16(topK),
+	}
+}
+
+func getRouterTopKScratch(numExperts, topK int) *routerTopKScratch {
+	p := routerTopKScratchPoolFor(numExperts, topK)
+	if s := p.Get(); s != nil && s.numExperts == numExperts && s.topK == topK && s.idxBuf != nil && s.weightBuf != nil {
+		return s
+	}
+	return newRouterTopKScratch(numExperts, topK)
+}
+
+func putRouterTopKScratch(s *routerTopKScratch) {
+	if s != nil && s.numExperts > 0 && s.topK > 0 && s.idxBuf != nil && s.weightBuf != nil {
+		routerTopKScratchPoolFor(s.numExperts, s.topK).Put(s)
+	}
+}
+
 func encRouterTopKBF16(enc metal.MTLComputeCommandEncoder, scores, perExpertScale, topIndices, topWeights metal.MTLBuffer, scaleOff uint, numExperts, topK int, hasScale bool) error {
 	if topK <= 0 || topK > numExperts || topK > routerTopKMaxK {
 		return core.NewError("native.encRouterTopKBF16: topK must be in 1..numExperts and <= 32")
@@ -391,24 +436,31 @@ func routerTopKBF16(scoresB, perExpertScale []byte, numExperts, topK int) ([]int
 	weights := make([]byte, topK*bf16Size)
 	var encErr error
 	withAutoreleasePool(func() {
-		scoresBuf := sharedBytes(scoresB)
+		scratch := getRouterTopKScratch(numExperts, topK)
+		defer putRouterTopKScratch(scratch)
+		scoresBuf, ok := scratch.scoresView.bufferAfterStable(scoresB, 2)
+		if !ok {
+			scoresBuf = sharedBytes(scoresB)
+		}
 		scaleBuf := metal.MTLBuffer(nil)
 		if perExpertScale != nil {
-			scaleBuf = sharedBytes(perExpertScale)
+			var ok bool
+			scaleBuf, ok = scratch.scaleView.bufferAfterStable(perExpertScale, 2)
+			if !ok {
+				scaleBuf = sharedBytes(perExpertScale)
+			}
 		}
-		idxBuf := device.NewBufferWithLengthOptions(uint(topK*4), metal.MTLResourceStorageModeShared)
-		weightBuf := scratchBF16(topK)
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		if encErr = encRouterTopKBF16(enc, scoresBuf, scaleBuf, idxBuf, weightBuf, 0, numExperts, topK, perExpertScale != nil); encErr != nil {
-			enc.EndEncoding()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encRouterTopKBF16(enc, scoresBuf, scaleBuf, scratch.idxBuf, scratch.weightBuf, 0, numExperts, topK, perExpertScale != nil); encErr != nil {
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
-		copy(idx, unsafe.Slice((*int32)(idxBuf.Contents()), topK))
-		copy(weights, unsafe.Slice((*byte)(weightBuf.Contents()), topK*bf16Size))
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		copy(idx, unsafe.Slice((*int32)(scratch.idxBuf.Contents()), topK))
+		copy(weights, unsafe.Slice((*byte)(scratch.weightBuf.Contents()), topK*bf16Size))
 	})
 	if encErr != nil {
 		return nil, nil, encErr
@@ -759,17 +811,17 @@ func encBF16LogitsArgmaxTilesBF16(
 		return err
 	}
 	tileCount := (vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(tileValues, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(tileIndices, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, logits, 0, 0)
+	setBuf(enc, tileValues, 0, 1)
+	setBuf(enc, tileIndices, 0, 2)
 	setEncInt32(enc, int32(vocab), 3)
 	if suppress == nil {
 		suppress = logits
 	}
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 4)
+	setBuf(enc, suppress, 0, 4)
 	setEncInt32(enc, int32(suppressCount), 5)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+	dispatchThreadgroups(enc,
 		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)
@@ -790,19 +842,19 @@ func encBF16LMHeadArgmaxTilesBF16(
 		return err
 	}
 	tileCount := (vocab + bf16LMHeadArgmaxRowsPerTile - 1) / bf16LMHeadArgmaxRowsPerTile
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
-	enc.SetBufferWithOffsetAtIndex(weight, weightOff, 1)
-	enc.SetBufferWithOffsetAtIndex(tileValues, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(tileIndices, 0, 3)
+	setPSO(enc, pso)
+	setBuf(enc, x, xOff, 0)
+	setBuf(enc, weight, weightOff, 1)
+	setBuf(enc, tileValues, 0, 2)
+	setBuf(enc, tileIndices, 0, 3)
 	setEncInt32(enc, int32(dModel), 4)
 	setEncInt32(enc, int32(vocab), 5)
 	if suppress == nil {
 		suppress = x
 	}
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 6)
+	setBuf(enc, suppress, 0, 6)
 	setEncInt32(enc, int32(suppressCount), 7)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+	dispatchThreadgroups(enc,
 		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: bf16LMHeadArgmaxRowsPerTile, Depth: 1},
 	)
@@ -817,12 +869,12 @@ func encArgmaxMergeF32(enc metal.MTLComputeCommandEncoder, values, indices, out 
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(values, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(indices, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, values, 0, 0)
+	setBuf(enc, indices, 0, 1)
+	setBuf(enc, out, 0, 2)
 	setEncInt32(enc, int32(n), 3)
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)
@@ -883,22 +935,22 @@ func encBF16LogitsCandidatesBF16(
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(values, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(indices, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, logits, 0, 0)
+	setBuf(enc, values, 0, 1)
+	setBuf(enc, indices, 0, 2)
 	setEncInt32(enc, int32(vocab), 3)
 	if suppress == nil {
 		suppress = logits
 	}
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 4)
+	setBuf(enc, suppress, 0, 4)
 	setEncInt32(enc, int32(suppressCount), 5)
 	setEncFloat32(enc, softCap, 6)
 	group := uint(256)
 	if uint(vocab) < group {
 		group = uint(vocab)
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: uint(vocab), Height: 1, Depth: 1},
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)
@@ -922,25 +974,25 @@ func encBF16LogitsTopKTilesBF16(
 		return err
 	}
 	tileCount := (vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(values, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(indices, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, logits, 0, 0)
+	setBuf(enc, values, 0, 1)
+	setBuf(enc, indices, 0, 2)
 	setEncInt32(enc, int32(vocab), 3)
 	if suppress == nil {
 		suppress = logits
 	}
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 4)
+	setBuf(enc, suppress, 0, 4)
 	setEncInt32(enc, int32(suppressCount), 5)
 	if history == nil {
 		history = logits
 	}
-	enc.SetBufferWithOffsetAtIndex(history, 0, 6)
+	setBuf(enc, history, 0, 6)
 	setEncInt32(enc, int32(historyCount), 7)
 	setEncFloat32(enc, repeatPenalty, 8)
 	setEncFloat32(enc, softCap, 9)
 	setEncInt32(enc, int32(topK), 10)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+	dispatchThreadgroups(enc,
 		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)
@@ -1017,31 +1069,90 @@ func encQ4LMHeadTopKTilesBF16(
 		return err
 	}
 	tileCount := (vocab + q4LMHeadTopKRowsPerTile - 1) / q4LMHeadTopKRowsPerTile
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
-	enc.SetBufferWithOffsetAtIndex(weight, weightOff, 1)
-	enc.SetBufferWithOffsetAtIndex(scales, scalesOff, 2)
-	enc.SetBufferWithOffsetAtIndex(biases, biasesOff, 3)
-	enc.SetBufferWithOffsetAtIndex(values, 0, 4)
-	enc.SetBufferWithOffsetAtIndex(indices, 0, 5)
+	setPSO(enc, pso)
+	setBuf(enc, x, xOff, 0)
+	setBuf(enc, weight, weightOff, 1)
+	setBuf(enc, scales, scalesOff, 2)
+	setBuf(enc, biases, biasesOff, 3)
+	setBuf(enc, values, 0, 4)
+	setBuf(enc, indices, 0, 5)
 	setEncInt32(enc, int32(dModel), 6)
 	setEncInt32(enc, int32(vocab), 7)
 	setEncInt32(enc, int32(groupSize), 8)
 	if suppress == nil {
 		suppress = x
 	}
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 9)
+	setBuf(enc, suppress, 0, 9)
 	setEncInt32(enc, int32(suppressCount), 10)
 	if history == nil {
 		history = x
 	}
-	enc.SetBufferWithOffsetAtIndex(history, 0, 11)
+	setBuf(enc, history, 0, 11)
 	setEncInt32(enc, int32(historyCount), 12)
 	setEncFloat32(enc, repeatPenalty, 13)
 	setEncFloat32(enc, softCap, 14)
 	setEncInt32(enc, int32(topK), 15)
 	setEncInt32(enc, int32(candidatesPerTile), 16)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+	dispatchThreadgroups(enc,
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: q4LMHeadTopKSimdgroups, Depth: 1},
+	)
+	return nil
+}
+
+func encQ4LMHeadTopKTilesBF16Object(
+	enc metal.MTLComputeCommandEncoderObject,
+	x, weight, scales, biases, values, indices, suppress, history metal.MTLBuffer,
+	xOff, weightOff, scalesOff, biasesOff uint,
+	dModel, vocab, groupSize, suppressCount, historyCount, topK, candidatesPerTile int,
+	repeatPenalty, softCap float32,
+) error {
+	if dModel <= 0 || vocab <= 0 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: invalid head geometry")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: topK must be in 1..64")
+	}
+	if candidatesPerTile <= 0 || candidatesPerTile > topK || candidatesPerTile > q4LMHeadTopKRowsPerTile {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: invalid candidatesPerTile")
+	}
+	if groupSize != 32 && groupSize != 64 && groupSize != 128 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: groupSize must be 32, 64, or 128")
+	}
+	if dModel%groupSize != 0 || dModel%q4LMHeadTopKBlockSize != 0 {
+		return core.NewError("native.encQ4LMHeadTopKTilesBF16: dModel must be a multiple of groupSize and 512")
+	}
+	pso, err := q4LMHeadTopKTilesPipeline()
+	if err != nil {
+		return err
+	}
+	if suppress == nil {
+		suppress = x
+	}
+	if history == nil {
+		history = x
+	}
+	tileCount := (vocab + q4LMHeadTopKRowsPerTile - 1) / q4LMHeadTopKRowsPerTile
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(x, xOff, 0)
+	sink.setBuf(weight, weightOff, 1)
+	sink.setBuf(scales, scalesOff, 2)
+	sink.setBuf(biases, biasesOff, 3)
+	sink.setBuf(values, 0, 4)
+	sink.setBuf(indices, 0, 5)
+	sink.setI32(int32(dModel), 6)
+	sink.setI32(int32(vocab), 7)
+	sink.setI32(int32(groupSize), 8)
+	sink.setBuf(suppress, 0, 9)
+	sink.setI32(int32(suppressCount), 10)
+	sink.setBuf(history, 0, 11)
+	sink.setI32(int32(historyCount), 12)
+	sink.setF32(repeatPenalty, 13)
+	sink.setF32(softCap, 14)
+	sink.setI32(int32(topK), 15)
+	sink.setI32(int32(candidatesPerTile), 16)
+	sink.dispatchThreadgroups(
 		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: q4LMHeadTopKSimdgroups, Depth: 1},
 	)
@@ -1059,14 +1170,14 @@ func encTopKMergeF32(enc metal.MTLComputeCommandEncoder, values, indices, outVal
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(values, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(indices, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(outValues, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(outIndices, 0, 3)
+	setPSO(enc, pso)
+	setBuf(enc, values, 0, 0)
+	setBuf(enc, indices, 0, 1)
+	setBuf(enc, outValues, 0, 2)
+	setBuf(enc, outIndices, 0, 3)
 	setEncInt32(enc, int32(n), 4)
 	setEncInt32(enc, int32(topK), 5)
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)
@@ -1128,13 +1239,13 @@ func encLogitsSampleBF16(enc metal.MTLComputeCommandEncoder, logits, suppress, h
 	if history == nil {
 		history = logits
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(logits, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(suppress, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(history, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
-	enc.SetBufferWithOffsetAtIndex(params, 0, 4)
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	setPSO(enc, pso)
+	setBuf(enc, logits, 0, 0)
+	setBuf(enc, suppress, 0, 1)
+	setBuf(enc, history, 0, 2)
+	setBuf(enc, out, 0, 3)
+	setBuf(enc, params, 0, 4)
+	dispatchThreads(enc,
 		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
 		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
 	)

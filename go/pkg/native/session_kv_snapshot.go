@@ -7,7 +7,6 @@ package native
 import (
 	"encoding/binary"
 	"math"
-	"strings"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/kv"
@@ -17,7 +16,9 @@ import (
 const nativeKVSnapshotDTypeBF16 = "bfloat16"
 
 // KVBlockSource streams root KV snapshot blocks without requiring callers to
-// assemble a full CPU-side kv.Snapshot first.
+// assemble a full CPU-side kv.Snapshot first. RetainedLogits borrows the source
+// session's retained boundary buffer; consume or copy it before mutating/closing
+// the source session.
 type KVBlockSource struct {
 	TokenCount          int
 	PrefixTokens        int
@@ -27,6 +28,7 @@ type KVBlockSource struct {
 	RetainedLogits      []byte
 	BlockCount          int
 	Load                func(int) (kv.Block, error)
+	nativeStateSource   *SessionStateBlockSource
 }
 
 // CaptureKV captures the session's current native K/V cache as a root KV
@@ -131,8 +133,9 @@ func (s *ArchSession) KVBlockSource(blockSize int, opts kv.CaptureOptions) (KVBl
 		TrustedPrefixTokens: stateSource.trustedPrefixTokens(),
 		FirstBlockIndex:     stateSource.firstBlockIndex,
 		CachedIDs:           append([]int32(nil), stateSource.CachedIDs...),
-		RetainedLogits:      append([]byte(nil), stateSource.RetainedLogits...),
+		RetainedLogits:      stateSource.RetainedLogits,
 		BlockCount:          stateSource.BlockCount,
+		nativeStateSource:   &stateSource,
 	}
 	source.Load = func(index int) (kv.Block, error) {
 		block, err := stateSource.Load(index)
@@ -203,13 +206,24 @@ func (s *ArchSession) RestoreKV(snapshot *kv.Snapshot) error {
 		if err := nativeKVValidateLayerMetadata("native.RestoreKV", layer, view); err != nil {
 			return err
 		}
-		keySlab, valueSlab, tokenCount, err := nativeKVLayerSnapshotSlabs(layer, view)
-		if err != nil {
-			return err
-		}
 		wantTokens := position
 		if view.maxSize > 0 && position > view.cacheRows {
 			wantTokens = view.cacheRows
+		}
+		if keySlab, valueSlab, tokenCount, ok, err := nativeKVLayerSnapshotDirectBF16Slabs("native.RestoreKV", layer, view); err != nil {
+			return err
+		} else if ok {
+			if tokenCount != wantTokens {
+				return core.NewError("native.RestoreKV: layer window length mismatch")
+			}
+			if err := restoreNativeKVLayerSlabs("native.RestoreKV", view, position-tokenCount, tokenCount, position, keySlab, valueSlab); err != nil {
+				return err
+			}
+			continue
+		}
+		keySlab, valueSlab, tokenCount, err := nativeKVLayerSnapshotSlabs(layer, view)
+		if err != nil {
+			return err
 		}
 		if tokenCount != wantTokens {
 			return core.NewError("native.RestoreKV: layer window length mismatch")
@@ -233,8 +247,72 @@ func (s *ArchSession) RestoreKV(snapshot *kv.Snapshot) error {
 			return err
 		}
 	}
+	if err := s.reloadPagedStateLayerViews(position, targetViews); err != nil {
+		return err
+	}
 	if err := s.restoreKVSnapshotMetadata(snapshot, position); err != nil {
 		return err
+	}
+	return nil
+}
+
+func nativeKVLayerSnapshotDirectBF16Slabs(scope string, layer kv.LayerSnapshot, view sessionStateLayerView) ([]byte, []byte, int, bool, error) {
+	if len(layer.TurboQuantPayloads) > 0 || len(layer.KeyBytes) == 0 || len(layer.ValueBytes) == 0 {
+		return nil, nil, 0, false, nil
+	}
+	if !nativeKVIsBF16DType(layer.KeyDType) || !nativeKVIsBF16DType(layer.ValueDType) {
+		return nil, nil, 0, false, nil
+	}
+	keySlab, keySeq, err := nativeKVLayerRawSlabBF16(layer.KeyBytes, layer.KeyDType, layer.KeyShape, view)
+	if err != nil {
+		return nil, nil, 0, true, core.E(scope, "native layer key", err)
+	}
+	valueSlab, valueSeq, err := nativeKVLayerRawSlabBF16(layer.ValueBytes, layer.ValueDType, layer.ValueShape, view)
+	if err != nil {
+		return nil, nil, 0, true, core.E(scope, "native layer value", err)
+	}
+	if keySeq != valueSeq {
+		return nil, nil, 0, true, core.NewError(scope + ": layer key/value window mismatch")
+	}
+	return keySlab, valueSlab, keySeq, true, nil
+}
+
+func restoreNativeKVLayerSlabs(scope string, view sessionStateLayerView, start, tokenCount, position int, keySlab, valueSlab []byte) error {
+	if view.rowBytes <= 0 || view.cacheRows <= 0 || view.kvHeads <= 0 || view.headDim <= 0 {
+		return core.NewError(scope + ": invalid layer view geometry")
+	}
+	headBytes := view.headDim * bf16Size
+	want := view.kvHeads * tokenCount * headBytes
+	if tokenCount <= 0 || len(keySlab) != want || len(valueSlab) != want {
+		return core.NewError(scope + ": layer slab size mismatch")
+	}
+	if view.maxSize > 0 && position > view.cacheRows {
+		windowStart := position - view.cacheRows
+		if start < windowStart {
+			return core.NewError(scope + ": layer starts before sliding cache window")
+		}
+	} else {
+		off := start * view.rowBytes
+		n := tokenCount * view.rowBytes
+		if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+			return core.NewError(scope + ": layer exceeds cache rows")
+		}
+	}
+	for token := 0; token < tokenCount; token++ {
+		slot := start + token
+		if view.maxSize > 0 && position > view.cacheRows {
+			slot %= view.cacheRows
+		}
+		dstRow := slot * view.rowBytes
+		for head := 0; head < view.kvHeads; head++ {
+			src := (head*tokenCount + token) * headBytes
+			dst := dstRow + head*headBytes
+			if dst < 0 || dst+headBytes > len(view.keyBytes) || dst+headBytes > len(view.valueBytes) {
+				return core.NewError(scope + ": layer exceeds cache rows")
+			}
+			copy(view.keyBytes[dst:dst+headBytes], keySlab[src:src+headBytes])
+			copy(view.valueBytes[dst:dst+headBytes], valueSlab[src:src+headBytes])
+		}
 	}
 	return nil
 }
@@ -277,11 +355,19 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		}
 		return s.restoreTrustedKVBlockMetadata(source, prefixTokens)
 	}
+	if stateSource, ok, err := source.nativeRestoreStateSource(prefixTokens); err != nil {
+		return err
+	} else if ok {
+		if err := s.RestoreStateBlocks(stateSource); err != nil {
+			return core.E("native.RestoreKVBlocks", "native state source", err)
+		}
+		return nil
+	}
 	targetViews, err := s.stateLayerViews()
 	if err != nil {
 		return err
 	}
-	cachedIDs := make([]int32, 0, prefixTokens)
+	cachedIDs := s.kvBlockCachedIDScratch(prefixTokens)
 	if trustedPrefix > 0 {
 		cachedIDs = append(cachedIDs, s.cachedIDs[:trustedPrefix]...)
 	}
@@ -310,7 +396,15 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 			if trimCount <= 0 {
 				return core.NewError("native.RestoreKVBlocks: invalid block token range")
 			}
-			trimmed, err := block.Snapshot.SliceBlock(0, trimCount, block.TokenStart, false)
+			if nativeKVSnapshotHasTurboQuantPayload(block.Snapshot) {
+				if err := s.restoreKVSnapshotBlockLayersPrefix(block, trimCount, prefixTokens, targetViews); err != nil {
+					return core.E("native.RestoreKVBlocks", "restore prefix block", err)
+				}
+				cachedIDs = append(cachedIDs, block.Snapshot.Tokens[:trimCount]...)
+				expectedStart += trimCount
+				continue
+			}
+			trimmed, err := nativeKVSliceBlockPrefix(block.Snapshot, trimCount, block.TokenStart)
 			if err != nil {
 				return core.E("native.RestoreKVBlocks", "slice prefix block", err)
 			}
@@ -339,29 +433,166 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 	if expectedStart != prefixTokens {
 		return core.NewError("native.RestoreKVBlocks: block coverage does not match token count")
 	}
-	metadata := &kv.Snapshot{
-		Tokens:      cachedIDs,
-		TokenOffset: prefixTokens,
-	}
+	var generated []int32
+	var logitShape []int32
+	var logits []float32
 	if finalSnapshot != nil && prefixTokens == source.TokenCount {
-		metadata.Generated = finalSnapshot.Generated
-		metadata.LogitShape = finalSnapshot.LogitShape
-		metadata.Logits = finalSnapshot.Logits
+		generated = finalSnapshot.Generated
+		logitShape = finalSnapshot.LogitShape
+		logits = finalSnapshot.Logits
 	}
-	return s.restoreKVSnapshotMetadata(metadata, prefixTokens)
+	if err := s.reloadPagedStateLayerViews(prefixTokens, targetViews); err != nil {
+		return err
+	}
+	if prefixTokens == source.TokenCount && len(source.RetainedLogits) > 0 {
+		return s.restoreKVBlockMetadataRetainedLogits(cachedIDs, generated, source.RetainedLogits, prefixTokens)
+	}
+	return s.restoreKVBlockMetadata(cachedIDs, generated, logitShape, logits, prefixTokens)
+}
+
+func (s *ArchSession) kvBlockCachedIDScratch(n int) []int32 {
+	if s == nil {
+		return nil
+	}
+	if cap(s.kvBlockCachedIDs) < n {
+		s.kvBlockCachedIDs = make([]int32, 0, n)
+	}
+	return s.kvBlockCachedIDs[:0]
+}
+
+func (source KVBlockSource) nativeRestoreStateSource(prefixTokens int) (SessionStateBlockSource, bool, error) {
+	if source.nativeStateSource == nil {
+		return SessionStateBlockSource{}, false, nil
+	}
+	state := *source.nativeStateSource
+	if source.FirstBlockIndex != state.firstBlockIndex || source.BlockCount != state.BlockCount || source.TrustedPrefixTokens != state.trustedPrefixTokens() {
+		return SessionStateBlockSource{}, false, nil
+	}
+	if prefixTokens < 0 || prefixTokens > state.Position {
+		return SessionStateBlockSource{}, false, core.NewError("native.RestoreKVBlocks: prefix tokens outside native source")
+	}
+	if len(state.CachedIDs) < prefixTokens {
+		return SessionStateBlockSource{}, false, core.NewError("native.RestoreKVBlocks: native source ids missing")
+	}
+	state.Position = prefixTokens
+	state.CachedIDs = state.CachedIDs[:prefixTokens]
+	state.CachedPromptIDs = nil
+	state.CachedPromptHidden = nil
+	state.CachedPromptLogits = nil
+	state.RetainedHidden = nil
+	if prefixTokens != source.TokenCount {
+		state.RetainedLogits = nil
+	}
+	if err := nativeKVTrimStateRestoreBlocks(&state, prefixTokens); err != nil {
+		return SessionStateBlockSource{}, false, err
+	}
+	return state, true, nil
+}
+
+func nativeKVTrimStateRestoreBlocks(source *SessionStateBlockSource, prefixTokens int) error {
+	if source == nil {
+		return core.NewError("native.RestoreKVBlocks: nil native state source")
+	}
+	if len(source.blockBoundaries) <= 1 {
+		return nil
+	}
+	if source.firstBlockIndex < 0 || source.firstBlockIndex >= len(source.blockBoundaries) {
+		return core.NewError("native.RestoreKVBlocks: native block index outside boundaries")
+	}
+	endBoundary := source.firstBlockIndex
+	for endBoundary < len(source.blockBoundaries) && source.blockBoundaries[endBoundary] < prefixTokens {
+		endBoundary++
+	}
+	if endBoundary >= len(source.blockBoundaries) {
+		return core.NewError("native.RestoreKVBlocks: native prefix outside block boundaries")
+	}
+	if source.blockBoundaries[endBoundary] != prefixTokens {
+		if endBoundary == source.firstBlockIndex {
+			return core.NewError("native.RestoreKVBlocks: native prefix before first block")
+		}
+		boundaries := append(source.blockBoundaries[:endBoundary:endBoundary], prefixTokens)
+		source.blockBoundaries = boundaries
+	} else {
+		source.blockBoundaries = source.blockBoundaries[:endBoundary+1]
+	}
+	source.BlockCount = endBoundary - source.firstBlockIndex
+	source.totalBlockCount = len(source.blockBoundaries) - 1
+	return nil
+}
+
+func nativeKVSliceBlockPrefix(snapshot *kv.Snapshot, tokenCount, baseOffset int) (*kv.Snapshot, error) {
+	return snapshot.SliceBlock(0, tokenCount, baseOffset, false)
+}
+
+func nativeKVSnapshotHasTurboQuantPayload(snapshot *kv.Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, layer := range snapshot.Layers {
+		if len(layer.TurboQuantPayloads) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeKVLayerSnapshotPrefixSlabs(layer kv.LayerSnapshot, view sessionStateLayerView, tokenCount int) ([]byte, []byte, error) {
+	if len(layer.TurboQuantPayloads) > 0 {
+		keyPrefix, valuePrefix, seqLen, err := nativeTurboQuantKVLayerPrefixSlabs(layer.TurboQuantPayloads, view, tokenCount)
+		if err != nil {
+			return nil, nil, err
+		}
+		if seqLen != tokenCount {
+			return nil, nil, core.NewError("native.RestoreKVBlocks: turboquant prefix length mismatch")
+		}
+		return keyPrefix, valuePrefix, nil
+	}
+	keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(layer, view)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tokenCount > seqLen {
+		return nil, nil, core.NewError("native.RestoreKVBlocks: compressed prefix outside layer window")
+	}
+	keyPrefix, err := nativeKVLayerSlabPrefix(keySlab, seqLen, tokenCount, view.kvHeads, view.headDim)
+	if err != nil {
+		return nil, nil, core.E("native.RestoreKVBlocks", "slice compressed key prefix", err)
+	}
+	valuePrefix, err := nativeKVLayerSlabPrefix(valueSlab, seqLen, tokenCount, view.kvHeads, view.headDim)
+	if err != nil {
+		return nil, nil, core.E("native.RestoreKVBlocks", "slice compressed value prefix", err)
+	}
+	return keyPrefix, valuePrefix, nil
+}
+
+func nativeKVLayerSlabPrefix(src []byte, seqLen, tokenCount, heads, headDim int) ([]byte, error) {
+	if tokenCount <= 0 || tokenCount > seqLen || heads <= 0 || headDim <= 0 {
+		return nil, core.NewError("native.RestoreKVBlocks: invalid layer slab prefix geometry")
+	}
+	rowBytes := headDim * bf16Size
+	if len(src) != heads*seqLen*rowBytes {
+		return nil, core.NewError("native.RestoreKVBlocks: layer slab prefix size mismatch")
+	}
+	out := make([]byte, heads*tokenCount*rowBytes)
+	for head := 0; head < heads; head++ {
+		srcStart := head * seqLen * rowBytes
+		srcEnd := srcStart + tokenCount*rowBytes
+		dstStart := head * tokenCount * rowBytes
+		copy(out[dstStart:dstStart+tokenCount*rowBytes], src[srcStart:srcEnd])
+	}
+	return out, nil
 }
 
 func (s *ArchSession) restoreTrustedKVBlockMetadata(source KVBlockSource, prefixTokens int) error {
 	if len(source.RetainedLogits) > 0 && len(source.RetainedLogits) != s.arch.Vocab*bf16Size {
 		return core.NewError("native.RestoreKVBlocks: retained logits size mismatch")
 	}
+	if len(source.RetainedLogits) > 0 && prefixTokens == source.TokenCount {
+		return s.restoreKVBlockMetadataRetainedLogits(s.cachedIDs[:prefixTokens], nil, source.RetainedLogits, prefixTokens)
+	}
 	metadata := &kv.Snapshot{
 		Tokens:      append([]int32(nil), s.cachedIDs[:prefixTokens]...),
 		TokenOffset: prefixTokens,
-	}
-	if len(source.RetainedLogits) > 0 && prefixTokens == source.TokenCount {
-		metadata.LogitShape = []int32{1, int32(s.arch.Vocab)}
-		metadata.Logits = bf16ToF32Slice(source.RetainedLogits)
 	}
 	return s.restoreKVSnapshotMetadata(metadata, prefixTokens)
 }
@@ -502,17 +733,44 @@ func (s *ArchSession) restoreKVSnapshotBlockLayers(block kv.Block, position int,
 			}
 			continue
 		}
-		keySlab, valueSlab, tokenCount, err := nativeKVLayerSnapshotSlabs(layer, view)
-		if err != nil {
+		if keySlab, valueSlab, tokenCount, ok, err := nativeKVLayerSnapshotDirectBF16Slabs("native.RestoreKVBlocks", layer, view); err != nil {
 			return err
+		} else if ok {
+			if tokenCount != block.TokenCount {
+				return core.NewError("native.RestoreKVBlocks: layer window length mismatch")
+			}
+			if err := restoreNativeKVLayerSlabs("native.RestoreKVBlocks", view, block.TokenStart, tokenCount, position, keySlab, valueSlab); err != nil {
+				return err
+			}
+			continue
+		}
+		var keyRows, valueRows []byte
+		var tokenCount int
+		if len(layer.TurboQuantPayloads) > 0 {
+			if ok, err := s.restoreTurboQuantKVLayerRowsInto(view, block.TokenStart, block.TokenCount, position, layer.TurboQuantPayloads, 0); err != nil {
+				return err
+			} else if ok {
+				continue
+			}
+			var err error
+			keyRows, valueRows, tokenCount, err = nativeTurboQuantKVLayerRows(layer.TurboQuantPayloads, view)
+			if err != nil {
+				return err
+			}
+		} else {
+			keySlab, valueSlab, seqLen, err := nativeKVLayerSnapshotSlabs(layer, view)
+			if err != nil {
+				return err
+			}
+			tokenCount = seqLen
+			keyRows = make([]byte, tokenCount*view.rowBytes)
+			valueRows = make([]byte, tokenCount*view.rowBytes)
+			nativeKVLayerSlabToTokenRows(keyRows, keySlab, tokenCount, view.kvHeads, view.headDim)
+			nativeKVLayerSlabToTokenRows(valueRows, valueSlab, tokenCount, view.kvHeads, view.headDim)
 		}
 		if tokenCount != block.TokenCount {
 			return core.NewError("native.RestoreKVBlocks: layer window length mismatch")
 		}
-		keyRows := make([]byte, tokenCount*view.rowBytes)
-		valueRows := make([]byte, tokenCount*view.rowBytes)
-		nativeKVLayerSlabToTokenRows(keyRows, keySlab, tokenCount, view.kvHeads, view.headDim)
-		nativeKVLayerSlabToTokenRows(valueRows, valueSlab, tokenCount, view.kvHeads, view.headDim)
 		layerBlock := SessionStateLayerBlock{
 			Layer:      view.layer,
 			CacheIndex: view.cacheIndex,
@@ -529,6 +787,150 @@ func (s *ArchSession) restoreKVSnapshotBlockLayers(block kv.Block, position int,
 		}
 	}
 	return nil
+}
+
+func (s *ArchSession) restoreKVSnapshotBlockLayersPrefix(block kv.Block, tokenCount, position int, targetViews []sessionStateLayerView) error {
+	if block.Snapshot == nil {
+		return core.NewError("native.RestoreKVBlocks: nil block snapshot")
+	}
+	if tokenCount <= 0 || tokenCount > block.TokenCount || tokenCount > len(block.Snapshot.Tokens) {
+		return core.NewError("native.RestoreKVBlocks: invalid compressed prefix range")
+	}
+	if block.Snapshot.SeqLen != 0 && block.Snapshot.SeqLen < tokenCount {
+		return core.NewError("native.RestoreKVBlocks: block seq length mismatch")
+	}
+	for _, view := range targetViews {
+		layer, ok := nativeKVSnapshotLayer(block.Snapshot, view.layer)
+		if !ok {
+			return core.NewError("native.RestoreKVBlocks: missing layer")
+		}
+		if err := nativeKVValidateLayerMetadata("native.RestoreKVBlocks", layer, view); err != nil {
+			return err
+		}
+		if !nativeKVLayerHasPayload(layer) {
+			empty := SessionStateLayerBlock{
+				Layer:      view.layer,
+				CacheIndex: view.cacheIndex,
+				CacheMode:  view.cacheMode,
+				MaxSize:    view.maxSize,
+				KVHeads:    view.kvHeads,
+				HeadDim:    view.headDim,
+				RowBytes:   view.rowBytes,
+			}
+			if err := restoreStateBlockLayer(view, block.TokenStart, tokenCount, position, empty); err != nil {
+				return err
+			}
+			continue
+		}
+		var keyRows, valueRows []byte
+		if len(layer.TurboQuantPayloads) > 0 {
+			if ok, err := s.restoreTurboQuantKVLayerRowsInto(view, block.TokenStart, tokenCount, position, layer.TurboQuantPayloads, tokenCount); err != nil {
+				return err
+			} else if ok {
+				continue
+			}
+			var seqLen int
+			var err error
+			keyRows, valueRows, seqLen, err = nativeTurboQuantKVLayerPrefixRows(layer.TurboQuantPayloads, view, tokenCount)
+			if err != nil {
+				return err
+			}
+			if seqLen != tokenCount {
+				return core.NewError("native.RestoreKVBlocks: turboquant prefix length mismatch")
+			}
+		} else {
+			keySlab, valueSlab, err := nativeKVLayerSnapshotPrefixSlabs(layer, view, tokenCount)
+			if err != nil {
+				return err
+			}
+			keyRows = make([]byte, tokenCount*view.rowBytes)
+			valueRows = make([]byte, tokenCount*view.rowBytes)
+			nativeKVLayerSlabToTokenRows(keyRows, keySlab, tokenCount, view.kvHeads, view.headDim)
+			nativeKVLayerSlabToTokenRows(valueRows, valueSlab, tokenCount, view.kvHeads, view.headDim)
+		}
+		layerBlock := SessionStateLayerBlock{
+			Layer:      view.layer,
+			CacheIndex: view.cacheIndex,
+			CacheMode:  view.cacheMode,
+			MaxSize:    view.maxSize,
+			KVHeads:    view.kvHeads,
+			HeadDim:    view.headDim,
+			RowBytes:   view.rowBytes,
+			KeyBytes:   keyRows,
+			ValueBytes: valueRows,
+		}
+		if err := restoreStateBlockLayer(view, block.TokenStart, tokenCount, position, layerBlock); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ArchSession) restoreTurboQuantKVLayerRowsInto(view sessionStateLayerView, start, tokenCount, position int, payloads [][]byte, prefixTokens int) (bool, error) {
+	keyRows, valueRows, ok, err := nativeKVResidentLayerRows(view, start, tokenCount, position)
+	if err != nil || !ok {
+		return ok, err
+	}
+	rotated, normalised := s.turboQuantKVDecodeScratch(view.headDim)
+	parsed, err := s.turboQuantKVPayloads(payloads, view)
+	if err != nil {
+		return true, err
+	}
+	seqLen, err := nativeTurboQuantKVLayerPayloadsRowsIntoScratch(parsed, view, prefixTokens, keyRows, valueRows, rotated, normalised)
+	if err != nil {
+		return true, err
+	}
+	if seqLen != tokenCount {
+		return true, core.NewError("native.RestoreKVBlocks: turboquant layer window length mismatch")
+	}
+	return true, nil
+}
+
+func (s *ArchSession) turboQuantKVDecodeScratch(headDim int) ([]float64, []float64) {
+	if s == nil || headDim <= 0 {
+		return nil, nil
+	}
+	if cap(s.turboQuantRotated) < headDim {
+		s.turboQuantRotated = make([]float64, headDim)
+	} else {
+		s.turboQuantRotated = s.turboQuantRotated[:headDim]
+	}
+	if cap(s.turboQuantNormed) < headDim {
+		s.turboQuantNormed = make([]float64, headDim)
+	} else {
+		s.turboQuantNormed = s.turboQuantNormed[:headDim]
+	}
+	return s.turboQuantRotated, s.turboQuantNormed
+}
+
+func nativeKVResidentLayerRows(view sessionStateLayerView, start, tokenCount, position int) ([]byte, []byte, bool, error) {
+	if view.rowBytes <= 0 || view.cacheRows <= 0 {
+		return nil, nil, false, core.NewError("native.RestoreKVBlocks: invalid layer view geometry")
+	}
+	if tokenCount <= 0 {
+		return nil, nil, false, core.NewError("native.RestoreKVBlocks: invalid layer token count")
+	}
+	n := tokenCount * view.rowBytes
+	if view.maxSize <= 0 || position <= view.cacheRows {
+		off := start * view.rowBytes
+		if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+			return nil, nil, false, core.NewError("native.RestoreKVBlocks: layer exceeds cache rows")
+		}
+		return view.keyBytes[off : off+n], view.valueBytes[off : off+n], true, nil
+	}
+	windowStart := position - view.cacheRows
+	if start+tokenCount <= windowStart || start < windowStart {
+		return nil, nil, false, nil
+	}
+	slot := start % view.cacheRows
+	if slot+tokenCount > view.cacheRows {
+		return nil, nil, false, nil
+	}
+	off := slot * view.rowBytes
+	if off < 0 || off+n > len(view.keyBytes) || off+n > len(view.valueBytes) {
+		return nil, nil, false, core.NewError("native.RestoreKVBlocks: sliding layer exceeds cache rows")
+	}
+	return view.keyBytes[off : off+n], view.valueBytes[off : off+n], true, nil
 }
 
 func (s *ArchSession) captureKVLogits() ([]float32, []int32, error) {
@@ -555,36 +957,55 @@ func (s *ArchSession) captureKVLogits() ([]float32, []int32, error) {
 }
 
 func (s *ArchSession) restoreKVSnapshotMetadata(snapshot *kv.Snapshot, position int) error {
-	cachedIDs := append([]int32(nil), snapshot.Tokens...)
-	if len(snapshot.Generated) > 0 && len(cachedIDs)+len(snapshot.Generated) <= position {
-		cachedIDs = append(cachedIDs, snapshot.Generated...)
+	cachedIDs := s.kvBlockCachedIDScratch(position)
+	cachedIDs = append(cachedIDs, snapshot.Tokens...)
+	return s.restoreKVBlockMetadata(cachedIDs, snapshot.Generated, snapshot.LogitShape, snapshot.Logits, position)
+}
+
+func (s *ArchSession) restoreKVBlockMetadata(cachedIDs, generated []int32, logitShape []int32, logits []float32, position int) error {
+	if len(generated) > 0 && len(cachedIDs)+len(generated) <= position {
+		cachedIDs = append(cachedIDs, generated...)
 	}
 	if len(cachedIDs) > position {
 		return core.NewError("native.RestoreKV: cached ids exceed position")
 	}
 	s.pos = position
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return err
+	}
 	s.cachedIDs = append(s.cachedIDs[:0], cachedIDs...)
 	s.clearCachedPromptHidden()
 	s.resetRetainedHidden()
-	if len(snapshot.Logits) == 0 {
+	if len(logits) == 0 {
 		return nil
 	}
-	if len(snapshot.LogitShape) > 0 {
+	if len(logitShape) > 0 {
 		total := 1
-		for _, dim := range snapshot.LogitShape {
+		for _, dim := range logitShape {
 			if dim <= 0 {
 				return core.NewError("native.RestoreKV: invalid logit shape")
 			}
 			total *= int(dim)
 		}
-		if total != len(snapshot.Logits) {
+		if total != len(logits) {
 			return core.NewError("native.RestoreKV: logit shape mismatch")
 		}
 	}
-	if len(snapshot.Logits) != s.arch.Vocab {
+	if len(logits) != s.arch.Vocab {
 		return core.NewError("native.RestoreKV: logits size mismatch")
 	}
-	s.rememberRetainedLogits(f32ToBf16Slice(snapshot.Logits))
+	s.rememberRetainedLogits(f32ToBf16Slice(logits))
+	return nil
+}
+
+func (s *ArchSession) restoreKVBlockMetadataRetainedLogits(cachedIDs, generated []int32, retainedLogits []byte, position int) error {
+	if len(retainedLogits) != s.arch.Vocab*bf16Size {
+		return core.NewError("native.RestoreKVBlocks: retained logits size mismatch")
+	}
+	if err := s.restoreKVBlockMetadata(cachedIDs, generated, nil, nil, position); err != nil {
+		return err
+	}
+	s.rememberRetainedLogits(retainedLogits)
 	return nil
 }
 
@@ -622,7 +1043,7 @@ func nativeKVLayerCaptureWindow(view sessionStateLayerView, position int) (int, 
 
 func nativeKVLayerSnapshotSlabs(layer kv.LayerSnapshot, view sessionStateLayerView) ([]byte, []byte, int, error) {
 	if len(layer.TurboQuantPayloads) > 0 {
-		return nil, nil, 0, core.NewError("native.RestoreKV: unsupported turboquant KV payload")
+		return nativeTurboQuantKVLayerSlabs(layer.TurboQuantPayloads, view)
 	}
 	if len(layer.KeyBytes) > 0 || len(layer.ValueBytes) > 0 {
 		keySlab, keySeq, err := nativeKVLayerRawSlabBF16(layer.KeyBytes, layer.KeyDType, layer.KeyShape, view)
@@ -645,13 +1066,26 @@ func nativeKVValidateLayerMetadata(scope string, layer kv.LayerSnapshot, view se
 	if layer.CacheIndex >= 0 && layer.CacheIndex != view.cacheIndex {
 		return core.NewError(scope + ": cache-index mismatch")
 	}
-	if layer.CacheMode != "" && view.cacheMode != "" && layer.CacheMode != view.cacheMode {
+	if layer.CacheMode != "" && view.cacheMode != "" && layer.CacheMode != view.cacheMode && !nativeKVRestorableSourceCacheMode(layer.CacheMode) {
 		return core.NewError(scope + ": cache-mode mismatch")
 	}
-	if layer.MaxSize > 0 && layer.MaxSize != view.maxSize {
+	if layer.MaxSize > 0 && layer.MaxSize != view.maxSize && !nativeKVRestorableSourceMaxSize(layer) {
 		return core.NewError(scope + ": cache max-size mismatch")
 	}
 	return nil
+}
+
+func nativeKVRestorableSourceMaxSize(layer kv.LayerSnapshot) bool {
+	return layer.CacheMode != "" && nativeKVRestorableSourceCacheMode(layer.CacheMode)
+}
+
+func nativeKVRestorableSourceCacheMode(mode string) bool {
+	switch mode {
+	case "", "fp16", "q8", "k-q8-v-q4", "paged", nativeStateCacheModeFixed, "turboquant", "rotating", "sliding":
+		return true
+	default:
+		return false
+	}
 }
 
 func nativeKVLayerHasPayload(layer kv.LayerSnapshot) bool {
@@ -824,16 +1258,33 @@ func nativeKVIsBF16DType(dtype string) bool {
 }
 
 func nativeKVRawDType(dtype string) (string, int, bool) {
-	switch strings.ToLower(dtype) {
-	case "bfloat16", "bf16":
+	switch {
+	case nativeKVASCIIEqualFold(dtype, "bfloat16") || nativeKVASCIIEqualFold(dtype, "bf16"):
 		return nativeKVSnapshotDTypeBF16, bf16Size, true
-	case "float16", "f16":
+	case nativeKVASCIIEqualFold(dtype, "float16") || nativeKVASCIIEqualFold(dtype, "f16"):
 		return "float16", 2, true
-	case "float32", "f32":
+	case nativeKVASCIIEqualFold(dtype, "float32") || nativeKVASCIIEqualFold(dtype, "f32"):
 		return "float32", 4, true
 	default:
 		return "", 0, false
 	}
+}
+
+func nativeKVASCIIEqualFold(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		g := got[i]
+		w := want[i]
+		if 'A' <= g && g <= 'Z' {
+			g += 'a' - 'A'
+		}
+		if g != w {
+			return false
+		}
+	}
+	return true
 }
 
 func nativeKVRawToBF16(dst, raw []byte, dtype string) error {

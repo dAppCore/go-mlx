@@ -149,8 +149,8 @@ func TestStepGreedyICBAllocationBudget(t *testing.T) {
 			t.Fatal("stepGreedyInPool declined after warmup")
 		}
 	})
-	if allocs > 305 {
-		t.Fatalf("ICB greedy allocations = %.0f, want <= 305", allocs)
+	if allocs > 60 {
+		t.Fatalf("ICB greedy allocations = %.0f, want <= 60", allocs)
 	}
 }
 

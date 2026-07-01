@@ -75,3 +75,19 @@ func TestRunVision_BadModelPath_Bad(t *testing.T) {
 		t.Fatalf("stderr = %q, want the vision load error", stderr.String())
 	}
 }
+
+func TestRunNativeVisionCommand_BadModelPath_Bad(t *testing.T) {
+	dir := t.TempDir()
+	img := core.JoinPath(dir, "a.png")
+	if r := core.WriteFile(img, []byte("\x89PNG"), 0o644); !r.OK {
+		t.Fatal(r.Value)
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runNativeVisionCommand(context.Background(), core.JoinPath(dir, "absent-model"), []string{img}, nil, 1, "Describe.", 8, true, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (native load failure)", code)
+	}
+	if !core.Contains(stderr.String(), "vision: load") {
+		t.Fatalf("stderr = %q, want the vision load error", stderr.String())
+	}
+}

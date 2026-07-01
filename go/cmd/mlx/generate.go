@@ -16,6 +16,8 @@ import (
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
+	mlxsession "dappco.re/go/mlx/session"
+	"dappco.re/go/mlx/spine"
 )
 
 // runGenerateCommand loads a model and generates from a prompt with no HTTP
@@ -40,7 +42,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	pipeline := fs.Bool("pipeline", true, "one-ahead pipelined decode (false forces the serial loop, for A/B traces)")
 	kvStorage := fs.String("kv-storage", "", "retained KV storage dtype (fp16, bf16; empty = native fp32) — mlx-lm and llama.cpp default to fp16-class caches")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
-	nativeBackend := fs.Bool("native", false, "generate via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine — no MTP/cache modes")
+	nativeBackend := fs.Bool("native", false, "generate via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
 	fs.Usage = func() {
@@ -89,25 +91,35 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if *kvStorage != "" {
 		loadOpts = append(loadOpts, mlx.WithKVCacheStorageDType(*kvStorage))
 	}
-	if *nativeBackend && (*tracePhases || *stateName != "") {
-		core.Print(stderr, "%s generate: --native does not support --trace or --state yet (cgo metal engine only)", cliName())
+	if *nativeBackend && *tracePhases {
+		core.Print(stderr, "%s generate: --native does not support --trace yet (cgo metal engine only)", cliName())
 		return 2
 	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
+	}
+	if *nativeBackend && *stateName != "" {
+		return runGenerateNativeState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *contextLen, loadOpts, stdout, stderr)
 	}
 	if *stateName != "" {
 		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
 	}
 	var tm inference.TextModel
 	var err error
+	detection := resolveServeDraft(fs.Arg(0), *draftPath, true)
 	if *nativeBackend {
-		core.Print(stderr, "%s generate: no-cgo native token-loop contract (pkg/model + pkg/native) — MTP off", cliName())
-		tm, err = mlx.LoadNativeTextModel(fs.Arg(0), loadOpts...)
+		core.Print(stderr, "%s generate: no-cgo native token-loop contract (pkg/model + pkg/native)", cliName())
+		detection = resolveNativeServeDraft(fs.Arg(0), *draftPath)
+		if detection.Active() {
+			core.Print(stderr, "%s generate: native MTP speculative decode ACTIVE — drafter %s (%s), block %d",
+				cliName(), detection.DraftPath, detection.Note, resolvedDraftBlock(*draftBlock))
+			tm, err = mlx.LoadNativeSpeculativePairAsTextModelBlock(fs.Arg(0), detection.DraftPath, *draftBlock, loadOpts...)
+		} else {
+			tm, err = mlx.LoadNativeTextModel(fs.Arg(0), loadOpts...)
+		}
 	} else {
 		// Reactive MTP pair resolution — same ladder as serve: explicit --draft
 		// wins, '' disables, 'auto' detects beside a Gemma 4 target.
-		detection := resolveServeDraft(fs.Arg(0), *draftPath, true)
 		if detection.Active() {
 			core.Print(stderr, "%s generate: MTP speculative decode ACTIVE — drafter %s (%s), block %d",
 				cliName(), detection.DraftPath, detection.Note, resolvedDraftBlock(*draftBlock))
@@ -236,7 +248,80 @@ func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath st
 		return 1
 	}
 	defer sess.Close()
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, stdout, stderr)
+}
 
+type nativeGenerateStateModel interface {
+	inference.TextModel
+	Info() inference.ModelInfo
+	NewSession() metal.SessionHandle
+	Close() error
+}
+
+func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+	if storePath == "" {
+		homeR := core.UserHomeDir()
+		if !homeR.OK {
+			core.Print(stderr, "%s generate: resolve home for default -state-store", cliName())
+			return 1
+		}
+		home, _ := homeR.Value.(string)
+		storePath = core.PathJoin(home, "Lethean", "data", "state", "agent.kv")
+	}
+	store, err := openOrCreateStateStore(ctx, storePath)
+	if err != nil {
+		core.Print(stderr, "%s generate: state store %s: %v", cliName(), storePath, err)
+		return 1
+	}
+	defer store.Close()
+
+	core.Print(stderr, "%s generate: no-cgo native state token-loop contract (pkg/model + pkg/native)", cliName())
+	tm, err := mlx.LoadNativeTextModel(modelPath, loadOpts...)
+	if err != nil {
+		core.Print(stderr, "%s generate: load: %v", cliName(), err)
+		return 1
+	}
+	nativeState, ok := tm.(nativeGenerateStateModel)
+	if !ok {
+		if closer, closeOK := tm.(interface{ Close() error }); closeOK {
+			_ = closer.Close()
+		}
+		core.Print(stderr, "%s generate: native state model does not support sessions", cliName())
+		return 1
+	}
+	defer nativeState.Close()
+	handle := nativeState.NewSession()
+	if handle == nil {
+		core.Print(stderr, "%s generate: native state session: nil session", cliName())
+		return 1
+	}
+	info := nativeGenerateStateModelInfo(nativeState.Info(), contextLen)
+	sess := mlxsession.New(handle, info, nil)
+	defer sess.Close()
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, stdout, stderr)
+}
+
+func nativeGenerateStateModelInfo(info inference.ModelInfo, contextLen int) spine.ModelInfo {
+	if contextLen <= 0 {
+		contextLen = 4096
+	}
+	return spine.ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: contextLen,
+	}
+}
+
+type generateStateStore interface {
+	state.Store
+	state.Writer
+}
+
+func runGenerateStateSession(ctx context.Context, prompt, name, storePath string, maxTokens int, temp float32, store generateStateStore, sess *mlx.ModelSession, stdout, stderr io.Writer) int {
 	entryURI := "mlx://agent/" + name
 	indexURI := entryURI + "/index"
 
@@ -246,9 +331,10 @@ func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath st
 	var wakeReport *agent.WakeReport
 	if _, idxErr := agent.LoadStateIndex(ctx, store, indexURI); idxErr == nil {
 		start := time.Now()
-		wakeReport, err = sess.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: indexURI, EntryURI: entryURI})
-		if err != nil {
-			core.Print(stderr, "%s generate: wake %s: %v", cliName(), name, err)
+		var wakeErr error
+		wakeReport, wakeErr = sess.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: indexURI, EntryURI: entryURI})
+		if wakeErr != nil {
+			core.Print(stderr, "%s generate: wake %s: %v", cliName(), name, wakeErr)
 			return 1
 		}
 		wakeDur = time.Since(start)

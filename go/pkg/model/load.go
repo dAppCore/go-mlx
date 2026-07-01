@@ -49,6 +49,20 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 		_ = dm.Close()
 		return nil, nil, err
 	}
+	if spec.Vision != nil {
+		m.Vision, err = spec.Vision(dm.Tensors, ac)
+		if err != nil {
+			_ = dm.Close()
+			return nil, nil, err
+		}
+	}
+	if spec.Audio != nil {
+		m.Audio, err = spec.Audio(dm.Tensors, ac)
+		if err != nil {
+			_ = dm.Close()
+			return nil, nil, err
+		}
+	}
 	return m, dm, nil
 }
 

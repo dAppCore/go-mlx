@@ -68,9 +68,12 @@ type hotSwapResolver struct {
 	onLoad func(inference.TextModel)
 	// loader builds a TextModel from a path — the cgo metal engine
 	// (mlx.LoadModelAsTextModel, the default) or the no-cgo native contract
-	// (mlx.LoadNativeTextModel, set by `serve --native`). The MTP pair branch
-	// stays metal-only; --native never sets a draft path.
+	// (mlx.LoadNativeTextModel, set by `serve --native`).
 	loader func(string, ...mlx.LoadOption) (inference.TextModel, error)
+	// speculativeLoader builds a target+draft TextModel when drafter detection
+	// is active. The default is the cgo metal assistant pair; serve --native
+	// swaps this to the no-cgo native target/draft pair loader.
+	speculativeLoader func(string, string, int, ...mlx.LoadOption) (inference.TextModel, error)
 }
 
 // newHotSwapResolver returns a resolver staged with the initial model
@@ -78,11 +81,12 @@ type hotSwapResolver struct {
 // block). The model is NOT loaded until first ResolveModel call.
 func newHotSwapResolver(modelPath, draftPath string, draftBlock int, opts []mlx.LoadOption) *hotSwapResolver {
 	return &hotSwapResolver{
-		initPath:       modelPath,
-		initDraftPath:  draftPath,
-		initDraftBlock: draftBlock,
-		initOpts:       opts,
-		loader:         mlx.LoadModelAsTextModel,
+		initPath:          modelPath,
+		initDraftPath:     draftPath,
+		initDraftBlock:    draftBlock,
+		initOpts:          opts,
+		loader:            mlx.LoadModelAsTextModel,
+		speculativeLoader: mlx.LoadSpeculativePairAsTextModelBlock,
 	}
 }
 
@@ -91,6 +95,13 @@ func newHotSwapResolver(modelPath, draftPath string, draftBlock int, opts []mlx.
 // before the first ResolveModel call.
 func (r *hotSwapResolver) setLoader(loader func(string, ...mlx.LoadOption) (inference.TextModel, error)) {
 	r.loader = loader
+}
+
+// setSpeculativeLoader swaps the target+draft loader before the first
+// ResolveModel call. serve --native uses this to keep the same draft-detection
+// path while loading both models through the no-cgo native contract.
+func (r *hotSwapResolver) setSpeculativeLoader(loader func(string, string, int, ...mlx.LoadOption) (inference.TextModel, error)) {
+	r.speculativeLoader = loader
 }
 
 // setOnLoad registers a hook run after every successful model load — the
@@ -144,8 +155,7 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 		var m inference.TextModel
 		var err error
 		if r.initDraftPath != "" {
-			// Native Gemma-4 MTP speculative lane: target + assistant drafter.
-			m, err = mlx.LoadSpeculativePairAsTextModelBlock(r.initPath, r.initDraftPath, r.initDraftBlock, r.initOpts...)
+			m, err = r.speculativeLoader(r.initPath, r.initDraftPath, r.initDraftBlock, r.initOpts...)
 		} else {
 			m, err = r.loader(r.initPath, r.initOpts...)
 		}
@@ -192,7 +202,7 @@ func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (pre
 	// boot runs over the swapped-in target, so a Gemma 4 model with an
 	// assistant/ pair or MTP gguf beside it keeps speculative decode.
 	if detection := r.reloadDetection(newPath); detection.Active() {
-		loaded, err = mlx.LoadSpeculativePairAsTextModelBlock(
+		loaded, err = r.speculativeLoader(
 			newPath, detection.DraftPath, r.initDraftBlock, r.reloadLoadOpts(newOpts)...)
 	} else {
 		loaded, err = r.loader(newPath, r.reloadLoadOpts(newOpts)...)

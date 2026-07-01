@@ -7,6 +7,9 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 func TestRunBinaryAllocationBudget(t *testing.T) {
@@ -59,6 +62,66 @@ func TestBinaryByteScratchPoolKeepsDimensionsResident(t *testing.T) {
 	defer putBinaryByteScratch(gotLarge)
 	if gotLarge != large {
 		t.Fatal("binary scratch pool evicted the large scratch after reusing the small scratch")
+	}
+}
+
+func TestBinaryByteScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	a := toBF16Bytes(syntheticFloat32(1024, 3))
+	b := toBF16Bytes(syntheticFloat32(1024, 5))
+	scratch, err := getBinaryByteScratch(len(a))
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	var aBuf, bBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		aBuf, bBuf, _, err = scratch.buffers(a, b)
+		if err != nil {
+			t.Fatalf("scratch.buffers warmup %d: %v", i, err)
+		}
+	}
+	if got, want := uintptr(aBuf.Contents()), uintptr(unsafe.Pointer(&a[0])); got != want {
+		t.Fatalf("a buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	if got, want := uintptr(bBuf.Contents()), uintptr(unsafe.Pointer(&b[0])); got != want {
+		t.Fatalf("b buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reusedA, reusedB, _, err := scratch.buffers(a, b)
+	if err != nil {
+		t.Fatalf("scratch.buffers reused: %v", err)
+	}
+	if reusedA.GetID() != aBuf.GetID() || reusedB.GetID() != bBuf.GetID() {
+		t.Fatal("scratch.buffers did not reuse cached no-copy input views")
+	}
+}
+
+func TestBinaryByteScratchOutputViewReusesPinnedOwnerBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pinned, err := newPinnedNoCopyBytes(1024 * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+
+	scratch, err := getBinaryByteScratch(len(pinned.bytes))
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	outBuf, ok := scratch.outputView(pinned.bytes)
+	if !ok {
+		t.Fatal("binary output view did not accept pinned caller bytes")
+	}
+	if got, want := outBuf.GetID(), pinned.buf.GetID(); got != want {
+		t.Fatalf("binary output view buffer id = %d, want pinned owner buffer %d", got, want)
+	}
+	if got, want := uintptr(outBuf.Contents()), uintptr(unsafe.Pointer(&pinned.bytes[0])); got != want {
+		t.Fatalf("binary output view pointer = %#x, want pinned backing %#x", got, want)
 	}
 }
 

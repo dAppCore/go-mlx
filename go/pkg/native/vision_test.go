@@ -538,7 +538,7 @@ func TestVisionTower(t *testing.T) {
 			WQ: toBF16Bytes(ws[5]), WK: toBF16Bytes(ws[6]), WV: toBF16Bytes(ws[7]), WO: toBF16Bytes(ws[8]), QNorm: toBF16Bytes(ws[9]), KNorm: toBF16Bytes(ws[10]),
 			WGate: toBF16Bytes(ws[11]), WUp: toBF16Bytes(ws[12]), WDown: toBF16Bytes(ws[13]),
 		}},
-		Projector: VisionProjectorWeights{Projection: toBF16Bytes(projW), Eps: eps},
+		Projector: VisionProjectorWeights{Projection: VisionProjectorLinear{Weight: toBF16Bytes(projW)}, Eps: eps},
 	}
 	cfg := VisionConfig{Hidden: hidden, PatchDim: patchDim, NumLayers: 1, NumHeads: nHeads, NumKVHeads: nHeads, HeadDim: headDim, RopeBase: base, RMSNormEps: eps, PoolKernel: poolK}
 	px := bf16Round(syntheticFloat32(L*patchDim, 20))
@@ -613,5 +613,37 @@ func TestVisionInjectFeatures(t *testing.T) {
 	// slot/feature count mismatch must error (1 feature for 2 slots).
 	if _, err := VisionInjectFeatures(emb, tokenIDs, toBF16Bytes(syntheticFloat32(H, 1)), imgTok, H); err == nil {
 		t.Fatal("expected an error on feature/slot count mismatch")
+	}
+}
+
+// TestAudioInjectFeatures pins the audio-placeholder splice against the same
+// host contract as vision: audio rows replace audio-token embeddings in order,
+// ordinary token embeddings pass through, and slot/row mismatches fail.
+func TestAudioInjectFeatures(t *testing.T) {
+	const H = 8
+	const audioTok = int32(77)
+	tokenIDs := []int32{10, audioTok, audioTok, 11, 12}
+	emb := toBF16Bytes(syntheticFloat32(5*H, 5))
+	feat := toBF16Bytes(syntheticFloat32(2*H, 9))
+	got, err := AudioInjectFeatures(emb, tokenIDs, feat, audioTok, H)
+	if err != nil {
+		t.Fatalf("AudioInjectFeatures: %v", err)
+	}
+	g, e, f := bf16Floats(got), bf16Floats(emb), bf16Floats(feat)
+	eq := func(a, b []float32, name string) {
+		for i := range a {
+			if a[i] != b[i] {
+				t.Fatalf("%s mismatch at %d: %v vs %v", name, i, a[i], b[i])
+			}
+		}
+	}
+	eq(g[1*H:2*H], f[0:H], "pos1=feature0")
+	eq(g[2*H:3*H], f[1*H:2*H], "pos2=feature1")
+	eq(g[0:H], e[0:H], "pos0 unchanged")
+	eq(g[3*H:4*H], e[3*H:4*H], "pos3 unchanged")
+	eq(g[4*H:5*H], e[4*H:5*H], "pos4 unchanged")
+
+	if _, err := AudioInjectFeatures(emb, tokenIDs, toBF16Bytes(syntheticFloat32(H, 1)), audioTok, H); err == nil {
+		t.Fatal("expected an error on audio feature/slot count mismatch")
 	}
 }

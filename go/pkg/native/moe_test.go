@@ -153,6 +153,40 @@ func TestMoEExpertsAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMoEExpertsScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMoEExpertsScratch(64, 128, 2)
+	if err != nil {
+		t.Fatalf("get small MoEExperts scratch: %v", err)
+	}
+	putMoEExpertsScratch(small)
+	large, err := getMoEExpertsScratch(96, 192, 3)
+	if err != nil {
+		t.Fatalf("get large MoEExperts scratch: %v", err)
+	}
+	putMoEExpertsScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMoEExpertsScratch(64, 128, 2)
+	if err != nil {
+		t.Fatalf("get small MoEExperts scratch again: %v", err)
+	}
+	defer putMoEExpertsScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MoEExperts scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMoEExpertsScratch(96, 192, 3)
+	if err != nil {
+		t.Fatalf("get large MoEExperts scratch again: %v", err)
+	}
+	defer putMoEExpertsScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MoEExperts scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
 func TestMoEExpertsIntoWritesDirectlyToCallerOutput(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -198,5 +232,59 @@ func TestMoEExpertsIntoWritesDirectlyToCallerOutput(t *testing.T) {
 	accBytes = unsafe.Slice((*byte)(scratch.acc.Contents()), dModel*bf16Size)
 	if !bytes.Equal(accBytes, sentinel) {
 		t.Fatal("MoEExpertsInto wrote through pooled accumulator instead of caller output")
+	}
+}
+
+func TestMoEExpertsScratchInputViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const topK, dModel, dFF = 2, 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.inputView(x)
+	if !ok {
+		t.Fatal("inputView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("inputView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := scratch.inputView(x)
+	if !ok {
+		t.Fatal("reused inputView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("inputView did not reuse the cached no-copy buffer for the same backing")
+	}
+}
+
+func TestMoEExpertsScratchWeightsViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const topK, dModel, dFF = 2, 64, 128
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+	scratch, err := getMoEExpertsScratch(dModel, dFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEExpertsScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.weightsView(weights)
+	if !ok {
+		t.Fatal("weightsView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&weights[0])); got != want {
+		t.Fatalf("weightsView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := scratch.weightsView(weights)
+	if !ok {
+		t.Fatal("reused weightsView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("weightsView did not reuse the cached no-copy buffer for the same backing")
 	}
 }

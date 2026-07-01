@@ -98,6 +98,8 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 			return nil, herr
 		}
 		tm.headEnc = he
+		tm.vision = lm.Vision
+		tm.audio = lm.Audio
 		return tm, nil
 	}
 	g := loadedToBF16(lm)
@@ -113,6 +115,8 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 		return nil, herr
 	}
 	tm.headEnc = he
+	tm.vision = lm.Vision
+	tm.audio = lm.Audio
 	return tm, nil
 }
 

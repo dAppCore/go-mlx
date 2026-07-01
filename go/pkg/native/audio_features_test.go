@@ -7,6 +7,7 @@ package native
 import (
 	"math"
 	"math/cmplx"
+	"slices"
 	"testing"
 
 	core "dappco.re/go"
@@ -100,6 +101,43 @@ func TestAudioFeatureExtractorExtractMasksPaddedFrames(t *testing.T) {
 		if v != 0 {
 			t.Fatalf("padded feature %d = %v, want zero", i, v)
 		}
+	}
+}
+
+func TestAudioInputFeatures_Good(t *testing.T) {
+	extractor, err := NewAudioFeatureExtractor(&AudioFeatureConfig{
+		NumMelFilters: 4,
+		SamplingRate:  16_000,
+		FrameLength:   4,
+		HopLength:     2,
+		FFTLength:     4,
+		MaxFrequency:  8000,
+		PadToMultiple: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewAudioFeatureExtractor: %v", err)
+	}
+	samples := []float32{0.1, -0.2, 0.3, -0.4}
+	wantF32, _, wantFrames, err := extractor.Extract(samples)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	got, frames, melBins, err := AudioInputFeatures(samples, extractor)
+	if err != nil {
+		t.Fatalf("AudioInputFeatures: %v", err)
+	}
+	if frames != wantFrames {
+		t.Fatalf("frames = %d, want %d", frames, wantFrames)
+	}
+	if melBins != 4 {
+		t.Fatalf("melBins = %d, want 4", melBins)
+	}
+	if len(got) != wantFrames*melBins*bf16Size {
+		t.Fatalf("feature bytes = %d, want %d", len(got), wantFrames*melBins*bf16Size)
+	}
+	if !slices.Equal(got, f32ToBf16Slice(wantF32)) {
+		t.Fatal("AudioInputFeatures did not return bf16-converted extractor rows")
 	}
 }
 

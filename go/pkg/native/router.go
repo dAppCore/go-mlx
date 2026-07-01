@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -24,6 +25,7 @@ type routerDeviceScratch struct {
 	numExpertsCapacity int
 	topKCapacity       int
 	x                  *pinnedNoCopyBytes
+	xPinned            *pinnedNoCopyBytes
 	normedBuf          metal.MTLBuffer
 	scoresBuf          metal.MTLBuffer
 	idxBuf             metal.MTLBuffer
@@ -32,11 +34,23 @@ type routerDeviceScratch struct {
 	weightPtr          *byte
 }
 
-var routerDeviceScratchPool sync.Pool
+type routerDeviceScratchKey struct {
+	dModel, numExperts, topK int
+}
+
+type routerDeviceScratchPool struct {
+	mu    sync.Mutex
+	items []*routerDeviceScratch
+}
+
+var routerDeviceScratchPools sync.Map
 
 type routerQuantHostScratch struct {
-	dModel, numExperts int
-	normed, scores     *pinnedNoCopyBytes
+	dModel, numExperts          int
+	normed, scores              *pinnedNoCopyBytes
+	selectScores, selectSoftmax []float32
+	selectIdx                   []int32
+	selectWeights               []byte
 }
 
 type routerHostScratchKey struct {
@@ -96,6 +110,10 @@ func (s *routerQuantHostScratch) Close() {
 		s.scores.Close()
 		s.scores = nil
 	}
+	s.selectScores = nil
+	s.selectSoftmax = nil
+	s.selectIdx = nil
+	s.selectWeights = nil
 	s.dModel, s.numExperts = 0, 0
 }
 
@@ -164,18 +182,53 @@ func (s *routerDeviceScratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	if s.xPinned != nil {
+		s.xPinned.Close()
+		s.xPinned = nil
+	}
+}
+
+func (s *routerDeviceScratch) inputView(x []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(x) == 0 {
+		return nil, false
+	}
+	if s.xPinned != nil && len(s.xPinned.bytes) == len(x) && &s.xPinned.bytes[0] == &x[0] {
+		return s.xPinned.buf, true
+	}
+	if s.xPinned != nil {
+		s.xPinned.Close()
+		s.xPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(x); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(x)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: x, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.xPinned = pinned
+	return buf, true
 }
 
 func getRouterDeviceScratch(dModel, numExperts, topK int) (*routerDeviceScratch, error) {
-	if v := routerDeviceScratchPool.Get(); v != nil {
-		s := v.(*routerDeviceScratch)
+	pool := routerDeviceScratchPoolFor(dModel, numExperts, topK)
+	for {
+		s := pool.Get()
+		if s == nil {
+			break
+		}
 		ok := s != nil &&
-			s.dModelCapacity >= dModel &&
-			s.numExpertsCapacity >= numExperts &&
-			s.topKCapacity >= topK &&
+			s.dModelCapacity == dModel &&
+			s.numExpertsCapacity == numExperts &&
+			s.topKCapacity == topK &&
 			s.x != nil &&
 			s.x.buf != nil &&
-			len(s.x.bytes) >= dModel*bf16Size &&
+			len(s.x.bytes) == dModel*bf16Size &&
 			s.normedBuf != nil &&
 			s.scoresBuf != nil &&
 			s.idxBuf != nil &&
@@ -190,10 +243,44 @@ func getRouterDeviceScratch(dModel, numExperts, topK int) (*routerDeviceScratch,
 	return newRouterDeviceScratch(dModel, numExperts, topK)
 }
 
+func routerDeviceScratchPoolFor(dModel, numExperts, topK int) *routerDeviceScratchPool {
+	key := routerDeviceScratchKey{dModel: dModel, numExperts: numExperts, topK: topK}
+	if v, ok := routerDeviceScratchPools.Load(key); ok {
+		return v.(*routerDeviceScratchPool)
+	}
+	pool := &routerDeviceScratchPool{}
+	if v, loaded := routerDeviceScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*routerDeviceScratchPool)
+	}
+	return pool
+}
+
 func putRouterDeviceScratch(s *routerDeviceScratch) {
 	if s != nil && s.x != nil && s.x.buf != nil && s.normedBuf != nil && s.scoresBuf != nil && s.idxBuf != nil && s.idxPtr != nil && s.weightBuf != nil && s.weightPtr != nil {
-		routerDeviceScratchPool.Put(s)
+		routerDeviceScratchPoolFor(s.dModelCapacity, s.numExpertsCapacity, s.topKCapacity).Put(s)
 	}
+}
+
+func (p *routerDeviceScratchPool) Get() *routerDeviceScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *routerDeviceScratchPool) Put(s *routerDeviceScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 // topKByScore returns the indices of the topK highest scores, highest first,
@@ -201,7 +288,15 @@ func putRouterDeviceScratch(s *routerDeviceScratch) {
 // experts instead of sorting the full expert list, matching the router hot path's
 // top-k shape.
 func topKByScore(scores []float32, topK int) []int32 {
-	out := make([]int32, topK)
+	return topKByScoreInto(scores, topK, nil)
+}
+
+func topKByScoreInto(scores []float32, topK int, out []int32) []int32 {
+	if cap(out) < topK {
+		out = make([]int32, topK)
+	} else {
+		out = out[:topK]
+	}
 	for slot := 0; slot < topK; slot++ {
 		best := -1
 		for i, score := range scores {
@@ -229,13 +324,21 @@ func selectedExpert(selected []int32, expert int32) bool {
 // softmaxAt returns softmax over the scores at idx (max-subtracted for stability),
 // in idx order, as float32.
 func softmaxAt(scores []float32, idx []int32) []float32 {
+	return softmaxAtInto(scores, idx, nil)
+}
+
+func softmaxAtInto(scores []float32, idx []int32, w []float32) []float32 {
 	maxS := float32(math.Inf(-1))
 	for _, e := range idx {
 		if scores[e] > maxS {
 			maxS = scores[e]
 		}
 	}
-	w := make([]float32, len(idx))
+	if cap(w) < len(idx) {
+		w = make([]float32, len(idx))
+	} else {
+		w = w[:len(idx)]
+	}
 	var sum float32
 	for i, e := range idx {
 		w[i] = float32(math.Exp(float64(scores[e] - maxS)))
@@ -317,7 +420,7 @@ func moeRouterBF16HostSelectWithScratch(x, normWScaled, routerW, perExpertScale 
 	if err != nil {
 		return nil, nil, err
 	}
-	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
+	idx, weights := routerSelectWithScratch(scoresB, perExpertScale, numExperts, topK, scratch)
 	return idx, weights, nil
 }
 
@@ -392,11 +495,15 @@ func moeRouterBF16DeviceTopKNoCopyWithBufferPooled(x []byte, xBuf metal.MTLBuffe
 		}
 		inputBuf := xBuf
 		if inputBuf == nil {
-			inputBuf, err = scratch.x.copyPrefixBuffer(x)
-			if err != nil {
-				putRouterDeviceScratch(scratch)
-				encErr = err
-				return
+			var ok bool
+			inputBuf, ok = scratch.inputView(x)
+			if !ok {
+				inputBuf, err = scratch.x.copyPrefixBuffer(x)
+				if err != nil {
+					putRouterDeviceScratch(scratch)
+					encErr = err
+					return
+				}
 			}
 		}
 		normedBuf := scratch.normedBuf
@@ -473,18 +580,55 @@ func matVecBF16ResidentInto(out []byte, mat, vec []byte, outDim, inDim int) ([]b
 // per-expert scores (numExperts bf16) — the routing decision shared by MoERouter and
 // MoERouterQuant (they differ only in how the scores are projected: bf16 gemv vs 4-bit qmv).
 func routerSelect(scoresB, perExpertScale []byte, numExperts, topK int) ([]int32, []byte) {
-	scores := make([]float32, numExperts)
+	return routerSelectWithScratch(scoresB, perExpertScale, numExperts, topK, nil)
+}
+
+func routerSelectWithScratch(scoresB, perExpertScale []byte, numExperts, topK int, scratch *routerQuantHostScratch) ([]int32, []byte) {
+	var scores []float32
+	if scratch != nil {
+		if cap(scratch.selectScores) < numExperts {
+			scratch.selectScores = make([]float32, numExperts)
+		} else {
+			scratch.selectScores = scratch.selectScores[:numExperts]
+		}
+		scores = scratch.selectScores
+	} else {
+		scores = make([]float32, numExperts)
+	}
 	for e := 0; e < numExperts; e++ {
 		scores[e] = bf16ToF32(scoresB[e*bf16Size], scoresB[e*bf16Size+1])
 	}
-	idx := topKByScore(scores, topK)
-	w := softmaxAt(scores, idx)
+	var idx []int32
+	if scratch != nil {
+		scratch.selectIdx = topKByScoreInto(scores, topK, scratch.selectIdx)
+		idx = scratch.selectIdx
+	} else {
+		idx = topKByScore(scores, topK)
+	}
+	var w []float32
+	if scratch != nil {
+		scratch.selectSoftmax = softmaxAtInto(scores, idx, scratch.selectSoftmax)
+		w = scratch.selectSoftmax
+	} else {
+		w = softmaxAt(scores, idx)
+	}
 	if perExpertScale != nil {
 		for i, e := range idx {
 			w[i] *= bf16ToF32(perExpertScale[int(e)*bf16Size], perExpertScale[int(e)*bf16Size+1])
 		}
 	}
-	weights := make([]byte, topK*bf16Size)
+	needWeights := topK * bf16Size
+	var weights []byte
+	if scratch != nil {
+		if cap(scratch.selectWeights) < needWeights {
+			scratch.selectWeights = make([]byte, needWeights)
+		} else {
+			scratch.selectWeights = scratch.selectWeights[:needWeights]
+		}
+		weights = scratch.selectWeights
+	} else {
+		weights = make([]byte, needWeights)
+	}
 	for i, v := range w {
 		h := f32ToBF16(v)
 		weights[i*bf16Size] = byte(h)
@@ -556,7 +700,7 @@ func moeRouterQuantHostSelectWithScratch(x, normWScaled []byte, normView bufView
 	if err != nil {
 		return nil, nil, err
 	}
-	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
+	idx, weights := routerSelectWithScratch(scoresB, perExpertScale, numExperts, topK, scratch)
 	return idx, weights, nil
 }
 
@@ -583,6 +727,15 @@ func moeRouterQuantDeviceTopKNoCopyWithBufferInPool(x []byte, xBuf metal.MTLBuff
 }
 
 func moeRouterQuantDeviceTopKNoCopyWithBufferPooled(x []byte, xBuf metal.MTLBuffer, normWScaled []byte, normView bufView, routerProj QuantWeight, perExpertScale []byte, perExpertScaleView bufView, numExperts, topK, dModel, groupSize, bits int, eps float32, useAutoreleasePool bool) ([]int32, []byte, metal.MTLBuffer, *routerDeviceScratch, bool, error) {
+	return moeRouterQuantDeviceTopKWithBufferPooled(x, xBuf, normWScaled, normView, routerProj, perExpertScale, perExpertScaleView, numExperts, topK, dModel, groupSize, bits, eps, useAutoreleasePool, true)
+}
+
+func moeRouterQuantDeviceTopKBuffersWithBufferInPool(x []byte, xBuf metal.MTLBuffer, normWScaled []byte, normView bufView, routerProj QuantWeight, perExpertScale []byte, perExpertScaleView bufView, numExperts, topK, dModel, groupSize, bits int, eps float32) (metal.MTLBuffer, *routerDeviceScratch, bool, error) {
+	_, _, weightBuf, scratch, ok, err := moeRouterQuantDeviceTopKWithBufferPooled(x, xBuf, normWScaled, normView, routerProj, perExpertScale, perExpertScaleView, numExperts, topK, dModel, groupSize, bits, eps, false, false)
+	return weightBuf, scratch, ok, err
+}
+
+func moeRouterQuantDeviceTopKWithBufferPooled(x []byte, xBuf metal.MTLBuffer, normWScaled []byte, normView bufView, routerProj QuantWeight, perExpertScale []byte, perExpertScaleView bufView, numExperts, topK, dModel, groupSize, bits int, eps float32, useAutoreleasePool bool, returnHostViews bool) ([]int32, []byte, metal.MTLBuffer, *routerDeviceScratch, bool, error) {
 	if !routerTopKUsable(numExperts, topK) {
 		return nil, nil, nil, nil, false, nil
 	}
@@ -629,11 +782,15 @@ func moeRouterQuantDeviceTopKNoCopyWithBufferPooled(x []byte, xBuf metal.MTLBuff
 		}
 		inputBuf := xBuf
 		if inputBuf == nil {
-			inputBuf, err = scratch.x.copyPrefixBuffer(x)
-			if err != nil {
-				putRouterDeviceScratch(scratch)
-				encErr = err
-				return
+			var ok bool
+			inputBuf, ok = scratch.inputView(x)
+			if !ok {
+				inputBuf, err = scratch.x.copyPrefixBuffer(x)
+				if err != nil {
+					putRouterDeviceScratch(scratch)
+					encErr = err
+					return
+				}
 			}
 		}
 		normBuf := bf16WeightView(normWScaled, normView)
@@ -673,9 +830,11 @@ func moeRouterQuantDeviceTopKNoCopyWithBufferPooled(x []byte, xBuf metal.MTLBuff
 		)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
-		waitUntilCompletedFast(cb)
-		idx = unsafe.Slice(scratch.idxPtr, topK)
-		weights = unsafe.Slice(scratch.weightPtr, topK*bf16Size)
+		if returnHostViews {
+			waitUntilCompletedFast(cb)
+			idx = unsafe.Slice(scratch.idxPtr, topK)
+			weights = unsafe.Slice(scratch.weightPtr, topK*bf16Size)
+		}
 		weightBuf = scratch.weightBuf
 		resultScratch = scratch
 	}

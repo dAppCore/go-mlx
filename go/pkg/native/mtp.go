@@ -6,6 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // mtp.go — speculative (multi-token-prediction) decode over two ArchSessions, a fast DRAFT
@@ -37,8 +38,9 @@ import (
 // reset to the accepted length + the committed bonus token. The rejected suffix's K/V rows are
 // simply overwritten by the next write at that position (stepToken writes at pos and SDPA attends a
 // pos+1 window — see decode_forward_arch.go), so resetting pos is a complete rollback. This is exact
-// for owner caches; sliding-ring caches are not rolled back row-for-row, so a speculative window
-// must not straddle a ring wrap (the dense/all-global path used by the gate has no ring).
+// for owner caches. Sliding-ring/device-paged caches keep only the visible window; rollback stores
+// the absolute offset separately and the batched bridge syncs the physical ring slots before and
+// after verification, so a speculative window may straddle a ring wrap.
 
 // MTPResult reports a speculative decode: the generated ids (target-greedy, identical to plain
 // Generate) plus the acceptance accounting — how many draft tokens were proposed vs accepted, and
@@ -62,6 +64,13 @@ type MTPResult struct {
 // real one, but for correctness they may share weights (the draft then accepts everything and the
 // speedup is maximal) or diverge wildly (nothing accepts, greedy speed) — the output is the same.
 func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k int) (*MTPResult, error) {
+	return MTPDecodeEach(target, draft, promptIDs, maxNew, eosID, k, nil)
+}
+
+// MTPDecodeEach is MTPDecode with a streaming token sink. yield receives each
+// committed token in order; returning false stops after that token and returns
+// the partial result.
+func MTPDecodeEach(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k int, yield func(int32) bool) (*MTPResult, error) {
 	if target == nil || draft == nil {
 		return nil, core.NewError("native.MTPDecode: nil target/draft session")
 	}
@@ -74,16 +83,18 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 	if k <= 0 {
 		return nil, core.NewError("native.MTPDecode: k must be > 0")
 	}
-	// the target must have cache headroom for the speculative overshoot: a round steps up to K draft
-	// tokens past the committed length before rolling back, so guard the worst case once up front.
-	if target.pos+len(promptIDs)+maxNew+k > target.maxLen {
-		return nil, core.NewError("native.MTPDecode: target sequence (+ speculation window) would exceed maxLen cache rows")
+	// The loop caps each draft block to the remaining emitted-token budget, so neither cache needs
+	// rows beyond the final committed prompt+generated sequence.
+	if target.pos+len(promptIDs)+maxNew > target.maxLen {
+		return nil, core.NewError("native.MTPDecode: target sequence would exceed maxLen cache rows")
 	}
-	if draft.pos+len(promptIDs)+maxNew+k > draft.maxLen {
-		return nil, core.NewError("native.MTPDecode: draft sequence (+ speculation window) would exceed maxLen cache rows")
+	if draft.pos+len(promptIDs)+maxNew > draft.maxLen {
+		return nil, core.NewError("native.MTPDecode: draft sequence would exceed maxLen cache rows")
 	}
 
 	res := &MTPResult{Tokens: make([]int32, 0, maxNew)}
+	targetStartPos := target.pos
+	draftStartPos := draft.pos
 	var verifyStack [16]int32
 	verifyIDs := verifyStack[:1]
 	if k+1 > len(verifyStack) {
@@ -229,6 +240,9 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		// roll the target cache back to just the committed run (t0 + accepted drafts); the rejected
 		// suffix's K/V is overwritten by the bonus step below / the next round.
 		target.pos = posBefore + commitLen
+		if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+			return nil, err
+		}
 
 		// keep the DRAFT cache aligned with the committed run too — otherwise it drifts a slot every
 		// round (it proposes nDraft tokens but only `accepted` commit, and on a FULL accept it proposed
@@ -238,29 +252,50 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		// — except the full-accept case, where the final committed draft was proposed but not stepped, so
 		// step it now to fill that row. Then roll the draft to the committed length so the bonus below
 		// lands at the same position the target wrote it.
-		if accepted == len(drafts) && accepted > 0 {
-			if _, err = draft.stepID(drafts[accepted-1]); err != nil {
-				return nil, err
-			}
-		}
-		draft.pos = draftPos0 + commitLen
-
 		// commit the accepted run, honouring maxNew/eos as plain Generate would.
 		stop := false
+		emittedCommitLen := 0
 		for _, id := range verifyIDs[:commitLen] {
-			res.Tokens = append(res.Tokens, id)
+			if !emitMTPToken(res, yield, id) {
+				stop = true
+				emittedCommitLen++
+				break
+			}
+			emittedCommitLen++
 			if (eosID >= 0 && int(id) == eosID) || len(res.Tokens) >= maxNew {
 				stop = true
 				break
 			}
 		}
 		if stop {
+			target.pos = posBefore + emittedCommitLen
+			if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+				return nil, err
+			}
+			if err := draft.retainMTPCommittedBoundary(draftPos0, verifyIDs[:emittedCommitLen]); err != nil {
+				return nil, err
+			}
+			if batched && emittedCommitLen > 0 {
+				if err := target.rememberDenseBatchRetainedHidden(emittedCommitLen - 1); err != nil {
+					return nil, err
+				}
+			}
 			break
+		}
+
+		if accepted == len(drafts) && accepted > 0 {
+			if _, err = draft.stepID(drafts[accepted-1]); err != nil {
+				return nil, err
+			}
+		}
+		draft.pos = draftPos0 + commitLen
+		if err := draft.state.truncateDevicePagedKV(draft.pos); err != nil {
+			return nil, err
 		}
 
 		// commit the bonus correction token (the target's greedy after the accepted run) and step it
 		// on BOTH sessions, so each cache holds it and the next round's cursor is its hidden.
-		res.Tokens = append(res.Tokens, bonus)
+		yieldOK := emitMTPToken(res, yield, bonus)
 		if bonusHidden, err = target.stepID(bonus); err != nil {
 			return nil, err
 		}
@@ -268,12 +303,381 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 			return nil, err
 		}
 		hidden = bonusHidden
+		if !yieldOK {
+			break
+		}
 		if (eosID >= 0 && int(bonus) == eosID) || len(res.Tokens) >= maxNew {
 			break
 		}
 	}
 
+	target.appendKnownResidentIDs(targetStartPos, promptIDs, res.Tokens)
+	draft.appendKnownResidentIDs(draftStartPos, promptIDs, res.Tokens)
 	return res, nil
+}
+
+// MTPDecodeSampled is the target-sampled sibling of MTPDecode: draft proposes
+// continuations, but the target sampler decides every committed token in the
+// same order as GenerateSampledEach. The draft sampler is separate so proposal
+// draws cannot perturb the target RNG stream. stopTokens mirrors
+// GenerateSampledEach; pass nil to disable stop-token early exit.
+func MTPDecodeSampled(target, draft *ArchSession, promptIDs []int32, maxNew int, stopTokens []int32, targetSampler, draftSampler *model.Sampler, params model.SampleParams, k int) (*MTPResult, error) {
+	return MTPDecodeSampledEach(target, draft, promptIDs, maxNew, stopTokens, targetSampler, draftSampler, params, k, nil)
+}
+
+// MTPDecodeSampledEach is MTPDecodeSampled with a streaming token sink. yield
+// receives every target-sampled committed token in order; returning false stops
+// after that token and returns the partial result.
+func MTPDecodeSampledEach(target, draft *ArchSession, promptIDs []int32, maxNew int, stopTokens []int32, targetSampler, draftSampler *model.Sampler, params model.SampleParams, k int, yield func(int32) bool) (*MTPResult, error) {
+	if target == nil || draft == nil {
+		return nil, core.NewError("native.MTPDecodeSampled: nil target/draft session")
+	}
+	if targetSampler == nil {
+		return nil, core.NewError("native.MTPDecodeSampled: nil target sampler")
+	}
+	if draftSampler == nil {
+		return nil, core.NewError("native.MTPDecodeSampled: nil draft sampler")
+	}
+	if targetSampler == draftSampler {
+		return nil, core.NewError("native.MTPDecodeSampled: target and draft samplers must be distinct")
+	}
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("native.MTPDecodeSampled: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("native.MTPDecodeSampled: maxNew must be > 0")
+	}
+	if k <= 0 {
+		return nil, core.NewError("native.MTPDecodeSampled: k must be > 0")
+	}
+	if target.pos+len(promptIDs)+maxNew > target.maxLen {
+		return nil, core.NewError("native.MTPDecodeSampled: target sequence would exceed maxLen cache rows")
+	}
+	if draft.pos+len(promptIDs)+maxNew > draft.maxLen {
+		return nil, core.NewError("native.MTPDecodeSampled: draft sequence would exceed maxLen cache rows")
+	}
+
+	res := &MTPResult{Tokens: make([]int32, 0, maxNew)}
+	targetStartPos := target.pos
+	draftStartPos := draft.pos
+	history := target.sampleHistoryScratchFor(params, maxNew)
+	finalHistory := history
+	defer func() { target.sampleHistory = finalHistory }()
+
+	hidden, ok, err := target.prefillMTPPrompt(promptIDs, true)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		for i, id := range promptIDs {
+			h, err := target.stepID(id)
+			if err != nil {
+				return nil, err
+			}
+			if i == len(promptIDs)-1 {
+				hidden = h
+			}
+		}
+	}
+	if _, ok, err = draft.prefillMTPPrompt(promptIDs, false); err != nil {
+		return nil, err
+	} else if !ok {
+		for _, id := range promptIDs {
+			if _, err := draft.stepID(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if hidden == nil {
+		return nil, core.NewError("native.MTPDecodeSampled: prompt prefill produced no cursor hidden")
+	}
+
+	var verifyStack [16]int32
+	verifyIDs := verifyStack[:1]
+	if k+1 > len(verifyStack) {
+		verifyIDs = make([]int32, 1, k+1)
+	}
+
+	for len(res.Tokens) < maxNew {
+		res.Rounds++
+		draftPos0 := draft.pos
+
+		pickParams := target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
+		t0, err := target.sampleMTPTokenFromHidden(hidden, targetSampler, pickParams, history)
+		if err != nil {
+			return nil, err
+		}
+
+		room := maxNew - len(res.Tokens)
+		nDraft := k
+		if nDraft > room-1 {
+			nDraft = room - 1
+		}
+		if nDraft < 0 {
+			nDraft = 0
+		}
+		verifyIDs = verifyIDs[:1]
+		verifyIDs[0] = t0
+		drafts := verifyIDs[1:1]
+		draftHistory := history
+		if params.RepeatPenalty > 1 {
+			draftHistory = draft.sampleHistoryScratchFor(params, maxNew)
+			draftHistory = append(draftHistory, history...)
+			draftHistory = append(draftHistory, t0)
+		}
+		seed := t0
+		for d := 0; d < nDraft; d++ {
+			dh, err := draft.stepID(seed)
+			if err != nil {
+				return nil, err
+			}
+			draftParams := draft.mtpSamplePickParams(params, stopTokens, len(res.Tokens)+1+d)
+			nd, err := draft.sampleMTPTokenFromHidden(dh, draftSampler, draftParams, draftHistory)
+			if err != nil {
+				return nil, err
+			}
+			drafts = append(drafts, nd)
+			if params.RepeatPenalty > 1 {
+				draftHistory = append(draftHistory, nd)
+			}
+			seed = nd
+		}
+		verifyIDs = verifyIDs[:1+len(drafts)]
+		res.Drafted += len(drafts)
+
+		posBefore := target.pos
+		commitLen := 0
+		accepted := 0
+		bonusOK := false
+		stopped := false
+		var bonus int32
+		batchedHiddens, batched, err := target.verifyBatchedHiddens(verifyIDs)
+		if err != nil {
+			return nil, err
+		}
+		if batched {
+			if len(batchedHiddens) != len(verifyIDs) {
+				return nil, core.NewError("native.MTPDecodeSampled: sampled batched verify hidden count mismatch")
+			}
+			hidden = batchedHiddens[0]
+			commitLen = 1
+			if !emitMTPToken(res, yield, t0) {
+				stopped = true
+			}
+			if params.RepeatPenalty > 1 {
+				history = append(history, t0)
+				finalHistory = history
+			}
+			if nativeTokenInSet(t0, stopTokens) || len(res.Tokens) >= maxNew {
+				stopped = true
+			}
+			if !stopped {
+				expectedParams := target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
+				expected, sampleErr := target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+				if sampleErr != nil {
+					return nil, sampleErr
+				}
+				for d, draftID := range drafts {
+					if draftID != expected {
+						bonus = expected
+						bonusOK = true
+						break
+					}
+					commitLen++
+					accepted++
+					hidden = batchedHiddens[d+1]
+					if !emitMTPToken(res, yield, draftID) {
+						stopped = true
+						break
+					}
+					if params.RepeatPenalty > 1 {
+						history = append(history, draftID)
+						finalHistory = history
+					}
+					if nativeTokenInSet(draftID, stopTokens) || len(res.Tokens) >= maxNew {
+						stopped = true
+						break
+					}
+					expectedParams = target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
+					expected, sampleErr = target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+					if sampleErr != nil {
+						return nil, sampleErr
+					}
+				}
+				if !stopped && !bonusOK {
+					bonus = expected
+					bonusOK = true
+				}
+			}
+		} else {
+			hidden, err = target.stepID(t0)
+			if err != nil {
+				return nil, err
+			}
+			commitLen = 1
+			if !emitMTPToken(res, yield, t0) {
+				stopped = true
+			}
+			if params.RepeatPenalty > 1 {
+				history = append(history, t0)
+				finalHistory = history
+			}
+			if nativeTokenInSet(t0, stopTokens) || len(res.Tokens) >= maxNew {
+				stopped = true
+			}
+
+			if !stopped {
+				expectedParams := target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
+				expected, sampleErr := target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+				if sampleErr != nil {
+					return nil, sampleErr
+				}
+				for _, draftID := range drafts {
+					if draftID != expected {
+						bonus = expected
+						bonusOK = true
+						break
+					}
+					hidden, err = target.stepID(draftID)
+					if err != nil {
+						return nil, err
+					}
+					commitLen++
+					accepted++
+					if !emitMTPToken(res, yield, draftID) {
+						stopped = true
+						break
+					}
+					if params.RepeatPenalty > 1 {
+						history = append(history, draftID)
+						finalHistory = history
+					}
+					if nativeTokenInSet(draftID, stopTokens) || len(res.Tokens) >= maxNew {
+						stopped = true
+						break
+					}
+					expectedParams = target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
+					expected, sampleErr = target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+					if sampleErr != nil {
+						return nil, sampleErr
+					}
+				}
+				if !stopped && !bonusOK {
+					bonus = expected
+					bonusOK = true
+				}
+			}
+		}
+		res.Accepted += accepted
+		target.pos = posBefore + commitLen
+		if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+			return nil, err
+		}
+
+		if stopped {
+			if batched {
+				if err := target.rememberDenseBatchRetainedHidden(commitLen - 1); err != nil {
+					return nil, err
+				}
+			}
+			if err := draft.retainMTPCommittedBoundary(draftPos0, verifyIDs[:commitLen]); err != nil {
+				return nil, err
+			}
+			break
+		}
+		if len(drafts) == 0 {
+			if _, err = draft.stepID(t0); err != nil {
+				return nil, err
+			}
+		} else if accepted == len(drafts) && accepted > 0 {
+			if _, err = draft.stepID(drafts[accepted-1]); err != nil {
+				return nil, err
+			}
+		}
+		draft.pos = draftPos0 + commitLen
+		if err := draft.state.truncateDevicePagedKV(draft.pos); err != nil {
+			return nil, err
+		}
+		if !bonusOK {
+			return nil, core.NewError("native.MTPDecodeSampled: sampled verify produced no bonus token")
+		}
+
+		yieldOK := emitMTPToken(res, yield, bonus)
+		if params.RepeatPenalty > 1 {
+			history = append(history, bonus)
+			finalHistory = history
+		}
+		if hidden, err = target.stepID(bonus); err != nil {
+			return nil, err
+		}
+		if _, err = draft.stepID(bonus); err != nil {
+			return nil, err
+		}
+		if !yieldOK {
+			break
+		}
+		if nativeTokenInSet(bonus, stopTokens) || len(res.Tokens) >= maxNew {
+			break
+		}
+	}
+
+	target.appendKnownResidentIDs(targetStartPos, promptIDs, res.Tokens)
+	draft.appendKnownResidentIDs(draftStartPos, promptIDs, res.Tokens)
+	return res, nil
+}
+
+func emitMTPToken(res *MTPResult, yield func(int32) bool, id int32) bool {
+	res.Tokens = append(res.Tokens, id)
+	return yield == nil || yield(id)
+}
+
+func (s *ArchSession) mtpSamplePickParams(params model.SampleParams, stopTokens []int32, generated int) model.SampleParams {
+	pick := params
+	if params.MinTokensBeforeStop > 0 && generated < params.MinTokensBeforeStop {
+		pick.SuppressTokens = s.suppressionTokensScratch(params.SuppressTokens, stopTokens)
+	}
+	return pick
+}
+
+func (s *ArchSession) sampleMTPTokenFromHidden(hidden []byte, sampler *model.Sampler, params model.SampleParams, history []int32) (int32, error) {
+	var (
+		token int32
+		err   error
+	)
+	withAutoreleasePool(func() {
+		token, err = s.sampleMTPTokenFromHiddenInPool(hidden, sampler, params, history)
+	})
+	return token, err
+}
+
+func (s *ArchSession) sampleMTPTokenFromHiddenInPool(hidden []byte, sampler *model.Sampler, params model.SampleParams, history []int32) (int32, error) {
+	if sampledGreedyParamsEligible(params) {
+		return s.headGreedyOrLogits(hidden, params.SuppressTokens, nil, nil, false)
+	}
+	logits, err := s.headLogitsScratch(hidden, false)
+	if err != nil {
+		return 0, err
+	}
+	return s.sampleTokenFromLogits(logits, sampler, params, history)
+}
+
+func (s *ArchSession) retainMTPCommittedBoundary(start int, ids []int32) error {
+	if s == nil {
+		return core.NewError("native.MTPDecode: nil draft session")
+	}
+	if start < 0 || start+len(ids) > s.maxLen {
+		return core.NewError("native.MTPDecode: committed draft boundary would exceed maxLen cache rows")
+	}
+	s.pos = start
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.stepID(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool, error) {
@@ -283,13 +687,9 @@ func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool
 	if s.perLayerInput != nil || s.pos+len(ids) > s.maxLen {
 		return nil, false, nil
 	}
-	if readLast && len(ids) == 1 {
-		hidden, err := s.stepID(ids[0])
-		return hidden, true, err
-	}
 	batchIDs := ids
 	if readLast {
-		batchIDs = ids[:len(ids)-1]
+		batchIDs = ids
 	}
 	if len(batchIDs) == 0 {
 		return nil, false, nil
@@ -330,36 +730,59 @@ func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool
 		}
 	}
 	var (
+		hidden  []byte
 		hiddens [][]byte
 		ok      bool
 		err     error
 	)
+	if readLast {
+		dst := s.sampleHidden
+		retained := false
+		if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK {
+			s.resetRetainedLogits()
+			dst = pinned.bytes[:s.arch.Hidden*bf16Size]
+			retained = true
+		}
+		withAutoreleasePool(func() {
+			hidden, ok, err = s.state.stepTokensBatchedDenseLastInto(embs, s.pos, dst)
+		})
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		if retained {
+			s.sampleHidden = nil
+			s.retainedHidden = hidden
+		} else {
+			s.sampleHidden = hidden
+		}
+		s.pos += len(batchIDs)
+		return hidden, true, nil
+	}
 	withAutoreleasePool(func() {
-		hiddens, ok, err = s.state.stepTokensBatchedDenseResult(embs, s.pos, false, false, nil)
+		hiddens, ok, err = s.state.stepTokensBatchedDenseResult(embs, s.pos, false, false, nil, nil)
 	})
 	if err != nil || !ok {
 		return nil, ok, err
 	}
 	s.pos += len(batchIDs)
-	if !readLast {
-		return nil, true, nil
-	}
 	if len(hiddens) != 0 {
 		return nil, false, core.NewError("native.MTPDecode: dense prompt prefill returned incomplete hiddens")
 	}
-	hidden, err := s.stepID(ids[len(ids)-1])
-	return hidden, true, err
+	return nil, true, nil
 }
 
 // stepID embeds token id and steps it through the session's resident cache at the current position,
-// advancing pos — the same primitive Generate uses internally (StepWithID), so the resulting hidden
-// is byte-identical to a plain greedy step on this token. PLE models thread the id correctly.
+// advancing pos. It retains the returned hidden in the session's no-copy boundary buffer when possible,
+// so the following greedy/head path can bind it directly. PLE models thread the id correctly.
 func (s *ArchSession) stepID(id int32) ([]byte, error) {
-	emb, err := s.embedID(id)
-	if err != nil {
-		return nil, err
-	}
-	return s.StepWithID(id, emb)
+	var (
+		hidden []byte
+		err    error
+	)
+	withAutoreleasePool(func() {
+		hidden, err = s.stepIDRetainedInPool(id)
+	})
+	return hidden, err
 }
 
 // greedyOf returns the greedy argmax id plain Generate would emit at this hidden.

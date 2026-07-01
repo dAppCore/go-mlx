@@ -7,6 +7,7 @@ package native
 import (
 	"testing"
 
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/model"
 )
 
@@ -235,6 +236,154 @@ func BenchmarkSessionStateRestoreBlocksTrustedPrefix(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if err := restored.RestoreStateBlocks(source); err != nil {
 			b.Fatalf("RestoreStateBlocks trusted prefix: %v", err)
+		}
+	}
+}
+
+func BenchmarkSessionStateRestoreKVTurboQuantPrefixBlock(b *testing.B) {
+	requireNativeRuntime(b)
+	restored := newSingleLayerSessionStateFixture(b)
+	source, _, view := turboQuantPrefixKVBlockSourceFixture(b, restored)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		b.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	b.SetBytes(int64(view.rowBytes))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := restored.RestoreKVBlocks(source); err != nil {
+			b.Fatalf("RestoreKVBlocks: %v", err)
+		}
+	}
+}
+
+func BenchmarkSessionStateRestoreKVTurboQuantFullBlock(b *testing.B) {
+	requireNativeRuntime(b)
+	restored := newSingleLayerSessionStateFixture(b)
+	source, _, view := turboQuantPrefixKVBlockSourceFixture(b, restored)
+	source.PrefixTokens = source.TokenCount
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		b.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	b.SetBytes(int64(source.TokenCount * view.rowBytes))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := restored.RestoreKVBlocks(source); err != nil {
+			b.Fatalf("RestoreKVBlocks: %v", err)
+		}
+	}
+}
+
+func BenchmarkSessionStateRestoreKVNativeLayerSlabs(b *testing.B) {
+	requireNativeRuntime(b)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(b)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		b.Fatalf("PrefillTokens: %v", err)
+	}
+	snapshot, err := saved.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		b.Fatalf("CaptureKVWithOptions: %v", err)
+	}
+	snapshot.Generated = nil
+	snapshot.LogitShape = nil
+	snapshot.Logits = nil
+	var payloadBytes int
+	for _, layer := range snapshot.Layers {
+		payloadBytes += len(layer.KeyBytes) + len(layer.ValueBytes)
+	}
+
+	restored := newSessionStateFixture(b)
+	if err := restored.RestoreKV(snapshot); err != nil {
+		b.Fatalf("RestoreKV warmup: %v", err)
+	}
+	b.SetBytes(int64(payloadBytes))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := restored.RestoreKV(snapshot); err != nil {
+			b.Fatalf("RestoreKV: %v", err)
+		}
+	}
+}
+
+func BenchmarkSessionStateRestoreKVBlocksNativeLayerSlabs(b *testing.B) {
+	requireNativeRuntime(b)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(b)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		b.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		b.Fatalf("KVBlockSource: %v", err)
+	}
+	payloadBytes := 0
+	for i := 0; i < source.BlockCount; i++ {
+		block, err := source.Load(i)
+		if err != nil {
+			b.Fatalf("source.Load(%d): %v", i, err)
+		}
+		for _, layer := range block.Snapshot.Layers {
+			payloadBytes += len(layer.KeyBytes) + len(layer.ValueBytes)
+		}
+	}
+
+	restored := newSessionStateFixture(b)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		b.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	b.SetBytes(int64(payloadBytes))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := restored.RestoreKVBlocks(source); err != nil {
+			b.Fatalf("RestoreKVBlocks: %v", err)
+		}
+	}
+}
+
+func BenchmarkSessionStateRestoreKVBlocksPortableRetainedLogits(b *testing.B) {
+	requireNativeRuntime(b)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(b)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		b.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		b.Fatalf("KVBlockSource: %v", err)
+	}
+	blocks := make([]kv.Block, source.BlockCount)
+	payloadBytes := 0
+	for i := range blocks {
+		blocks[i], err = source.Load(i)
+		if err != nil {
+			b.Fatalf("source.Load(%d): %v", i, err)
+		}
+		for _, layer := range blocks[i].Snapshot.Layers {
+			payloadBytes += len(layer.KeyBytes) + len(layer.ValueBytes)
+		}
+	}
+	source.nativeStateSource = nil
+	source.Load = func(index int) (kv.Block, error) {
+		return blocks[index], nil
+	}
+
+	restored := newSessionStateFixture(b)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		b.Fatalf("RestoreKVBlocks warmup: %v", err)
+	}
+	b.SetBytes(int64(payloadBytes))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := restored.RestoreKVBlocks(source); err != nil {
+			b.Fatalf("RestoreKVBlocks: %v", err)
 		}
 	}
 }

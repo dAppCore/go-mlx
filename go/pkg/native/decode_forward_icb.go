@@ -14,6 +14,7 @@ import (
 	core "dappco.re/go"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/apple/metal"
+	"github.com/tmc/apple/objc"
 )
 
 type decodeForwardICBCoreScratch struct {
@@ -25,7 +26,9 @@ type decodeForwardICBCoreScratch struct {
 	offBuf, nBuf                      metal.MTLBuffer
 	offPtr, nPtr                      *int32
 	kRopeCmd, vCmd                    []metal.MTLIndirectComputeCommand
+	residentBufs                      []metal.MTLBuffer
 	residentRes                       []metal.MTLResource
+	residentIDs                       []objc.ID
 	outputViewPtrs                    []uintptr
 	outputViewLens                    []int
 	outputViewBufs                    []metal.MTLBuffer
@@ -36,7 +39,78 @@ type decodeForwardICBCoreScratchKey struct {
 	dModel, qDim, kvDim, dFF, nLayers int
 }
 
+type decodeForwardICBCoreScratchPool struct {
+	mu    sync.Mutex
+	items []*decodeForwardICBCoreScratch
+}
+
 var decodeForwardICBCoreScratchPools sync.Map
+
+type decodeForwardICBLayerProjBuffers struct {
+	wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer
+}
+
+type decodeForwardICBSetupScratch struct {
+	anwBufs, mnwBufs []metal.MTLBuffer
+	kCaches, vCaches []metal.MTLBuffer
+	lb               []decodeForwardICBLayerProjBuffers
+	projResident     []metal.MTLBuffer
+}
+
+var decodeForwardICBSetupScratchPool sync.Pool
+
+func newDecodeForwardICBSetupScratch(nLayers int) *decodeForwardICBSetupScratch {
+	return &decodeForwardICBSetupScratch{
+		anwBufs:      make([]metal.MTLBuffer, nLayers),
+		mnwBufs:      make([]metal.MTLBuffer, nLayers),
+		kCaches:      make([]metal.MTLBuffer, nLayers),
+		vCaches:      make([]metal.MTLBuffer, nLayers),
+		lb:           make([]decodeForwardICBLayerProjBuffers, nLayers),
+		projResident: make([]metal.MTLBuffer, 0, nLayers*7+19),
+	}
+}
+
+func (s *decodeForwardICBSetupScratch) fits(nLayers int) bool {
+	return s != nil &&
+		cap(s.anwBufs) >= nLayers &&
+		cap(s.mnwBufs) >= nLayers &&
+		cap(s.kCaches) >= nLayers &&
+		cap(s.vCaches) >= nLayers &&
+		cap(s.lb) >= nLayers &&
+		cap(s.projResident) >= nLayers*7+19
+}
+
+func (s *decodeForwardICBSetupScratch) reset(nLayers int) *decodeForwardICBSetupScratch {
+	clear(s.anwBufs)
+	clear(s.mnwBufs)
+	clear(s.kCaches)
+	clear(s.vCaches)
+	clear(s.lb)
+	clear(s.projResident)
+	s.anwBufs = s.anwBufs[:nLayers]
+	s.mnwBufs = s.mnwBufs[:nLayers]
+	s.kCaches = s.kCaches[:nLayers]
+	s.vCaches = s.vCaches[:nLayers]
+	s.lb = s.lb[:nLayers]
+	s.projResident = s.projResident[:0]
+	return s
+}
+
+func getDecodeForwardICBSetupScratch(nLayers int) *decodeForwardICBSetupScratch {
+	if v := decodeForwardICBSetupScratchPool.Get(); v != nil {
+		s := v.(*decodeForwardICBSetupScratch)
+		if s.fits(nLayers) {
+			return s.reset(nLayers)
+		}
+	}
+	return newDecodeForwardICBSetupScratch(nLayers)
+}
+
+func putDecodeForwardICBSetupScratch(s *decodeForwardICBSetupScratch) {
+	if s != nil {
+		decodeForwardICBSetupScratchPool.Put(s.reset(0))
+	}
+}
 
 func newDecodeForwardICBCoreScratch(dModel, qDim, kvDim, dFF, nLayers int) *decodeForwardICBCoreScratch {
 	hBufs := make([]metal.MTLBuffer, nLayers)
@@ -47,17 +121,18 @@ func newDecodeForwardICBCoreScratch(dModel, qDim, kvDim, dFF, nLayers int) *deco
 	nBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
 	return &decodeForwardICBCoreScratch{
 		dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF, nLayers: nLayers,
-		asc:         newAttnScratch(dModel, qDim, kvDim, 0, 0),
-		msc:         newMLPScratch(dModel, dFF),
-		ping:        [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)},
-		hBufs:       hBufs,
-		offBuf:      offBuf,
-		nBuf:        nBuf,
-		offPtr:      (*int32)(offBuf.Contents()),
-		nPtr:        (*int32)(nBuf.Contents()),
-		kRopeCmd:    make([]metal.MTLIndirectComputeCommand, nLayers),
-		vCmd:        make([]metal.MTLIndirectComputeCommand, nLayers),
-		residentRes: make([]metal.MTLResource, 0, 12*nLayers+64),
+		asc:          newAttnScratch(dModel, qDim, kvDim, 0, 0),
+		msc:          newMLPScratch(dModel, dFF),
+		ping:         [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)},
+		hBufs:        hBufs,
+		offBuf:       offBuf,
+		nBuf:         nBuf,
+		offPtr:       (*int32)(offBuf.Contents()),
+		nPtr:         (*int32)(nBuf.Contents()),
+		kRopeCmd:     make([]metal.MTLIndirectComputeCommand, nLayers),
+		vCmd:         make([]metal.MTLIndirectComputeCommand, nLayers),
+		residentBufs: make([]metal.MTLBuffer, 0, 12*nLayers+64),
+		residentRes:  make([]metal.MTLResource, 0, 12*nLayers+64),
 	}
 }
 
@@ -142,6 +217,13 @@ func (s *decodeForwardICBCoreScratch) outputViews(outputs [][]byte, outLen int) 
 			continue
 		}
 		s.closeOutputViewAt(i)
+		if buf, ok := registeredPinnedNoCopyBytes(outputs[i]); ok {
+			s.outputViewPtrs[i] = ptr
+			s.outputViewLens[i] = outLen
+			s.outputViewBufs[i] = buf
+			s.outputViewPinned[i] = nil
+			continue
+		}
 		buf, pinner, noCopy := residentNoCopyBytes(outputs[i])
 		if !noCopy {
 			if pinner != nil {
@@ -159,19 +241,18 @@ func (s *decodeForwardICBCoreScratch) outputViews(outputs [][]byte, outLen int) 
 	return s.outputViewBufs, true
 }
 
-func decodeForwardICBCoreScratchPoolFor(dModel, qDim, kvDim, dFF, nLayers int) *sync.Pool {
+func decodeForwardICBCoreScratchPoolFor(dModel, qDim, kvDim, dFF, nLayers int) *decodeForwardICBCoreScratchPool {
 	key := decodeForwardICBCoreScratchKey{dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF, nLayers: nLayers}
 	if v, ok := decodeForwardICBCoreScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*decodeForwardICBCoreScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := &decodeForwardICBCoreScratchPool{}
 	actual, _ := decodeForwardICBCoreScratchPools.LoadOrStore(key, pool)
-	return actual.(*sync.Pool)
+	return actual.(*decodeForwardICBCoreScratchPool)
 }
 
 func getDecodeForwardICBCoreScratch(dModel, qDim, kvDim, dFF, nLayers int) *decodeForwardICBCoreScratch {
-	if v := decodeForwardICBCoreScratchPoolFor(dModel, qDim, kvDim, dFF, nLayers).Get(); v != nil {
-		s := v.(*decodeForwardICBCoreScratch)
+	if s := decodeForwardICBCoreScratchPoolFor(dModel, qDim, kvDim, dFF, nLayers).Get(); s != nil {
 		if s.matches(dModel, qDim, kvDim, dFF, nLayers) {
 			return s
 		}
@@ -183,6 +264,28 @@ func putDecodeForwardICBCoreScratch(s *decodeForwardICBCoreScratch) {
 	if s != nil {
 		decodeForwardICBCoreScratchPoolFor(s.dModel, s.qDim, s.kvDim, s.dFF, s.nLayers).Put(s)
 	}
+}
+
+func (p *decodeForwardICBCoreScratchPool) Get() *decodeForwardICBCoreScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *decodeForwardICBCoreScratchPool) Put(s *decodeForwardICBCoreScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 // decodeForwardICBCore is the backend-agnostic cache-grow ICB recorder + replay:
@@ -268,7 +371,6 @@ func decodeForwardICBCore(
 	}
 	withAutoreleasePool(func() {
 		sc := getDecodeForwardICBCoreScratch(dModel, qDim, kvDim, dFF, nLayers)
-		defer putDecodeForwardICBCoreScratch(sc)
 
 		// shared scratch + gelu constants + residual ping-pong
 		normed := sc.asc.normed
@@ -308,12 +410,13 @@ func decodeForwardICBCore(
 			tanhCntB = scalarI32(int32(dFF))
 		}
 
-		resident := []metal.MTLBuffer{
+		resident := sc.residentBufs[:0]
+		resident = append(resident,
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, mlpNormed,
 			gate, up, gated, down,
 			offBuf, nBuf, epsBuf, axisBuf, wsBuf,
 			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB, cntFFB,
-		}
+		)
 		if !hasFusedGELU {
 			resident = append(resident,
 				x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu,
@@ -362,9 +465,9 @@ func decodeForwardICBCore(
 			inBuf, outBuf := ping[li%2], ping[(li+1)%2]
 			hBuf := hBufs[li]
 			cmd := func(op int) metal.MTLIndirectComputeCommand {
-				c := icb.IndirectComputeCommandAtIndex(uint(opBase + op))
+				c := indirectComputeCommandAtIndexFast(icb, uint(opBase+op))
 				if opBase+op != 0 {
-					c.SetBarrier()
+					setICBBarrier(c)
 				}
 				return c
 			}
@@ -442,13 +545,15 @@ func decodeForwardICBCore(
 		for i, b := range resident {
 			residentRes[i] = b
 		}
+		sc.residentIDs = resourceIDsForFastUse(sc.residentIDs, residentRes)
+		residentIDs := sc.residentIDs
 		rng := foundation.NSRange{Location: 0, Length: uint(total)}
 
 		// optimize the recorded ICB once (offset-only rebinds after don't re-optimize)
 		optCb := commandBufferFast(queue)
-		blit := optCb.BlitCommandEncoder()
-		blit.OptimizeIndirectCommandBufferWithRange(icb, rng)
-		blit.EndEncoding()
+		blit := blitCommandEncoderFast(optCb)
+		optimizeIndirectCommandBufferWithRangeFast(blit, icb, rng)
+		endBlitEncodingFast(blit)
 		commitCommandBufferFast(optCb)
 		waitUntilCompletedFast(optCb)
 
@@ -469,8 +574,8 @@ func decodeForwardICBCore(
 
 			cb := commandBufferFast(queue)
 			enc := computeCommandEncoderFast(cb)
-			enc.UseResourcesCountUsage(residentRes, uint(len(residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			enc.ExecuteCommandsInBufferWithRange(icb, rng)
+			useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			executeCommandsInBufferWithRangeFast(enc, icb, rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb)
 			waitUntilCompletedFast(cb)
@@ -481,6 +586,7 @@ func decodeForwardICBCore(
 				copy(outputs[t], unsafe.Slice(lastOutPtr, dModel*bf16Size))
 			}
 		}
+		putDecodeForwardICBCoreScratch(sc)
 	})
 	return outputs, nil
 }
@@ -568,24 +674,24 @@ func decodeForwardICBInto(
 
 	var coreErr error
 	withAutoreleasePool(func() {
-		anwBufs := make([]metal.MTLBuffer, nLayers)
-		mnwBufs := make([]metal.MTLBuffer, nLayers)
-		kCaches := make([]metal.MTLBuffer, nLayers)
-		vCaches := make([]metal.MTLBuffer, nLayers)
-		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
-		lb := make([]lw, nLayers)
+		setup := getDecodeForwardICBSetupScratch(nLayers)
+		anwBufs := setup.anwBufs
+		mnwBufs := setup.mnwBufs
+		kCaches := setup.kCaches
+		vCaches := setup.vCaches
+		lb := setup.lb
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		// presized to the upper bound (every layer's 7 projection buffers, plus the 19 trailing
 		// scalar buffers) so the per-forward build never geometrically regrows its backing array.
 		// Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7+19)
+		projResident := setup.projResident
 		for li := range layers {
 			w := layers[li]
 			anwBufs[li] = residentBytes(w.AttnNormW)
 			mnwBufs[li] = residentBytes(w.MLPNormW)
 			kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-			lb[li] = lw{residentBytes(w.WQ), residentBytes(w.WK), residentBytes(w.WV), residentBytes(w.WO), residentBytes(w.WGate), residentBytes(w.WUp), residentBytes(w.WDown)}
+			lb[li] = decodeForwardICBLayerProjBuffers{residentBytes(w.WQ), residentBytes(w.WK), residentBytes(w.WV), residentBytes(w.WO), residentBytes(w.WGate), residentBytes(w.WUp), residentBytes(w.WDown)}
 			projResident = append(projResident, lb[li].wq, lb[li].wk, lb[li].wv, lb[li].wo, lb[li].wg, lb[li].wu, lb[li].wd)
 		}
 		// gemv scalar params (shared across layers)
@@ -621,6 +727,7 @@ func decodeForwardICBInto(
 			}
 		}
 		outputs, coreErr = decodeForwardICBCore(outputs, inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps, useCallerOut)
+		putDecodeForwardICBSetupScratch(setup)
 	})
 	if coreErr != nil {
 		return nil, coreErr

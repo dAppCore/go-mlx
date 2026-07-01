@@ -38,7 +38,13 @@ type VisionConfig struct {
 	PoolKernel  int  // spatial pooling kernel (gemma4 default 3)
 	Standardize bool // post-pool (x-bias)·scale
 	// EmbeddingScale is √Hidden, multiplied into the pooled rows (cached to skip a per-pass sqrt).
-	EmbeddingScale float32
+	EmbeddingScale  float32
+	ImageTokenID    int32
+	ImageBeginToken string
+	ImageToken      string
+	ImageEndToken   string
+	VideoTokenID    int32
+	VideoToken      string
 }
 
 type visionSDPAScratchKey struct {
@@ -421,8 +427,10 @@ func vNormHeadMajor(proj []byte, L, N, headDim int, eps float32) []byte {
 type VisionLayerWeights struct {
 	InputNorm, PostAttnNorm, PreFFNorm, PostFFNorm []byte
 	WQ, WK, WV, WO                                 []byte
+	BQ, BK, BV, BO                                 []byte
 	QNorm, KNorm                                   []byte
 	WGate, WUp, WDown                              []byte
+	BGate, BUp, BDown                              []byte
 }
 
 // visionAttention runs the SigLIP attention subblock on a pre-normed [L, hidden] input: Q/K/V
@@ -430,15 +438,15 @@ type VisionLayerWeights struct {
 // (VisionSDPA) → output projection. Returns [L, hidden] bf16.
 func visionAttention(normed []byte, w *VisionLayerWeights, cfg VisionConfig) ([]byte, error) {
 	qDim, kvDim := cfg.NumHeads*cfg.HeadDim, cfg.NumKVHeads*cfg.HeadDim
-	qP, err := MatRowsBF16(w.WQ, normed, cfg.GridH*cfg.GridW, qDim, cfg.Hidden)
+	qP, err := visionDenseLinearRows(w.WQ, w.BQ, normed, cfg.GridH*cfg.GridW, qDim, cfg.Hidden, "q projection")
 	if err != nil {
 		return nil, err
 	}
-	kP, err := MatRowsBF16(w.WK, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden)
+	kP, err := visionDenseLinearRows(w.WK, w.BK, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden, "k projection")
 	if err != nil {
 		return nil, err
 	}
-	vP, err := MatRowsBF16(w.WV, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden)
+	vP, err := visionDenseLinearRows(w.WV, w.BV, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden, "v projection")
 	if err != nil {
 		return nil, err
 	}
@@ -464,18 +472,18 @@ func visionAttention(normed []byte, w *VisionLayerWeights, cfg VisionConfig) ([]
 				af[(h*L+pos)*cfg.HeadDim:(h*L+pos)*cfg.HeadDim+cfg.HeadDim])
 		}
 	}
-	return MatRowsBF16(w.WO, f32ToBf16Slice(tok), L, cfg.Hidden, qDim)
+	return visionDenseLinearRows(w.WO, w.BO, f32ToBf16Slice(tok), L, cfg.Hidden, qDim, "output projection")
 }
 
 // visionMLP runs the gated-GeLU feed-forward on [L, hidden] bf16: gate/up projections → gelu(gate)·up
 // → down projection. The gelu·gate·up runs in fp32 (gemma's tanh-approx gelu) then back to bf16.
 func visionMLP(ffIn []byte, w *VisionLayerWeights, L, hidden int) ([]byte, error) {
 	ffDim := len(w.WGate) / bf16Size / hidden
-	gate, err := MatRowsBF16(w.WGate, ffIn, L, ffDim, hidden)
+	gate, err := visionDenseLinearRows(w.WGate, w.BGate, ffIn, L, ffDim, hidden, "gate projection")
 	if err != nil {
 		return nil, err
 	}
-	up, err := MatRowsBF16(w.WUp, ffIn, L, ffDim, hidden)
+	up, err := visionDenseLinearRows(w.WUp, w.BUp, ffIn, L, ffDim, hidden, "up projection")
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +491,7 @@ func visionMLP(ffIn []byte, w *VisionLayerWeights, L, hidden int) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	return MatRowsBF16(w.WDown, f32ToBf16Slice(gated), L, hidden, ffDim)
+	return visionDenseLinearRows(w.WDown, w.BDown, f32ToBf16Slice(gated), L, hidden, ffDim, "down projection")
 }
 
 // VisionEncoderLayer runs one pre-norm SigLIP encoder block — the faithful re-expression of metal's
@@ -563,11 +571,23 @@ func visionGridForPatchCount(patches, poolKernel int) (int, int) {
 	return bestH, bestW
 }
 
-// VisionProjectorWeights is the vision-to-text projector's bf16 weight views: a single projection,
-// or fc1+fc2 with a gelu between. Eps is the projector's RMSNormNoScale epsilon.
+// VisionProjectorLinear is one vision-projector linear. Weight is either dense
+// bf16 or affine-packed quant data when Scales/Biases are present.
+type VisionProjectorLinear struct {
+	Weight         []byte
+	Scales, Biases []byte
+	Bias           []byte
+	OutDim, InDim  int
+	GroupSize      int
+	Bits           int
+}
+
+// VisionProjectorWeights is the vision-to-text projector's weight views: a
+// single projection, or fc1+fc2 with a gelu between. Eps is the projector's
+// RMSNormNoScale epsilon.
 type VisionProjectorWeights struct {
-	Projection       []byte
-	Linear1, Linear2 []byte
+	Projection       VisionProjectorLinear
+	Linear1, Linear2 VisionProjectorLinear
 	Eps              float32
 }
 
@@ -653,22 +673,76 @@ func visionProjector(rows []byte, w *VisionProjectorWeights, H int) ([]byte, err
 	}
 	normed := f32ToBf16Slice(f)
 	switch {
-	case w.Projection != nil:
-		return MatRowsBF16(w.Projection, normed, L, len(w.Projection)/bf16Size/H, H)
-	case w.Linear1 != nil && w.Linear2 != nil:
-		inter := len(w.Linear1) / bf16Size / H
-		h1, err := MatRowsBF16(w.Linear1, normed, L, inter, H)
+	case w.Projection.Weight != nil:
+		return visionProjectorLinearRows(normed, w.Projection, L, H, "projection")
+	case w.Linear1.Weight != nil && w.Linear2.Weight != nil:
+		h1, err := visionProjectorLinearRows(normed, w.Linear1, L, H, "linear1")
 		if err != nil {
 			return nil, err
 		}
+		inter := len(h1) / bf16Size / L
 		g := bf16ToF32Slice(h1)
 		for i := range g {
 			g[i] = geluTanhScalar(g[i])
 		}
-		return MatRowsBF16(w.Linear2, f32ToBf16Slice(g), L, len(w.Linear2)/bf16Size/inter, inter)
+		return visionProjectorLinearRows(f32ToBf16Slice(g), w.Linear2, L, inter, "linear2")
 	default:
 		return normed, nil
 	}
+}
+
+func visionProjectorLinearRows(in []byte, w VisionProjectorLinear, rows, inDim int, label string) ([]byte, error) {
+	if len(w.Scales) > 0 {
+		if w.InDim != inDim || w.OutDim <= 0 || w.GroupSize <= 0 || w.Bits <= 0 {
+			return nil, core.NewError("native.VisionProjector: invalid quant " + label + " geometry")
+		}
+		if len(w.Biases) == 0 {
+			return nil, core.NewError("native.VisionProjector: quant " + label + " missing biases")
+		}
+		out := make([]byte, rows*w.OutDim*bf16Size)
+		for r := 0; r < rows; r++ {
+			rowIn := in[r*inDim*bf16Size : (r+1)*inDim*bf16Size]
+			rowOut := out[r*w.OutDim*bf16Size : (r+1)*w.OutDim*bf16Size]
+			if _, err := QMVBF16Into(rowOut, rowIn, w.Weight, w.Scales, w.Biases, w.OutDim, inDim, w.GroupSize, w.Bits); err != nil {
+				return nil, err
+			}
+		}
+		return addVisionLinearBiasRows(out, w.Bias, rows, w.OutDim, "native.VisionProjector "+label)
+	}
+	outDim := w.OutDim
+	if outDim <= 0 {
+		outDim = len(w.Weight) / bf16Size / inDim
+	}
+	return visionDenseLinearRows(w.Weight, w.Bias, in, rows, outDim, inDim, "projector "+label)
+}
+
+func visionDenseLinearRows(weight, bias, in []byte, rows, outDim, inDim int, label string) ([]byte, error) {
+	out, err := MatRowsBF16(weight, in, rows, outDim, inDim)
+	if err != nil {
+		return nil, err
+	}
+	return addVisionLinearBiasRows(out, bias, rows, outDim, "native.Vision "+label)
+}
+
+func addVisionLinearBiasRows(out, bias []byte, rows, outDim int, label string) ([]byte, error) {
+	if bias == nil {
+		return out, nil
+	}
+	if len(bias) != outDim*bf16Size {
+		return nil, core.NewError(label + ": bias length must equal outDim*2 bytes")
+	}
+	if len(out) != rows*outDim*bf16Size {
+		return nil, core.NewError(label + ": output length must equal rows*outDim*2 bytes")
+	}
+	b := bf16ToF32Slice(bias)
+	f := bf16ToF32Slice(out)
+	for r := 0; r < rows; r++ {
+		row := f[r*outDim : (r+1)*outDim]
+		for c := range row {
+			row[c] += b[c]
+		}
+	}
+	return f32ToBf16Slice(f), nil
 }
 
 // VisionTower runs the whole gemma4 SigLIP vision forward on pre-patchified pixel patches [L, patchDim]
@@ -727,22 +801,45 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 // next feature row in order; the rest pass through. Returns the spliced [L, H] stream. The features'
 // H must match the embedding H (the projector already mapped vision → text hidden).
 func VisionInjectFeatures(embeddings []byte, tokenIDs []int32, features []byte, imageTokenID int32, H int) ([]byte, error) {
+	return injectTokenFeatures(embeddings, tokenIDs, features, imageTokenID, H, "Vision")
+}
+
+// AudioInjectFeatures splices Gemma-4 audio soft-token rows into the text
+// embedding stream at audio-placeholder positions, matching the same B=1
+// contract as Metal's injectGemma4TokenFeatures.
+func AudioInjectFeatures(embeddings []byte, tokenIDs []int32, features []byte, audioTokenID int32, H int) ([]byte, error) {
+	return injectTokenFeatures(embeddings, tokenIDs, features, audioTokenID, H, "Audio")
+}
+
+func injectTokenFeatures(embeddings []byte, tokenIDs []int32, features []byte, tokenID int32, H int, label string) ([]byte, error) {
+	if H <= 0 {
+		return nil, core.NewError("native." + label + "InjectFeatures: hidden size must be positive")
+	}
 	row := H * bf16Size
+	if len(embeddings)%row != 0 {
+		return nil, core.NewError("native." + label + "InjectFeatures: embedding rows must align to hidden size")
+	}
+	if len(features)%row != 0 {
+		return nil, core.NewError("native." + label + "InjectFeatures: feature rows must align to hidden size")
+	}
 	L := len(embeddings) / row
+	if len(tokenIDs) != L {
+		return nil, core.NewError("native." + label + "InjectFeatures: token ids must match embedding rows")
+	}
 	nFeat := len(features) / row
 	slots := 0
 	for _, id := range tokenIDs {
-		if id == imageTokenID {
+		if id == tokenID {
 			slots++
 		}
 	}
 	if slots != nFeat {
-		return nil, core.NewError("native.VisionInjectFeatures: feature count must equal image-token slots")
+		return nil, core.NewError("native." + label + "InjectFeatures: feature count must equal token slots")
 	}
 	out := append([]byte(nil), embeddings...)
 	featureIdx := 0
 	for pos, id := range tokenIDs {
-		if id != imageTokenID || pos >= L {
+		if id != tokenID {
 			continue
 		}
 		copy(out[pos*row:pos*row+row], features[featureIdx*row:featureIdx*row+row])

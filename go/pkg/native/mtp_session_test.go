@@ -7,8 +7,10 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/model"
 )
 
@@ -24,6 +26,11 @@ const (
 )
 
 func newMTPDecodeFixture(t testing.TB) func() *ArchSession {
+	t.Helper()
+	return newMTPDecodeFixtureWithArch(t, nil)
+}
+
+func newMTPDecodeFixtureWithArch(t testing.TB, configure func(*model.Arch)) func() *ArchSession {
 	t.Helper()
 	layers := make([]DecodeLayerWeights, mtpFixtureLayers)
 	types := make([]string, mtpFixtureLayers)
@@ -46,6 +53,9 @@ func newMTPDecodeFixture(t testing.TB) func() *ArchSession {
 		Eps: 1e-5, AttnScale: 0.125, RopeBase: 10000, RopeScale: 1, RopeLocalBase: 10000,
 		RotaryDim: mtpFixtureHead, RotaryDimLocal: mtpFixtureHead,
 		Layer: specs,
+	}
+	if configure != nil {
+		configure(&arch)
 	}
 	return func() *ArchSession {
 		s, err := NewArchSession(g, arch, mtpFixtureMaxLen)
@@ -89,13 +99,49 @@ func TestMTPDecodeInputGuards(t *testing.T) {
 		{name: "empty prompt", target: session(8), draft: session(8), prompt: nil, maxNew: 1, k: 1},
 		{name: "zero maxNew", target: session(8), draft: session(8), prompt: prompt, maxNew: 0, k: 1},
 		{name: "zero k", target: session(8), draft: session(8), prompt: prompt, maxNew: 1, k: 0},
-		{name: "target headroom", target: session(2), draft: session(8), prompt: prompt, maxNew: 1, k: 1},
-		{name: "draft headroom", target: session(8), draft: session(2), prompt: prompt, maxNew: 1, k: 1},
+		{name: "target headroom", target: session(1), draft: session(8), prompt: prompt, maxNew: 1, k: 1},
+		{name: "draft headroom", target: session(8), draft: session(1), prompt: prompt, maxNew: 1, k: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := MTPDecode(tt.target, tt.draft, tt.prompt, tt.maxNew, -1, tt.k); err == nil {
 				t.Fatal("MTPDecode error = nil")
+			}
+		})
+	}
+}
+
+func TestMTPDecodeSampledInputGuards(t *testing.T) {
+	session := func(maxLen int) *ArchSession { return &ArchSession{maxLen: maxLen} }
+	prompt := []int32{1}
+	targetSampler := model.NewSampler(1)
+	draftSampler := model.NewSampler(2)
+	sharedSampler := model.NewSampler(3)
+	tests := []struct {
+		name          string
+		target        *ArchSession
+		draft         *ArchSession
+		prompt        []int32
+		maxNew        int
+		k             int
+		targetSampler *model.Sampler
+		draftSampler  *model.Sampler
+	}{
+		{name: "nil target", target: nil, draft: session(8), prompt: prompt, maxNew: 1, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "nil draft", target: session(8), draft: nil, prompt: prompt, maxNew: 1, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "nil target sampler", target: session(8), draft: session(8), prompt: prompt, maxNew: 1, k: 1, draftSampler: draftSampler},
+		{name: "nil draft sampler", target: session(8), draft: session(8), prompt: prompt, maxNew: 1, k: 1, targetSampler: targetSampler},
+		{name: "shared sampler", target: session(8), draft: session(8), prompt: prompt, maxNew: 1, k: 1, targetSampler: sharedSampler, draftSampler: sharedSampler},
+		{name: "empty prompt", target: session(8), draft: session(8), prompt: nil, maxNew: 1, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "zero maxNew", target: session(8), draft: session(8), prompt: prompt, maxNew: 0, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "zero k", target: session(8), draft: session(8), prompt: prompt, maxNew: 1, k: 0, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "target headroom", target: session(1), draft: session(8), prompt: prompt, maxNew: 1, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+		{name: "draft headroom", target: session(8), draft: session(1), prompt: prompt, maxNew: 1, k: 1, targetSampler: targetSampler, draftSampler: draftSampler},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := MTPDecodeSampled(tt.target, tt.draft, tt.prompt, tt.maxNew, nil, tt.targetSampler, tt.draftSampler, model.SampleParams{}, tt.k); err == nil {
+				t.Fatal("MTPDecodeSampled error = nil")
 			}
 		})
 	}
@@ -144,6 +190,151 @@ func TestMTPDecodeBatchedTokenIdentity(t *testing.T) {
 	}
 	t.Log(core.Sprintf("MTP batched == Generate over %d tokens; accepted %d/%d drafted in %d rounds",
 		len(ref), res.Accepted, res.Drafted, res.Rounds))
+}
+
+func TestMTPDecodeEachYieldsCommittedTokens(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 10
+	prompt := []int32{1, 2, 3, 4, 5}
+	mk := newMTPDecodeFixture(t)
+	ref, err := mk().Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var yielded []int32
+	res, err := MTPDecodeEach(mk(), mk(), prompt, maxNew, -1, K, func(id int32) bool {
+		yielded = append(yielded, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("MTPDecodeEach: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, ref) {
+		t.Fatalf("MTPDecodeEach tokens %v != Generate %v", res.Tokens, ref)
+	}
+	if !mtpIDsEqual(yielded, res.Tokens) {
+		t.Fatalf("MTPDecodeEach yielded %v != result tokens %v", yielded, res.Tokens)
+	}
+}
+
+func TestMTPDecodeUsesExactContextTailHeadroom(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 2
+	prompt := []int32{1, 2, 3}
+	maxLen := len(prompt) + maxNew
+	mk := newMTPDecodeFixture(t)
+	limit := func(s *ArchSession) *ArchSession {
+		s.maxLen = maxLen
+		return s
+	}
+
+	ref, err := limit(mk()).Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("Generate exact tail reference: %v", err)
+	}
+	res, err := MTPDecode(limit(mk()), limit(mk()), prompt, maxNew, -1, K)
+	if err != nil {
+		t.Fatalf("MTPDecode exact tail: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, ref) {
+		t.Fatalf("MTP exact tail tokens %v != Generate %v", res.Tokens, ref)
+	}
+}
+
+func TestMTPDecodeSampledMatchesGenerateSampled(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 12
+	const seed uint64 = 53
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{
+		Temperature:   0.8,
+		TopK:          7,
+		TopP:          0.75,
+		MinP:          0.01,
+		RepeatPenalty: 1.2,
+		SuppressTokens: []int32{
+			2,
+			7,
+		},
+	}
+	mk := newMTPDecodeFixture(t)
+
+	ref, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledEach: %v", err)
+	}
+	res, err := MTPDecodeSampled(mk(), mk(), prompt, maxNew, nil, model.NewSampler(seed), model.NewSampler(seed+1), params, K)
+	if err != nil {
+		t.Fatalf("MTPDecodeSampled: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, ref) {
+		t.Fatalf("sampled MTP tokens %v != GenerateSampledEach %v", res.Tokens, ref)
+	}
+	if res.Drafted == 0 {
+		t.Fatal("sampled MTP proposed no draft tokens")
+	}
+}
+
+func TestMTPDecodeSampledEachYieldsCommittedTokens(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 10
+	const seed uint64 = 53
+	prompt := []int32{1, 2, 3, 4, 5}
+	params := model.SampleParams{
+		Temperature:   0.8,
+		TopK:          7,
+		TopP:          0.75,
+		MinP:          0.01,
+		RepeatPenalty: 1.2,
+		SuppressTokens: []int32{
+			2,
+			7,
+		},
+	}
+	mk := newMTPDecodeFixture(t)
+	ref, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledEach: %v", err)
+	}
+	var yielded []int32
+	res, err := MTPDecodeSampledEach(mk(), mk(), prompt, maxNew, nil, model.NewSampler(seed), model.NewSampler(seed+1), params, K, func(id int32) bool {
+		yielded = append(yielded, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("MTPDecodeSampledEach: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, ref) {
+		t.Fatalf("MTPDecodeSampledEach tokens %v != GenerateSampledEach %v", res.Tokens, ref)
+	}
+	if !mtpIDsEqual(yielded, res.Tokens) {
+		t.Fatalf("MTPDecodeSampledEach yielded %v != result tokens %v", yielded, res.Tokens)
+	}
+}
+
+func TestMTPDecodeSlidingRingWrapMatchesGenerate(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 3, 10
+	mk := newMTPDecodeFixtureWithArch(t, func(arch *model.Arch) {
+		arch.SlidingWindow = 4
+		arch.Layer[0].Attention = model.SlidingAttention
+	})
+	prompt := []int32{1, 2, 3}
+
+	ref, err := mk().Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("Generate sliding reference: %v", err)
+	}
+	res, err := MTPDecode(mk(), mk(), prompt, maxNew, -1, K)
+	if err != nil {
+		t.Fatalf("MTPDecode sliding: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, ref) {
+		t.Fatalf("sliding MTP tokens %v != Generate %v", res.Tokens, ref)
+	}
+	if res.Accepted == 0 {
+		t.Fatal("sliding MTP accepted no drafts; batched verify did not engage")
+	}
 }
 
 func TestMTPDecodeDraftEqualsTargetAllocationBudget(t *testing.T) {
@@ -272,6 +463,90 @@ func TestMTPVerifyBatchedWrapperAndFallback(t *testing.T) {
 	}
 }
 
+func TestMTPVerifyBatchedSlidingRingWrapMatchesSequential(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixtureWithArch(t, func(arch *model.Arch) {
+		arch.SlidingWindow = 4
+		arch.Layer[0].Attention = model.SlidingAttention
+	})
+	ref := mk()
+	sess := mk()
+	prompt := []int32{1, 2, 3}
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("reference PrefillTokens: %v", err)
+	}
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("candidate PrefillTokens: %v", err)
+	}
+	if sess.Pos() != 3 {
+		t.Fatalf("prefill pos = %d, want 3", sess.Pos())
+	}
+	ids := []int32{4, 5}
+	want := make([]int32, len(ids))
+	for i, id := range ids {
+		hidden, err := ref.stepID(id)
+		if err != nil {
+			t.Fatalf("reference stepID(%d): %v", id, err)
+		}
+		want[i], err = ref.greedyOf(hidden)
+		if err != nil {
+			t.Fatalf("reference greedyOf(%d): %v", id, err)
+		}
+	}
+	greedys, ok, err := sess.verifyBatchedInto(ids, make([]int32, len(ids)))
+	if err != nil {
+		t.Fatalf("verifyBatchedInto sliding wrap: %v", err)
+	}
+	if !ok {
+		t.Fatal("verifyBatchedInto sliding wrap ok = false")
+	}
+	if !mtpIDsEqual(greedys, want) {
+		t.Fatalf("verifyBatchedInto sliding wrap greedys = %v, want sequential %v", greedys, want)
+	}
+	if sess.Pos() != 3 {
+		t.Fatalf("verifyBatchedInto sliding wrap changed pos = %d, want 3", sess.Pos())
+	}
+}
+
+func TestMTPVerifyBatchedHiddensMatchesSequential(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	ref := mk()
+	sess := mk()
+	prompt := []int32{1, 2, 3}
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("reference PrefillTokens: %v", err)
+	}
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("candidate PrefillTokens: %v", err)
+	}
+	ids := []int32{4, 5, 6}
+	want := make([][]byte, len(ids))
+	for i, id := range ids {
+		hidden, err := ref.stepID(id)
+		if err != nil {
+			t.Fatalf("reference stepID(%d): %v", id, err)
+		}
+		want[i] = append([]byte(nil), hidden...)
+	}
+	got, ok, err := sess.verifyBatchedHiddens(ids)
+	if err != nil {
+		t.Fatalf("verifyBatchedHiddens: %v", err)
+	}
+	if !ok {
+		t.Fatal("verifyBatchedHiddens ok = false")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("verifyBatchedHiddens returned %d rows, want %d", len(got), len(want))
+	}
+	for i := range got {
+		eqBytes(t, core.Sprintf("batched hidden row %d", i), got[i], want[i])
+	}
+	if sess.Pos() != len(prompt) {
+		t.Fatalf("verifyBatchedHiddens changed pos = %d, want %d", sess.Pos(), len(prompt))
+	}
+}
+
 func TestMTPVerifyBatchedUsesEmbedInto(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
@@ -337,6 +612,83 @@ func TestMTPPrefillPromptUsesEmbedInto(t *testing.T) {
 	}
 }
 
+func TestMTPPrefillPromptRetainsLastHiddenNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	sess := mk()
+	ids := []int32{1, 2, 3, 4, 5}
+
+	hidden, ok, err := sess.prefillMTPPrompt(ids, true)
+	if err != nil {
+		t.Fatalf("prefillMTPPrompt: %v", err)
+	}
+	if !ok {
+		t.Fatal("prefillMTPPrompt ok = false")
+	}
+	if sess.retainedHiddenPinned == nil || sess.retainedHiddenPinned.buf == nil {
+		t.Fatal("prefillMTPPrompt did not retain a pinned last hidden")
+	}
+	if len(hidden) != len(sess.retainedHiddenPinned.bytes) {
+		t.Fatalf("prefillMTPPrompt hidden len = %d, want retained pinned len %d", len(hidden), len(sess.retainedHiddenPinned.bytes))
+	}
+	if unsafe.Pointer(&hidden[0]) != unsafe.Pointer(&sess.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("prefillMTPPrompt hidden does not alias retained pinned backing")
+	}
+	if sess.retainedHiddenBufferFor(hidden) == nil {
+		t.Fatal("prefillMTPPrompt retained hidden is not exposed as a no-copy buffer")
+	}
+}
+
+func TestMTPStepIDRetainsHiddenNoCopy(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	sess := mk()
+
+	hidden, err := sess.stepID(3)
+	if err != nil {
+		t.Fatalf("stepID: %v", err)
+	}
+	if sess.retainedHiddenPinned == nil || sess.retainedHiddenPinned.buf == nil {
+		t.Fatal("stepID did not retain a pinned hidden")
+	}
+	if len(hidden) != len(sess.retainedHiddenPinned.bytes) {
+		t.Fatalf("stepID hidden len = %d, want retained pinned len %d", len(hidden), len(sess.retainedHiddenPinned.bytes))
+	}
+	if unsafe.Pointer(&hidden[0]) != unsafe.Pointer(&sess.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("stepID hidden does not alias retained pinned backing")
+	}
+	if sess.retainedHiddenBufferFor(hidden) == nil {
+		t.Fatal("stepID retained hidden is not exposed as a no-copy buffer")
+	}
+}
+
+func TestGreedyFallbackUsesHeadLogitsScratch(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	sess := mk()
+
+	hidden, err := sess.stepID(3)
+	if err != nil {
+		t.Fatalf("stepID: %v", err)
+	}
+	if sess.retainedHiddenBufferFor(hidden) == nil {
+		t.Fatal("test setup did not retain hidden as a no-copy buffer")
+	}
+	sess.greedy = nil
+	sess.sampleHeadLogits = nil
+
+	got, err := sess.greedyFromHiddenInPool(hidden, nil)
+	if err != nil {
+		t.Fatalf("greedyFromHiddenInPool: %v", err)
+	}
+	if got < 0 || int(got) >= sess.arch.Vocab {
+		t.Fatalf("greedyFromHiddenInPool token = %d outside vocab %d", got, sess.arch.Vocab)
+	}
+	if len(sess.sampleHeadLogits) != sess.arch.Vocab*bf16Size {
+		t.Fatalf("fallback logits scratch len = %d, want %d", len(sess.sampleHeadLogits), sess.arch.Vocab*bf16Size)
+	}
+}
+
 func TestMTPVerifyBatchedDirectHeadAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
@@ -365,8 +717,48 @@ func TestMTPVerifyBatchedDirectHeadAllocationBudget(t *testing.T) {
 	if !verifyOK {
 		t.Fatal("verifyBatched ok = false")
 	}
-	if allocs > 24000 {
-		t.Fatalf("verifyBatched allocations = %.0f, want <= 24000", allocs)
+	if allocs > 680 {
+		t.Fatalf("verifyBatched allocations = %.0f, want <= 680", allocs)
+	}
+}
+
+func TestMTPVerifyBatchedFallbackReusesPinnedHiddenRows(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	dense := mk()
+	for _, id := range []int32{1, 2, 3} {
+		if _, err := dense.stepID(id); err != nil {
+			t.Fatalf("prefill dense stepID(%d): %v", id, err)
+		}
+	}
+	dense.greedy = func(hidden []byte, suppress []int32) (int32, bool, error) {
+		return dense.headEnc.greedyInPool(hidden, suppress)
+	}
+	if dense.canUseDirectHeadGreedy() {
+		t.Fatal("test setup still has direct head greedy enabled")
+	}
+
+	ids := []int32{4, 5, 6, 7}
+	if _, ok, err := dense.verifyBatchedInto(ids, make([]int32, len(ids))); err != nil {
+		t.Fatalf("verifyBatched fallback: %v", err)
+	} else if !ok {
+		t.Fatal("verifyBatched fallback ok = false")
+	}
+	if dense.mtpVerifyHiddenPinned == nil || dense.mtpVerifyHiddenPinned.buf == nil {
+		t.Fatal("verifyBatched fallback did not retain pinned packed hidden rows")
+	}
+	if len(dense.mtpVerifyHiddenRows) != len(ids) {
+		t.Fatalf("verifyBatched fallback retained %d rows, want %d", len(dense.mtpVerifyHiddenRows), len(ids))
+	}
+	base := unsafe.Pointer(&dense.mtpVerifyHiddenPinned.bytes[0])
+	rowBytes := dense.arch.Hidden * bf16Size
+	for i, row := range dense.mtpVerifyHiddenRows {
+		if len(row) != rowBytes {
+			t.Fatalf("hidden row %d length = %d, want %d", i, len(row), rowBytes)
+		}
+		if unsafe.Pointer(&row[0]) != unsafe.Pointer(&dense.mtpVerifyHiddenPinned.bytes[i*rowBytes]) {
+			t.Fatalf("hidden row %d does not alias the pinned packed backing at %p", i, base)
+		}
 	}
 }
 
@@ -389,6 +781,116 @@ func TestMTPDecodeSinglePromptEOSMatchesGenerate(t *testing.T) {
 	}
 	if len(res.Tokens) != 1 {
 		t.Fatalf("MTP EOS emitted %d tokens, want 1", len(res.Tokens))
+	}
+}
+
+func TestMTPDecodeEOSRollsBackTargetPosition(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 8
+	prompt := []int32{7}
+	mk := newMTPDecodeFixture(t)
+
+	first, err := mk().Generate(prompt, 1, -1)
+	if err != nil {
+		t.Fatalf("Generate first token: %v", err)
+	}
+	target := mk()
+	draft := mk()
+	res, err := MTPDecode(target, draft, prompt, maxNew, int(first[0]), K)
+	if err != nil {
+		t.Fatalf("MTPDecode: %v", err)
+	}
+	if len(res.Tokens) != 1 {
+		t.Fatalf("MTP EOS emitted %d tokens, want 1", len(res.Tokens))
+	}
+	wantPos := len(prompt) + len(res.Tokens)
+	if target.Pos() != wantPos {
+		t.Fatalf("target pos after EOS = %d, want prompt+emitted %d", target.Pos(), wantPos)
+	}
+}
+
+func TestMTPDecodeEOSRetainsDraftBoundaryForContinuation(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 8
+	prompt := []int32{7}
+	mk := newMTPDecodeFixture(t)
+
+	want, err := mk().Generate(prompt, 2, -1)
+	if err != nil {
+		t.Fatalf("Generate reference: %v", err)
+	}
+	target := mk()
+	draft := mk()
+	res, err := MTPDecode(target, draft, prompt, maxNew, int(want[0]), K)
+	if err != nil {
+		t.Fatalf("MTPDecode: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, want[:1]) {
+		t.Fatalf("MTP EOS tokens = %v, want first greedy %v", res.Tokens, want[:1])
+	}
+	wantPos := len(prompt) + len(res.Tokens)
+	if draft.Pos() != wantPos {
+		t.Fatalf("draft pos after EOS = %d, want prompt+emitted %d", draft.Pos(), wantPos)
+	}
+	got, err := draft.GenerateFromCache(1, -1)
+	if err != nil {
+		t.Fatalf("draft GenerateFromCache after MTPDecode: %v", err)
+	}
+	if !mtpIDsEqual(got, want[1:]) {
+		t.Fatalf("draft GenerateFromCache after MTPDecode = %v, want next token %v", got, want[1:])
+	}
+}
+
+func TestMTPDecodePopulatesTargetKVSnapshotTokens(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 3, 4
+	prompt := []int32{1, 2, 3}
+	mk := newMTPDecodeFixture(t)
+	target := mk()
+	draft := mk()
+
+	res, err := MTPDecode(target, draft, prompt, maxNew, -1, K)
+	if err != nil {
+		t.Fatalf("MTPDecode: %v", err)
+	}
+	snapshot, err := target.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKVWithOptions after MTPDecode: %v", err)
+	}
+	want := append(append([]int32(nil), prompt...), res.Tokens...)
+	if !mtpIDsEqual(snapshot.Tokens, want) {
+		t.Fatalf("snapshot tokens after MTPDecode = %v, want %v", snapshot.Tokens, want)
+	}
+	if snapshot.TokenOffset != len(want) {
+		t.Fatalf("snapshot token offset = %d, want %d", snapshot.TokenOffset, len(want))
+	}
+}
+
+func TestMTPDecodeMaxNewRetainsBoundaryForContinuation(t *testing.T) {
+	requireNativeRuntime(t)
+	const K, maxNew = 4, 2
+	prompt := []int32{1, 2, 3}
+	mk := newMTPDecodeFixture(t)
+
+	want, err := mk().Generate(prompt, maxNew+1, -1)
+	if err != nil {
+		t.Fatalf("Generate reference: %v", err)
+	}
+	target := mk()
+	draft := mk()
+	res, err := MTPDecode(target, draft, prompt, maxNew, -1, K)
+	if err != nil {
+		t.Fatalf("MTPDecode: %v", err)
+	}
+	if !mtpIDsEqual(res.Tokens, want[:maxNew]) {
+		t.Fatalf("MTP tokens = %v, want prefix %v", res.Tokens, want[:maxNew])
+	}
+	got, err := target.GenerateFromCache(1, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after MTPDecode: %v", err)
+	}
+	if !mtpIDsEqual(got, want[maxNew:]) {
+		t.Fatalf("GenerateFromCache after MTPDecode = %v, want next token %v", got, want[maxNew:])
 	}
 }
 

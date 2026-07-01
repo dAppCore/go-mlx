@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"math"
 	"os"
-	"runtime"
 	"testing"
 
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -94,7 +93,7 @@ func TestLayerScalarBufAllocationBudget(t *testing.T) {
 	if buf := layerScalarBuf(scalarW, dModel); buf == nil {
 		t.Fatal("layerScalarBuf warmup returned nil")
 	}
-	runtime.GC()
+	forceNativeGC()
 
 	allocs := testing.AllocsPerRun(5, func() {
 		if buf := layerScalarBuf(scalarW, dModel); buf == nil {
@@ -115,7 +114,7 @@ func TestValueNormOnesBufAllocationBudget(t *testing.T) {
 	if buf := valueNormOnesBuf(true, headDim); buf == nil {
 		t.Fatal("valueNormOnesBuf warmup returned nil")
 	}
-	runtime.GC()
+	forceNativeGC()
 
 	allocs := testing.AllocsPerRun(5, func() {
 		if buf := valueNormOnesBuf(true, headDim); buf == nil {

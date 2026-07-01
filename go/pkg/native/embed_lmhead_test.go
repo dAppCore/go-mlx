@@ -176,8 +176,8 @@ func TestLMHeadBF16AllocationBudget(t *testing.T) {
 			t.Fatalf("LMHeadBF16: %v", err)
 		}
 	})
-	if allocs > 302 {
-		t.Fatalf("LMHeadBF16 allocations = %.0f, want <= 302", allocs)
+	if allocs > 35 {
+		t.Fatalf("LMHeadBF16 allocations = %.0f, want <= 35", allocs)
 	}
 }
 

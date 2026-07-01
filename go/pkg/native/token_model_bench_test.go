@@ -99,6 +99,42 @@ func BenchmarkNativeTokenModelGenerateDirectSession(b *testing.B) {
 	}
 }
 
+type sampledStepwiseOnlyTokenModel struct {
+	*NativeTokenModel
+}
+
+func (m sampledStepwiseOnlyTokenModel) OpenSession() (model.DecodeStepper, error) {
+	sess, err := m.NativeTokenModel.OpenSession()
+	if err != nil {
+		return nil, err
+	}
+	return sampledStepwiseOnlyStepper{inner: sess}, nil
+}
+
+type sampledStepwiseOnlyStepper struct {
+	inner model.DecodeStepper
+}
+
+func (s sampledStepwiseOnlyStepper) Step(emb []byte) ([]byte, error) {
+	return s.inner.Step(emb)
+}
+
+func (s sampledStepwiseOnlyStepper) StepWithID(id int32, emb []byte) ([]byte, error) {
+	if stepID, ok := s.inner.(interface {
+		StepWithID(id int32, emb []byte) ([]byte, error)
+	}); ok {
+		return stepID.StepWithID(id, emb)
+	}
+	return s.inner.Step(emb)
+}
+
+func (s sampledStepwiseOnlyStepper) Close() error {
+	if c, ok := s.inner.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 func BenchmarkNativeTokenModelGenerateSampledStepwiseHead(b *testing.B) {
 	requireNativeRuntime(b)
 
@@ -107,12 +143,13 @@ func BenchmarkNativeTokenModelGenerateSampledStepwiseHead(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	stepwise := sampledStepwiseOnlyTokenModel{NativeTokenModel: tm}
 	prompt := []int32{1, 5, 3, 9}
 	params := model.SampleParams{Temperature: 1, TopK: 32}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := model.GenerateSampledWithStopTokens(tm, model.NewSampler(1), params, prompt, 6, nil); err != nil {
+		if _, err := model.GenerateSampledWithStopTokens(stepwise, model.NewSampler(1), params, prompt, 6, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -131,21 +168,47 @@ func BenchmarkNativeTokenModelGenerateSampledNativeSessionOneShot(b *testing.B) 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sess, err := tm.OpenSession()
-		if err != nil {
+		if _, err := model.GenerateSampledWithStopTokens(tm, model.NewSampler(1), params, prompt, 6, nil); err != nil {
 			b.Fatal(err)
 		}
-		streamSess, ok := sess.(interface {
-			GenerateSampledOneShotEach([]int32, int, []int32, *model.Sampler, model.SampleParams, model.TokenTransform, func(int32) bool) ([]int32, error)
-		})
-		if !ok {
-			b.Fatal("session does not implement GenerateSampledOneShotEach")
-		}
-		if _, err := streamSess.GenerateSampledOneShotEach(prompt, 6, nil, model.NewSampler(1), params, nil, nil); err != nil {
+	}
+}
+
+func BenchmarkNativeTokenModelGenerateSampledNoEOSStepwiseHead(b *testing.B) {
+	requireNativeRuntime(b)
+
+	g, arch := gemma4BF16Fixture(b, 128, 2, 1, 64, 256, 32768, 2)
+	tm, err := NewBF16TokenModel(g, arch, 16)
+	if err != nil {
+		b.Fatal(err)
+	}
+	stepwise := sampledStepwiseOnlyTokenModel{NativeTokenModel: tm}
+	prompt := []int32{1, 5, 3, 9}
+	params := model.SampleParams{Temperature: 1, TopK: 32}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := model.GenerateSampled(stepwise, model.NewSampler(1), params, prompt, 6, -1); err != nil {
 			b.Fatal(err)
 		}
-		if c, ok := sess.(interface{ Close() error }); ok {
-			_ = c.Close()
+	}
+}
+
+func BenchmarkNativeTokenModelGenerateSampledNoEOSNativeSessionOneShot(b *testing.B) {
+	requireNativeRuntime(b)
+
+	g, arch := gemma4BF16Fixture(b, 128, 2, 1, 64, 256, 32768, 2)
+	tm, err := NewBF16TokenModel(g, arch, 16)
+	if err != nil {
+		b.Fatal(err)
+	}
+	prompt := []int32{1, 5, 3, 9}
+	params := model.SampleParams{Temperature: 1, TopK: 32}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := model.GenerateSampled(tm, model.NewSampler(1), params, prompt, 6, -1); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
@@ -175,30 +238,18 @@ func benchmarkNativeQuantTokenModelGenerateSampledWithParams(b *testing.B, direc
 		b.Fatal(err)
 	}
 	prompt := []int32{1, 5, 3, 9}
+	stepwise := sampledStepwiseOnlyTokenModel{NativeTokenModel: tm}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if !direct {
-			if _, err := model.GenerateSampledWithStopTokens(tm, model.NewSampler(1), params, prompt, 6, nil); err != nil {
+			if _, err := model.GenerateSampledWithStopTokens(stepwise, model.NewSampler(1), params, prompt, 6, nil); err != nil {
 				b.Fatal(err)
 			}
 			continue
 		}
-		sess, err := tm.OpenSession()
-		if err != nil {
+		if _, err := model.GenerateSampledWithStopTokens(tm, model.NewSampler(1), params, prompt, 6, nil); err != nil {
 			b.Fatal(err)
-		}
-		streamSess, ok := sess.(interface {
-			GenerateSampledOneShotEach([]int32, int, []int32, *model.Sampler, model.SampleParams, model.TokenTransform, func(int32) bool) ([]int32, error)
-		})
-		if !ok {
-			b.Fatal("session does not implement GenerateSampledOneShotEach")
-		}
-		if _, err := streamSess.GenerateSampledOneShotEach(prompt, 6, nil, model.NewSampler(1), params, nil, nil); err != nil {
-			b.Fatal(err)
-		}
-		if c, ok := sess.(interface{ Close() error }); ok {
-			_ = c.Close()
 		}
 	}
 }

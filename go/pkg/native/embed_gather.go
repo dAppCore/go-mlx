@@ -31,15 +31,42 @@ type embedGatherScratch struct {
 	outViewPinned *pinnedNoCopyBytes
 }
 
-func embedGatherScratchPoolFor(dModel int) *sync.Pool {
+type embedGatherScratchPool struct {
+	mu    sync.Mutex
+	items []*embedGatherScratch
+}
+
+func embedGatherScratchPoolFor(dModel int) *embedGatherScratchPool {
 	if v, ok := embedGatherScratchPools.Load(dModel); ok {
-		return v.(*sync.Pool)
+		return v.(*embedGatherScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := new(embedGatherScratchPool)
 	if v, loaded := embedGatherScratchPools.LoadOrStore(dModel, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*embedGatherScratchPool)
 	}
 	return pool
+}
+
+func (p *embedGatherScratchPool) Get() *embedGatherScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *embedGatherScratchPool) Put(s *embedGatherScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 func embedGatherScratchReady(s *embedGatherScratch, dModel int) bool {
@@ -71,8 +98,7 @@ func newEmbedGatherScratch(dModel int) (*embedGatherScratch, error) {
 
 func getEmbedGatherScratch(dModel int) (*embedGatherScratch, error) {
 	pool := embedGatherScratchPoolFor(dModel)
-	if v := pool.Get(); v != nil {
-		s := v.(*embedGatherScratch)
+	if s := pool.Get(); s != nil {
 		if embedGatherScratchReady(s, dModel) {
 			return s, nil
 		}
@@ -128,6 +154,13 @@ func (s *embedGatherScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {

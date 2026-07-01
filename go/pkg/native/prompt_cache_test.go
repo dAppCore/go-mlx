@@ -261,6 +261,134 @@ func TestGenerateCachedExactPromptUsesCachedLogits(t *testing.T) {
 	}
 }
 
+func TestGenerateCachedExactPromptUsesCachedLogitsWithoutHidden(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	fallback := newSessionStateFixture(t)
+	if err := fallback.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache fallback: %v", err)
+	}
+	fallback.cachedPromptLogits = nil
+	fallbackToken, err := fallback.GenerateCached(prompt, 1, -1)
+	if err != nil {
+		t.Fatalf("fallback GenerateCached: %v", err)
+	}
+	if len(fallbackToken) != 1 {
+		t.Fatalf("fallback generated %d tokens, want 1", len(fallbackToken))
+	}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	target := (fallbackToken[0] + 1) % int32(warm.arch.Vocab)
+	logits := make([]float32, warm.arch.Vocab)
+	for i := range logits {
+		logits[i] = -4
+	}
+	logits[target] = 4
+	warm.cachedPromptLogits = toBF16Bytes(logits)
+	warm.cachedPromptHidden = nil
+
+	got, err := warm.GenerateCached(prompt, 1, -1)
+	if err != nil {
+		t.Fatalf("GenerateCached cached logits without hidden: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("cached-logits generated %d tokens, want 1", len(got))
+	}
+	if got[0] != target {
+		t.Fatalf("cached-logits first token = %d, want synthetic cached-logits token %d", got[0], target)
+	}
+}
+
+func TestGenerateCachedExactPromptUsesCachedLogitsWithSuppressionWithoutHidden(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if warm.arch.Vocab < 2 {
+		t.Fatalf("fixture vocab = %d, want at least 2", warm.arch.Vocab)
+	}
+	suppressed := int32(warm.arch.Vocab - 2)
+	want := int32(warm.arch.Vocab - 1)
+	logits := make([]float32, warm.arch.Vocab)
+	for i := range logits {
+		logits[i] = -8
+	}
+	logits[suppressed] = 9
+	logits[want] = 6
+	warm.cachedPromptLogits = toBF16Bytes(logits)
+	warm.cachedPromptHidden = nil
+
+	got, err := warm.GenerateCachedEachWithSuppression(prompt, 1, -1, []int32{suppressed}, nil)
+	if err != nil {
+		t.Fatalf("GenerateCachedEachWithSuppression cached logits without hidden: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("cached-logits generated %d tokens, want 1", len(got))
+	}
+	if got[0] != want {
+		t.Fatalf("cached-logits suppressed first token = %d, want synthetic unsuppressed token %d", got[0], want)
+	}
+}
+
+func TestGenerateCachedExactPromptUsesCachedLogitsWithTransformWithoutHidden(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	fallback := newSessionStateFixture(t)
+	if err := fallback.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache fallback: %v", err)
+	}
+	fallback.cachedPromptLogits = nil
+	fallbackToken, err := fallback.GenerateCached(prompt, 1, -1)
+	if err != nil {
+		t.Fatalf("fallback GenerateCached: %v", err)
+	}
+	if len(fallbackToken) != 1 {
+		t.Fatalf("fallback generated %d tokens, want 1", len(fallbackToken))
+	}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if warm.arch.Vocab < 3 {
+		t.Fatalf("fixture vocab = %d, want at least 3", warm.arch.Vocab)
+	}
+	target := (fallbackToken[0] + 1) % int32(warm.arch.Vocab)
+	want := (fallbackToken[0] + 2) % int32(warm.arch.Vocab)
+	logits := make([]float32, warm.arch.Vocab)
+	for i := range logits {
+		logits[i] = -6
+	}
+	logits[target] = 6
+	warm.cachedPromptLogits = toBF16Bytes(logits)
+	warm.cachedPromptHidden = nil
+
+	transform := func(id int32) int32 {
+		if id == target {
+			return want
+		}
+		return id
+	}
+	got, err := warm.GenerateCachedEachTransformed(prompt, 1, -1, transform, nil)
+	if err != nil {
+		t.Fatalf("GenerateCachedEachTransformed cached logits without hidden: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("cached-logits generated %d tokens, want 1", len(got))
+	}
+	if got[0] != want {
+		t.Fatalf("cached-logits transformed first token = %d, want synthetic transformed token %d", got[0], want)
+	}
+}
+
 func TestGenerateCachedSampledEachExactPromptSkipsPromptReencode(t *testing.T) {
 	requireNativeRuntime(t)
 	prompt := []int32{1, 2, 3, 4, 5}
@@ -374,8 +502,9 @@ func TestGenerateCachedSampledSuffixUsesRetainedPromptHiddenNoCopy(t *testing.T)
 	if !bytes.Equal(warm.cachedPromptHidden, warm.retainedHidden) {
 		t.Fatal("sampled suffix cached hidden did not match the retained prompt-boundary hidden")
 	}
-	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) {
-		t.Fatal("sampled suffix cached hidden aliases mutable retained hidden backing")
+	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) &&
+		warm.cachedPromptHiddenPinned != warm.retainedHiddenPinned {
+		t.Fatal("sampled suffix cached hidden aliases retained hidden without shared no-copy ownership")
 	}
 }
 
@@ -600,8 +729,9 @@ func TestWarmPromptCacheUsesRetainedHiddenNoCopyLogits(t *testing.T) {
 	if !bytes.Equal(warm.cachedPromptHidden, warm.retainedHidden) {
 		t.Fatal("WarmPromptCache cached hidden does not match retained prompt-boundary hidden")
 	}
-	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) {
-		t.Fatal("WarmPromptCache cached hidden aliases mutable retained hidden backing")
+	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) &&
+		warm.cachedPromptHiddenPinned != warm.retainedHiddenPinned {
+		t.Fatal("WarmPromptCache cached hidden aliases retained hidden without shared no-copy ownership")
 	}
 	if warm.retainedLogitsBuffer() == nil {
 		t.Fatal("WarmPromptCache did not retain prompt logits in a no-copy buffer")
@@ -612,8 +742,9 @@ func TestWarmPromptCacheUsesRetainedHiddenNoCopyLogits(t *testing.T) {
 	if !bytes.Equal(warm.cachedPromptLogits, warm.retainedLogits) {
 		t.Fatal("WarmPromptCache cached logits do not match retained prompt-boundary logits")
 	}
-	if unsafe.Pointer(&warm.cachedPromptLogits[0]) == unsafe.Pointer(&warm.retainedLogits[0]) {
-		t.Fatal("WarmPromptCache cached logits alias mutable retained logits backing")
+	if unsafe.Pointer(&warm.cachedPromptLogits[0]) == unsafe.Pointer(&warm.retainedLogits[0]) &&
+		warm.cachedPromptLogitsPinned != warm.retainedLogitsPinned {
+		t.Fatal("WarmPromptCache cached logits alias retained logits without shared no-copy ownership")
 	}
 }
 

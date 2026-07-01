@@ -5,7 +5,6 @@
 package native
 
 import (
-	"runtime"
 	"testing"
 )
 
@@ -22,7 +21,7 @@ func TestMLPScratchComposedConstantAllocationBudget(t *testing.T) {
 	if sc.c044 == nil || sc.c079 == nil || sc.c1 == nil || sc.c05 == nil {
 		t.Fatal("newMLPScratch composed constants were not allocated")
 	}
-	runtime.GC()
+	forceNativeGC()
 
 	allocs := testing.AllocsPerRun(5, func() {
 		sc := newMLPScratch(dModel, dFF)

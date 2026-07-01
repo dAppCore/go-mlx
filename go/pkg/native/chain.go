@@ -39,17 +39,17 @@ func encodeRMSNorm(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(w, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, x, 0, 0)
+	setBuf(enc, w, 0, 1)
+	setBuf(enc, out, 0, 2)
 	setEncFloat32(enc, eps, 3)
 	setEncInt32(enc, int32(axisSize), 4)
 	setEncInt32(enc, 1, 5)
 	tgNeeded := (axisSize + rmsNReads - 1) / rmsNReads
 	simdsNeeded := (tgNeeded + rmsSimdSize - 1) / rmsSimdSize
 	tg := uint(rmsSimdSize * simdsNeeded)
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
 		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
 	)
@@ -64,10 +64,10 @@ func encodeGemv(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffe
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(mat, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(vec, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
+	setPSO(enc, pso)
+	setBuf(enc, mat, 0, 0)
+	setBuf(enc, vec, 0, 1)
+	setBuf(enc, out, 0, 3)
 	setEncInt32(enc, int32(inDim), 4)
 	setEncInt32(enc, int32(outDim), 5)
 	setEncInt32(enc, int32(inDim), 6)
@@ -77,7 +77,7 @@ func encodeGemv(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffe
 	setEncInt64(enc, 0, 12)
 	nOutPerTgp := bm * sm * tm
 	nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+	dispatchThreadgroups(enc,
 		metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
 	)
@@ -91,16 +91,16 @@ func encodeUnary(enc metal.MTLComputeCommandEncoder, name string, in, out metal.
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(in, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 1)
+	setPSO(enc, pso)
+	setBuf(enc, in, 0, 0)
+	setBuf(enc, out, 0, 1)
 	cnt := uint32(n)
 	enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&cnt)), 4), 4, 2)
 	group := uint(256)
 	if uint(n) < group {
 		group = uint(n)
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)
@@ -114,16 +114,16 @@ func encodeBinary(enc metal.MTLComputeCommandEncoder, name string, a, b, out met
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(a, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(b, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	setPSO(enc, pso)
+	setBuf(enc, a, 0, 0)
+	setBuf(enc, b, 0, 1)
+	setBuf(enc, out, 0, 2)
 	setEncInt32(enc, int32(n), 3)
 	group := uint(256)
 	if uint(n) < group {
 		group = uint(n)
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)
@@ -159,19 +159,19 @@ func NormProject(x, normWeight, projWeight []float32, dIn, dOut int, eps float32
 		pwBuf := residentFloat32(projWeight)
 		tmpBuf := scratch(dIn)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if encErr = encodeRMSNorm(enc, xBuf, nwBuf, tmpBuf, dIn, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encodeGemv(enc, pwBuf, tmpBuf, outBuf, dOut, dIn); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(float32Bytes(out), ioScratch.out.bytes[:dOut*4])
 	})
 	return out, encErr
@@ -229,38 +229,73 @@ func MLPBlock(x, normWeight, wGate, wUp, wDown []float32, dModel, dFF int, eps f
 		gelu, gated := scratch(dFF), scratch(dFF)
 		down := scratch(dModel)
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		steps := []func() error{
-			func() error { return encodeRMSNorm(enc, xBuf, nwBuf, normed, dModel, eps) },
-			func() error { return encodeGemv(enc, wgBuf, normed, gate, dFF, dModel) },
-			func() error { return encodeGemv(enc, wuBuf, normed, up, dFF, dModel) },
-			// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
-			//                    scaled=0.7978…·inner; t=tanh(scaled);
-			//                    onePlus=t+1; halfG=0.5·g; gelu=halfG·onePlus
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", gate, gate, x2, dFF) },
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", x2, gate, x3, dFF) },
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", x3, c044, x3s, dFF) },
-			func() error { return encodeBinary(enc, "vv_Addfloat32", gate, x3s, inner, dFF) },
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", inner, c079, scaled, dFF) },
-			func() error { return encodeUnary(enc, "v_Tanhfloat32float32", scaled, t, dFF) },
-			func() error { return encodeBinary(enc, "vv_Addfloat32", t, c1, onePlus, dFF) },
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", gate, c05, halfG, dFF) },
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", halfG, onePlus, gelu, dFF) },
-			// gate·up, down projection, residual
-			func() error { return encodeBinary(enc, "vv_Multiplyfloat32", gelu, up, gated, dFF) },
-			func() error { return encodeGemv(enc, wdBuf, gated, down, dModel, dFF) },
-			func() error { return encodeBinary(enc, "vv_Addfloat32", xBuf, down, outBuf, dModel) },
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		if encErr = encodeRMSNorm(enc, xBuf, nwBuf, normed, dModel, eps); encErr != nil {
+			endEncodingFast(enc)
+			return
 		}
-		for _, step := range steps {
-			if encErr = step(); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
+		if encErr = encodeGemv(enc, wgBuf, normed, gate, dFF, dModel); encErr != nil {
+			endEncodingFast(enc)
+			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		if encErr = encodeGemv(enc, wuBuf, normed, up, dFF, dModel); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
+		// scaled=0.7978…·inner; t=tanh(scaled); onePlus=t+1; halfG=0.5·g; gelu=halfG·onePlus.
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", gate, gate, x2, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", x2, gate, x3, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", x3, c044, x3s, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Addfloat32", gate, x3s, inner, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", inner, c079, scaled, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeUnary(enc, "v_Tanhfloat32float32", scaled, t, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Addfloat32", t, c1, onePlus, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", gate, c05, halfG, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", halfG, onePlus, gelu, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Multiplyfloat32", gelu, up, gated, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeGemv(enc, wdBuf, gated, down, dModel, dFF); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		if encErr = encodeBinary(enc, "vv_Addfloat32", xBuf, down, outBuf, dModel); encErr != nil {
+			endEncodingFast(enc)
+			return
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(float32Bytes(out), ioScratch.out.bytes[:dModel*4])
 	})
 	return out, encErr

@@ -36,12 +36,16 @@ func TestRunGenerate_NativeTraceConflict_Bad(t *testing.T) {
 	}
 }
 
-// generate --native with --state is likewise rejected (exit 2).
-func TestRunGenerate_NativeStateConflict_Bad(t *testing.T) {
+// generate --native with --state now enters the native state path; a bad model
+// path should fail as a load error, not as a CLI incompatibility.
+func TestRunGenerate_NativeStateBadModel_Bad(t *testing.T) {
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
-	code := runCommand(context.Background(), []string{"generate", "-native", "-state", "chat", "/m"}, stdout, stderr)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (native+state conflict)", code)
+	code := runCommand(context.Background(), []string{"generate", "-native", "-state", "chat", core.JoinPath(t.TempDir(), "nope")}, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (native state load failure)", code)
+	}
+	if !strings.Contains(stderr.String(), "native state") || !strings.Contains(stderr.String(), "load:") {
+		t.Fatalf("stderr = %q, want native state load error", stderr.String())
 	}
 }
 

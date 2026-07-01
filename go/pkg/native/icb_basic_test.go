@@ -115,8 +115,8 @@ func TestRebindProbeICBAllocationBudget(t *testing.T) {
 			t.Fatalf("rebindProbeICB: %v", err)
 		}
 	})
-	if allocs > 245 {
-		t.Fatalf("rebindProbeICB allocations = %.0f, want <= 245", allocs)
+	if allocs > 220 {
+		t.Fatalf("rebindProbeICB allocations = %.0f, want <= 220", allocs)
 	}
 }
 

@@ -44,16 +44,21 @@ type attentionBlockKVScratchKey struct {
 	kBytes, vBytes int
 }
 
+type attentionBlockKVScratchPool struct {
+	mu    sync.Mutex
+	items []*attentionBlockKVScratch
+}
+
 var attentionBlockKVScratchPools sync.Map
 
-func attentionBlockKVScratchPoolFor(kBytes, vBytes int) *sync.Pool {
+func attentionBlockKVScratchPoolFor(kBytes, vBytes int) *attentionBlockKVScratchPool {
 	key := attentionBlockKVScratchKey{kBytes: kBytes, vBytes: vBytes}
 	if v, ok := attentionBlockKVScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*attentionBlockKVScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := &attentionBlockKVScratchPool{}
 	if v, loaded := attentionBlockKVScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*attentionBlockKVScratchPool)
 	}
 	return pool
 }
@@ -76,8 +81,7 @@ func newAttentionBlockKVScratch(kBytes, vBytes int) (*attentionBlockKVScratch, e
 
 func getAttentionBlockKVScratch(kBytes, vBytes int) (*attentionBlockKVScratch, error) {
 	pool := attentionBlockKVScratchPoolFor(kBytes, vBytes)
-	if v := pool.Get(); v != nil {
-		s := v.(*attentionBlockKVScratch)
+	if s := pool.Get(); s != nil {
 		if s.kBytes == kBytes && s.vBytes == vBytes && s.k != nil && s.v != nil {
 			return s, nil
 		}
@@ -90,6 +94,28 @@ func putAttentionBlockKVScratch(s *attentionBlockKVScratch) {
 	if s != nil && s.kBytes > 0 && s.vBytes > 0 && s.k != nil && s.v != nil {
 		attentionBlockKVScratchPoolFor(s.kBytes, s.vBytes).Put(s)
 	}
+}
+
+func (p *attentionBlockKVScratchPool) Get() *attentionBlockKVScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *attentionBlockKVScratchPool) Put(s *attentionBlockKVScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 func (s *attentionBlockKVScratch) Close() {
@@ -164,27 +190,42 @@ func (s *attentionBlockKVScratch) buffersNoCopy(kCache, vCache []byte) (metal.MT
 		return s.kView, s.vView, true, nil
 	}
 	s.closeCacheViews()
-	kBuf, kPinner, kNoCopy := residentNoCopyBytes(kCache)
-	if !kNoCopy {
-		if kPinner != nil {
-			kPinner.Unpin()
+	kBuf, kRegistered := registeredPinnedNoCopyBytes(kCache)
+	var kPinner *runtime.Pinner
+	if !kRegistered {
+		var kNoCopy bool
+		kBuf, kPinner, kNoCopy = residentNoCopyBytes(kCache)
+		if !kNoCopy {
+			if kPinner != nil {
+				kPinner.Unpin()
+			}
+			return nil, nil, false, nil
 		}
-		return nil, nil, false, nil
 	}
-	vBuf, vPinner, vNoCopy := residentNoCopyBytes(vCache)
-	if !vNoCopy {
-		if kPinner != nil {
-			kPinner.Unpin()
+	vBuf, vRegistered := registeredPinnedNoCopyBytes(vCache)
+	var vPinner *runtime.Pinner
+	if !vRegistered {
+		var vNoCopy bool
+		vBuf, vPinner, vNoCopy = residentNoCopyBytes(vCache)
+		if !vNoCopy {
+			if kPinner != nil {
+				kPinner.Unpin()
+			}
+			if vPinner != nil {
+				vPinner.Unpin()
+			}
+			return nil, nil, false, nil
 		}
-		if vPinner != nil {
-			vPinner.Unpin()
-		}
-		return nil, nil, false, nil
 	}
-	kPinned := &pinnedNoCopyBytes{bytes: kCache, buf: kBuf, pinner: kPinner}
-	vPinned := &pinnedNoCopyBytes{bytes: vCache, buf: vBuf, pinner: vPinner}
-	runtime.SetFinalizer(kPinned, (*pinnedNoCopyBytes).Close)
-	runtime.SetFinalizer(vPinned, (*pinnedNoCopyBytes).Close)
+	var kPinned, vPinned *pinnedNoCopyBytes
+	if !kRegistered {
+		kPinned = &pinnedNoCopyBytes{bytes: kCache, buf: kBuf, pinner: kPinner}
+		runtime.SetFinalizer(kPinned, (*pinnedNoCopyBytes).Close)
+	}
+	if !vRegistered {
+		vPinned = &pinnedNoCopyBytes{bytes: vCache, buf: vBuf, pinner: vPinner}
+		runtime.SetFinalizer(vPinned, (*pinnedNoCopyBytes).Close)
+	}
 	s.kViewPtr = kPtr
 	s.kViewLen = len(kCache)
 	s.kView = kBuf
@@ -242,6 +283,59 @@ type pinnedNoCopyBytes struct {
 	pinner *runtime.Pinner
 }
 
+type pinnedNoCopyBytesKey struct {
+	ptr uintptr
+	n   int
+}
+
+var pinnedNoCopyByteBuffers sync.Map
+
+func pinnedNoCopyKey(b []byte) (pinnedNoCopyBytesKey, bool) {
+	if len(b) == 0 {
+		return pinnedNoCopyBytesKey{}, false
+	}
+	return pinnedNoCopyBytesKey{ptr: uintptr(unsafe.Pointer(&b[0])), n: len(b)}, true
+}
+
+func registerPinnedNoCopyBytes(p *pinnedNoCopyBytes) {
+	if p == nil || p.buf == nil {
+		return
+	}
+	key, ok := pinnedNoCopyKey(p.bytes)
+	if !ok {
+		return
+	}
+	pinnedNoCopyByteBuffers.Store(key, p.buf)
+}
+
+func unregisterPinnedNoCopyBytes(p *pinnedNoCopyBytes) {
+	if p == nil {
+		return
+	}
+	key, ok := pinnedNoCopyKey(p.bytes)
+	if !ok {
+		return
+	}
+	pinnedNoCopyByteBuffers.Delete(key)
+}
+
+func registeredPinnedNoCopyBytes(b []byte) (metal.MTLBuffer, bool) {
+	key, ok := pinnedNoCopyKey(b)
+	if !ok {
+		return nil, false
+	}
+	v, ok := pinnedNoCopyByteBuffers.Load(key)
+	if !ok {
+		return nil, false
+	}
+	buf, ok := v.(metal.MTLBuffer)
+	if !ok || buf == nil {
+		pinnedNoCopyByteBuffers.Delete(key)
+		return nil, false
+	}
+	return buf, true
+}
+
 func newPinnedNoCopyBytes(n int) (*pinnedNoCopyBytes, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -265,6 +359,7 @@ func newPinnedNoCopyBytes(n int) (*pinnedNoCopyBytes, error) {
 		return nil, core.NewError("native.newPinnedNoCopyBytes: failed to create no-copy Metal buffer")
 	}
 	p := &pinnedNoCopyBytes{bytes: b, buf: buf, pinner: pinner}
+	registerPinnedNoCopyBytes(p)
 	runtime.SetFinalizer(p, (*pinnedNoCopyBytes).Close)
 	return p, nil
 }
@@ -296,6 +391,7 @@ func (p *pinnedNoCopyBytes) Close() {
 		return
 	}
 	runtime.SetFinalizer(p, nil)
+	unregisterPinnedNoCopyBytes(p)
 	if p.pinner != nil {
 		p.pinner.Unpin()
 		p.pinner = nil
@@ -790,10 +886,17 @@ func attentionBlockInto(out []byte, x, normWeight, wQ, wO, kCache, vCache []byte
 			return
 		}
 		defer putAttentionBlockKVScratch(kvScratch)
-		kBuf, vBuf, err := kvScratch.buffers(kCache, vCache)
+		kBuf, vBuf, ok, err := kvScratch.buffersNoCopy(kCache, vCache)
 		if err != nil {
 			encErr = err
 			return
+		}
+		if !ok {
+			kBuf, vBuf, err = kvScratch.buffers(kCache, vCache)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		off := int32(offset)
 		offBuf := scalarI32(off)

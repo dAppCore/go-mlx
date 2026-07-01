@@ -369,24 +369,24 @@ func decodeForwardInto(
 		for t := 0; t < T; t++ {
 			sc.seed(t, inputs[t])
 
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
 			in, out := sc.xA, sc.xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
 				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, sc.offBuf, sc.hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
-					enc.EndEncoding()
+					endEncodingFast(enc)
 					return
 				}
 				if encErr = encMLPHalfBF16(enc, sc.hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
-					enc.EndEncoding()
+					endEncodingFast(enc)
 					return
 				}
 				in, out = out, in // next layer reads this layer's output
 			}
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 			sc.copyBuffer(outputs[t], in) // `in` holds the last layer's output after the final swap
 		}
 	})

@@ -38,7 +38,10 @@ type SessionStateBlock struct {
 }
 
 // SessionStateBlockSource streams native session state blocks without first
-// assembling a monolithic SerializeState blob.
+// assembling a monolithic SerializeState blob. CachedPromptHidden,
+// CachedPromptLogits, RetainedHidden, and RetainedLogits borrow the source
+// session's boundary buffers; consume or copy them before mutating/closing the
+// source session.
 type SessionStateBlockSource struct {
 	Position           int
 	CachedIDs          []int32
@@ -128,6 +131,7 @@ type sessionStateLayerView struct {
 	cacheRows  int
 	keyBytes   []byte
 	valueBytes []byte
+	paged      *devicePagedKVCache
 }
 
 // StateBlockSource returns a block loader over the current resident K/V cache.
@@ -157,10 +161,10 @@ func (s *ArchSession) StateBlockSourceFrom(startToken, blockSize int) (SessionSt
 		Position:           s.pos,
 		CachedIDs:          append([]int32(nil), s.cachedIDs...),
 		CachedPromptIDs:    append([]int32(nil), s.cachedPromptIDs...),
-		CachedPromptHidden: append([]byte(nil), s.cachedPromptHidden...),
-		CachedPromptLogits: append([]byte(nil), s.cachedPromptLogits...),
-		RetainedHidden:     append([]byte(nil), s.retainedHidden...),
-		RetainedLogits:     append([]byte(nil), retainedLogits...),
+		CachedPromptHidden: s.cachedPromptHidden,
+		CachedPromptLogits: s.cachedPromptLogits,
+		RetainedHidden:     s.retainedHidden,
+		RetainedLogits:     retainedLogits,
 		BlockCount:         blockCount,
 		blockSize:          blockSize,
 		firstBlockIndex:    firstBlock,
@@ -262,6 +266,9 @@ func (s *ArchSession) RestoreStateBlocks(source SessionStateBlockSource) error {
 		return core.NewError("native.RestoreStateBlocks: block coverage does not match position")
 	}
 	if err := s.restoreStateBlockMetadata(source); err != nil {
+		return err
+	}
+	if err := s.reloadPagedStateLayerViews(source.Position, targetViews); err != nil {
 		return err
 	}
 	return nil
@@ -474,10 +481,10 @@ func restoreStateBlock(index, expectedStart, position, ownerCount int, targetVie
 		if layer.HeadDim > 0 && layer.HeadDim != view.headDim {
 			return core.NewError("native.RestoreStateBlocks: head-dim mismatch")
 		}
-		if layer.CacheMode != "" && view.cacheMode != "" && layer.CacheMode != view.cacheMode {
+		if layer.CacheMode != "" && view.cacheMode != "" && layer.CacheMode != view.cacheMode && !nativeKVRestorableSourceCacheMode(layer.CacheMode) {
 			return core.NewError("native.RestoreStateBlocks: cache-mode mismatch")
 		}
-		if layer.MaxSize > 0 && layer.MaxSize != view.maxSize {
+		if layer.MaxSize > 0 && layer.MaxSize != view.maxSize && !nativeKVRestorableStateSourceMaxSize(layer) {
 			return core.NewError("native.RestoreStateBlocks: cache max-size mismatch")
 		}
 		if layer.RowBytes != view.rowBytes {
@@ -488,6 +495,10 @@ func restoreStateBlock(index, expectedStart, position, ownerCount int, targetVie
 		}
 	}
 	return nil
+}
+
+func nativeKVRestorableStateSourceMaxSize(layer SessionStateLayerBlock) bool {
+	return layer.CacheMode != "" && nativeKVRestorableSourceCacheMode(layer.CacheMode)
 }
 
 func restoreStateBlockLayer(view sessionStateLayerView, start, tokenCount, position int, layer SessionStateLayerBlock) error {
@@ -550,9 +561,11 @@ func (s *ArchSession) restoreStateBlockMetadata(source SessionStateBlockSource) 
 	}
 	s.pos = source.Position
 	s.cachedIDs = append(s.cachedIDs[:0], source.CachedIDs...)
-	s.cachedPromptIDs = append(s.cachedPromptIDs[:0], source.CachedPromptIDs...)
-	s.cachedPromptHidden = append(s.cachedPromptHidden[:0], source.CachedPromptHidden...)
-	s.cachedPromptLogits = append(s.cachedPromptLogits[:0], source.CachedPromptLogits...)
+	if len(source.CachedPromptHidden) > 0 {
+		s.rememberCachedPromptEntry(source.CachedPromptIDs, source.CachedPromptHidden, source.CachedPromptLogits)
+	} else {
+		s.clearCachedPromptHidden()
+	}
 	if len(source.RetainedHidden) == 0 {
 		s.resetRetainedHidden()
 	} else {
@@ -570,6 +583,9 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 	ownerCount := s.ownedStateCacheLayers()
 	icb := s.state.icb != nil
 	if len(s.stateBlockViews) == ownerCount && s.stateBlockViewsICB == icb {
+		if err := s.refreshPagedStateLayerViews(s.stateBlockViews); err != nil {
+			return nil, err
+		}
 		return s.stateBlockViews, nil
 	}
 	views := s.stateBlockViews
@@ -582,20 +598,27 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 		if !spec.OwnsCache() {
 			continue
 		}
+		paged := s.state.layerPagedKV(li)
 		k, _, kPtr, vPtr, err := s.snapshotCacheViews(li)
 		if err != nil {
 			return nil, err
 		}
-		cacheBytes := int(k.Length())
+		cacheBytes := 0
+		if paged != nil {
+			cacheBytes = paged.snapshotBytes
+		} else {
+			cacheBytes = int(bufferLengthFast(k))
+		}
 		cacheRows := s.stateCacheRows(spec)
 		rowBytes, err := s.stateCacheRowBytes(cacheBytes, cacheRows)
 		if err != nil {
 			return nil, err
 		}
+		headDim := headDimOf(spec, s.arch.HeadDim)
 		views = append(views, sessionStateLayerView{
 			layer:      li,
-			kvHeads:    kvHeadsOf(spec, s.arch.KVHeads),
-			headDim:    headDimOf(spec, s.arch.HeadDim),
+			kvHeads:    stateLayerViewKVHeads(spec, s.arch.KVHeads, headDim, rowBytes),
+			headDim:    headDim,
 			rowBytes:   rowBytes,
 			cacheIndex: spec.CacheIndex,
 			cacheMode:  nativeStateCacheModeFixed,
@@ -603,11 +626,58 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 			cacheRows:  cacheRows,
 			keyBytes:   unsafe.Slice(kPtr, cacheBytes),
 			valueBytes: unsafe.Slice(vPtr, cacheBytes),
+			paged:      paged,
 		})
 	}
 	s.stateBlockViews = views
 	s.stateBlockViewsICB = icb
 	return s.stateBlockViews, nil
+}
+
+func stateLayerViewKVHeads(spec model.LayerSpec, archKVHeads, headDim, rowBytes int) int {
+	if rowBytes > 0 && headDim > 0 {
+		rowUnit := headDim * bf16Size
+		if rowUnit > 0 && rowBytes%rowUnit == 0 {
+			if heads := rowBytes / rowUnit; heads > 0 {
+				return heads
+			}
+		}
+	}
+	return kvHeadsOf(spec, archKVHeads)
+}
+
+func (s *ArchSession) refreshPagedStateLayerViews(views []sessionStateLayerView) error {
+	for i := range views {
+		cache := views[i].paged
+		if cache == nil {
+			continue
+		}
+		_, _, kPtr, vPtr, err := cache.linearSnapshot(views[i].cacheRows)
+		if err != nil {
+			return err
+		}
+		cacheBytes := cache.snapshotBytes
+		views[i].keyBytes = unsafe.Slice(kPtr, cacheBytes)
+		views[i].valueBytes = unsafe.Slice(vPtr, cacheBytes)
+	}
+	return nil
+}
+
+func (s *ArchSession) reloadPagedStateLayerViews(position int, views []sessionStateLayerView) error {
+	for i := range views {
+		cache := views[i].paged
+		if cache == nil {
+			continue
+		}
+		tokens := position
+		if tokens > views[i].cacheRows {
+			tokens = views[i].cacheRows
+		}
+		if err := cache.loadLinearSnapshot(views[i].keyBytes, views[i].valueBytes, tokens); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ArchSession) stateBlockPlan(startToken, blockSize int) (int, int, int, []int, []sessionStateLayerView, error) {

@@ -110,6 +110,27 @@ func TestPerLayerInputsGPUAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestPerLayerInputsGPUScratchBuffersUseCallerEmbeddingBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numLayers, pliDim, dModel = 4, 64, 128
+	const projScale = float32(0.5)
+	plDim := numLayers * pliDim
+	emb := toBF16Bytes(syntheticFloat32(dModel, 23))
+	scratch, err := getPerLayerInputsGPUScratch(plDim, dModel, projScale)
+	if err != nil {
+		t.Fatalf("get per-layer GPU scratch: %v", err)
+	}
+	defer putPerLayerInputsGPUScratch(scratch)
+	_, embBuf, _, err := scratch.buffers(17, emb)
+	if err != nil {
+		t.Fatalf("per-layer GPU scratch buffers: %v", err)
+	}
+	if got, want := uintptr(embBuf.Contents()), uintptr(unsafe.Pointer(&emb[0])); got != want {
+		t.Fatalf("embedding buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+}
+
 func TestPerLayerInputsGPUIntoReusesOutputBacking(t *testing.T) {
 	requireNativeRuntime(t)
 	const vocabPLI, numLayers, pliDim, dModel = 32, 4, 64, 128
@@ -196,6 +217,8 @@ func TestPerLayerInputsGPUScratchPoolKeepsDimensionsResident(t *testing.T) {
 		t.Fatalf("get large PLE GPU scratch: %v", err)
 	}
 	putPerLayerInputsGPUScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 	gotSmall, err := getPerLayerInputsGPUScratch(smallPLDim, smallDModel, smallScale)
 	if err != nil {
 		t.Fatalf("get small PLE GPU scratch again: %v", err)

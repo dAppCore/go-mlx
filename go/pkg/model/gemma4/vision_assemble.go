@@ -3,6 +3,8 @@
 package gemma4
 
 import (
+	"math"
+
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
@@ -16,33 +18,23 @@ import (
 // pkg/metal/model/gemma4/vision_load.go, reusing the canonicalise + infer front + model.WeightAny.
 
 // LoadedVisionLinear is one vision linear's weight + optional bias byte views (nil bias = none).
-type LoadedVisionLinear struct {
-	Weight, Bias []byte
-}
+type LoadedVisionLinear = model.LoadedVisionLinear
 
 // LoadedVisionLayer is one SigLIP encoder layer's weights: pre/post norms, QK-normed attention, gated MLP.
-type LoadedVisionLayer struct {
-	InputNorm, PostAttnNorm, PreFFNorm, PostFFNorm []byte
-	Q, K, V, O                                     LoadedVisionLinear
-	QNorm, KNorm                                   []byte
-	Gate, Up, Down                                 LoadedVisionLinear
-}
+type LoadedVisionLayer = model.LoadedVisionLayer
 
 // LoadedVisionProjector is the vision-to-text projector's weights (a single projection, or fc1+fc2).
-type LoadedVisionProjector struct {
-	Projection, Linear1, Linear2 LoadedVisionLinear
-}
+type LoadedVisionProjector = model.LoadedVisionProjector
 
 // LoadedVision is the whole SigLIP tower + projector as byte views — the loader output a backend uploads.
-type LoadedVision struct {
-	PatchEmbedding     []byte
-	PositionEmbeddings []byte
-	PostLayernorm      []byte
-	StdBias, StdScale  []byte
-	Layers             []LoadedVisionLayer
-	Projector          LoadedVisionProjector
-	Cfg                *Gemma4VisionConfig
-}
+type LoadedVision = model.LoadedVision
+
+const (
+	Gemma4BOIToken   = "<|image>"
+	Gemma4ImageToken = "<|image|>"
+	Gemma4EOIToken   = "<image|>"
+	Gemma4VideoToken = "<|video|>"
+)
 
 func visionWeight(weights map[string]safetensors.Tensor, names ...string) []byte {
 	if t, ok := model.WeightAny(weights, names...); ok {
@@ -57,6 +49,29 @@ func visionLinear(weights map[string]safetensors.Tensor, prefixes ...string) Loa
 	for _, p := range prefixes {
 		if w := visionWeight(weights, p+".weight", p+".linear.weight"); w != nil {
 			return LoadedVisionLinear{Weight: w, Bias: visionWeight(weights, p+".bias", p+".linear.bias")}
+		}
+	}
+	return LoadedVisionLinear{}
+}
+
+func visionLinearWithInputDim(weights map[string]safetensors.Tensor, inDim int, prefixes ...string) LoadedVisionLinear {
+	for _, p := range prefixes {
+		for _, candidate := range []string{p, p + ".linear"} {
+			lin := model.LoadLinear(weights, candidate, inDim, "affine")
+			if lin == nil {
+				continue
+			}
+			return LoadedVisionLinear{
+				Weight:    lin.Weight,
+				Scales:    lin.Scales,
+				Biases:    lin.Biases,
+				Bias:      lin.Bias,
+				OutDim:    lin.OutDim,
+				InDim:     lin.InDim,
+				GroupSize: lin.GroupSize,
+				Bits:      lin.Bits,
+				Kind:      lin.Kind,
+			}
 		}
 	}
 	return LoadedVisionLinear{}
@@ -88,7 +103,7 @@ func AssembleVision(weights map[string]safetensors.Tensor, textCfg *Gemma4TextCo
 		StdBias:            visionWeight(weights, "std_bias"),
 		StdScale:           visionWeight(weights, "std_scale"),
 		Layers:             make([]LoadedVisionLayer, int(visionCfg.NumHiddenLayers)),
-		Cfg:                visionCfg,
+		Cfg:                loadedVisionConfig(visionCfg, textCfg),
 	}
 	for i := range v.Layers {
 		p := core.Sprintf("encoder.layers.%d", i)
@@ -110,12 +125,46 @@ func AssembleVision(weights map[string]safetensors.Tensor, textCfg *Gemma4TextCo
 			return nil, err
 		}
 	}
-	v.Projector = LoadedVisionProjector{
-		Projection: visionLinear(weights, "embed_vision.embedding_projection", "multi_modal_projector.embedding_projection", "multi_modal_projector.proj", "multi_modal_projector"),
-		Linear1:    visionLinear(weights, "multi_modal_projector.linear_1", "multi_modal_projector.fc1"),
-		Linear2:    visionLinear(weights, "multi_modal_projector.linear_2", "multi_modal_projector.fc2"),
+	visionHidden := int(visionCfg.HiddenSize)
+	v.Projector.Projection = visionLinearWithInputDim(weights, visionHidden, "embed_vision.embedding_projection", "multi_modal_projector.embedding_projection", "multi_modal_projector.proj", "multi_modal_projector")
+	v.Projector.Linear1 = visionLinearWithInputDim(weights, visionHidden, "multi_modal_projector.linear_1", "multi_modal_projector.fc1")
+	linear2In := v.Projector.Linear1.OutDim
+	if linear2In == 0 {
+		linear2In = visionHidden
 	}
+	v.Projector.Linear2 = visionLinearWithInputDim(weights, linear2In, "multi_modal_projector.linear_2", "multi_modal_projector.fc2")
 	return v, nil
+}
+
+func loadedVisionConfig(cfg *Gemma4VisionConfig, textCfg *Gemma4TextConfig) model.LoadedVisionConfig {
+	if cfg == nil {
+		return model.LoadedVisionConfig{}
+	}
+	hidden := int(cfg.HiddenSize)
+	patch := int(cfg.PatchSize)
+	channels := int(cfg.NumChannels)
+	out := model.LoadedVisionConfig{
+		Hidden:         hidden,
+		PatchDim:       channels * patch * patch,
+		NumLayers:      int(cfg.NumHiddenLayers),
+		NumHeads:       int(cfg.NumAttentionHeads),
+		NumKVHeads:     int(cfg.NumKeyValueHeads),
+		HeadDim:        int(cfg.HeadDim),
+		RopeBase:       cfg.RopeParameters.RopeTheta,
+		RMSNormEps:     cfg.RMSNormEps,
+		PoolKernel:     int(cfg.PoolingKernelSize),
+		Standardize:    cfg.Standardize,
+		EmbeddingScale: float32(math.Sqrt(float64(hidden))),
+	}
+	if textCfg != nil {
+		out.ImageTokenID = textCfg.ImageTokenID
+		out.ImageBeginToken = Gemma4BOIToken
+		out.ImageToken = Gemma4ImageToken
+		out.ImageEndToken = Gemma4EOIToken
+		out.VideoTokenID = textCfg.VideoTokenID
+		out.VideoToken = Gemma4VideoToken
+	}
+	return out
 }
 
 // validateLoadedVisionLayer fails loud on a missing required weight in an encoder layer — a malformed

@@ -92,6 +92,8 @@ func TestEmbedGatherScratchPoolKeepsDimensionsResident(t *testing.T) {
 		t.Fatalf("get large embed-gather scratch: %v", err)
 	}
 	putEmbedGatherScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall, err := getEmbedGatherScratch(256)
 	if err != nil {

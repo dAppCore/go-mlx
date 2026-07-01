@@ -44,3 +44,31 @@ func TestHotSwapResolver_SetLoader_UsesInjectedLoader_Good(t *testing.T) {
 		t.Fatalf("loader re-invoked (%d), want exactly 1 (initial.Do guards)", called)
 	}
 }
+
+// setSpeculativeLoader swaps the target+draft loader before the first
+// ResolveModel; this is how serve --native keeps the draft-detection path but
+// loads both models through the no-cgo native contract.
+func TestHotSwapResolver_SetSpeculativeLoader_UsesInjectedPairLoader_Good(t *testing.T) {
+	r := newHotSwapResolver("/target/path", "/draft/path", 6, nil)
+	called := 0
+	var gotTarget, gotDraft string
+	var gotBlock int
+	r.setSpeculativeLoader(func(target, draft string, block int, _ ...mlx.LoadOption) (inference.TextModel, error) {
+		called++
+		gotTarget = target
+		gotDraft = draft
+		gotBlock = block
+		return nil, core.NewError("pair loader sentinel")
+	})
+
+	_, err := r.ResolveModel(context.Background(), "")
+	if err == nil {
+		t.Fatal("ResolveModel error = nil, want the injected pair loader's sentinel error")
+	}
+	if called != 1 {
+		t.Fatalf("pair loader called %d times, want 1", called)
+	}
+	if gotTarget != "/target/path" || gotDraft != "/draft/path" || gotBlock != 6 {
+		t.Fatalf("pair loader args target=%q draft=%q block=%d, want staged target/draft/block", gotTarget, gotDraft, gotBlock)
+	}
+}

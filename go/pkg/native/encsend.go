@@ -46,15 +46,22 @@ var (
 	selSetBytesLengthAtIndex   = objc.Sel("setBytes:length:atIndex:")
 	selDispatchThreads         = objc.Sel("dispatchThreads:threadsPerThreadgroup:")
 	selDispatchThreadgroups    = objc.Sel("dispatchThreadgroups:threadsPerThreadgroup:")
+	selMemoryBarrierWithScope  = objc.Sel("memoryBarrierWithScope:")
 	selConcurrentThreads       = objc.Sel("concurrentDispatchThreads:threadsPerThreadgroup:")
 	selConcurrentThreadgroups  = objc.Sel("concurrentDispatchThreadgroups:threadsPerThreadgroup:")
 	selCommandBuffer           = objc.Sel("commandBuffer")
 	selComputeCommandEncoder   = objc.Sel("computeCommandEncoder")
+	selBlitCommandEncoder      = objc.Sel("blitCommandEncoder")
 	selEndEncoding             = objc.Sel("endEncoding")
 	selCommit                  = objc.Sel("commit")
 	selWaitUntilCompleted      = objc.Sel("waitUntilCompleted")
 	selUseResourcesCountUsage  = objc.Sel("useResources:count:usage:")
 	selExecuteICBWithRange     = objc.Sel("executeCommandsInBuffer:withRange:")
+	selOptimizeICBWithRange    = objc.Sel("optimizeIndirectCommandBuffer:withRange:")
+	selIndirectComputeCommand  = objc.Sel("indirectComputeCommandAtIndex:")
+	selSetBarrier              = objc.Sel("setBarrier")
+	selContents                = objc.Sel("contents")
+	selBufferLength            = objc.Sel("length")
 	objcMsgSendAddr            uintptr
 	objcAutoreleasePoolPush    uintptr
 	objcAutoreleasePoolPop     uintptr
@@ -100,6 +107,18 @@ func objcMsgSendRaw1(fn, id, sel, a1 uintptr) {
 	args.a3 = a1
 	puregoRuntimeCGOCall(puregoSyscall15XABI0, unsafe.Pointer(args))
 	objcSyscallArgsPut(args)
+}
+
+func objcMsgSendRaw1Ret(fn, id, sel, a1 uintptr) uintptr {
+	args := objcSyscallArgsGet()
+	args.fn = fn
+	args.a1 = id
+	args.a2 = sel
+	args.a3 = a1
+	puregoRuntimeCGOCall(puregoSyscall15XABI0, unsafe.Pointer(args))
+	rv := args.a1
+	objcSyscallArgsPut(args)
+	return rv
 }
 
 func objcMsgSendRaw0(fn, id, sel uintptr) uintptr {
@@ -400,7 +419,28 @@ func computeCommandEncoderFast(cb metal.MTLCommandBufferObject) metal.MTLCompute
 	return metal.MTLComputeCommandEncoderObjectFromID(enc.GetID())
 }
 
+func blitCommandEncoderFast(cb metal.MTLCommandBufferObject) metal.MTLBlitCommandEncoderObject {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		rv := objcMsgSendRaw0(objcMsgSendAddr, uintptr(cb.GetID()), uintptr(selBlitCommandEncoder))
+		runtime.KeepAlive(cb)
+		return metal.MTLBlitCommandEncoderObjectFromID(objc.ID(rv))
+	}
+	blit := cb.BlitCommandEncoder()
+	return metal.MTLBlitCommandEncoderObjectFromID(blit.GetID())
+}
+
 func endEncodingFast(enc metal.MTLComputeCommandEncoderObject) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw0(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selEndEncoding))
+		runtime.KeepAlive(enc)
+		return
+	}
+	enc.EndEncoding()
+}
+
+func endBlitEncodingFast(enc metal.MTLBlitCommandEncoderObject) {
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
 		objcMsgSendRaw0(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selEndEncoding))
@@ -430,6 +470,26 @@ func waitUntilCompletedFast(cb metal.MTLCommandBufferObject) {
 	cb.WaitUntilCompleted()
 }
 
+func bufferLengthFast(buf metal.MTLBuffer) uint {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		n := objcMsgSendRaw0(objcMsgSendAddr, uintptr(buf.GetID()), uintptr(selBufferLength))
+		runtime.KeepAlive(buf)
+		return uint(n)
+	}
+	return buf.Length()
+}
+
+func bufferContentsFast(buf metal.MTLBuffer) unsafe.Pointer {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		ptr := objcMsgSendRaw0(objcMsgSendAddr, uintptr(buf.GetID()), uintptr(selContents))
+		runtime.KeepAlive(buf)
+		return unsafe.Pointer(ptr)
+	}
+	return buf.Contents()
+}
+
 func useResourcesIDsFast(enc metal.MTLComputeCommandEncoder, resources []metal.MTLResource, ids []objc.ID, usage metal.MTLResourceUsage) {
 	if len(ids) == 0 {
 		return
@@ -448,6 +508,22 @@ func useResourcesIDsFast(enc metal.MTLComputeCommandEncoder, resources []metal.M
 	runtime.KeepAlive(ids)
 }
 
+func resourceIDsForFastUse(dst []objc.ID, resources []metal.MTLResource) []objc.ID {
+	if cap(dst) < len(resources) {
+		dst = make([]objc.ID, len(resources))
+	} else {
+		dst = dst[:len(resources)]
+	}
+	for i, r := range resources {
+		if r == nil {
+			dst[i] = 0
+			continue
+		}
+		dst[i] = r.GetID()
+	}
+	return dst
+}
+
 func executeCommandsInBufferWithRangeFast(enc metal.MTLComputeCommandEncoder, icb metal.MTLIndirectCommandBuffer, rng foundation.NSRange) {
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
@@ -457,6 +533,27 @@ func executeCommandsInBufferWithRangeFast(enc metal.MTLComputeCommandEncoder, ic
 		return
 	}
 	objc.Send[struct{}](enc.GetID(), selExecuteICBWithRange, icb, rng)
+}
+
+func indirectComputeCommandAtIndexFast(icb metal.MTLIndirectCommandBuffer, idx uint) metal.MTLIndirectComputeCommand {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		id := objcMsgSendRaw1Ret(objcMsgSendAddr, uintptr(icb.GetID()), uintptr(selIndirectComputeCommand), uintptr(idx))
+		runtime.KeepAlive(icb)
+		return metal.MTLIndirectComputeCommandObjectFromID(objc.ID(id))
+	}
+	return icb.IndirectComputeCommandAtIndex(idx)
+}
+
+func optimizeIndirectCommandBufferWithRangeFast(enc metal.MTLBlitCommandEncoderObject, icb metal.MTLIndirectCommandBuffer, rng foundation.NSRange) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw3(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selOptimizeICBWithRange), uintptr(icb.GetID()), uintptr(rng.Location), uintptr(rng.Length))
+		runtime.KeepAlive(enc)
+		runtime.KeepAlive(icb)
+		return
+	}
+	objc.Send[struct{}](enc.GetID(), selOptimizeICBWithRange, icb, rng)
 }
 
 // dispatchThreads binds the same dispatchThreads:threadsPerThreadgroup: call as
@@ -503,6 +600,16 @@ func dispatchThreadgroupsObject(enc metal.MTLComputeCommandEncoderObject, grid, 
 	enc.DispatchThreadgroupsThreadsPerThreadgroup(grid, group)
 }
 
+func memoryBarrier(enc metal.MTLComputeCommandEncoder, scope metal.MTLBarrierScope) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw1(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selMemoryBarrierWithScope), uintptr(scope))
+		runtime.KeepAlive(enc)
+		return
+	}
+	enc.MemoryBarrierWithScope(scope)
+}
+
 func setICBPSO(cmd metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState) {
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
@@ -527,6 +634,16 @@ func setICBKernelBuffer(cmd metal.MTLIndirectComputeCommand, buf metal.MTLBuffer
 		return
 	}
 	cmd.SetKernelBufferOffsetAtIndex(buf, offset, index)
+}
+
+func setICBBarrier(cmd metal.MTLIndirectComputeCommand) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw0(objcMsgSendAddr, uintptr(cmd.GetID()), uintptr(selSetBarrier))
+		runtime.KeepAlive(cmd)
+		return
+	}
+	cmd.SetBarrier()
 }
 
 func concurrentDispatchThreads(cmd metal.MTLIndirectComputeCommand, grid, group metal.MTLSize) {

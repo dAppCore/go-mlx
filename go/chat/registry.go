@@ -3,7 +3,7 @@
 package chat
 
 // Formatter renders a message list into a model-family chat prompt. A family's
-// own chat package (e.g. pkg/metal/model/gemma4/chat) registers its formatter
+// own chat package (e.g. pkg/model/gemma4/chat) registers its formatter
 // under the template name it serves, so the neutral chat package dispatches by
 // name and never carries family-specific prompt logic.
 type Formatter func(messages []Message, cfg Config) string

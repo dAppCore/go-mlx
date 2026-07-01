@@ -235,6 +235,7 @@ type archICBReplayScratch struct {
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx      []int
 	barrierOps, rowBytes                   []int
 	residentRes                            []metal.MTLResource
+	residentResIDs                         []objc.ID
 	outputViewPtrs                         []uintptr
 	outputViewLens                         []int
 	outputViewBufs                         []metal.MTLBuffer
@@ -397,6 +398,13 @@ func (s *archICBReplayScratch) outputViews(outputs [][]byte, outLen int) ([]meta
 			continue
 		}
 		s.closeOutputViewAt(i)
+		if buf, ok := registeredPinnedNoCopyBytes(outputs[i]); ok {
+			s.outputViewPtrs[i] = ptr
+			s.outputViewLens[i] = outLen
+			s.outputViewBufs[i] = buf
+			s.outputViewPinned[i] = nil
+			continue
+		}
 		buf, pinner, noCopy := residentNoCopyBytes(outputs[i])
 		if !noCopy {
 			if pinner != nil {
@@ -505,12 +513,12 @@ func (r *archICBReplay) cacheKVContents() {
 	}
 	for i, b := range r.kCaches {
 		if b != nil {
-			r.kCachePtrs[i] = (*byte)(b.Contents())
+			r.kCachePtrs[i] = (*byte)(bufferContentsFast(b))
 		}
 	}
 	for i, b := range r.vCaches {
 		if b != nil {
-			r.vCachePtrs[i] = (*byte)(b.Contents())
+			r.vCachePtrs[i] = (*byte)(bufferContentsFast(b))
 		}
 	}
 }
@@ -519,7 +527,7 @@ func (r *archICBReplay) cacheLastOutContents() {
 	if r == nil || r.lastOut == nil {
 		return
 	}
-	r.lastOutPtr = (*byte)(r.lastOut.Contents())
+	r.lastOutPtr = (*byte)(bufferContentsFast(r.lastOut))
 }
 
 func (r *archICBReplay) cacheStepContents() {
@@ -527,19 +535,19 @@ func (r *archICBReplay) cacheStepContents() {
 		return
 	}
 	if r.offBuf != nil {
-		r.offPtr = (*int32)(r.offBuf.Contents())
+		r.offPtr = (*int32)(bufferContentsFast(r.offBuf))
 	}
 	if r.nGlobalBuf != nil {
-		r.nGlobalPtr = (*int32)(r.nGlobalBuf.Contents())
+		r.nGlobalPtr = (*int32)(bufferContentsFast(r.nGlobalBuf))
 	}
 	if r.nSlidingBuf != nil {
-		r.nSlidingPtr = (*int32)(r.nSlidingBuf.Contents())
+		r.nSlidingPtr = (*int32)(bufferContentsFast(r.nSlidingBuf))
 	}
 	if r.ping0 != nil {
-		r.ping0Ptr = (*byte)(r.ping0.Contents())
+		r.ping0Ptr = (*byte)(bufferContentsFast(r.ping0))
 	}
 	if r.pleInput != nil {
-		r.pleInputPtr = (*byte)(r.pleInput.Contents())
+		r.pleInputPtr = (*byte)(bufferContentsFast(r.pleInput))
 	}
 }
 
@@ -598,7 +606,7 @@ func (r *archICBReplay) bindStepOutput(out metal.MTLBuffer) bool {
 	if outID := out.GetID(); outID != 0 && r.finalOutBufID == outID {
 		return true
 	}
-	cmd := r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+	cmd := indirectComputeCommandAtIndexFast(r.icb, uint(r.finalOutIdx))
 	return r.bindStepOutputCommand(cmd, out)
 }
 
@@ -665,7 +673,7 @@ func (r *archICBReplay) stepBodyResultWithResources(inputEmb []byte, pos int, pl
 		for _, b := range r.barrierOps {
 			bb := uint(b)
 			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
 		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
@@ -690,18 +698,18 @@ func (r *archICBReplay) stepBodyCapture(inputEmb []byte, pos int, pli []byte) (f
 	r.prepareStep(inputEmb, pos, pli)
 	perLayer = make([][]byte, r.nLayers)
 	for li := 0; li < r.nLayers; li++ {
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
-		enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{
 			Location: uint(li) * r.opsPerLayer,
 			Length:   r.opsPerLayer,
 		})
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		row := make([]byte, r.dModel*bf16Size)
-		copy(row, unsafe.Slice((*byte)(r.ping[(li+1)%2].Contents()), r.dModel*bf16Size))
+		copy(row, unsafe.Slice((*byte)(bufferContentsFast(r.ping[(li+1)%2])), r.dModel*bf16Size))
 		perLayer[li] = row
 	}
 	if len(perLayer) > 0 {
@@ -740,20 +748,20 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 			// record pool's drain, but the icb + its recorded commands persist — so rebind by
 			// op index. (The buffers + the icb are device.New*-owned, hence retained.)
 			rowOff := uint(pos * r.rowBytes[li]) // per-layer: global layers' rows are wider (larger head_dim)
-			r.icb.IndirectComputeCommandAtIndex(uint(r.kRopeIdx[li])).SetKernelBufferOffsetAtIndex(r.kCaches[li], rowOff, r.kRopeBind)
-			r.icb.IndirectComputeCommandAtIndex(uint(r.vIdx[li])).SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, r.vOutBind)
+			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.kRopeIdx[li])), r.kCaches[li], rowOff, r.kRopeBind)
+			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.vIdx[li])), r.vCaches[li], rowOff, r.vOutBind)
 			if r.hasValueNorm {
-				vn := r.icb.IndirectComputeCommandAtIndex(uint(r.vNormIdx[li]))
-				vn.SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, 0)
-				vn.SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, 2)
+				vn := indirectComputeCommandAtIndexFast(r.icb, uint(r.vNormIdx[li]))
+				setICBKernelBuffer(vn, r.vCaches[li], rowOff, 0)
+				setICBKernelBuffer(vn, r.vCaches[li], rowOff, 2)
 			}
 		}
 		if r.specs[li].Attention == model.SlidingAttention {
 			own := r.specs[li].KVShareFrom
 			slideOff := uint(start * r.rowBytes[own]) // read the owner's cache at its row stride
-			sd := r.icb.IndirectComputeCommandAtIndex(uint(r.sdpaIdx[li]))
-			sd.SetKernelBufferOffsetAtIndex(r.kCaches[own], slideOff, 1)
-			sd.SetKernelBufferOffsetAtIndex(r.vCaches[own], slideOff, 2)
+			sd := indirectComputeCommandAtIndexFast(r.icb, uint(r.sdpaIdx[li]))
+			setICBKernelBuffer(sd, r.kCaches[own], slideOff, 1)
+			setICBKernelBuffer(sd, r.vCaches[own], slideOff, 2)
 		}
 	}
 }
@@ -773,7 +781,7 @@ func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder
 		for _, b := range r.barrierOps {
 			bb := uint(b)
 			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
 		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
@@ -798,7 +806,7 @@ func (r *archICBReplay) encodeStepBodyNoInputIntoBuffer(enc metal.MTLComputeComm
 		for _, b := range r.barrierOps {
 			bb := uint(b)
 			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
 		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
@@ -844,7 +852,7 @@ func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCalle
 	withAutoreleasePool(func() {
 		var directOutputCmd metal.MTLIndirectComputeCommand
 		if directOutput {
-			directOutputCmd = r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
+			directOutputCmd = indirectComputeCommandAtIndexFast(r.icb, uint(r.finalOutIdx))
 		}
 		for t := range inputs {
 			var pli []byte
@@ -926,8 +934,8 @@ func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byt
 	withAutoreleasePool(func() {
 		var directOutputCmds [2]metal.MTLIndirectComputeCommand
 		if directOutput {
-			directOutputCmds[0] = r.icb.IndirectComputeCommandAtIndex(uint(r.finalOutIdx))
-			directOutputCmds[1] = r2.icb.IndirectComputeCommandAtIndex(uint(r2.finalOutIdx))
+			directOutputCmds[0] = indirectComputeCommandAtIndexFast(r.icb, uint(r.finalOutIdx))
+			directOutputCmds[1] = indirectComputeCommandAtIndexFast(r2.icb, uint(r2.finalOutIdx))
 		}
 		var prev *archICBReplay
 		var prevCB metal.MTLCommandBufferObject
@@ -958,9 +966,9 @@ func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byt
 			if directOutput {
 				useResourcesIDsFast(enc, directResidentRes[slot], directResidentIDs[slot], metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			} else {
-				enc.UseResourcesCountUsage(rr.residentRes, uint(len(rr.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+				useResourcesIDsFast(enc, rr.residentRes, rr.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			}
-			enc.ExecuteCommandsInBufferWithRange(rr.icb, rr.rng)
+			executeCommandsInBufferWithRangeFast(enc, rr.icb, rr.rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb) // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
 			if prevReady {
@@ -1469,22 +1477,22 @@ func recordArchICB(
 		// icbSink — the path-unifying dispatchSink, one math recorded into both the encoder and the ICB.
 		// icbSink binds eps/axis/ws as the memoised scalar buffers (== epsBuf/axisBuf/wsBuf bound above).
 		setRMS := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer) {
-			emitRMSNorm(icbSink{c}, rmsPSO, in, w, o, 0, dModel, eps, rmsTG)
+			emitRMSNorm(fastICBSink{c}, rmsPSO, in, w, o, 0, dModel, eps, rmsTG)
 		}
 		// fused post-norm tail out = res + rmsnorm(x, w) in ONE ICB command (lthn_rmsnorm_residual_bf16,
 		// one fewer barrier than RMS + vv_Add) through the SHARED emitRMSNormResidual body.
 		setRMSResidual := func(c metal.MTLIndirectComputeCommand, x, w, res, o metal.MTLBuffer) {
-			emitRMSNormResidual(icbSink{c}, rmsResPSO, x, w, res, o, 0, dModel, eps, rmsTG)
+			emitRMSNormResidual(fastICBSink{c}, rmsResPSO, x, w, res, o, 0, dModel, eps, rmsTG)
 		}
 		// per-head RMSNorm (gemma4 QK-norm: rows of headDim each) through the SHARED emitRMSNormRows body;
 		// axisSize = hd binds the same memoised buffer hdAxisOf(hd).axisHead holds.
 		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows, hd int) {
-			emitRMSNormRows(icbSink{c}, rmsPSO, in, w, o, 0, 0, 0, hd, eps, rows, headTGOf(hd))
+			emitRMSNormRows(fastICBSink{c}, rmsPSO, in, w, o, 0, 0, 0, hd, eps, rows, headTGOf(hd))
 		}
 		// element-wise binary op through the SHARED emitBinary body (with encBinaryDT). The count binds the
 		// memoised scalar buffer addModelB/ffCntOf hold — no separate count param.
 		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, n int) {
-			emitBinary(icbSink{c}, pso, a, aOff, b, bOff, o, oOff, n)
+			emitBinary(fastICBSink{c}, pso, a, aOff, b, bOff, o, oOff, n)
 		}
 		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o metal.MTLBuffer, n int) {
 			setBinOffsets(c, pso, a, 0, b, 0, o, 0, n)
@@ -1499,7 +1507,7 @@ func recordArchICB(
 			if freqs != nil {
 				pso = ropeFreqsPSO
 			}
-			emitRope(icbSink{c}, pso, in, out, 0, 0, offBuf, freqs, heads, rotDim, hdOf(li), scale, float32(log2base))
+			emitRope(fastICBSink{c}, pso, in, out, 0, 0, offBuf, freqs, heads, rotDim, hdOf(li), scale, float32(log2base))
 		}
 		// setQKNormRope records the fused per-head QK-norm + RoPE (out = RoPE(RMSNorm(in, w))) in ONE op:
 		// per-head rms then rotate, replacing setRMSRows+setRope. One threadgroup per head, hd threads.
@@ -1509,7 +1517,7 @@ func recordArchICB(
 		// ropeBaseB hold; the base form binds qkDummyPeriodsB at 9 (unread, useFreqs=0).
 		setQKNormRope := func(c metal.MTLIndirectComputeCommand, in metal.MTLBuffer, inOff uint, w metal.MTLBuffer, out metal.MTLBuffer, outOff uint, heads, li int) {
 			log2base, freqs, rd := ropeParamsOf(li)
-			emitQKNormRope(icbSink{c}, qkRopeICBPSO, in, w, out, inOff, 0, outOff, offBuf, freqs, qkDummyPeriodsB,
+			emitQKNormRope(fastICBSink{c}, qkRopeICBPSO, in, w, out, inOff, 0, outOff, offBuf, freqs, qkDummyPeriodsB,
 				heads, hdOf(li), rd, eps, scale, float32(log2base))
 		}
 		layerScalarFor := func(li int) metal.MTLBuffer {
@@ -1538,14 +1546,14 @@ func recordArchICB(
 		hasFinalOut := false
 		barrierOps := sc.barrierOps[:0] // op indices that carry a barrier-before — used by the fine-grained replay
 		emit := func() metal.MTLIndirectComputeCommand {
-			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
+			c := indirectComputeCommandAtIndexFast(icb, uint(opIdx))
 			if opIdx != 0 {
 				if fineGrainedReplay {
 					// record barrier-free; the replay enforces the dep with an encoder memory barrier
 					// (resource-scoped, may pipeline) instead of the coarse all-prior ICB SetBarrier.
 					barrierOps = append(barrierOps, opIdx)
 				} else if !allBarriersOffForTest { // allBarriersOff: TIMING-ONLY ceiling probe (output races/garbage)
-					c.SetBarrier()
+					setICBBarrier(c)
 				}
 			}
 			opIdx++
@@ -1559,7 +1567,7 @@ func recordArchICB(
 		// one of these (kNorm, kRope, valueNorm, SDPA, gelu) still barriers, so the only relaxed
 		// ordering is sibling-vs-sibling, which has no data hazard. Byte-parity-gated.
 		emitNB := func() metal.MTLIndirectComputeCommand {
-			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
+			c := indirectComputeCommandAtIndexFast(icb, uint(opIdx))
 			opIdx++
 			return c
 		}
@@ -1652,7 +1660,7 @@ func recordArchICB(
 			// gqaOf/sdpaStrideOf/sdpaScaleB hold. attendK read offset rebound/token if sliding.
 			hd, kv := hdOf(li), kvOf(li)
 			kvd := int64(kv * hd)
-			emitSDPA(icbSink{emit()}, sdpaPSOByHd[hd], qr, attendK, attendV, attn, 0, nBufForLayer,
+			emitSDPA(fastICBSink{emit()}, sdpaPSOByHd[hd], qr, attendK, attendV, attn, 0, nBufForLayer,
 				nHeads, kv, 0, int64(hd), kvd, int64(hd), kvd, scale)
 			sdpaIdx[li] = opIdx - 1
 			recordProj(li, emit(), attn, attnOut, 0, projO)
@@ -1683,11 +1691,11 @@ func recordArchICB(
 				setBin(emit(), addPSO, gate, x3s, inner, lff)
 				setBin(emit(), mulPSO, inner, c079, scaled, lff)
 				ct := emit()
-				ct.SetComputePipelineState(tanhPSO)
-				ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
-				ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-				ct.SetKernelBufferOffsetAtIndex(ffCntB, 0, 2)
-				ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
+				setICBPSO(ct, tanhPSO)
+				setICBKernelBuffer(ct, scaled, 0, 0)
+				setICBKernelBuffer(ct, tnh, 0, 1)
+				setICBKernelBuffer(ct, ffCntB, 0, 2)
+				concurrentDispatchThreads(ct, metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
 				setBin(emit(), addPSO, tnh, c1c, onePlus, lff)
 				setBin(emit(), mulPSO, gate, c05, halfG, lff)
 				setBin(emit(), mulPSO, halfG, onePlus, gelu, lff)
@@ -1722,11 +1730,11 @@ func recordArchICB(
 					setBin(emit(), addPSO, pleGate, x3s, inner, ple.pliDim)
 					setBin(emit(), mulPSO, inner, c079, scaled, ple.pliDim)
 					ct := emit()
-					ct.SetComputePipelineState(tanhPSO)
-					ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
-					ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-					ct.SetKernelBufferOffsetAtIndex(pleCntB, 0, 2)
-					ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
+					setICBPSO(ct, tanhPSO)
+					setICBKernelBuffer(ct, scaled, 0, 0)
+					setICBKernelBuffer(ct, tnh, 0, 1)
+					setICBKernelBuffer(ct, pleCntB, 0, 2)
+					concurrentDispatchThreads(ct, metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
 					setBin(emit(), addPSO, tnh, c1c, onePlus, ple.pliDim)
 					setBin(emit(), mulPSO, pleGate, c05, halfG, ple.pliDim)
 					setBin(emit(), mulPSO, halfG, onePlus, gelu, ple.pliDim)
@@ -1767,18 +1775,14 @@ func recordArchICB(
 		for i, bb := range resident {
 			residentRes[i] = bb
 		}
-		residentResIDs := make([]objc.ID, len(residentRes))
-		for i, bb := range residentRes {
-			if bb != nil {
-				residentResIDs[i] = bb.GetID()
-			}
-		}
+		sc.residentResIDs = resourceIDsForFastUse(sc.residentResIDs, residentRes)
+		residentResIDs := sc.residentResIDs
 		rng := foundation.NSRange{Location: 0, Length: uint(total)}
 
 		optCb := commandBufferFast(queue)
-		blit := optCb.BlitCommandEncoder()
-		blit.OptimizeIndirectCommandBufferWithRange(icb, rng)
-		blit.EndEncoding()
+		blit := blitCommandEncoderFast(optCb)
+		optimizeIndirectCommandBufferWithRangeFast(blit, icb, rng)
+		endBlitEncodingFast(blit)
 		commitCommandBufferFast(optCb)
 		waitUntilCompletedFast(optCb)
 

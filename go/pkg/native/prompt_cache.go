@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/metal"
 )
 
 // prompt_cache.go is native automatic prompt caching (12-14): the metal serve path reuses a warm KV
@@ -81,10 +82,32 @@ func (s *ArchSession) generateCached(promptIDs []int32, maxNew, eosID int, suppr
 	if lcp == len(promptIDs) {
 		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
 			logits := s.cachedPromptLogitsFor(promptIDs)
-			s.rememberRetainedHidden(hidden)
-			hidden = s.retainedHidden
 			s.pos = lcp // roll back over any generated tail; prompt K/V rows stay resident
+			if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+				return nil, err
+			}
 			gen, err := s.generateFromHiddenSuppressedEach(hidden, maxNew, eosID, logits, suppress, transform, yield)
+			if err != nil {
+				s.cachedIDs = nil
+				s.clearCachedPromptHidden()
+				return nil, err
+			}
+			resident := s.cachedIDs[:0]
+			resident = append(resident, promptIDs...)
+			resident = append(resident, gen...)
+			s.cachedIDs = resident
+			return gen, nil
+		}
+		if logits := s.cachedPromptLogitsFor(promptIDs); logits != nil {
+			s.pos = lcp // roll back over any generated tail; prompt K/V rows stay resident
+			if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+				return nil, err
+			}
+			var gen []int32
+			var err error
+			withAutoreleasePool(func() {
+				gen, err = s.generateFromLogitsInPool(logits, maxNew, eosID, suppress, transform, yield)
+			})
 			if err != nil {
 				s.cachedIDs = nil
 				s.clearCachedPromptHidden()
@@ -99,6 +122,9 @@ func (s *ArchSession) generateCached(promptIDs []int32, maxNew, eosID int, suppr
 		lcp = len(promptIDs) - 1
 	}
 	s.pos = lcp // roll the resident cache back to the shared prefix; its K/V rows are reused as-is
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return nil, err
+	}
 	gen, err := s.generateWithYield(promptIDs[lcp:], maxNew, eosID, promptIDs, suppress, transform, yield)
 	if err != nil {
 		s.cachedIDs = nil // a failed run leaves the cache in an unknown state; force a cold next call
@@ -131,12 +157,14 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 	}
 	if lcp == len(promptIDs) {
 		if logits := s.cachedPromptLogitsForSampledReplay(promptIDs, params); logits != nil {
-			s.rememberRetainedLogits(logits)
 			s.pos = lcp
+			if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+				return nil, err
+			}
 			var gen []int32
 			var err error
 			withAutoreleasePool(func() {
-				gen, err = s.generateSampledFromLogitsInPool(s.retainedLogits, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
+				gen, err = s.generateSampledFromLogitsInPool(logits, maxNew, stopTokens, sampler, params, transform, yield, cacheFinal)
 			})
 			if err != nil {
 				s.cachedIDs = nil
@@ -150,9 +178,10 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 			return gen, nil
 		}
 		if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
-			s.rememberRetainedHidden(hidden)
-			hidden = s.retainedHidden
 			s.pos = lcp
+			if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+				return nil, err
+			}
 			var gen []int32
 			var err error
 			withAutoreleasePool(func() {
@@ -172,6 +201,9 @@ func (s *ArchSession) generateCachedSampled(promptIDs []int32, maxNew int, stopT
 		lcp = len(promptIDs) - 1
 	}
 	s.pos = lcp
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return nil, err
+	}
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
@@ -215,6 +247,7 @@ func (s *ArchSession) ClearPromptCache() {
 		return
 	}
 	s.pos = 0
+	_ = s.state.truncateDevicePagedKV(s.pos)
 	s.cachedIDs = nil
 	s.clearCachedPromptHidden()
 	s.resetRetainedHidden()
@@ -230,6 +263,9 @@ func (s *ArchSession) WarmPromptCache(ids []int32) error {
 		return core.NewError("native.WarmPromptCache: empty prompt")
 	}
 	s.pos = 0
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return err
+	}
 	s.resetCachedPromptEntry()
 	s.resetRetainedHidden()
 	resident := s.cachedIDs[:0]
@@ -237,6 +273,7 @@ func (s *ArchSession) WarmPromptCache(ids []int32) error {
 	hidden, logits, err := s.prefillPromptCacheEntry(ids)
 	if err != nil {
 		s.pos = 0
+		_ = s.state.truncateDevicePagedKV(s.pos)
 		s.cachedIDs = resident[:0]
 		s.resetCachedPromptEntry()
 		s.resetRetainedHidden()
@@ -267,10 +304,14 @@ func (s *ArchSession) CompactCache(keep int) error {
 	}
 	kept := s.cachedIDs[len(s.cachedIDs)-keep:]
 	s.pos = 0
+	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		return err
+	}
 	s.clearCachedPromptHidden()
 	s.cachedIDs = nil
 	if err := s.prefillCachedIDs(kept); err != nil {
 		s.pos = 0
+		_ = s.state.truncateDevicePagedKV(s.pos)
 		s.resetRetainedHidden()
 		return err
 	}
@@ -536,6 +577,21 @@ func (s *ArchSession) stableCachedPromptHidden(hidden []byte) []byte {
 	if n == 0 {
 		return nil
 	}
+	if s.retainedHiddenPinned != nil &&
+		len(s.retainedHidden) == n &&
+		unsafe.Pointer(&hidden[0]) == unsafe.Pointer(&s.retainedHidden[0]) {
+		if s.cachedPromptHiddenPinned != nil && s.cachedPromptHiddenPinned != s.retainedHiddenPinned {
+			s.closeCachedPromptHiddenPinned()
+		}
+		s.cachedPromptHiddenPinned = s.retainedHiddenPinned
+		s.cachedPromptHidden = s.retainedHidden
+		return s.cachedPromptHidden
+	}
+	if pinned, ok := s.ensureCachedPromptHiddenPinned(n); ok {
+		copy(pinned.bytes, hidden)
+		s.cachedPromptHidden = pinned.bytes[:n]
+		return s.cachedPromptHidden
+	}
 	if cap(s.cachedPromptHidden) < n || sameByteBacking(s.cachedPromptHidden, s.retainedHidden) {
 		s.cachedPromptHidden = make([]byte, n)
 	} else {
@@ -549,6 +605,21 @@ func (s *ArchSession) stableCachedPromptLogits(logits []byte) []byte {
 	n := len(logits)
 	if n == 0 {
 		return nil
+	}
+	if s.retainedLogitsPinned != nil &&
+		len(s.retainedLogits) == n &&
+		unsafe.Pointer(&logits[0]) == unsafe.Pointer(&s.retainedLogits[0]) {
+		if s.cachedPromptLogitsPinned != nil && s.cachedPromptLogitsPinned != s.retainedLogitsPinned {
+			s.closeCachedPromptLogitsPinned()
+		}
+		s.cachedPromptLogitsPinned = s.retainedLogitsPinned
+		s.cachedPromptLogits = s.retainedLogits
+		return s.cachedPromptLogits
+	}
+	if pinned, ok := s.ensureCachedPromptLogitsPinned(n); ok {
+		copy(pinned.bytes, logits)
+		s.cachedPromptLogits = pinned.bytes[:n]
+		return s.cachedPromptLogits
 	}
 	if cap(s.cachedPromptLogits) < n || sameByteBacking(s.cachedPromptLogits, s.retainedLogits) {
 		s.cachedPromptLogits = make([]byte, n)
@@ -584,6 +655,8 @@ func (s *ArchSession) clearCachedPromptHidden() {
 	s.cachedPromptIDs = nil
 	s.cachedPromptHidden = nil
 	s.cachedPromptLogits = nil
+	s.closeCachedPromptHiddenPinned()
+	s.closeCachedPromptLogitsPinned()
 }
 
 func (s *ArchSession) resetCachedPromptEntry() {
@@ -593,6 +666,90 @@ func (s *ArchSession) resetCachedPromptEntry() {
 	s.cachedPromptIDs = s.cachedPromptIDs[:0]
 	s.cachedPromptHidden = s.cachedPromptHidden[:0]
 	s.cachedPromptLogits = s.cachedPromptLogits[:0]
+}
+
+func (s *ArchSession) ensureCachedPromptHiddenPinned(n int) (*pinnedNoCopyBytes, bool) {
+	if s == nil || n <= 0 {
+		return nil, false
+	}
+	if s.cachedPromptHiddenPinned != nil {
+		if len(s.cachedPromptHiddenPinned.bytes) == n && s.cachedPromptHiddenPinned.buf != nil {
+			return s.cachedPromptHiddenPinned, true
+		}
+		s.closeCachedPromptHiddenPinned()
+	}
+	pinned, err := newPinnedNoCopyBytes(n)
+	if err != nil {
+		return nil, false
+	}
+	s.cachedPromptHiddenPinned = pinned
+	return pinned, true
+}
+
+func (s *ArchSession) closeCachedPromptHiddenPinned() {
+	if s == nil || s.cachedPromptHiddenPinned == nil {
+		return
+	}
+	if s.cachedPromptHiddenPinned == s.retainedHiddenPinned {
+		s.cachedPromptHiddenPinned = nil
+		s.cachedPromptHidden = nil
+		return
+	}
+	s.cachedPromptHiddenPinned.Close()
+	s.cachedPromptHiddenPinned = nil
+	s.cachedPromptHidden = nil
+}
+
+func (s *ArchSession) cachedPromptHiddenBuffer() metal.MTLBuffer {
+	if s == nil || len(s.cachedPromptHidden) == 0 || s.cachedPromptHiddenPinned == nil || s.cachedPromptHiddenPinned.buf == nil || len(s.cachedPromptHiddenPinned.bytes) != len(s.cachedPromptHidden) {
+		return nil
+	}
+	if unsafe.Pointer(&s.cachedPromptHidden[0]) != unsafe.Pointer(&s.cachedPromptHiddenPinned.bytes[0]) {
+		return nil
+	}
+	return s.cachedPromptHiddenPinned.buf
+}
+
+func (s *ArchSession) ensureCachedPromptLogitsPinned(n int) (*pinnedNoCopyBytes, bool) {
+	if s == nil || n <= 0 {
+		return nil, false
+	}
+	if s.cachedPromptLogitsPinned != nil {
+		if len(s.cachedPromptLogitsPinned.bytes) == n && s.cachedPromptLogitsPinned.buf != nil {
+			return s.cachedPromptLogitsPinned, true
+		}
+		s.closeCachedPromptLogitsPinned()
+	}
+	pinned, err := newPinnedNoCopyBytes(n)
+	if err != nil {
+		return nil, false
+	}
+	s.cachedPromptLogitsPinned = pinned
+	return pinned, true
+}
+
+func (s *ArchSession) closeCachedPromptLogitsPinned() {
+	if s == nil || s.cachedPromptLogitsPinned == nil {
+		return
+	}
+	if s.cachedPromptLogitsPinned == s.retainedLogitsPinned {
+		s.cachedPromptLogitsPinned = nil
+		s.cachedPromptLogits = nil
+		return
+	}
+	s.cachedPromptLogitsPinned.Close()
+	s.cachedPromptLogitsPinned = nil
+	s.cachedPromptLogits = nil
+}
+
+func (s *ArchSession) cachedPromptLogitsBuffer() metal.MTLBuffer {
+	if s == nil || len(s.cachedPromptLogits) == 0 || s.cachedPromptLogitsPinned == nil || s.cachedPromptLogitsPinned.buf == nil || len(s.cachedPromptLogitsPinned.bytes) != len(s.cachedPromptLogits) {
+		return nil
+	}
+	if unsafe.Pointer(&s.cachedPromptLogits[0]) != unsafe.Pointer(&s.cachedPromptLogitsPinned.bytes[0]) {
+		return nil
+	}
+	return s.cachedPromptLogitsPinned.buf
 }
 
 func (s *ArchSession) cachedPromptHiddenFor(promptIDs []int32) []byte {

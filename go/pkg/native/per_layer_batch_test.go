@@ -128,6 +128,40 @@ func TestPerLayerProjBatchedScratchMatchesDefault(t *testing.T) {
 	}
 }
 
+func TestPerLayerProjBatchedScratchUsesCallerInputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	const numLayers, pliDim, dModel = 2, 8, 16
+	const eps = float32(1e-5)
+	plDim := numLayers * pliDim
+	projScale := float32(1 / math.Sqrt(float64(dModel)))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 1))
+	perLayer := toBF16Bytes(syntheticFloat32(plDim, 2))
+	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 3))
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 4))
+	scratch, err := newPLHostScratch(plDim, dModel, projScale)
+	if err != nil {
+		t.Fatalf("newPLHostScratch: %v", err)
+	}
+	defer scratch.Close()
+	hiddenSentinel := bytes.Repeat([]byte{0xa5}, len(scratch.hidden.bytes))
+	perLayerSentinel := bytes.Repeat([]byte{0x5a}, len(scratch.perLayer.bytes))
+	copy(scratch.hidden.bytes, hiddenSentinel)
+	copy(scratch.perLayer.bytes, perLayerSentinel)
+
+	got, err := perLayerProjBatched(bufView{buf: residentBytes(projW)}, hidden, perLayer, projScale, projNormW, plDim, numLayers, pliDim, dModel, eps, scratch)
+	if err != nil {
+		t.Fatalf("perLayerProjBatched scratch: %v", err)
+	}
+	want := perLayerProjUnbatchedRef(t, projW, hidden, perLayer, projScale, projNormW, numLayers, pliDim, dModel, eps)
+	eqBytes(t, "perLayerProjBatched scratch", got, want)
+	if !bytes.Equal(scratch.hidden.bytes, hiddenSentinel) {
+		t.Fatal("perLayerProjBatched copied hidden bytes into pooled scratch instead of using caller backing")
+	}
+	if !bytes.Equal(scratch.perLayer.bytes, perLayerSentinel) {
+		t.Fatal("perLayerProjBatched copied per-layer bytes into pooled scratch instead of using caller backing")
+	}
+}
+
 func TestPerLayerProjBatchedScratchReusesOutputBacking(t *testing.T) {
 	requireNativeRuntime(t)
 	const numLayers, pliDim, dModel = 2, 8, 16
@@ -327,6 +361,42 @@ func TestPLHostScratchKeepsScalarBuffersResident(t *testing.T) {
 	}
 	if first.combineScaleBuf.GetID() != second.combineScaleBuf.GetID() {
 		t.Fatalf("combine scale buffer was not resident: first=%d second=%d", first.combineScaleBuf.GetID(), second.combineScaleBuf.GetID())
+	}
+}
+
+func TestPLHostScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	smallScale := float32(1 / math.Sqrt(float64(16)))
+	small, err := getPLHostScratch(16, 16, smallScale)
+	if err != nil {
+		t.Fatalf("get small PL host scratch: %v", err)
+	}
+	putPLHostScratch(small)
+	largeScale := float32(1 / math.Sqrt(float64(32)))
+	large, err := getPLHostScratch(32, 32, largeScale)
+	if err != nil {
+		t.Fatalf("get large PL host scratch: %v", err)
+	}
+	putPLHostScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getPLHostScratch(16, 16, smallScale)
+	if err != nil {
+		t.Fatalf("get small PL host scratch again: %v", err)
+	}
+	defer putPLHostScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("PL host scratch pool evicted the small dimension after using a larger dimension")
+	}
+	gotLarge, err := getPLHostScratch(32, 32, largeScale)
+	if err != nil {
+		t.Fatalf("get large PL host scratch again: %v", err)
+	}
+	defer putPLHostScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("PL host scratch pool evicted the large dimension after reusing the small dimension")
 	}
 }
 

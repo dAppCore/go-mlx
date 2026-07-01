@@ -550,6 +550,66 @@ func TestKVSnapshotStateBlocks_Good_SaveNativeLayerSingleHeadRawOnly(t *testing.
 	}
 }
 
+func TestKVSnapshotStateBlocks_Good_SaveNativeLayerTokenMajorRawOnly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	keyBytes := []byte{
+		1, 0, 2, 0,
+		3, 0, 4, 0,
+		5, 0, 6, 0,
+		7, 0, 8, 0,
+	}
+	valueBytes := []byte{
+		11, 0, 12, 0,
+		13, 0, 14, 0,
+		15, 0, 16, 0,
+		17, 0, 18, 0,
+	}
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2, 3, 4},
+		TokenOffset:   4,
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        4,
+		HeadDim:       1,
+		NumQueryHeads: 2,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "bfloat16",
+			KeyBytes:   keyBytes,
+			KeyShape:   []int32{4, 2, 1},
+			ValueDType: "bfloat16",
+			ValueBytes: valueBytes,
+			ValueShape: []int32{4, 2, 1},
+			Heads:      make([]HeadSnapshot, 2),
+		}},
+	}
+
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingNative,
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(native token-major layer raw-only) error = %v", err)
+	}
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadFromStateBlocksWithOptions(native token-major layer raw-only) error = %v", err)
+	}
+	layer := loaded.Layers[0]
+	if !equalBytes(layer.KeyBytes, keyBytes) || !equalBytes(layer.ValueBytes, valueBytes) {
+		t.Fatalf("assembled token-major layer bytes = %v/%v, want original slabs", layer.KeyBytes, layer.ValueBytes)
+	}
+	if len(layer.KeyShape) != 3 || layer.KeyShape[0] != 4 || layer.KeyShape[1] != 2 || layer.KeyShape[2] != 1 {
+		t.Fatalf("assembled token-major key shape = %v, want [4 2 1]", layer.KeyShape)
+	}
+	if len(layer.Heads) != 2 || len(layer.Heads[0].KeyBytes) != 0 {
+		t.Fatalf("assembled token-major heads = %+v, want no duplicated per-head bytes", layer.Heads)
+	}
+}
+
 func TestKVSnapshotStateBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) {
 	ctx := context.Background()
 	path := core.PathJoin(t.TempDir(), "kv-blocks.mvlog")

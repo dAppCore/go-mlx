@@ -1059,7 +1059,7 @@ func TestModel_FormatChatChunks_GemmaMatchesFormattedPrompt_Good(t *testing.T) {
 func TestModel_ChatConfig_AssemblesFromModelAndRequest_Good(t *testing.T) {
 	// formatChat's metal-side responsibility is to build chat.Config from the
 	// model and the request; the gemma4 byte-output is gemma4chat's job (tested
-	// in pkg/metal/model/gemma4/chat). Verifying the assembly here keeps the
+	// in pkg/model/gemma4/chat). Verifying the assembly here keeps the
 	// engine free of any family formatter while still pinning the plumbing.
 	model := &Model{modelType: "gemma4_text"}
 

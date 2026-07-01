@@ -252,7 +252,36 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 		return nil
 	}
 	dtype, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
-	if dtype == "" || bytesPerValue <= 0 || len(shape) != 4 {
+	if dtype == "" || bytesPerValue <= 0 {
+		return errUnsupportedLayerRawTensor
+	}
+	if len(shape) == 3 {
+		L, H, D := int(shape[0]), int(shape[1]), int(shape[2])
+		if L <= 0 || H <= 0 || D <= 0 || len(raw) != L*H*D*bytesPerValue {
+			return errLayerRawTensorShape
+		}
+		if *dstDType == "" {
+			*dstDType = dtype
+		} else if *dstDType != dtype {
+			return errLayerRawDtypeMismatch
+		}
+		if len(*dstBytes) == 0 {
+			*dstBytes = append((*dstBytes)[:0], raw...)
+			*dstShape = core.SliceClone(shape)
+			return nil
+		}
+		if len(*dstShape) != 3 || int((*dstShape)[1]) != H || int((*dstShape)[2]) != D {
+			return errLayerRawTensorShape
+		}
+		oldLen := int((*dstShape)[0])
+		if oldLen <= 0 || len(*dstBytes) != oldLen*H*D*bytesPerValue {
+			return errLayerRawByteLenMismatch
+		}
+		*dstBytes = append(*dstBytes, raw...)
+		(*dstShape)[0] = int32(oldLen + L)
+		return nil
+	}
+	if len(shape) != 4 {
 		return errUnsupportedLayerRawTensor
 	}
 	B, H, L, D := int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])

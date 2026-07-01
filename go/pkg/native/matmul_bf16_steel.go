@@ -25,19 +25,29 @@ import (
 var bf16SteelNT = steelTiling{64, 32, 32, 2, 2, "steel_gemm_fused_nt_bfloat16_bfloat16_bm64_bn32_bk32_wm2_wn2"}
 
 var (
-	matMulBF16SteelScratchPool   sync.Pool
+	matMulBF16SteelScratchPools  sync.Map
 	errMatMulBF16SteelScratchDim = core.NewError("native.matMulBF16SteelScratch: dimension mismatch")
 )
 
 type matMulBF16SteelScratch struct {
 	M, K, N       int
 	a, out        *pinnedNoCopyBytes
+	aView         cachedNoCopyBytesView
 	params        *pinnedNoCopyBytes
 	paramsFilled  bool
 	outViewPtr    uintptr
 	outViewLen    int
 	outView       metal.MTLBuffer
 	outViewPinned *pinnedNoCopyBytes
+}
+
+type matMulBF16SteelScratchKey struct {
+	M, K, N int
+}
+
+type matMulBF16SteelScratchPool struct {
+	mu    sync.Mutex
+	items []*matMulBF16SteelScratch
 }
 
 func newMatMulBF16SteelScratch(M, K, N int) (*matMulBF16SteelScratch, error) {
@@ -62,9 +72,43 @@ func newMatMulBF16SteelScratch(M, K, N int) (*matMulBF16SteelScratch, error) {
 	return &matMulBF16SteelScratch{M: M, K: K, N: N, a: a, out: out, params: params}, nil
 }
 
+func matMulBF16SteelScratchPoolFor(M, K, N int) *matMulBF16SteelScratchPool {
+	key := matMulBF16SteelScratchKey{M: M, K: K, N: N}
+	if v, ok := matMulBF16SteelScratchPools.Load(key); ok {
+		return v.(*matMulBF16SteelScratchPool)
+	}
+	pool := &matMulBF16SteelScratchPool{}
+	if v, loaded := matMulBF16SteelScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*matMulBF16SteelScratchPool)
+	}
+	return pool
+}
+
+func (p *matMulBF16SteelScratchPool) Get() *matMulBF16SteelScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *matMulBF16SteelScratchPool) Put(s *matMulBF16SteelScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
+}
+
 func getMatMulBF16SteelScratch(M, K, N int) (*matMulBF16SteelScratch, error) {
-	if v := matMulBF16SteelScratchPool.Get(); v != nil {
-		s := v.(*matMulBF16SteelScratch)
+	pool := matMulBF16SteelScratchPoolFor(M, K, N)
+	if s := pool.Get(); s != nil {
 		if s.M == M && s.K == K && s.N == N && s.a != nil && s.out != nil && s.params != nil {
 			return s, nil
 		}
@@ -74,8 +118,8 @@ func getMatMulBF16SteelScratch(M, K, N int) (*matMulBF16SteelScratch, error) {
 }
 
 func putMatMulBF16SteelScratch(s *matMulBF16SteelScratch) {
-	if s != nil {
-		matMulBF16SteelScratchPool.Put(s)
+	if s != nil && s.M > 0 && s.K > 0 && s.N > 0 && s.a != nil && s.out != nil && s.params != nil {
+		matMulBF16SteelScratchPoolFor(s.M, s.K, s.N).Put(s)
 	}
 }
 
@@ -95,6 +139,7 @@ func (s *matMulBF16SteelScratch) Close() {
 		s.params.Close()
 		s.params = nil
 	}
+	s.aView.Close()
 	s.closeOutputView()
 	s.M, s.K, s.N = 0, 0, 0
 	s.paramsFilled = false
@@ -122,6 +167,13 @@ func (s *matMulBF16SteelScratch) outputView(out []byte) (metal.MTLBuffer, bool) 
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -145,9 +197,13 @@ func (s *matMulBF16SteelScratch) buffers(a []byte, t steelTiling) (metal.MTLBuff
 	if len(a) != s.M*s.K*bf16Size || len(s.out.bytes) != s.M*s.N*bf16Size || len(s.params.bytes) != 72 {
 		return nil, nil, nil, errMatMulBF16SteelScratchDim
 	}
-	aBuf, err := s.a.copyBuffer(a)
-	if err != nil {
-		return nil, nil, nil, err
+	aBuf, ok := s.aView.buffer(a)
+	if !ok {
+		var err error
+		aBuf, err = s.a.copyBuffer(a)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	if !s.paramsFilled {
 		tn, tm := (s.N+t.bn-1)/t.bn, (s.M+t.bm-1)/t.bm

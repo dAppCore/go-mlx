@@ -14,12 +14,16 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/decode"
+	"dappco.re/go/inference/scheduler"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
+	_ "dappco.re/go/mlx/pkg/model/gemma4/chat"
 	// Register the native model loaders the reactive LoadTokenModelDir dispatches to — the deleted
 	// per-arch loaders used to pull these in transitively; the serve layer now imports them explicitly
 	// (pkg/native itself stays arch-free).
-	_ "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model/gemma4"
 	_ "dappco.re/go/mlx/pkg/model/mistral"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
@@ -39,16 +43,27 @@ import (
 // model sampler loop. Close is a no-op: the resident weights live for the process
 // (a single served model), matching the load-once serve shape.
 type nativeTextModel struct {
-	tm        model.TokenModel
-	tok       *tokenizer.Tokenizer
-	modelType string
-	info      inference.ModelInfo
-	maxLen    int
+	tm            model.TokenModel
+	tok           *tokenizer.Tokenizer
+	modelType     string
+	modelPath     string
+	info          inference.ModelInfo
+	maxLen        int
+	adapter       inference.AdapterIdentity
+	adapterPack   string
+	imageFeatures *native.VisionImageFeatureConfig
+	audioFeatures *native.AudioFeatureExtractor
+	visionCache   *nativeVisionFeatureCache
 
 	mu          sync.Mutex
 	lastErr     error
 	lastMetrics inference.GenerateMetrics
 	cacheSess   nativeTextPromptCacheSession
+	cacheBlocks []inference.CacheBlockRef
+
+	schedulerMu sync.Mutex
+	scheduler   *scheduler.Model
+	probeSink   inference.ProbeSink
 }
 
 var _ inference.TextModel = (*nativeTextModel)(nil)
@@ -62,6 +77,10 @@ type nativeTextPromptCacheSession interface {
 
 type nativeTextPromptCacheSizer interface {
 	CachedPrefixLen() int
+}
+
+type nativeTextPromptCacheExactSizer interface {
+	CachedPrefixLen([]int32) int
 }
 
 type nativeTextGreedyStreamSession interface {
@@ -88,6 +107,57 @@ type nativeTextSampledOneShotStreamSession interface {
 	GenerateSampledOneShotEach([]int32, int, []int32, *model.Sampler, model.SampleParams, model.TokenTransform, func(int32) bool) ([]int32, error)
 }
 
+type nativeTextMTPDecodeFunc func(target, draft model.DecodeStepper, prompt []int32, maxNew, eos, k int, yield func(int32) bool) (*native.MTPResult, bool, error)
+
+type nativeTextMTPSampledDecodeFunc func(target, draft model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, targetSampler, draftSampler *model.Sampler, params model.SampleParams, k int, yield func(int32) bool) (*native.MTPResult, bool, error)
+
+type nativeTextGemma4AssistantDecodeFunc func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error)
+
+type nativeTextGemma4AssistantSampledDecodeFunc func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error)
+
+var (
+	nativeTextMTPDecode nativeTextMTPDecodeFunc = func(target, draft model.DecodeStepper, prompt []int32, maxNew, eos, k int, yield func(int32) bool) (*native.MTPResult, bool, error) {
+		targetArch, ok := target.(*native.ArchSession)
+		if !ok {
+			return nil, false, nil
+		}
+		draftArch, ok := draft.(*native.ArchSession)
+		if !ok {
+			return nil, false, nil
+		}
+		res, err := native.MTPDecodeEach(targetArch, draftArch, prompt, maxNew, eos, k, yield)
+		return res, true, err
+	}
+	nativeTextMTPSampledDecode nativeTextMTPSampledDecodeFunc = func(target, draft model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, targetSampler, draftSampler *model.Sampler, params model.SampleParams, k int, yield func(int32) bool) (*native.MTPResult, bool, error) {
+		targetArch, ok := target.(*native.ArchSession)
+		if !ok {
+			return nil, false, nil
+		}
+		draftArch, ok := draft.(*native.ArchSession)
+		if !ok {
+			return nil, false, nil
+		}
+		res, err := native.MTPDecodeSampledEach(targetArch, draftArch, prompt, maxNew, stopTokens, targetSampler, draftSampler, params, k, yield)
+		return res, true, err
+	}
+	nativeTextGemma4AssistantDecode nativeTextGemma4AssistantDecodeFunc = func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+		targetArch, ok := target.(*native.ArchSession)
+		if !ok {
+			return native.Gemma4AssistantGenerateResult{}, false, nil
+		}
+		res, err := pair.GenerateFromSessionEach(targetArch, prompt, maxNew, eos, draftTokens, suppress, yield)
+		return res, true, err
+	}
+	nativeTextGemma4AssistantSampledDecode nativeTextGemma4AssistantSampledDecodeFunc = func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+		targetArch, ok := target.(*native.ArchSession)
+		if !ok {
+			return native.Gemma4AssistantGenerateResult{}, false, nil
+		}
+		res, err := pair.GenerateSampledFromSessionEach(targetArch, prompt, maxNew, stopTokens, sampler, params, draftTokens, yield)
+		return res, true, err
+	}
+)
+
 type nativeTextPromptCacheGreedyStreamSession interface {
 	GenerateCachedEach([]int32, int, int, func(int32) bool) ([]int32, error)
 }
@@ -110,9 +180,11 @@ type nativeTextPromptCacheSampledStreamSession interface {
 
 type nativeTextRootSession interface {
 	PrefillTokens([]int32) error
+	PrefillTokenEmbeddings([]int32, [][]byte) error
 	AppendTokens([]int32) error
 	BoundaryLogits() ([]byte, error)
 	GenerateFromCacheEach(int, int, func(int32) bool) ([]int32, error)
+	GenerateFromCacheEachWithSuppressionAndTransform(int, int, []int32, native.TokenTransform, func(int32) bool) ([]int32, error)
 	GenerateSampledFromCacheEach(int, []int32, *model.Sampler, model.SampleParams, model.TokenTransform, func(int32) bool) ([]int32, error)
 	StateBlockSource(int) (native.SessionStateBlockSource, error)
 	StateBlockSourceFrom(int, int) (native.SessionStateBlockSource, error)
@@ -122,17 +194,32 @@ type nativeTextRootSession interface {
 }
 
 type nativeTextSession struct {
-	mu        sync.Mutex
-	model     *nativeTextModel
-	sess      nativeTextRootSession
-	tokens    []int32
-	generated []int32
-	logits    []byte
-	err       error
-	closed    bool
+	mu              sync.Mutex
+	model           *nativeTextModel
+	sess            nativeTextRootSession
+	tokens          []int32
+	generated       []int32
+	logits          []byte
+	err             error
+	prefillDuration time.Duration
+	closed          bool
 }
 
 var _ metal.SessionHandle = (*nativeTextSession)(nil)
+
+type nativeTextImageChatModel interface {
+	AcceptsImageInput() bool
+	ImagePlaceholderBlock(int) string
+	ImagePlaceholderTokenID() int32
+	ProjectImageFeatures([]byte) ([]byte, error)
+}
+
+type nativeTextAudioChatModel interface {
+	AcceptsAudioInput() bool
+	AudioPlaceholderBlock(int) string
+	AudioPlaceholderTokenID() int32
+	ProjectAudioFeatures([]byte, int, int) ([]byte, error)
+}
 
 // LoadNativeTextModel loads a gemma4 checkpoint directory as an inference.TextModel
 // served entirely without cgo: the no-cgo native contract stack
@@ -154,10 +241,41 @@ func LoadNativeTextModel(modelPath string, opts ...LoadOption) (inference.TextMo
 	if err != nil {
 		return nil, core.E("mlx.LoadNativeTextModel", "load tokenizer", err)
 	}
+	imageFeatures, err := loadNativeImageFeatureConfig(modelPath)
+	if err != nil {
+		return nil, core.E("mlx.LoadNativeTextModel", "load image processor", err)
+	}
+	audioFeatures, err := loadNativeAudioFeatureExtractor(modelPath)
+	if err != nil {
+		return nil, core.E("mlx.LoadNativeTextModel", "load audio processor", err)
+	}
 	return &nativeTextModel{
-		tm: tm, tok: tok, maxLen: maxLen, modelType: "gemma4",
+		tm: tm, tok: tok, maxLen: maxLen, modelType: "gemma4", modelPath: modelPath, imageFeatures: imageFeatures, audioFeatures: audioFeatures,
 		info: inference.ModelInfo{Architecture: "gemma4", VocabSize: tm.Vocab()},
 	}, nil
+}
+
+func loadNativeImageFeatureConfig(modelPath string) (*native.VisionImageFeatureConfig, error) {
+	imageCfg, _, err := gemma4.LoadGemma4ImageFeatureConfigs(modelPath)
+	if err != nil || imageCfg == nil {
+		return nil, err
+	}
+	return &native.VisionImageFeatureConfig{
+		PatchSize:         imageCfg.PatchSize,
+		MaxSoftTokens:     imageCfg.MaxSoftTokens,
+		PoolingKernelSize: imageCfg.PoolingKernelSize,
+		RescaleFactor:     imageCfg.RescaleFactor,
+		DoResize:          imageCfg.DoResize,
+		DoConvertRGB:      imageCfg.DoConvertRGB,
+	}, nil
+}
+
+func loadNativeAudioFeatureExtractor(modelPath string) (*native.AudioFeatureExtractor, error) {
+	audioCfg, err := native.LoadAudioFeatureConfig(modelPath)
+	if err != nil || audioCfg == nil {
+		return nil, err
+	}
+	return native.NewAudioFeatureExtractor(audioCfg)
 }
 
 // Generate streams tokens for a raw prompt (no chat template — Chat applies that).
@@ -168,7 +286,283 @@ func (m *nativeTextModel) Generate(ctx context.Context, prompt string, opts ...i
 // Chat streams tokens from a multi-turn conversation rendered with the gemma turn
 // template (user/model turns, a trailing model turn to complete).
 func (m *nativeTextModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	return m.stream(ctx, m.tok.Encode(formatGemmaChat(messages)), inference.ApplyGenerateOpts(opts))
+	cfg := inference.ApplyGenerateOpts(opts)
+	if inferenceMessagesCarryImages(messages) {
+		return m.chatVision(ctx, messages, cfg)
+	}
+	return m.stream(ctx, m.tok.Encode(m.formatChat(messages, cfg)), cfg)
+}
+
+func (m *nativeTextModel) ApplyChatTemplate(messages []inference.Message) (string, error) {
+	if m == nil {
+		return "", errMLXModelNil
+	}
+	return m.formatChat(messages, inference.GenerateConfig{}), nil
+}
+
+func (m *nativeTextModel) Encode(text string) []int32 {
+	if m == nil || m.tok == nil {
+		return nil
+	}
+	return m.tok.Encode(text)
+}
+
+func (m *nativeTextModel) Decode(ids []int32) string {
+	if m == nil || m.tok == nil {
+		return ""
+	}
+	return m.tok.Decode(ids)
+}
+
+func (m *nativeTextModel) AcceptsImages() bool {
+	_, ok := m.imageChatModel()
+	return ok && m.imageFeatures != nil
+}
+
+func (m *nativeTextModel) AcceptsAudioInput() bool {
+	_, ok := m.audioChatModel()
+	return ok && m.audioFeatures != nil
+}
+
+func (m *nativeTextModel) errorStream(err error) iter.Seq[inference.Token] {
+	return func(func(inference.Token) bool) {
+		m.setErr(err)
+	}
+}
+
+func (m *nativeTextModel) chatVision(ctx context.Context, messages []inference.Message, cfg inference.GenerateConfig) iter.Seq[inference.Token] {
+	return func(yield func(inference.Token) bool) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := ctx.Err(); err != nil {
+			m.setErr(err)
+			return
+		}
+		if m == nil || m.tok == nil || m.tm == nil {
+			m.setErr(core.NewError("mlx.nativeTextModel.Chat: model is not initialised"))
+			return
+		}
+		imageModel, ok := m.imageChatModel()
+		if !ok {
+			m.setErr(core.NewError("mlx.nativeTextModel.Chat: model does not accept image input"))
+			return
+		}
+		if m.imageFeatures == nil {
+			m.setErr(core.NewError("mlx.nativeTextModel.Chat: image feature config is nil"))
+			return
+		}
+		start := time.Now()
+		spliced := make([]inference.Message, len(messages))
+		var features [][]byte
+		totalSoftTokens := 0
+		cache := m.nativeVisionFeatureCacheLazy()
+		for i, msg := range messages {
+			spliced[i] = inference.Message{Role: msg.Role, Content: msg.Content}
+			if len(msg.Images) == 0 {
+				continue
+			}
+			var blocks core.Builder
+			for _, data := range msg.Images {
+				if len(data) == 0 {
+					continue
+				}
+				key := nativeVisionFeatureCacheKey(data)
+				projected, softTokens, ok := cache.get(key)
+				if !ok {
+					patches, st, err := native.VisionImagePatches(data, m.imageFeatures)
+					if err != nil {
+						m.setErr(core.E("mlx.nativeTextModel.Chat", "encode image", err))
+						return
+					}
+					projected, err = imageModel.ProjectImageFeatures(patches)
+					if err != nil {
+						m.setErr(core.E("mlx.nativeTextModel.Chat", "project image features", err))
+						return
+					}
+					softTokens = st
+					cache.put(key, projected, softTokens)
+				}
+				features = append(features, projected)
+				totalSoftTokens += softTokens
+				blocks.WriteString(imageModel.ImagePlaceholderBlock(softTokens))
+				blocks.WriteString("\n")
+			}
+			spliced[i].Content = blocks.String() + msg.Content
+		}
+		if totalSoftTokens == 0 {
+			m.setErr(core.NewError("mlx.nativeTextModel.Chat: image chat carried no decodable images"))
+			return
+		}
+		ids := m.tok.Encode(m.formatChat(spliced, cfg))
+		placeholderID := imageModel.ImagePlaceholderTokenID()
+		placeholders := 0
+		for _, id := range ids {
+			if id == placeholderID {
+				placeholders++
+			}
+		}
+		if placeholders != totalSoftTokens {
+			m.setErr(core.NewError(core.Sprintf(
+				"mlx.nativeTextModel.Chat: tokenizer produced %d image placeholders, want %d",
+				placeholders, totalSoftTokens)))
+			return
+		}
+		embeddings, err := m.nativeImagePromptEmbeddings(ids, placeholderID, features)
+		if err != nil {
+			m.setErr(err)
+			return
+		}
+		sess, err := m.openNativeRootSession()
+		if err != nil {
+			m.setErr(err)
+			return
+		}
+		defer func() { _ = sess.Close() }()
+		if err := sess.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+			m.setErr(err)
+			return
+		}
+		prefill := time.Since(start)
+		decodeStart := time.Now()
+		maxNew := cfg.MaxTokens
+		if maxNew <= 0 || len(ids)+maxNew > m.maxLen {
+			maxNew = m.maxLen - len(ids)
+		}
+		if maxNew <= 0 {
+			m.setErr(core.NewError("mlx.nativeTextModel.Chat: prompt fills the context window, no room to generate"))
+			return
+		}
+		stopTokens := m.stopTokens(cfg)
+		eos := singleStopToken(stopTokens)
+		emit := func(id int32) bool {
+			if err := ctx.Err(); err != nil {
+				return false
+			}
+			if yield != nil && !yield(inference.Token{ID: id, Text: m.tok.DecodeToken(id)}) {
+				return false
+			}
+			return !tokenInSet(id, stopTokens)
+		}
+		var out []int32
+		sampled := cfg.Temperature > 0 || cfg.MinP > 0 || cfg.RepeatPenalty > 1
+		minStopActive := cfg.MinTokensBeforeStop > 0 && len(stopTokens) > 0
+		switch {
+		case sampled:
+			params := model.SampleParams{
+				Temperature:         cfg.Temperature,
+				TopK:                cfg.TopK,
+				TopP:                cfg.TopP,
+				MinP:                cfg.MinP,
+				SuppressTokens:      cfg.SuppressTokens,
+				MinTokensBeforeStop: cfg.MinTokensBeforeStop,
+				RepeatPenalty:       cfg.RepeatPenalty,
+			}
+			out, err = sess.GenerateSampledFromCacheEach(maxNew, stopTokens, model.NewSampler(nativeSamplerSeed(cfg)), params, nil, emit)
+		case minStopActive:
+			prefix := cfg.MinTokensBeforeStop
+			if prefix > maxNew {
+				prefix = maxNew
+			}
+			prefixSuppress := nativeTextMergeSuppressTokens(cfg.SuppressTokens, stopTokens)
+			out, err = sess.GenerateFromCacheEachWithSuppressionAndTransform(prefix, eos, prefixSuppress, nil, emit)
+			if err == nil && len(out) == prefix && len(out) < maxNew {
+				var more []int32
+				if len(cfg.SuppressTokens) > 0 {
+					more, err = sess.GenerateFromCacheEachWithSuppressionAndTransform(maxNew-len(out), eos, cfg.SuppressTokens, nil, emit)
+				} else {
+					more, err = sess.GenerateFromCacheEach(maxNew-len(out), eos, emit)
+				}
+				out = append(out, more...)
+			}
+		case len(cfg.SuppressTokens) > 0:
+			out, err = sess.GenerateFromCacheEachWithSuppressionAndTransform(maxNew, eos, cfg.SuppressTokens, nil, emit)
+		default:
+			out, err = sess.GenerateFromCacheEach(maxNew, eos, emit)
+		}
+		if err != nil {
+			m.setErr(err)
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			m.setErr(err)
+			return
+		}
+		m.setSessionMetrics(len(ids), len(out), prefill, time.Since(decodeStart))
+	}
+}
+
+func (m *nativeTextModel) nativeImagePromptEmbeddings(ids []int32, placeholderID int32, features [][]byte) ([][]byte, error) {
+	return m.nativeModalityPromptEmbeddings(ids, placeholderID, features, "image")
+}
+
+func (m *nativeTextModel) nativeAudioPromptEmbeddings(ids []int32, placeholderID int32, features [][]byte) ([][]byte, error) {
+	return m.nativeModalityPromptEmbeddings(ids, placeholderID, features, "audio")
+}
+
+func (m *nativeTextModel) nativeModalityPromptEmbeddings(ids []int32, placeholderID int32, features [][]byte, label string) ([][]byte, error) {
+	embeddings := make([][]byte, len(ids))
+	featureIdx, featureOff, used := 0, 0, 0
+	for i, id := range ids {
+		emb, err := m.tm.Embed(id)
+		if err != nil {
+			return nil, err
+		}
+		if id != placeholderID {
+			embeddings[i] = append([]byte(nil), emb...)
+			continue
+		}
+		rowBytes := len(emb)
+		if rowBytes == 0 {
+			return nil, core.NewError("mlx.nativeTextModel.Chat: token embedding is empty")
+		}
+		for featureIdx < len(features) && featureOff >= len(features[featureIdx]) {
+			featureIdx++
+			featureOff = 0
+		}
+		if featureIdx >= len(features) || featureOff+rowBytes > len(features[featureIdx]) {
+			return nil, core.NewError("mlx.nativeTextModel.Chat: " + label + " feature rows do not match placeholder embeddings")
+		}
+		embeddings[i] = append([]byte(nil), features[featureIdx][featureOff:featureOff+rowBytes]...)
+		featureOff += rowBytes
+		used++
+	}
+	if used == 0 {
+		return nil, core.NewError("mlx.nativeTextModel.Chat: no " + label + " placeholders found")
+	}
+	for featureIdx < len(features) {
+		if featureOff < len(features[featureIdx]) {
+			return nil, core.NewError("mlx.nativeTextModel.Chat: unused " + label + " feature rows")
+		}
+		featureIdx++
+		featureOff = 0
+	}
+	return embeddings, nil
+}
+
+func (m *nativeTextModel) nativeVisionFeatureCacheLazy() *nativeVisionFeatureCache {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.visionCache == nil {
+		m.visionCache = newNativeVisionFeatureCache(0)
+	}
+	return m.visionCache
+}
+
+func (m *nativeTextModel) imageChatModel() (nativeTextImageChatModel, bool) {
+	if m == nil || m.tm == nil {
+		return nil, false
+	}
+	imageModel, ok := m.tm.(nativeTextImageChatModel)
+	return imageModel, ok && imageModel.AcceptsImageInput()
+}
+
+func (m *nativeTextModel) audioChatModel() (nativeTextAudioChatModel, bool) {
+	if m == nil || m.tm == nil {
+		return nil, false
+	}
+	audioModel, ok := m.tm.(nativeTextAudioChatModel)
+	return audioModel, ok && audioModel.AcceptsAudioInput()
 }
 
 // GenerateChunks streams tokens for a prompt supplied as bounded text chunks.
@@ -196,7 +590,39 @@ func (m *nativeTextModel) GenerateChunks(ctx context.Context, chunks iter.Seq[st
 // ChatChunks formats a chat prompt and feeds it through the chunked native
 // generation path, preserving the same concatenated prompt as Chat.
 func (m *nativeTextModel) ChatChunks(ctx context.Context, messages []inference.Message, chunkBytes int, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	return m.GenerateChunks(ctx, nativeGemmaChatChunks(messages, chunkBytes), opts...)
+	cfg := inference.ApplyGenerateOpts(opts)
+	return m.GenerateChunks(ctx, nativeTextPromptChunks(m.formatChat(messages, cfg), chunkBytes), opts...)
+}
+
+func (m *nativeTextModel) formatChat(messages []inference.Message, cfg inference.GenerateConfig) string {
+	return chat.Format(messages, m.chatConfig(cfg))
+}
+
+func (m *nativeTextModel) chatConfig(cfg inference.GenerateConfig) chat.Config {
+	info := m.Info()
+	architecture := info.Architecture
+	if architecture == "" {
+		architecture = m.modelType
+	}
+	if architecture == "" {
+		architecture = "gemma4"
+	}
+	numHeads := 0
+	if m != nil && m.tm != nil {
+		if reporter, ok := m.tm.(interface{ NumQueryHeads() int }); ok {
+			numHeads = reporter.NumQueryHeads()
+		}
+	}
+	out := chat.ConfigForArchitecture(architecture, numHeads)
+	if cfg.EnableThinking != nil {
+		out.EnableThinking = *cfg.EnableThinking
+	}
+	if m != nil && m.tm != nil {
+		if suppressor, ok := m.tm.(interface{ NeedsThoughtChannelSuppressor() bool }); ok {
+			out.LargeVariant = suppressor.NeedsThoughtChannelSuppressor()
+		}
+	}
+	return out
 }
 
 // formatGemmaChat renders messages in the gemma turn format. gemma has no system
@@ -215,7 +641,10 @@ func formatGemmaChat(messages []inference.Message) string {
 }
 
 func nativeGemmaChatChunks(messages []inference.Message, chunkBytes int) iter.Seq[string] {
-	prompt := formatGemmaChat(messages)
+	return nativeTextPromptChunks(formatGemmaChat(messages), chunkBytes)
+}
+
+func nativeTextPromptChunks(prompt string, chunkBytes int) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if chunkBytes <= 0 {
 			yield(prompt)
@@ -273,12 +702,20 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 			streamed bool
 		)
 		repeatPenaltyActive := cfg.RepeatPenalty > 1
-		minStopActive := cfg.MinTokensBeforeStop > 0
-		if cfg.Temperature <= 0 && !repeatPenaltyActive && !minStopActive {
+		minStopActive := cfg.MinTokensBeforeStop > 0 && len(stopTokens) > 0
+		sampled := cfg.Temperature > 0 || repeatPenaltyActive
+		if !sampled {
 			m.mu.Lock()
 			cacheSess := m.cacheSess
 			if cacheSess != nil {
-				if needsSuppress || nativeTransform != nil {
+				if minStopActive {
+					if streamSess, ok := cacheSess.(nativeTextPromptCacheGreedySuppressTransformStreamSession); ok {
+						streamed = true
+						out, err = nativeTextGenerateCachedGreedyMinStop(streamSess, ids, maxNew, eos, cfg.MinTokensBeforeStop, suppressTokens, stopTokens, nativeTransform, emit)
+					} else {
+						cacheSess = nil
+					}
+				} else if needsSuppress || nativeTransform != nil {
 					if streamSess, ok := cacheSess.(nativeTextPromptCacheGreedySuppressTransformStreamSession); ok {
 						streamed = true
 						out, err = streamSess.GenerateCachedEachWithSuppressionAndTransform(ids, maxNew, eos, suppressTokens, nativeTransform, emit)
@@ -324,7 +761,7 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 				return
 			}
 		}
-		if cfg.Temperature > 0 || repeatPenaltyActive || minStopActive { // stochastic, or greedy with logits-side policy
+		if sampled || minStopActive { // stochastic, or greedy with logits-side policy
 			sampler := model.NewSampler(nativeSamplerSeed(cfg))
 			sampleParams := model.SampleParams{Temperature: cfg.Temperature, TopK: cfg.TopK, TopP: cfg.TopP, MinP: cfg.MinP, SuppressTokens: suppressTokens, MinTokensBeforeStop: cfg.MinTokensBeforeStop, RepeatPenalty: cfg.RepeatPenalty}
 			m.mu.Lock()
@@ -414,6 +851,68 @@ func tokenInSet(id int32, tokens []int32) bool {
 	return false
 }
 
+func nativeTextMergeSuppressTokens(base, extra []int32) []int32 {
+	if len(extra) == 0 {
+		return base
+	}
+	if len(base) == 0 {
+		return extra
+	}
+	merged := append([]int32(nil), base...)
+	for _, token := range extra {
+		if !tokenInSet(token, merged) {
+			merged = append(merged, token)
+		}
+	}
+	return merged
+}
+
+func nativeTextPromptWithGenerated(prompt, generated []int32) []int32 {
+	if len(generated) == 0 {
+		return prompt
+	}
+	out := make([]int32, 0, len(prompt)+len(generated))
+	out = append(out, prompt...)
+	out = append(out, generated...)
+	return out
+}
+
+func nativeTextGenerateCachedGreedyMinStop(streamSess nativeTextPromptCacheGreedySuppressTransformStreamSession, ids []int32, maxNew, eos, minTokens int, suppressTokens, stopTokens []int32, transform native.TokenTransform, emit func(int32) bool) ([]int32, error) {
+	prefix := minTokens
+	if prefix > maxNew {
+		prefix = maxNew
+	}
+	keepGoing := true
+	stageEmit := func(id int32) bool {
+		if !keepGoing {
+			return false
+		}
+		if emit == nil {
+			return true
+		}
+		keepGoing = emit(id)
+		return keepGoing
+	}
+	prefixSuppress := nativeTextMergeSuppressTokens(suppressTokens, stopTokens)
+	out, err := streamSess.GenerateCachedEachWithSuppressionAndTransform(ids, prefix, eos, prefixSuppress, transform, stageEmit)
+	if err != nil || !keepGoing || len(out) < prefix || len(out) >= maxNew {
+		return out, err
+	}
+	nextIDs := nativeTextPromptWithGenerated(ids, out)
+	var more []int32
+	if len(suppressTokens) == 0 && transform == nil {
+		if plainSess, ok := streamSess.(nativeTextPromptCacheGreedyStreamSession); ok {
+			more, err = plainSess.GenerateCachedEach(nextIDs, maxNew-len(out), eos, stageEmit)
+		} else {
+			more, err = streamSess.GenerateCachedEachWithSuppressionAndTransform(nextIDs, maxNew-len(out), eos, nil, nil, stageEmit)
+		}
+	} else {
+		more, err = streamSess.GenerateCachedEachWithSuppressionAndTransform(nextIDs, maxNew-len(out), eos, suppressTokens, transform, stageEmit)
+	}
+	out = append(out, more...)
+	return out, err
+}
+
 func nativeSamplerSeed(cfg inference.GenerateConfig) uint64 {
 	if cfg.SeedSet {
 		return cfg.Seed
@@ -491,6 +990,310 @@ func (m *nativeTextModel) streamSampledSession(ids []int32, maxNew int, stopToke
 	return out, err, true
 }
 
+func (m *nativeTextModel) GenerateNativeSpeculative(ctx context.Context, draftModel *nativeTextModel, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, bool, error) {
+	return m.GenerateNativeSpeculativeEach(ctx, draftModel, prompt, cfg, nil)
+}
+
+func (m *nativeTextModel) GenerateNativeGemma4Assistant(ctx context.Context, pair *native.Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int) (SpeculativeDecodeResult, bool, error) {
+	return m.GenerateNativeGemma4AssistantEach(ctx, pair, prompt, cfg, draftTokens, nil)
+}
+
+func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context, pair *native.Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int, yield func(decode.Token) bool) (SpeculativeDecodeResult, bool, error) {
+	if m == nil || m.tm == nil || m.tok == nil {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	if pair == nil {
+		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeGemma4Assistant: assistant pair is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SpeculativeDecodeResult{}, true, err
+	}
+	generateCfg := cfg
+	if generateCfg.MaxTokens == 0 {
+		generateCfg = DefaultGenerateConfig()
+	}
+	maxNew := generateCfg.MaxTokens
+	if maxNew <= 0 {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	if draftTokens <= 0 {
+		draftTokens = MTPDefaultDraftTokens
+	}
+	promptIDs := m.tok.Encode(prompt)
+	if len(promptIDs) == 0 {
+		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeGemma4Assistant: empty prompt after tokenisation")
+	}
+	targetSess, closeTarget, promptCacheTarget, err := m.nativeTextGemma4AssistantTargetSession(promptIDs)
+	if err != nil {
+		return SpeculativeDecodeResult{}, true, err
+	}
+	if targetSess == nil {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	if closeTarget != nil {
+		defer closeTarget()
+	}
+
+	stopTokens := generateCfg.StopTokens
+	if len(stopTokens) == 0 && m.tok.HasEOSToken() {
+		stopTokens = []int32{m.tok.EOSToken()}
+	}
+	start := time.Now()
+	var yieldID func(int32) bool
+	if yield != nil {
+		yieldID = func(id int32) bool {
+			return yield(decode.Token{ID: id, Text: m.tok.DecodeToken(id)})
+		}
+	}
+	var (
+		res     native.Gemma4AssistantGenerateResult
+		handled bool
+	)
+	if nativeTextMTPPlainGreedy(generateCfg, stopTokens) {
+		res, handled, err = nativeTextGemma4AssistantDecode(pair, targetSess, promptIDs, maxNew, singleStopToken(stopTokens), draftTokens, generateCfg.SuppressTokens, yieldID)
+	} else {
+		params := model.SampleParams{
+			Temperature:         generateCfg.Temperature,
+			TopK:                generateCfg.TopK,
+			TopP:                generateCfg.TopP,
+			MinP:                generateCfg.MinP,
+			SuppressTokens:      generateCfg.SuppressTokens,
+			MinTokensBeforeStop: generateCfg.MinTokensBeforeStop,
+			RepeatPenalty:       generateCfg.RepeatPenalty,
+		}
+		res, handled, err = nativeTextGemma4AssistantSampledDecode(pair, targetSess, promptIDs, maxNew, stopTokens, model.NewSampler(nativeTextSpeculativeSamplerSeed(generateCfg)), params, draftTokens, yieldID)
+	}
+	if err != nil || !handled {
+		return SpeculativeDecodeResult{}, handled, err
+	}
+	if promptCacheTarget {
+		m.rememberNativePromptCacheBlock(promptIDs)
+	}
+	return m.nativeTextGemma4AssistantResult(prompt, res, time.Since(start)), true, nil
+}
+
+func (m *nativeTextModel) nativeTextGemma4AssistantTargetSession(promptIDs []int32) (model.DecodeStepper, func(), bool, error) {
+	m.mu.Lock()
+	if m.cacheSess != nil {
+		if sizer, ok := m.cacheSess.(nativeTextPromptCacheExactSizer); ok && sizer.CachedPrefixLen(promptIDs) > 0 {
+			sess := m.cacheSess
+			m.mu.Unlock()
+			return sess, nil, true, nil
+		}
+	}
+	m.mu.Unlock()
+
+	targetSM, ok := m.tm.(model.SessionModel)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	targetSess, err := targetSM.OpenSession()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var closeTarget func()
+	if c, ok := targetSess.(interface{ Close() error }); ok {
+		closeTarget = func() { _ = c.Close() }
+	}
+	return targetSess, closeTarget, false, nil
+}
+
+func (m *nativeTextModel) rememberNativePromptCacheBlock(promptIDs []int32) {
+	if len(promptIDs) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var labels map[string]string
+	if len(m.cacheBlocks) > 0 {
+		labels = nativeCacheLabels(m.cacheBlocks[0].Labels)
+	}
+	m.cacheBlocks = nativePromptCacheBlocks(promptIDs, labels)
+}
+
+func (m *nativeTextModel) GenerateNativeSpeculativeEach(ctx context.Context, draftModel *nativeTextModel, prompt string, cfg SpeculativeDecodeConfig, yield func(decode.Token) bool) (SpeculativeDecodeResult, bool, error) {
+	if m == nil || m.tm == nil || m.tok == nil {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	if draftModel == nil || draftModel.tm == nil {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	targetSM, ok := m.tm.(model.SessionModel)
+	if !ok {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	draftSM, ok := draftModel.tm.(model.SessionModel)
+	if !ok {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SpeculativeDecodeResult{}, true, err
+	}
+	generateCfg := cfg.GenerateConfig
+	if generateCfg.MaxTokens == 0 {
+		generateCfg = DefaultGenerateConfig()
+	}
+	maxNew := cfg.MaxTokens
+	if maxNew <= 0 {
+		maxNew = generateCfg.MaxTokens
+	}
+	if maxNew <= 0 {
+		return SpeculativeDecodeResult{}, false, nil
+	}
+	k := cfg.DraftTokens
+	if k <= 0 {
+		k = MTPDefaultDraftTokens
+	}
+	promptIDs := m.tok.Encode(prompt)
+	if len(promptIDs) == 0 {
+		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeSpeculative: empty prompt after tokenisation")
+	}
+	targetSess, err := targetSM.OpenSession()
+	if err != nil {
+		return SpeculativeDecodeResult{}, true, err
+	}
+	if c, ok := targetSess.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+	draftSess, err := draftSM.OpenSession()
+	if err != nil {
+		return SpeculativeDecodeResult{}, true, err
+	}
+	if c, ok := draftSess.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+
+	stopTokens := generateCfg.StopTokens
+	if len(stopTokens) == 0 && m.tok.HasEOSToken() {
+		stopTokens = []int32{m.tok.EOSToken()}
+	}
+	start := time.Now()
+	var (
+		res     *native.MTPResult
+		handled bool
+	)
+	var yieldID func(int32) bool
+	if yield != nil {
+		yieldID = func(id int32) bool {
+			return yield(decode.Token{ID: id, Text: m.tok.DecodeToken(id)})
+		}
+	}
+	if nativeTextMTPPlainGreedy(generateCfg, stopTokens) {
+		res, handled, err = nativeTextMTPDecode(targetSess, draftSess, promptIDs, maxNew, singleStopToken(stopTokens), k, yieldID)
+	} else {
+		seed := nativeTextSpeculativeSamplerSeed(generateCfg)
+		params := model.SampleParams{
+			Temperature:         generateCfg.Temperature,
+			TopK:                generateCfg.TopK,
+			TopP:                generateCfg.TopP,
+			MinP:                generateCfg.MinP,
+			SuppressTokens:      generateCfg.SuppressTokens,
+			MinTokensBeforeStop: generateCfg.MinTokensBeforeStop,
+			RepeatPenalty:       generateCfg.RepeatPenalty,
+		}
+		res, handled, err = nativeTextMTPSampledDecode(targetSess, draftSess, promptIDs, maxNew, stopTokens, model.NewSampler(seed), model.NewSampler(seed+0x9e3779b97f4a7c15), params, k, yieldID)
+	}
+	if err != nil || !handled {
+		return SpeculativeDecodeResult{}, handled, err
+	}
+	return m.nativeTextMTPResult(prompt, res, time.Since(start)), true, nil
+}
+
+func nativeTextMTPPlainGreedy(cfg GenerateConfig, stopTokens []int32) bool {
+	return cfg.Temperature <= 0 &&
+		cfg.TopK <= 0 &&
+		cfg.TopP <= 0 &&
+		cfg.MinP <= 0 &&
+		len(cfg.SuppressTokens) == 0 &&
+		cfg.MinTokensBeforeStop <= 0 &&
+		cfg.RepeatPenalty <= 1 &&
+		len(stopTokens) <= 1
+}
+
+func nativeTextSpeculativeSamplerSeed(cfg GenerateConfig) uint64 {
+	if cfg.SeedSet {
+		return cfg.Seed
+	}
+	return uint64(time.Now().UnixNano())
+}
+
+func (m *nativeTextModel) nativeTextMTPResult(prompt string, res *native.MTPResult, duration time.Duration) SpeculativeDecodeResult {
+	if res == nil {
+		return SpeculativeDecodeResult{Mode: SpeculativeDecodeModeMTP, Prompt: prompt}
+	}
+	tokens := make([]decode.Token, len(res.Tokens))
+	var text core.Builder
+	for i, id := range res.Tokens {
+		piece := m.tok.DecodeToken(id)
+		tokens[i].ID = id
+		tokens[i].Text = piece
+		text.WriteString(piece)
+	}
+	rejected := res.Drafted - res.Accepted
+	if rejected < 0 {
+		rejected = 0
+	}
+	var acceptanceRate float64
+	if res.Drafted > 0 {
+		acceptanceRate = float64(res.Accepted) / float64(res.Drafted)
+	}
+	return SpeculativeDecodeResult{
+		Mode:   SpeculativeDecodeModeMTP,
+		Prompt: prompt,
+		Text:   text.String(),
+		Tokens: tokens,
+		Metrics: decode.Metrics{
+			TargetTokens:   len(res.Tokens),
+			DraftTokens:    res.Drafted,
+			AcceptedTokens: res.Accepted,
+			RejectedTokens: rejected,
+			EmittedTokens:  len(res.Tokens),
+			AcceptanceRate: acceptanceRate,
+			TargetCalls:    res.Rounds,
+			DraftCalls:     res.Rounds,
+			Duration:       duration,
+		},
+	}
+}
+
+func (m *nativeTextModel) nativeTextGemma4AssistantResult(prompt string, res native.Gemma4AssistantGenerateResult, duration time.Duration) SpeculativeDecodeResult {
+	tokens := make([]decode.Token, len(res.Tokens))
+	var text core.Builder
+	for i, id := range res.Tokens {
+		piece := m.tok.DecodeToken(id)
+		tokens[i].ID = id
+		tokens[i].Text = piece
+		text.WriteString(piece)
+	}
+	var acceptanceRate float64
+	if res.DraftTokens > 0 {
+		acceptanceRate = float64(res.AcceptedTokens) / float64(res.DraftTokens)
+	}
+	return SpeculativeDecodeResult{
+		Mode:   SpeculativeDecodeModeMTP,
+		Prompt: prompt,
+		Text:   text.String(),
+		Tokens: tokens,
+		Metrics: decode.Metrics{
+			TargetTokens:   res.TargetTokens,
+			DraftTokens:    res.DraftTokens,
+			AcceptedTokens: res.AcceptedTokens,
+			RejectedTokens: res.RejectedTokens,
+			EmittedTokens:  len(res.Tokens),
+			AcceptanceRate: acceptanceRate,
+			TargetCalls:    res.TargetCalls,
+			DraftCalls:     res.DraftCalls,
+			Duration:       duration,
+		},
+	}
+}
+
 func (m *nativeTextModel) WarmPromptCache(ctx context.Context, prompt string) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -510,6 +1313,7 @@ func (m *nativeTextModel) WarmPromptCache(ctx context.Context, prompt string) er
 		m.lastErr = err
 		return err
 	}
+	m.cacheBlocks = nativePromptCacheBlocks(ids, nil)
 	m.lastErr = nil
 	return ctx.Err()
 }
@@ -552,6 +1356,9 @@ func (m *nativeTextModel) WarmCache(ctx context.Context, req inference.CacheWarm
 			return inference.CacheWarmResult{}, err
 		}
 	}
+	if len(ids) > 0 {
+		m.cacheBlocks = nativePromptCacheBlocks(ids, labels)
+	}
 	m.lastErr = nil
 	stats := m.cacheStatsLocked(labels)
 	result := inference.CacheWarmResult{
@@ -559,15 +1366,22 @@ func (m *nativeTextModel) WarmCache(ctx context.Context, req inference.CacheWarm
 		Labels: labels,
 	}
 	if len(ids) > 0 {
-		result.Blocks = []inference.CacheBlockRef{{
-			ID:         "native-prompt",
-			Kind:       "prompt",
-			TokenStart: 0,
-			TokenCount: len(ids),
-			Labels:     nativeCacheLabels(labels),
-		}}
+		result.Blocks = nativeCloneCacheBlocks(m.cacheBlocks)
 	}
 	return result, ctx.Err()
+}
+
+func (m *nativeTextModel) CacheEntries(ctx context.Context, labels map[string]string) ([]inference.CacheBlockRef, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries := m.cacheEntriesLocked(labels)
+	return entries, ctx.Err()
 }
 
 func (m *nativeTextModel) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
@@ -593,6 +1407,7 @@ func (m *nativeTextModel) WarmPromptCacheChunks(ctx context.Context, chunks iter
 		m.lastErr = err
 		return err
 	}
+	m.cacheBlocks = nativePromptCacheBlocks(ids, nil)
 	m.lastErr = nil
 	return ctx.Err()
 }
@@ -603,6 +1418,7 @@ func (m *nativeTextModel) ClearPromptCache() {
 	if m.cacheSess != nil {
 		m.cacheSess.ClearPromptCache()
 	}
+	m.cacheBlocks = nil
 }
 
 func (m *nativeTextModel) ClearCache(ctx context.Context, labels map[string]string) (inference.CacheStats, error) {
@@ -614,16 +1430,189 @@ func (m *nativeTextModel) ClearCache(ctx context.Context, labels map[string]stri
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(labels) > 0 && !m.cacheHasEntryMatchingLabelsLocked(labels) {
+		return m.cacheStatsLocked(labels), ctx.Err()
+	}
 	if m.cacheSess != nil {
 		m.cacheSess.ClearPromptCache()
 	}
+	m.cacheBlocks = nil
 	return m.cacheStatsLocked(labels), ctx.Err()
+}
+
+func (m *nativeTextModel) CaptureKV(ctx context.Context, prompt string) (*metal.KVSnapshot, error) {
+	return m.CaptureKVWithOptions(ctx, prompt, metal.KVSnapshotCaptureOptions{})
+}
+
+func (m *nativeTextModel) CaptureKVWithOptions(ctx context.Context, prompt string, opts metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handle, err := m.newOneShotNativeSession("mlx.nativeTextModel.CaptureKV")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = handle.Close() }()
+	if err := handle.Prefill(ctx, prompt); err != nil {
+		return nil, err
+	}
+	return handle.CaptureKVWithOptions(ctx, opts)
+}
+
+func (m *nativeTextModel) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*metal.KVSnapshot, error) {
+	return m.CaptureKVChunksWithOptions(ctx, chunks, metal.KVSnapshotCaptureOptions{})
+}
+
+func (m *nativeTextModel) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handle, err := m.newOneShotNativeSession("mlx.nativeTextModel.CaptureKVChunks")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = handle.Close() }()
+	if err := handle.PrefillChunks(ctx, chunks); err != nil {
+		return nil, err
+	}
+	return handle.CaptureKVWithOptions(ctx, opts)
+}
+
+func (m *nativeTextModel) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+	snapshot, err := m.CaptureKVWithOptions(ctx, prompt, metal.KVSnapshotCaptureOptions{RawKVOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	return nativeTextAttentionSnapshotFromKV(snapshot)
+}
+
+func nativeTextAttentionSnapshotFromKV(snapshot *metal.KVSnapshot) (*inference.AttentionSnapshot, error) {
+	if snapshot == nil {
+		return nil, nil
+	}
+	keys := make([][][]float32, len(snapshot.Layers))
+	for i, layer := range snapshot.Layers {
+		stateLayer, err := nativeTextStateLayerFromMetal(layer, snapshot.SeqLen)
+		if err != nil {
+			return nil, err
+		}
+		if len(stateLayer.KeyBytes) == 0 {
+			continue
+		}
+		keyHeads, err := nativeTextAttentionKeysFromLayer(stateLayer, snapshot.SeqLen)
+		if err != nil {
+			return nil, err
+		}
+		keys[i] = keyHeads
+	}
+	return &inference.AttentionSnapshot{
+		NumLayers:     snapshot.NumLayers,
+		NumHeads:      snapshot.NumHeads,
+		SeqLen:        snapshot.SeqLen,
+		HeadDim:       snapshot.HeadDim,
+		NumQueryHeads: snapshot.NumQueryHeads,
+		Keys:          keys,
+		Architecture:  snapshot.Architecture,
+	}, nil
+}
+
+func nativeTextAttentionKeysFromLayer(layer native.SessionStateLayerBlock, tokenCount int) ([][]float32, error) {
+	if tokenCount < 0 || layer.KVHeads <= 0 || layer.HeadDim <= 0 {
+		return nil, core.NewError("mlx.nativeTextModel.InspectAttention: invalid native KV geometry")
+	}
+	wantBytes := tokenCount * layer.KVHeads * layer.HeadDim * 2
+	if len(layer.KeyBytes) != wantBytes {
+		return nil, core.NewError("mlx.nativeTextModel.InspectAttention: native key slab size mismatch")
+	}
+	keys := make([][]float32, layer.KVHeads)
+	for head := 0; head < layer.KVHeads; head++ {
+		key := make([]float32, tokenCount*layer.HeadDim)
+		for token := 0; token < tokenCount; token++ {
+			srcBase := (token*layer.KVHeads + head) * layer.HeadDim * 2
+			dstBase := token * layer.HeadDim
+			for dim := 0; dim < layer.HeadDim; dim++ {
+				off := srcBase + dim*2
+				key[dstBase+dim] = math.Float32frombits(uint32(uint16(layer.KeyBytes[off])|uint16(layer.KeyBytes[off+1])<<8) << 16)
+			}
+		}
+		keys[head] = key
+	}
+	return keys, nil
+}
+
+func (m *nativeTextModel) RestorePromptCacheFromKV(ctx context.Context, snapshot *metal.KVSnapshot) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	source, _, _, _, err := nativeTextStateSourceFromSnapshot(snapshot)
+	if err != nil {
+		m.setErr(err)
+		return err
+	}
+	return m.restorePromptCacheStateSource(ctx, source, "mlx.nativeTextModel.RestorePromptCacheFromKV")
+}
+
+func (m *nativeTextModel) RestorePromptCacheFromKVBlocks(ctx context.Context, source metal.KVSnapshotBlockSource) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	restored, _, _, err := nativeTextStateSourceFromBlockSource(ctx, source, nil)
+	if err != nil {
+		m.setErr(err)
+		return err
+	}
+	return m.restorePromptCacheStateSource(ctx, restored, "mlx.nativeTextModel.RestorePromptCacheFromKVBlocks")
+}
+
+func (m *nativeTextModel) restorePromptCacheStateSource(ctx context.Context, source native.SessionStateBlockSource, scope string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cacheSess, err := m.promptCacheSessionLocked()
+	if err != nil {
+		m.lastErr = err
+		return err
+	}
+	restorer, ok := cacheSess.(interface {
+		RestoreStateBlocks(native.SessionStateBlockSource) error
+	})
+	if !ok {
+		err := core.NewError(scope + ": native session cannot restore KV prompt cache")
+		m.lastErr = err
+		return err
+	}
+	if err := restorer.RestoreStateBlocks(source); err != nil {
+		m.lastErr = err
+		return err
+	}
+	m.lastErr = nil
+	return ctx.Err()
+}
+
+func (m *nativeTextModel) newOneShotNativeSession(scope string) (*nativeTextSession, error) {
+	sess, err := m.openNativeRootSession()
+	if err != nil {
+		if scope != "" {
+			return nil, core.E(scope, "open session", err)
+		}
+		return nil, err
+	}
+	return &nativeTextSession{model: m, sess: sess}, nil
 }
 
 func (m *nativeTextModel) cacheStatsLocked(labels map[string]string) inference.CacheStats {
 	stats := inference.CacheStats{
 		CacheMode: "native-prompt",
 		Labels:    nativeCacheLabels(labels),
+	}
+	if len(m.cacheBlocks) > 0 {
+		stats.Blocks = len(m.cacheBlocks)
+		return stats
 	}
 	if m.cacheSess == nil {
 		return stats
@@ -638,6 +1627,101 @@ func (m *nativeTextModel) cacheStatsLocked(labels map[string]string) inference.C
 	return stats
 }
 
+func (m *nativeTextModel) cacheEntriesLocked(labels map[string]string) []inference.CacheBlockRef {
+	entries := m.cacheBlocks
+	if len(entries) == 0 {
+		if prefixLen := m.cachedPromptPrefixLenLocked(); prefixLen > 0 {
+			entries = nativePromptCacheBlocks(make([]int32, prefixLen), nil)
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]inference.CacheBlockRef, 0, len(entries))
+	for _, entry := range entries {
+		if len(labels) > 0 && !nativeCacheBlockMatchesLabels(entry, labels) {
+			continue
+		}
+		out = append(out, nativeCloneCacheBlock(entry))
+	}
+	return out
+}
+
+func (m *nativeTextModel) cacheHasEntryMatchingLabelsLocked(labels map[string]string) bool {
+	if len(labels) == 0 {
+		return true
+	}
+	for _, entry := range m.cacheEntriesLocked(nil) {
+		if nativeCacheBlockMatchesLabels(entry, labels) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *nativeTextModel) cachedPromptPrefixLenLocked() int {
+	if m.cacheSess == nil {
+		return 0
+	}
+	if sizer, ok := m.cacheSess.(nativeTextPromptCacheSizer); ok {
+		return sizer.CachedPrefixLen()
+	}
+	return 0
+}
+
+func nativePromptCacheBlocks(ids []int32, labels map[string]string) []inference.CacheBlockRef {
+	if len(ids) == 0 {
+		return nil
+	}
+	return []inference.CacheBlockRef{{
+		ID:         "native-prompt",
+		Kind:       "prompt",
+		TokenStart: 0,
+		TokenCount: len(ids),
+		Labels:     nativeCacheLabels(labels),
+	}}
+}
+
+func nativeCloneCacheBlocks(blocks []inference.CacheBlockRef) []inference.CacheBlockRef {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]inference.CacheBlockRef, len(blocks))
+	for i, block := range blocks {
+		out[i] = nativeCloneCacheBlock(block)
+	}
+	return out
+}
+
+func nativeCloneCacheBlock(block inference.CacheBlockRef) inference.CacheBlockRef {
+	block.Labels = nativeCacheLabels(block.Labels)
+	return block
+}
+
+func nativeCacheBlockMatchesLabels(block inference.CacheBlockRef, labels map[string]string) bool {
+	for key, want := range labels {
+		switch key {
+		case "model_hash":
+			if block.ModelHash != want {
+				return false
+			}
+		case "adapter_hash":
+			if block.AdapterHash != want {
+				return false
+			}
+		case "tokenizer_hash":
+			if block.TokenizerHash != want {
+				return false
+			}
+		default:
+			if block.Labels[key] != want {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func nativeCacheLabels(labels map[string]string) map[string]string {
 	if len(labels) == 0 {
 		return nil
@@ -650,6 +1734,10 @@ func nativeCacheLabels(labels map[string]string) map[string]string {
 }
 
 func (m *nativeTextModel) encodePromptChunks(ctx context.Context, chunks iter.Seq[string], scope string) ([]int32, error) {
+	return m.encodePromptChunksWithPrefix(ctx, chunks, scope, false)
+}
+
+func (m *nativeTextModel) encodePromptChunksWithPrefix(ctx context.Context, chunks iter.Seq[string], scope string, seenContent bool) ([]int32, error) {
 	if m == nil || m.tok == nil {
 		return nil, core.NewError("mlx.nativeTextModel: tokenizer is nil")
 	}
@@ -660,7 +1748,6 @@ func (m *nativeTextModel) encodePromptChunks(ctx context.Context, chunks iter.Se
 		scope = "mlx.nativeTextModel.GenerateChunks"
 	}
 	tokens := make([]int32, 0, 256)
-	seenContent := false
 	for chunk := range chunks {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -769,6 +1856,27 @@ func (s *nativeTextSession) Prefill(ctx context.Context, prompt string) error {
 	return s.prefillTokensLocked(ctx, ids)
 }
 
+func (s *nativeTextSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.readyLocked("mlx.nativeTextSession.PrefillChunks"); err != nil {
+		s.err = err
+		return err
+	}
+	ids, err := s.model.encodePromptChunks(ctx, chunks, "mlx.nativeTextSession.PrefillChunks")
+	if err != nil {
+		s.err = err
+		return err
+	}
+	return s.prefillTokensLocked(ctx, ids)
+}
+
 func (s *nativeTextSession) PrefillTokens(ctx context.Context, tokens []int32) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -795,6 +1903,7 @@ func (s *nativeTextSession) prefillTokensLocked(ctx context.Context, tokens []in
 		s.err = err
 		return err
 	}
+	start := time.Now()
 	ids := append([]int32(nil), tokens...)
 	if err := s.sess.PrefillTokens(ids); err != nil {
 		s.err = err
@@ -808,6 +1917,7 @@ func (s *nativeTextSession) prefillTokensLocked(ctx context.Context, tokens []in
 	s.tokens = ids
 	s.generated = nil
 	s.logits = append(s.logits[:0], logits...)
+	s.prefillDuration = time.Since(start)
 	s.err = nil
 	return ctx.Err()
 }
@@ -836,6 +1946,32 @@ func (s *nativeTextSession) AppendPrompt(ctx context.Context, prompt string) err
 		return err
 	}
 	ids := stripNativeImplicitChunkBOS(s.model.tok, s.model.tok.Encode(prompt))
+	return s.appendTokensLocked(ctx, ids)
+}
+
+func (s *nativeTextSession) AppendPromptChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.readyLocked("mlx.nativeTextSession.AppendPromptChunks"); err != nil {
+		s.err = err
+		return err
+	}
+	if len(s.tokens) == 0 {
+		err := core.NewError("mlx.nativeTextSession.AppendPromptChunks: no retained prefix")
+		s.err = err
+		return err
+	}
+	ids, err := s.model.encodePromptChunksWithPrefix(ctx, chunks, "mlx.nativeTextSession.AppendPromptChunks", true)
+	if err != nil {
+		s.err = err
+		return err
+	}
 	return s.appendTokensLocked(ctx, ids)
 }
 
@@ -870,6 +2006,7 @@ func (s *nativeTextSession) appendTokensLocked(ctx context.Context, tokens []int
 		s.err = err
 		return err
 	}
+	start := time.Now()
 	ids := append([]int32(nil), tokens...)
 	if err := s.sess.AppendTokens(ids); err != nil {
 		s.err = err
@@ -883,12 +2020,14 @@ func (s *nativeTextSession) appendTokensLocked(ctx context.Context, tokens []int
 	s.tokens = append(s.tokens, ids...)
 	s.generated = nil
 	s.logits = append(s.logits[:0], logits...)
+	s.prefillDuration += time.Since(start)
 	s.err = nil
 	return ctx.Err()
 }
 
 func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	return func(yield func(metal.Token) bool) {
+		totalStart := time.Now()
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -906,6 +2045,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 			s.err = core.NewError("mlx.nativeTextSession.Generate: no room to generate")
 			return
 		}
+		promptLen := len(s.tokens)
 		stopTokens := s.stopTokens(cfg)
 		eos := singleStopToken(stopTokens)
 		emit := func(id int32) bool {
@@ -922,7 +2062,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 			out []int32
 			err error
 		)
-		sampled := cfg.Temperature > 0 || cfg.MinP > 0 || cfg.RepeatPenalty > 1 || cfg.MinTokensBeforeStop > 0 || len(cfg.SuppressTokens) > 0
+		sampled := cfg.Temperature > 0 || cfg.MinP > 0 || cfg.RepeatPenalty > 1
 		if sampled {
 			params := model.SampleParams{
 				Temperature:         cfg.Temperature,
@@ -934,6 +2074,24 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 				RepeatPenalty:       cfg.RepeatPenalty,
 			}
 			out, err = s.sess.GenerateSampledFromCacheEach(maxNew, stopTokens, model.NewSampler(nativeMetalSamplerSeed(cfg)), params, nil, emit)
+		} else if cfg.MinTokensBeforeStop > 0 && len(stopTokens) > 0 {
+			prefix := cfg.MinTokensBeforeStop
+			if prefix > maxNew {
+				prefix = maxNew
+			}
+			prefixSuppress := nativeTextMergeSuppressTokens(cfg.SuppressTokens, stopTokens)
+			out, err = s.sess.GenerateFromCacheEachWithSuppressionAndTransform(prefix, eos, prefixSuppress, nil, emit)
+			if err == nil && len(out) == prefix && len(out) < maxNew {
+				var more []int32
+				if len(cfg.SuppressTokens) > 0 {
+					more, err = s.sess.GenerateFromCacheEachWithSuppressionAndTransform(maxNew-len(out), eos, cfg.SuppressTokens, nil, emit)
+				} else {
+					more, err = s.sess.GenerateFromCacheEach(maxNew-len(out), eos, emit)
+				}
+				out = append(out, more...)
+			}
+		} else if len(cfg.SuppressTokens) > 0 {
+			out, err = s.sess.GenerateFromCacheEachWithSuppressionAndTransform(maxNew, eos, cfg.SuppressTokens, nil, emit)
 		} else {
 			out, err = s.sess.GenerateFromCacheEach(maxNew, eos, emit)
 		}
@@ -951,6 +2109,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 		}
 		s.logits = append(s.logits[:0], logits...)
 		s.err = ctx.Err()
+		s.model.setSessionMetrics(promptLen, len(out), s.prefillDuration, time.Since(totalStart))
 	}
 }
 
@@ -1072,6 +2231,7 @@ func (s *nativeTextSession) RestoreKV(ctx context.Context, snapshot *metal.KVSna
 	s.tokens = tokens
 	s.generated = generated
 	s.logits = logits
+	s.prefillDuration = 0
 	s.err = nil
 	return ctx.Err()
 }
@@ -1098,6 +2258,7 @@ func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source metal.KV
 	s.tokens = tokens
 	s.generated = nil
 	s.logits = logits
+	s.prefillDuration = 0
 	s.err = nil
 	return ctx.Err()
 }
@@ -1138,6 +2299,7 @@ func (s *nativeTextSession) Reset() {
 		s.tokens = nil
 		s.generated = nil
 		s.logits = nil
+		s.prefillDuration = 0
 		return
 	}
 	next, err := s.model.openNativeRootSession()
@@ -1150,6 +2312,7 @@ func (s *nativeTextSession) Reset() {
 	s.tokens = nil
 	s.generated = nil
 	s.logits = nil
+	s.prefillDuration = 0
 	s.err = nil
 	if old != nil {
 		_ = old.Close()
@@ -1169,6 +2332,7 @@ func (s *nativeTextSession) Close() error {
 	s.tokens = nil
 	s.generated = nil
 	s.logits = nil
+	s.prefillDuration = 0
 	if s.sess == nil {
 		return s.err
 	}
@@ -1230,8 +2394,9 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 	layers := make([]metal.KVLayerSnapshot, len(block.Layers))
 	numHeads, headDim := 0, 0
 	for i, layer := range block.Layers {
+		kvHeads := nativeTextSnapshotLayerKVHeads(layer)
 		if numHeads == 0 {
-			numHeads = layer.KVHeads
+			numHeads = kvHeads
 		}
 		if headDim == 0 {
 			headDim = layer.HeadDim
@@ -1247,10 +2412,10 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 			MaxSize:    layer.MaxSize,
 			KeyDType:   metal.DTypeBFloat16,
 			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
-			KeyShape:   []int32{int32(block.TokenCount), int32(layer.KVHeads), int32(layer.HeadDim)},
+			KeyShape:   []int32{int32(block.TokenCount), int32(kvHeads), int32(layer.HeadDim)},
 			ValueDType: metal.DTypeBFloat16,
 			ValueBytes: append([]byte(nil), layer.ValueBytes...),
-			ValueShape: []int32{int32(block.TokenCount), int32(layer.KVHeads), int32(layer.HeadDim)},
+			ValueShape: []int32{int32(block.TokenCount), int32(kvHeads), int32(layer.HeadDim)},
 		}
 	}
 	tokens := s.snapshotTokens(source, block.TokenStart, block.TokenCount)
@@ -1276,11 +2441,23 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 		NumHeads:      numHeads,
 		SeqLen:        block.TokenCount,
 		HeadDim:       headDim,
-		NumQueryHeads: numHeads,
+		NumQueryHeads: s.modelNumQueryHeads(numHeads),
 		LogitShape:    logitShape,
 		Logits:        logits,
 		Layers:        layers,
 	}
+}
+
+func nativeTextSnapshotLayerKVHeads(layer native.SessionStateLayerBlock) int {
+	if layer.RowBytes > 0 && layer.HeadDim > 0 {
+		rowUnit := layer.HeadDim * 2
+		if rowUnit > 0 && layer.RowBytes%rowUnit == 0 {
+			if heads := layer.RowBytes / rowUnit; heads > 0 {
+				return heads
+			}
+		}
+	}
+	return layer.KVHeads
 }
 
 func (s *nativeTextSession) snapshotTokens(source native.SessionStateBlockSource, start, count int) []int32 {
@@ -1309,6 +2486,18 @@ func (s *nativeTextSession) modelNumLayers() int {
 		return 0
 	}
 	return s.model.info.NumLayers
+}
+
+func (s *nativeTextSession) modelNumQueryHeads(fallback int) int {
+	if s == nil || s.model == nil || s.model.tm == nil {
+		return fallback
+	}
+	if reporter, ok := s.model.tm.(interface{ NumQueryHeads() int }); ok {
+		if n := reporter.NumQueryHeads(); n > 0 {
+			return n
+		}
+	}
+	return fallback
 }
 
 func (s *nativeTextSession) modelVocab() int {
@@ -1585,7 +2774,7 @@ func nativeTextStateLayersFromSnapshot(snapshot *metal.KVSnapshot, tokenCount in
 func nativeTextStateLayersFromBlock(snapshot *metal.KVSnapshot, tokenCount int) ([]native.SessionStateLayerBlock, error) {
 	layers := make([]native.SessionStateLayerBlock, 0, len(snapshot.Layers))
 	for _, layer := range snapshot.Layers {
-		stateLayer, err := nativeTextStateLayerFromMetal(layer, snapshot.SeqLen)
+		stateLayer, err := nativeTextStateLayerFromMetal(layer, tokenCount)
 		if err != nil {
 			return nil, err
 		}
@@ -1623,14 +2812,23 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: unsupported value dtype")
 	}
 	n := tokenCount * rowBytes
-	if len(keyBytes) != n || len(valueBytes) != n {
-		return native.SessionStateLayerBlock{}, core.NewError("mlx.nativeTextSession.RestoreKV: native KV slab size mismatch")
-	}
 	if nativeTextLayerSlabIsHeadMajor(layer.KeyShape, tokenCount) {
 		keyBytes = nativeTextLayerSlabToTokenMajor(keyBytes, kvHeads, headDim, tokenCount)
 	}
 	if nativeTextLayerSlabIsHeadMajor(layer.ValueShape, tokenCount) {
 		valueBytes = nativeTextLayerSlabToTokenMajor(valueBytes, kvHeads, headDim, tokenCount)
+	}
+	if len(keyBytes) != n || len(valueBytes) != n {
+		if inferredHeads := nativeTextInferBF16SlabKVHeads(keyBytes, valueBytes, tokenCount, headDim); inferredHeads > 0 {
+			kvHeads = inferredHeads
+			rowBytes = kvHeads * headDim * 2
+			n = tokenCount * rowBytes
+		}
+	}
+	if len(keyBytes) != n || len(valueBytes) != n {
+		return native.SessionStateLayerBlock{}, core.NewError(core.Sprintf(
+			"mlx.nativeTextSession.RestoreKV: native KV slab size mismatch key=%d value=%d want=%d key_shape=%v value_shape=%v token_count=%d",
+			len(keyBytes), len(valueBytes), n, layer.KeyShape, layer.ValueShape, tokenCount))
 	}
 	return native.SessionStateLayerBlock{
 		Layer:      layer.Layer,
@@ -1643,6 +2841,17 @@ func nativeTextStateLayerFromMetal(layer metal.KVLayerSnapshot, tokenCount int) 
 		KeyBytes:   keyBytes,
 		ValueBytes: valueBytes,
 	}, nil
+}
+
+func nativeTextInferBF16SlabKVHeads(keyBytes, valueBytes []byte, tokenCount, headDim int) int {
+	if len(keyBytes) == 0 || len(keyBytes) != len(valueBytes) || tokenCount <= 0 || headDim <= 0 {
+		return 0
+	}
+	rowUnit := tokenCount * headDim * 2
+	if rowUnit <= 0 || len(keyBytes)%rowUnit != 0 {
+		return 0
+	}
+	return len(keyBytes) / rowUnit
 }
 
 func nativeTextLayerSlabToBF16(raw []byte, dtype metal.DType, kvHeads, headDim, tokenCount int) ([]byte, error) {
@@ -1874,6 +3083,29 @@ func (m *nativeTextModel) setMetricsWithThinkingBudget(promptTokens, genTokens i
 	m.mu.Unlock()
 }
 
+func (m *nativeTextModel) setSessionMetrics(promptTokens, genTokens int, prefill, decode time.Duration) {
+	prefillTPS := 0.0
+	if prefill > 0 {
+		prefillTPS = float64(promptTokens) / prefill.Seconds()
+	}
+	decodeTPS := 0.0
+	if decode > 0 {
+		decodeTPS = float64(genTokens) / decode.Seconds()
+	}
+	m.mu.Lock()
+	m.lastErr = nil
+	m.lastMetrics = inference.GenerateMetrics{
+		PromptTokens:        promptTokens,
+		GeneratedTokens:     genTokens,
+		PrefillDuration:     prefill,
+		DecodeDuration:      decode,
+		TotalDuration:       prefill + decode,
+		PrefillTokensPerSec: prefillTPS,
+		DecodeTokensPerSec:  decodeTPS,
+	}
+	m.mu.Unlock()
+}
+
 // Classify samples one token per prompt (greedy) — the prefill-only fast path
 // approximated over the contract (the contract has no batched prefill; one short
 // Generate per prompt).
@@ -2065,7 +3297,51 @@ func (m *nativeTextModel) BatchGenerate(ctx context.Context, prompts []string, o
 
 func (m *nativeTextModel) ModelType() string { return m.modelType }
 
-func (m *nativeTextModel) Info() inference.ModelInfo { return m.info }
+func (m *nativeTextModel) NumLayers() int { return m.Info().NumLayers }
+
+func (m *nativeTextModel) Capabilities() inference.CapabilityReport {
+	return inference.TextModelCapabilities(inference.RuntimeIdentity{
+		Backend:       "native",
+		NativeRuntime: true,
+	}, m)
+}
+
+func (m *nativeTextModel) Info() inference.ModelInfo {
+	if m == nil {
+		return inference.ModelInfo{}
+	}
+	info := m.info
+	if info.Architecture == "" {
+		info.Architecture = m.modelType
+	}
+	if m.tm == nil {
+		return info
+	}
+	if info.VocabSize == 0 {
+		info.VocabSize = m.tm.Vocab()
+	}
+	if info.NumLayers == 0 {
+		if reporter, ok := m.tm.(interface{ NumLayers() int }); ok {
+			info.NumLayers = reporter.NumLayers()
+		}
+	}
+	if info.HiddenSize == 0 {
+		if reporter, ok := m.tm.(interface{ HiddenSize() int }); ok {
+			info.HiddenSize = reporter.HiddenSize()
+		}
+	}
+	if info.QuantBits == 0 {
+		if reporter, ok := m.tm.(interface{ QuantBits() int }); ok {
+			info.QuantBits = reporter.QuantBits()
+		}
+	}
+	if info.QuantGroup == 0 {
+		if reporter, ok := m.tm.(interface{ QuantGroup() int }); ok {
+			info.QuantGroup = reporter.QuantGroup()
+		}
+	}
+	return info
+}
 
 func (m *nativeTextModel) Metrics() inference.GenerateMetrics {
 	m.mu.Lock()
@@ -2083,14 +3359,20 @@ func (m *nativeTextModel) Err() error {
 // for the process in the serve shape; a warmed cache session is explicit mutable
 // state and should be dropped on teardown or hot-swap.
 func (m *nativeTextModel) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.cacheSess == nil {
+	if m == nil {
 		return nil
 	}
-	defer func() { m.cacheSess = nil }()
-	if c, ok := m.cacheSess.(interface{ Close() error }); ok {
-		return c.Close()
+	m.mu.Lock()
+	m.visionCache = nil
+	m.clearNativePromptCacheLocked()
+	tm, adapterPack := m.tm, m.adapterPack
+	m.tm = nil
+	m.adapter = inference.AdapterIdentity{}
+	m.adapterPack = ""
+	m.mu.Unlock()
+	if err := closeNativeTokenModel(tm); err != nil {
+		_ = nativeRemoveAll(adapterPack)
+		return err
 	}
-	return nil
+	return nativeRemoveAll(adapterPack)
 }

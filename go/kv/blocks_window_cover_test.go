@@ -3,6 +3,7 @@
 package kv
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 )
@@ -70,21 +71,46 @@ func TestBlocksWindowCover_RawTensorWindowLen(t *testing.T) {
 func TestBlocksWindowCover_LayerRawWindowLen(t *testing.T) {
 	raw := cvtRawF16(2, 2) // 4 f16 values → 8 bytes
 
-	// Non-4-D shape → -1 (guard at 84).
+	// Unsupported 2-D shape → -1.
 	if got := kvSnapshotLayerRawWindowLen(raw, "float16", []int32{2, 2}, 2); got != -1 {
-		t.Fatalf("layer-raw non-4D shape = %d, want -1", got)
+		t.Fatalf("layer-raw 2D shape = %d, want -1", got)
 	}
-	// A zero dimension → -1 (guard at 89).
+	// A zero dimension → -1.
 	if got := kvSnapshotLayerRawWindowLen(raw, "float16", []int32{1, 1, 0, 2}, 2); got != -1 {
 		t.Fatalf("layer-raw zero dim = %d, want -1", got)
 	}
-	// Byte length disagrees with the shape's element count → -1 (guard at 94).
+	// Byte length disagrees with the shape's element count → -1.
 	if got := kvSnapshotLayerRawWindowLen(raw, "float16", []int32{1, 1, 4, 2}, 4); got != -1 {
 		t.Fatalf("layer-raw byte mismatch = %d, want -1", got)
 	}
-	// shape[2] (L=2) exceeds seqLen (1) → -1 (guard at 97).
+	// shape[2] (L=2) exceeds seqLen (1) → -1.
 	if got := kvSnapshotLayerRawWindowLen(raw, "float16", []int32{1, 1, 2, 2}, 1); got != -1 {
 		t.Fatalf("layer-raw L>seqLen = %d, want -1", got)
+	}
+}
+
+func TestBlocksWindowCover_TokenMajorLayerRaw3D_Good(t *testing.T) {
+	raw := []byte{
+		1, 0, 2, 0,
+		3, 0, 4, 0,
+		5, 0, 6, 0,
+	}
+	shape := []int32{3, 2, 1}
+	if got := kvSnapshotLayerRawWindowLen(raw, "bfloat16", shape, 3); got != 3 {
+		t.Fatalf("token-major layer window len = %d, want 3", got)
+	}
+	sliced, slicedShape, err := sliceKVSnapshotLayerRawTensorOpt(raw, "bfloat16", shape, 1, 3, false)
+	if err != nil {
+		t.Fatalf("slice token-major layer raw tensor: %v", err)
+	}
+	if !bytes.Equal(sliced, raw[4:12]) {
+		t.Fatalf("token-major slice = %v, want %v", sliced, raw[4:12])
+	}
+	if len(slicedShape) != 3 || slicedShape[0] != 2 || slicedShape[1] != 2 || slicedShape[2] != 1 {
+		t.Fatalf("token-major slice shape = %v, want [2 2 1]", slicedShape)
+	}
+	if len(sliced) > 0 && &sliced[0] != &raw[4] {
+		t.Fatal("token-major no-clone slice copied bytes; want borrowed contiguous range")
 	}
 }
 

@@ -84,8 +84,8 @@ func TestDecodeForwardICBQuantAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardICBQuant: %v", forwardErr)
 	}
-	if allocs > 490 {
-		t.Fatalf("DecodeForwardICBQuant allocations = %.0f, want <= 490", allocs)
+	if allocs > 255 {
+		t.Fatalf("DecodeForwardICBQuant allocations = %.0f, want <= 255", allocs)
 	}
 }
 

@@ -19,19 +19,20 @@ type plHostScratchKey struct {
 
 var plHostScratchPools sync.Map
 
-func plHostScratchPoolForKey(key plHostScratchKey) *sync.Pool {
+func plHostScratchPoolForKey(key plHostScratchKey) *scratchLIFOPool[*plHostScratch] {
 	if v, ok := plHostScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*scratchLIFOPool[*plHostScratch])
 	}
-	pool := &sync.Pool{}
+	pool := &scratchLIFOPool[*plHostScratch]{}
 	if v, loaded := plHostScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*scratchLIFOPool[*plHostScratch])
 	}
 	return pool
 }
 
 type plHostScratch struct {
 	hidden, perLayer                        *pinnedNoCopyBytes
+	hiddenView, perLayerView                cachedNoCopyBytesView
 	projected, scaled, projNormed, combined metal.MTLBuffer
 	out                                     metal.MTLBuffer
 	projScaleBuf, combineScaleBuf           metal.MTLBuffer
@@ -72,14 +73,13 @@ func newPLHostScratch(plDim, dModel int, projScale float32) (*plHostScratch, err
 	return s, nil
 }
 
-func plHostScratchPoolFor(plDim, dModel int, projScale float32) *sync.Pool {
+func plHostScratchPoolFor(plDim, dModel int, projScale float32) *scratchLIFOPool[*plHostScratch] {
 	return plHostScratchPoolForKey(plHostScratchKey{plDim: plDim, dModel: dModel, projScale: bf16ScalarBytes(projScale)})
 }
 
 func getPLHostScratch(plDim, dModel int, projScale float32) (*plHostScratch, error) {
 	pool := plHostScratchPoolFor(plDim, dModel, projScale)
-	if v := pool.Get(); v != nil {
-		s := v.(*plHostScratch)
+	if s := pool.Get(); s != nil {
 		if s != nil &&
 			s.plDim == plDim &&
 			s.dModel == dModel &&
@@ -117,6 +117,8 @@ func (s *plHostScratch) Close() {
 		s.perLayer.Close()
 		s.perLayer = nil
 	}
+	s.hiddenView.Close()
+	s.perLayerView.Close()
 	s.projected, s.scaled, s.projNormed, s.combined, s.out = nil, nil, nil, nil, nil
 	s.projScaleBuf, s.combineScaleBuf = nil, nil
 	s.closeHostReadback()
@@ -214,6 +216,7 @@ func perLayerProjBatchedCore(projView bufView, hidden []byte, hiddenBufArg metal
 		combineScaleBytes := bf16ScalarBytes(gemma4PerLayerCombineScale)
 		var hiddenBuf, perLayerBuf, projNormWBuf, projScaleBuf, combineScaleBuf metal.MTLBuffer
 		var projectedBuf, scaledBuf, projNormedBuf, combinedBuf, outBuf metal.MTLBuffer
+		var ok bool
 		if scratch != nil {
 			if scratch.plDim != plDim || scratch.dModel != dModel {
 				ferr = core.NewError("native.perLayerProjBatched: scratch dimension mismatch")
@@ -226,15 +229,19 @@ func perLayerProjBatchedCore(projView bufView, hidden []byte, hiddenBufArg metal
 			if hiddenBufArg != nil {
 				hiddenBuf = hiddenBufArg
 			} else {
-				if hiddenBuf, ferr = scratch.hidden.copyBuffer(hidden); ferr != nil {
-					return
+				if hiddenBuf, ok = scratch.hiddenView.buffer(hidden); !ok {
+					if hiddenBuf, ferr = scratch.hidden.copyBuffer(hidden); ferr != nil {
+						return
+					}
 				}
 			}
 			if len(perLayer) == len(scratch.perLayer.bytes) && len(perLayer) > 0 && unsafe.Pointer(&perLayer[0]) == unsafe.Pointer(&scratch.perLayer.bytes[0]) {
 				perLayerBuf = scratch.perLayer.buf
 			} else {
-				if perLayerBuf, ferr = scratch.perLayer.copyBuffer(perLayer); ferr != nil {
-					return
+				if perLayerBuf, ok = scratch.perLayerView.buffer(perLayer); !ok {
+					if perLayerBuf, ferr = scratch.perLayer.copyBuffer(perLayer); ferr != nil {
+						return
+					}
 				}
 			}
 			projNormWBuf = residentBytes(projNormW)
@@ -362,6 +369,7 @@ func perLayerProjQuantBatchedCore(q QuantWeight, hidden []byte, hiddenBufArg met
 		combineScaleBytes := bf16ScalarBytes(gemma4PerLayerCombineScale)
 		var hiddenBuf, perLayerBuf, projNormWBuf, projScaleBuf, combineScaleBuf metal.MTLBuffer
 		var projectedBuf, scaledBuf, projNormedBuf, combinedBuf, outBuf metal.MTLBuffer
+		var ok bool
 		if scratch != nil {
 			if scratch.plDim != plDim || scratch.dModel != dModel {
 				ferr = core.NewError("native.perLayerProjQuantBatched: scratch dimension mismatch")
@@ -374,15 +382,19 @@ func perLayerProjQuantBatchedCore(q QuantWeight, hidden []byte, hiddenBufArg met
 			if hiddenBufArg != nil {
 				hiddenBuf = hiddenBufArg
 			} else {
-				if hiddenBuf, ferr = scratch.hidden.copyBuffer(hidden); ferr != nil {
-					return
+				if hiddenBuf, ok = scratch.hiddenView.buffer(hidden); !ok {
+					if hiddenBuf, ferr = scratch.hidden.copyBuffer(hidden); ferr != nil {
+						return
+					}
 				}
 			}
 			if len(perLayer) == len(scratch.perLayer.bytes) && len(perLayer) > 0 && unsafe.Pointer(&perLayer[0]) == unsafe.Pointer(&scratch.perLayer.bytes[0]) {
 				perLayerBuf = scratch.perLayer.buf
 			} else {
-				if perLayerBuf, ferr = scratch.perLayer.copyBuffer(perLayer); ferr != nil {
-					return
+				if perLayerBuf, ok = scratch.perLayerView.buffer(perLayer); !ok {
+					if perLayerBuf, ferr = scratch.perLayer.copyBuffer(perLayer); ferr != nil {
+						return
+					}
 				}
 			}
 			projNormWBuf = residentBytes(projNormW)

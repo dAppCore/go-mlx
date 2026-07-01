@@ -19,16 +19,21 @@ type perLayerInputsGPUScratchKey struct {
 	projScale     [2]byte
 }
 
+type perLayerInputsGPUScratchPool struct {
+	mu    sync.Mutex
+	items []*perLayerInputsGPUScratch
+}
+
 var perLayerInputsGPUScratchPools sync.Map
 
-func perLayerInputsGPUScratchPoolFor(plDim, dModel int, projScale float32) *sync.Pool {
+func perLayerInputsGPUScratchPoolFor(plDim, dModel int, projScale float32) *perLayerInputsGPUScratchPool {
 	key := perLayerInputsGPUScratchKey{plDim: plDim, dModel: dModel, projScale: bf16ScalarBytes(projScale)}
 	if v, ok := perLayerInputsGPUScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*perLayerInputsGPUScratchPool)
 	}
-	pool := &sync.Pool{}
+	pool := &perLayerInputsGPUScratchPool{}
 	if v, loaded := perLayerInputsGPUScratchPools.LoadOrStore(key, pool); loaded {
-		return v.(*sync.Pool)
+		return v.(*perLayerInputsGPUScratchPool)
 	}
 	return pool
 }
@@ -81,6 +86,7 @@ type perLayerInputsGPUScratch struct {
 	plDim, dModel int
 	projScale     float32
 	token, emb    *pinnedNoCopyBytes
+	embView       cachedNoCopyBytesView
 	pl            *plGPUScratch
 	outViewPtr    uintptr
 	outViewLen    int
@@ -110,8 +116,7 @@ func newPerLayerInputsGPUScratch(plDim, dModel int, projScale float32) (*perLaye
 
 func getPerLayerInputsGPUScratch(plDim, dModel int, projScale float32) (*perLayerInputsGPUScratch, error) {
 	pool := perLayerInputsGPUScratchPoolFor(plDim, dModel, projScale)
-	if v := pool.Get(); v != nil {
-		s := v.(*perLayerInputsGPUScratch)
+	if s := pool.Get(); s != nil {
 		if s.plDim == plDim && s.dModel == dModel && s.projScale == projScale && s.token != nil && s.emb != nil && s.pl != nil && s.pl.out != nil {
 			return s, nil
 		}
@@ -124,6 +129,28 @@ func putPerLayerInputsGPUScratch(s *perLayerInputsGPUScratch) {
 	if s != nil && s.plDim > 0 && s.dModel > 0 && s.token != nil && s.emb != nil && s.pl != nil && s.pl.out != nil {
 		perLayerInputsGPUScratchPoolFor(s.plDim, s.dModel, s.projScale).Put(s)
 	}
+}
+
+func (p *perLayerInputsGPUScratchPool) Get() *perLayerInputsGPUScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *perLayerInputsGPUScratchPool) Put(s *perLayerInputsGPUScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 func (s *perLayerInputsGPUScratch) Close() {
@@ -139,6 +166,7 @@ func (s *perLayerInputsGPUScratch) Close() {
 		s.emb.Close()
 		s.emb = nil
 	}
+	s.embView.Close()
 	if s.pl != nil {
 		s.pl.Close()
 		s.pl = nil
@@ -169,6 +197,13 @@ func (s *perLayerInputsGPUScratch) outputView(out []byte) (metal.MTLBuffer, *byt
 		return s.outView, (*byte)(unsafe.Pointer(&out[0])), true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, (*byte)(unsafe.Pointer(&out[0])), true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -193,9 +228,13 @@ func (s *perLayerInputsGPUScratch) buffers(tokenID int32, emb []byte) (metal.MTL
 		return nil, nil, nil, core.NewError("native.perLayerInputsGPUScratch.buffers: dimension mismatch")
 	}
 	*(*int32)(unsafe.Pointer(&s.token.bytes[0])) = tokenID
-	embBuf, err := s.emb.copyBuffer(emb)
-	if err != nil {
-		return nil, nil, nil, err
+	embBuf, ok := s.embView.buffer(emb)
+	if !ok {
+		var err error
+		embBuf, err = s.emb.copyBuffer(emb)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	return s.token.buf, embBuf, s.pl, nil
 }

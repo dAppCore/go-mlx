@@ -12,6 +12,4 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Remaining feature tasks:
 
-- First-draft no-copy/fused routing into session/replay hot paths that still submit/read back per op.
-- First-draft MoE router/expert GPU flow that removes host readbacks while preserving parity.
-- Finish remaining KV cache parity for fixed, paged, rotating/sliding, restore helpers, and TurboQuant payload restore.
+- Finish remaining KV cache parity for fixed, paged, rotating/sliding, and restore helpers.

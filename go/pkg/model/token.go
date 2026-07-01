@@ -89,6 +89,14 @@ type greedySessionOneShotGenerator interface {
 	GenerateOneShot(promptIDs []int32, maxNew, eosID int) ([]int32, error)
 }
 
+type sampledSessionGenerator interface {
+	GenerateSampledEach(promptIDs []int32, maxNew int, stopTokens []int32, sampler *Sampler, params SampleParams, transform TokenTransform, yield func(int32) bool) ([]int32, error)
+}
+
+type sampledSessionOneShotGenerator interface {
+	GenerateSampledOneShotEach(promptIDs []int32, maxNew int, stopTokens []int32, sampler *Sampler, params SampleParams, transform TokenTransform, yield func(int32) bool) ([]int32, error)
+}
+
 // TokenTransform observes the selected token ID and returns the ID that should
 // be committed into the generation state before stop checks and the next
 // decode step.
@@ -340,9 +348,12 @@ func GenerateSampled(m TokenModel, s *Sampler, p SampleParams, promptIDs []int32
 	if s == nil {
 		return nil, core.NewError("model.GenerateSampled: nil sampler")
 	}
-	return generateUntilTransform(m, promptIDs, maxNew, singleStop(eos), repeatPenaltyTransform(p), nil, func(logits []byte, vocab int) (int32, error) {
-		return s.Sample(logits, vocab, p)
-	}, nil)
+	var stopTokens []int32
+	if eos >= 0 {
+		stopTokens = []int32{int32(eos)}
+		p.MinTokensBeforeStop = 0
+	}
+	return GenerateSampledWithStopTokensTransformEach(m, s, p, promptIDs, maxNew, stopTokens, nil, nil)
 }
 
 // GenerateSampledWithStopTokens is GenerateSampled with a full stop-token set.
@@ -369,6 +380,42 @@ func GenerateSampledWithStopTokensTransform(m TokenModel, s *Sampler, p SamplePa
 func GenerateSampledWithStopTokensTransformEach(m TokenModel, s *Sampler, p SampleParams, promptIDs []int32, maxNew int, stopTokens []int32, tokenTransform TokenTransform, yield func(int32) bool) ([]int32, error) {
 	if s == nil {
 		return nil, core.NewError("model.GenerateSampled: nil sampler")
+	}
+	if m == nil {
+		return nil, core.NewError("model.Generate: nil model")
+	}
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("model.Generate: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("model.Generate: maxNew must be > 0")
+	}
+	if sm, ok := m.(SessionModel); ok {
+		sess, err := sm.OpenSession()
+		if err != nil {
+			return nil, err
+		}
+		if c, ok := sess.(interface{ Close() error }); ok {
+			defer func() { _ = c.Close() }()
+		}
+		if direct, ok := sess.(sampledSessionOneShotGenerator); ok {
+			return direct.GenerateSampledOneShotEach(promptIDs, maxNew, stopTokens, s, p, tokenTransform, yield)
+		}
+		if direct, ok := sess.(sampledSessionGenerator); ok {
+			return direct.GenerateSampledEach(promptIDs, maxNew, stopTokens, s, p, tokenTransform, yield)
+		}
+		generated := 0
+		return generateStepwiseWithSession(sm, sess, promptIDs, maxNew, stopSet(stopTokens), repeatPenaltyTransform(p), tokenTransform, func(logits []byte, vocab int) (int32, error) {
+			pickParams := p
+			if p.MinTokensBeforeStop > 0 && generated < p.MinTokensBeforeStop {
+				pickParams.SuppressTokens = appendSuppressionTokens(p.SuppressTokens, stopTokens)
+			}
+			next, err := s.Sample(logits, vocab, pickParams)
+			if err == nil {
+				generated++
+			}
+			return next, err
+		}, yield)
 	}
 	generated := 0
 	return generateUntilTransform(m, promptIDs, maxNew, stopSet(stopTokens), repeatPenaltyTransform(p), tokenTransform, func(logits []byte, vocab int) (int32, error) {

@@ -149,6 +149,103 @@ func TestArchSessionNextInputBuffersUsePinnedNoCopyBacking(t *testing.T) {
 	}
 }
 
+func TestArchSessionNextInputEmbBufferReuseAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	sess := &ArchSession{}
+	if buf := sess.nextInputEmbBuffer(64); buf == nil {
+		t.Fatal("nextInputEmbBuffer warmup returned nil")
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		if buf := sess.nextInputEmbBuffer(64); buf == nil {
+			t.Fatal("nextInputEmbBuffer reuse returned nil")
+		}
+	})
+	if allocs > 0 {
+		t.Fatalf("nextInputEmbBuffer reuse allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestNewArchSessionInitialisesDevicePagedKVForGlobalOwners(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, maxLen = 64, 1, 1, 64, 128, 32, 4
+	specs := []model.LayerSpec{
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV},
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV},
+		{Attention: model.SlidingAttention, KVShareFrom: 2, CacheIndex: 1, HeadDim: headDim, KVHeads: nKV},
+	}
+	layers := make([]DecodeLayerWeights, len(specs))
+	for i := range layers {
+		layers[i] = decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 800+i)
+	}
+	g := &BF16Model{
+		Layers:    layers,
+		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 811)),
+		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 823)),
+	}
+	g.LMHead, g.Tied = g.Embed, true
+	arch := model.Arch{
+		Hidden: dModel, Heads: nHeads, KVHeads: nKV, HeadDim: headDim, FF: dFF, Vocab: vocab,
+		Layer: specs, SlidingWindow: 2, RotaryDim: headDim, RotaryDimLocal: headDim,
+		RopeBase: 10000, RopeLocalBase: 10000, AttnScale: 0.125, Eps: 1e-5,
+	}
+
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	defer sess.Close()
+	if len(sess.state.pagedKV) != len(specs) {
+		t.Fatalf("paged KV entries = %d, want %d", len(sess.state.pagedKV), len(specs))
+	}
+	if sess.state.pagedKV[0] == nil {
+		t.Fatal("global owner layer did not receive a device-paged KV cache")
+	}
+	if sess.state.pagedKV[1] != nil {
+		t.Fatal("KV-sharing layer should read the owner page cache, not own one")
+	}
+	if sess.state.pagedKV[2] == nil {
+		t.Fatal("sliding owner layer did not receive a ring device-paged KV cache")
+	}
+	if sess.state.pagedKV[0].maxSize != maxLen {
+		t.Fatalf("global owner paged maxSize = %d, want %d", sess.state.pagedKV[0].maxSize, maxLen)
+	}
+	if !sess.state.pagedKV[2].ring || sess.state.pagedKV[2].maxSize != arch.SlidingWindow {
+		t.Fatalf("sliding owner paged ring/maxSize = %v/%d, want true/%d", sess.state.pagedKV[2].ring, sess.state.pagedKV[2].maxSize, arch.SlidingWindow)
+	}
+}
+
+func TestArchSessionPrefillTokensPopulatesDevicePagedKV(t *testing.T) {
+	requireSDPAPagedKernel(t)
+
+	g, arch, maxLen := sessionStateFixture(t)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	defer sess.Close()
+	prompt := []int32{1, 2, 3, 4, 5}
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	for li, spec := range sess.state.specs {
+		if !spec.OwnsCache() {
+			continue
+		}
+		cache := sess.state.layerPagedKV(li)
+		if cache == nil {
+			continue
+		}
+		if cache.length != len(prompt) {
+			t.Fatalf("paged KV layer %d length = %d, want %d", li, cache.length, len(prompt))
+		}
+		if len(cache.kPages) == 0 || len(cache.vPages) == 0 {
+			t.Fatalf("paged KV layer %d has no allocated pages after prefill", li)
+		}
+	}
+}
+
 func TestArchSessionCloseClearsSessionOwnedScratch(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -401,6 +498,126 @@ func TestArchSessionPrefillRetainedTokensBatchedDenseUsesEmbedInto(t *testing.T)
 	}
 }
 
+func TestArchSessionPrefillRetainedTokensBatchedDenseChunksSlidingRingWrap(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	serial, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession serial: %v", err)
+	}
+	chunked, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession chunked: %v", err)
+	}
+	serial.state.icb = nil
+	chunked.state.icb = nil
+
+	ids := []int32{1, 5, 3, 9, 4}
+	var serialHidden []byte
+	withAutoreleasePool(func() {
+		for _, id := range ids {
+			serialHidden, err = serial.stepIDInPool(id)
+			if err != nil {
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("serial stepIDInPool: %v", err)
+	}
+
+	hidden, ok, err := chunked.prefillRetainedTokensBatchedDense(ids, "test")
+	if err != nil {
+		t.Fatalf("prefillRetainedTokensBatchedDense chunked sliding wrap: %v", err)
+	}
+	if !ok {
+		t.Fatal("prefillRetainedTokensBatchedDense chunked sliding wrap ok = false")
+	}
+	if chunked.Pos() != len(ids) {
+		t.Fatalf("chunked pos = %d, want %d", chunked.Pos(), len(ids))
+	}
+	if !bytes.Equal(hidden, serialHidden) {
+		t.Fatal("chunked sliding dense prefill hidden differs from serial")
+	}
+	var serialNext, chunkedNext []byte
+	withAutoreleasePool(func() {
+		serialNext, err = serial.stepIDInPool(6)
+		if err != nil {
+			return
+		}
+		chunkedNext, err = chunked.stepIDInPool(6)
+	})
+	if err != nil {
+		t.Fatalf("post-prefill stepIDInPool: %v", err)
+	}
+	if !bytes.Equal(chunkedNext, serialNext) {
+		t.Fatal("chunked sliding dense prefill cache differs from serial on next token")
+	}
+}
+
+func TestArchSessionPrefillTokensSlidingRingWrapMatchesSerial(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	serial, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession serial: %v", err)
+	}
+	retained, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession retained: %v", err)
+	}
+	serial.state.icb = nil
+	retained.state.icb = nil
+	ids := []int32{1, 5, 3, 9, 4}
+	var serialHidden []byte
+	withAutoreleasePool(func() {
+		for _, id := range ids {
+			serialHidden, err = serial.stepIDInPool(id)
+			if err != nil {
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("serial stepIDInPool: %v", err)
+	}
+	if err := retained.PrefillTokens(ids); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	if retained.Pos() != len(ids) {
+		t.Fatalf("retained pos = %d, want %d", retained.Pos(), len(ids))
+	}
+	if !bytes.Equal(retained.retainedHidden, serialHidden) {
+		t.Fatal("PrefillTokens sliding wrap hidden differs from serial")
+	}
+	var serialNext, retainedNext []byte
+	withAutoreleasePool(func() {
+		serialNext, err = serial.stepIDInPool(6)
+		if err != nil {
+			return
+		}
+		retainedNext, err = retained.stepIDInPool(6)
+	})
+	if err != nil {
+		t.Fatalf("post-prefill stepIDInPool: %v", err)
+	}
+	if !bytes.Equal(retainedNext, serialNext) {
+		t.Fatal("PrefillTokens sliding wrap cache differs from serial on next token")
+	}
+}
+
 func TestArchSessionPrefillRetainedTokensBatchedDenseReusesHiddenReadback(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -481,6 +698,52 @@ func TestArchSessionPrefillRetainedTokensBatchedDenseReturnsRetainedHidden(t *te
 	}
 	if cap(sess.sampleHidden) != 0 {
 		t.Fatalf("sample hidden scratch cap = %d, want 0", cap(sess.sampleHidden))
+	}
+}
+
+func TestArchSessionPrefillRetainedTokensBatchedDenseWritesLastHiddenDirectly(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	defer sess.Close()
+	sess.state.icb = nil
+
+	withAutoreleasePool(func() {
+		sess.state.denseBatch.rows(1, arch.Hidden)
+	})
+	outScratch := unsafe.Slice((*byte)(sess.state.denseBatch.outPacked.Contents()), arch.Hidden*bf16Size)
+	sentinel := bytes.Repeat([]byte{0x73}, len(outScratch))
+	copy(outScratch, sentinel)
+
+	hidden, ok, err := sess.prefillRetainedTokensBatchedDense([]int32{1}, "test")
+	if err != nil {
+		t.Fatalf("prefillRetainedTokensBatchedDense: %v", err)
+	}
+	if !ok {
+		t.Fatal("prefillRetainedTokensBatchedDense declined dense fixture")
+	}
+	if len(sess.retainedHidden) == 0 || unsafe.Pointer(&hidden[0]) != unsafe.Pointer(&sess.retainedHidden[0]) {
+		t.Fatal("batched retained prefill did not return retained hidden backing")
+	}
+	retainedBuf := sess.retainedHiddenBuffer()
+	if retainedBuf == nil {
+		t.Fatal("batched retained prefill did not keep a pinned retained hidden buffer")
+	}
+	if sess.state.denseBatch.lastRows == nil {
+		t.Fatal("batched retained prefill did not record a final row buffer")
+	}
+	if sess.state.denseBatch.lastRows.GetID() != retainedBuf.GetID() {
+		t.Fatalf("batched retained prefill final row buffer id = %d, want retained buffer %d", sess.state.denseBatch.lastRows.GetID(), retainedBuf.GetID())
+	}
+	if !bytes.Equal(outScratch, sentinel) {
+		t.Fatal("batched retained prefill wrote last hidden through dense output scratch")
 	}
 }
 
@@ -671,7 +934,7 @@ func TestArchSessionSampleTopKCandidatesFromLogitsMatchesFullSampler(t *testing.
 		SuppressTokens: []int32{4},
 	}
 	sess := &ArchSession{arch: model.Arch{Vocab: len(vals)}}
-	candidateLogits, candidateIDs, ok, err := sess.sampleTopKCandidatesFromLogits(logits, params.TopK, params.SuppressTokens)
+	candidateLogits, candidateIDs, ok, err := sess.sampleTopKCandidatesFromLogits(logits, params, nil)
 	if err != nil {
 		t.Fatalf("sampleTopKCandidatesFromLogits: %v", err)
 	}
@@ -696,6 +959,42 @@ func TestArchSessionSampleTopKCandidatesFromLogitsMatchesFullSampler(t *testing.
 		if got != want {
 			t.Fatalf("draw %d: candidate sample = %d, want %d", i, got, want)
 		}
+	}
+}
+
+func TestArchSessionSampleTokenFromLogitsTopKRepeatPenaltyUsesCompactCandidates(t *testing.T) {
+	vals := []float32{-2.5, 3.25, 0.5, 2.75, 3.1, -1.5, 2.9, 0.25, 1.8, -0.75, 2.4}
+	logits := toBF16Bytes(vals)
+	params := model.SampleParams{
+		Temperature:    0.9,
+		TopK:           5,
+		TopP:           0.82,
+		SuppressTokens: []int32{4},
+		RepeatPenalty:  1.4,
+	}
+	history := []int32{1, 1, 6, 9}
+	sess := &ArchSession{arch: model.Arch{Vocab: len(vals)}}
+
+	penalized, err := nativeApplyRepeatPenaltyBF16(logits, len(vals), history, params.RepeatPenalty)
+	if err != nil {
+		t.Fatalf("nativeApplyRepeatPenaltyBF16: %v", err)
+	}
+	want, err := model.NewSampler(77).Sample(penalized, len(vals), params)
+	if err != nil {
+		t.Fatalf("full penalized sample: %v", err)
+	}
+	got, err := sess.sampleTokenFromLogits(logits, model.NewSampler(77), params, history)
+	if err != nil {
+		t.Fatalf("sampleTokenFromLogits: %v", err)
+	}
+	if got != want {
+		t.Fatalf("compact candidate sample = %d, want full penalized sample %d", got, want)
+	}
+	if len(sess.sampleCandidateIDs) != params.TopK {
+		t.Fatalf("candidate ids len = %d, want %d", len(sess.sampleCandidateIDs), params.TopK)
+	}
+	if sess.samplePenaltyLogits != nil {
+		t.Fatal("TopK repeat-penalty logits path used vocab-sized repeat-penalty scratch")
 	}
 }
 
@@ -1470,6 +1769,8 @@ func TestArchSessionGenerateFirstHeadUsesRetainedPromptHiddenNoCopy(t *testing.T
 		sentinel.pinned.bytes[i] = 0xa5
 	}
 	sess.headEnc.hiddenScratch.Put(sentinel)
+	forceNativeGC()
+	forceNativeGC()
 
 	if _, err := sess.Generate([]int32{1, 5, 3}, 1, -1); err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1763,6 +2064,94 @@ func TestArchSessionSampleTopKTopPMatchesFullHead(t *testing.T) {
 	}
 	if deviceGot != want {
 		t.Fatalf("device TopK+TopP sample = %d, want candidate/full-head sample %d (ids %v)", deviceGot, want, candidateIDs)
+	}
+}
+
+func TestArchSessionSampleTopKCandidatesRepeatPenaltyEmptyHistoryDoesNotDecline(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	hidden := append([]byte(nil), sess.retainedHidden...)
+	params := model.SampleParams{Temperature: 1, TopK: 5, TopP: 0.5, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	full, err := sess.head(hidden, false)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	want, err := model.NewSampler(123).Sample(full, arch.Vocab, params)
+	if err != nil {
+		t.Fatalf("full Sample: %v", err)
+	}
+	candidateLogits, candidateIDs, ok, err := sess.sampleTopKCandidatesFromHiddenInPool(hidden, params)
+	if err != nil {
+		t.Fatalf("sampleTopKCandidatesFromHiddenInPool: %v", err)
+	}
+	if !ok {
+		t.Fatal("TopK candidate path declined repeat-penalty params with empty history")
+	}
+	got, err := model.NewSampler(123).SampleCandidates(candidateLogits, candidateIDs, params)
+	if err != nil {
+		t.Fatalf("candidate SampleCandidates: %v", err)
+	}
+	if got != want {
+		t.Fatalf("TopK+TopP repeat-penalty empty-history candidate sample = %d, want full-head sample %d (ids %v)", got, want, candidateIDs)
+	}
+}
+
+func TestArchSessionSampleTopKCandidatesRepeatPenaltyHistoryMatchesFullHead(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	if err := sess.PrefillTokens([]int32{1, 5, 3}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	hidden := append([]byte(nil), sess.retainedHidden...)
+	params := model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 1.2}
+	history := []int32{4, 5, 5, 31}
+	full, err := sess.head(hidden, false)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	penalized, err := nativeApplyRepeatPenaltyBF16(full, arch.Vocab, history, params.RepeatPenalty)
+	if err != nil {
+		t.Fatalf("nativeApplyRepeatPenaltyBF16: %v", err)
+	}
+	want, err := model.NewSampler(123).Sample(penalized, arch.Vocab, params)
+	if err != nil {
+		t.Fatalf("penalized full Sample: %v", err)
+	}
+	candidateLogits, candidateIDs, ok, err := sess.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, params, history)
+	if err != nil {
+		t.Fatalf("sampleTopKCandidatesFromHiddenWithHistoryInPool: %v", err)
+	}
+	if !ok {
+		t.Fatal("TopK candidate path declined repeat-penalty params with history")
+	}
+	got, err := model.NewSampler(123).SampleCandidates(candidateLogits, candidateIDs, params)
+	if err != nil {
+		t.Fatalf("candidate SampleCandidates: %v", err)
+	}
+	if got != want {
+		t.Fatalf("TopK+TopP repeat-penalty history candidate sample = %d, want full-head sample %d (ids %v)", got, want, candidateIDs)
+	}
+	if sess.samplePenaltyLogits != nil {
+		t.Fatal("TopK candidate repeat-penalty path used vocab-sized repeat-penalty scratch")
 	}
 }
 
@@ -2250,6 +2639,52 @@ func TestArchSessionStepSampleTopKCandidatesICBMatchesSerial(t *testing.T) {
 	if chained.Pos() != serial.Pos() {
 		t.Fatalf("positions diverged: chained=%d serial=%d", chained.Pos(), serial.Pos())
 	}
+
+	serial, err = NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession serial repeat penalty: %v", err)
+	}
+	chained, err = NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession chained repeat penalty: %v", err)
+	}
+	for _, id := range []int32{1, 5, 3} {
+		if _, err := serial.stepID(id); err != nil {
+			t.Fatalf("serial repeat-penalty prefix stepID(%d): %v", id, err)
+		}
+		if _, err := chained.stepID(id); err != nil {
+			t.Fatalf("chained repeat-penalty prefix stepID(%d): %v", id, err)
+		}
+	}
+	params = model.SampleParams{Temperature: 1, TopK: 7, TopP: 0.75, SuppressTokens: []int32{2, 7}, RepeatPenalty: 8}
+	serialHidden, err = serial.stepID(9)
+	if err != nil {
+		t.Fatalf("serial repeat-penalty stepID: %v", err)
+	}
+	unpenalizedLogits, unpenalizedIDs, ok, err := serial.sampleTopKCandidatesFromHiddenInPool(serialHidden, params)
+	if err != nil || !ok {
+		t.Fatalf("serial unpenalized sampleTopKCandidatesFromHiddenInPool ok=%v err=%v", ok, err)
+	}
+	history := append([]int32(nil), unpenalizedIDs...)
+	wantLogits, wantIDs, ok = nil, nil, false
+	wantLogits, wantIDs, ok, err = serial.sampleTopKCandidatesFromHiddenWithHistoryInPool(serialHidden, params, history)
+	if err != nil || !ok {
+		t.Fatalf("serial sampleTopKCandidatesFromHiddenWithHistoryInPool ok=%v err=%v", ok, err)
+	}
+	if bytes.Equal(unpenalizedLogits, wantLogits) && idsEqual(unpenalizedIDs, wantIDs) {
+		t.Fatal("BF16 fixture does not exercise repeat-penalty candidate differences")
+	}
+	gotHidden, gotLogits, gotIDs, ok = nil, nil, nil, false
+	gotHidden, gotLogits, gotIDs, ok, err = chained.stepSampleTopKCandidatesWithHistoryInPool(9, params, history)
+	if err != nil || !ok {
+		t.Fatalf("chained stepSampleTopKCandidatesWithHistoryInPool ok=%v err=%v", ok, err)
+	}
+	if !bytes.Equal(gotHidden, serialHidden) {
+		t.Fatal("chained sampled-candidate repeat-penalty hidden differs from serial stepID hidden")
+	}
+	if !bytes.Equal(gotLogits, wantLogits) || !idsEqual(gotIDs, wantIDs) {
+		t.Fatalf("chained repeat-penalty candidates differ from serial: ids got %v want %v", gotIDs, wantIDs)
+	}
 }
 
 func TestArchSessionStepSampleTopKCandidatesICBAllocationBudget(t *testing.T) {
@@ -2270,8 +2705,8 @@ func TestArchSessionStepSampleTopKCandidatesICBAllocationBudget(t *testing.T) {
 			t.Fatal("stepSampleTopKCandidatesInPool declined after warmup")
 		}
 	})
-	if allocs > 330 {
-		t.Fatalf("ICB sampled-TopK candidate allocations = %.0f, want <= 330", allocs)
+	if allocs > 40 {
+		t.Fatalf("ICB sampled-TopK candidate allocations = %.0f, want <= 40", allocs)
 	}
 }
 
@@ -3092,8 +3527,8 @@ func TestArchSessionStepSampleLogitsTokenICBAllocationBudget(t *testing.T) {
 			t.Fatal("stepSampleLogitsTokenInPool declined after warmup")
 		}
 	})
-	if allocs > 260 {
-		t.Fatalf("ICB sampled-logits token allocations = %.0f, want <= 260", allocs)
+	if allocs > 40 {
+		t.Fatalf("ICB sampled-logits token allocations = %.0f, want <= 40", allocs)
 	}
 }
 
@@ -3175,8 +3610,8 @@ func TestArchSessionStepSampleTopKTokenICBAllocationBudget(t *testing.T) {
 			t.Fatal("stepSampleTopKTokenInPool declined after warmup")
 		}
 	})
-	if allocs > 260 {
-		t.Fatalf("ICB sampled-TopK token allocations = %.0f, want <= 260", allocs)
+	if allocs > 40 {
+		t.Fatalf("ICB sampled-TopK token allocations = %.0f, want <= 40", allocs)
 	}
 }
 

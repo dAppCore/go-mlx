@@ -94,6 +94,39 @@ func TestDecodeForwardICBCoreScratchOutputViewsUseCallerBacking(t *testing.T) {
 	}
 }
 
+func TestDecodeForwardICBCoreScratchOutputViewsReusePinnedOwnerBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 64, 1, 1, 64, 128, 1
+	pinned := make([]*pinnedNoCopyBytes, 2)
+	t.Cleanup(func() {
+		for _, p := range pinned {
+			if p != nil {
+				p.Close()
+			}
+		}
+	})
+	sc := newDecodeForwardICBCoreScratch(dModel, nHeads*headDim, nKV*headDim, dFF, nLayers)
+	t.Cleanup(sc.closeOutputViews)
+
+	outputs := make([][]byte, len(pinned))
+	for i := range pinned {
+		var err error
+		pinned[i], err = newPinnedNoCopyBytes(dModel * bf16Size)
+		if err != nil {
+			t.Fatalf("newPinnedNoCopyBytes(%d): %v", i, err)
+		}
+		outputs[i] = pinned[i].bytes
+	}
+	views, ok := sc.outputViews(outputs, dModel*bf16Size)
+	if !ok {
+		t.Fatal("outputViews did not create no-copy views for pinned-owner outputs")
+	}
+	for i := range pinned {
+		requirePinnedOwnerBuffer(t, "decode ICB output view", views[i], pinned[i])
+	}
+}
+
 func TestDecodeForwardICBAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -112,8 +145,8 @@ func TestDecodeForwardICBAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardICB: %v", forwardErr)
 	}
-	if allocs > 540 {
-		t.Fatalf("DecodeForwardICB allocations = %.0f, want <= 540", allocs)
+	if allocs > 235 {
+		t.Fatalf("DecodeForwardICB allocations = %.0f, want <= 235", allocs)
 	}
 }
 
@@ -131,6 +164,8 @@ func TestDecodeForwardICBCoreScratchPoolKeepsShapesResident(t *testing.T) {
 
 	putDecodeForwardICBCoreScratch(small)
 	putDecodeForwardICBCoreScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	if got := smallPool.Get(); got != small {
 		t.Fatal("DecodeForward ICB core scratch pool evicted the small shape after using the larger shape")

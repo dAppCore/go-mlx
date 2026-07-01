@@ -344,6 +344,37 @@ func TestLoadFromDir(t *testing.T) {
 	t.Logf("Load: synthetic %d-layer bf16 checkpoint loaded + closed clean", len(m.Layers))
 }
 
+func TestLoadFromDirCarriesVisionPayload_Good(t *testing.T) {
+	cfg := Config{
+		HiddenSize: 64, NumHiddenLayers: 1, IntermediateSize: 128,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 16, VocabSize: 32, RMSNormEps: 1e-6,
+		SlidingWindow: 32, MaxPositionEmbeddings: 128,
+		LayerTypes: []string{"full_attention"},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := minimalGemma4Tensors(arch)
+	addMinimalVisionTensors(ts, 64, 1)
+	dir := writeGemma4Dir(t, cfg, ts)
+
+	m, dm, err := model.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer dm.Close()
+	if m.Vision == nil {
+		t.Fatal("loaded model Vision = nil, want gathered vision payload")
+	}
+	if len(m.Vision.Layers) != 1 {
+		t.Fatalf("vision layers = %d, want 1", len(m.Vision.Layers))
+	}
+	if m.Vision.PatchEmbedding == nil || m.Vision.Projector.Projection.Weight == nil {
+		t.Fatal("vision payload missing patch embedding or projector")
+	}
+}
+
 // TestLoadErrors covers Load's four error branches: missing config.json, unparseable config.json,
 // no safetensors in the dir, and a config that parses but fails Arch validation.
 func TestLoadErrors(t *testing.T) {
@@ -432,6 +463,29 @@ func writeGemma4Dir(t *testing.T, cfg Config, ts map[string]safetensors.Tensor) 
 	}
 	writeFile(t, dir, "model.safetensors", string(blob))
 	return dir
+}
+
+func addMinimalVisionTensors(ts map[string]safetensors.Tensor, hidden, layers int) {
+	bf := func(n int) safetensors.Tensor {
+		return safetensors.Tensor{Dtype: "BF16", Shape: []int{n}, Data: make([]byte, n*2)}
+	}
+	mat := func(out, in int) safetensors.Tensor {
+		return safetensors.Tensor{Dtype: "BF16", Shape: []int{out, in}, Data: make([]byte, out*in*2)}
+	}
+	ts["vision_tower.embeddings.patch_embedding.weight"] = mat(hidden, 588)
+	for i := 0; i < layers; i++ {
+		p := core.Sprintf("vision_tower.encoder.layers.%d", i)
+		for _, n := range []string{".input_layernorm", ".post_attention_layernorm", ".pre_feedforward_layernorm", ".post_feedforward_layernorm", ".self_attn.q_norm", ".self_attn.k_norm"} {
+			ts[p+n+".weight"] = bf(hidden)
+		}
+		for _, n := range []string{".self_attn.q_proj", ".self_attn.k_proj", ".self_attn.v_proj", ".self_attn.o_proj"} {
+			ts[p+n+".weight"] = mat(hidden, hidden)
+		}
+		ts[p+".mlp.gate_proj.weight"] = mat(hidden*4, hidden)
+		ts[p+".mlp.up_proj.weight"] = mat(hidden*4, hidden)
+		ts[p+".mlp.down_proj.weight"] = mat(hidden, hidden*4)
+	}
+	ts["multi_modal_projector.proj.weight"] = mat(hidden, hidden)
 }
 
 func writeFile(t *testing.T, dir, name, content string) {

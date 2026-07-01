@@ -6,12 +6,15 @@ import (
 	"context"
 	"flag"
 	"io"
+	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/chat"
-	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	gemma4chat "dappco.re/go/mlx/pkg/metal/model/gemma4/chat"
+	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/model/gemma4"
+	gemma4chat "dappco.re/go/mlx/pkg/model/gemma4/chat"
+	"dappco.re/go/mlx/pkg/native"
+	"dappco.re/go/mlx/pkg/tokenizer"
 )
 
 // runVisionCommand answers a prompt about images and/or video frames through
@@ -48,110 +51,131 @@ func runVisionCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 2
 	}
 
-	m, err := gemma4.LoadGemma4(fs.Arg(0))
+	return runNativeVisionCommand(ctx, fs.Arg(0), imagePaths, framePaths, *fps, *prompt, *maxTokens, *chatFlag, stdout, stderr)
+}
+
+type nativeVisionCommandModel interface {
+	model.SessionModel
+	AcceptsImageInput() bool
+	ImagePlaceholderTokenID() int32
+	ImagePlaceholderBlock(int) string
+	VideoPlaceholderTokenID() int32
+	VideoPlaceholderBlock(int) string
+	ProjectImageFeatures([]byte) ([]byte, error)
+}
+
+type nativeVisionCommandSession interface {
+	PrefillTokenEmbeddings([]int32, [][]byte) error
+	GenerateFromCacheEach(int, int, func(int32) bool) ([]int32, error)
+}
+
+func runNativeVisionCommand(ctx context.Context, modelPath string, imagePaths, framePaths []string, fps float64, prompt string, maxTokens int, chatFlag bool, stdout, stderr io.Writer) int {
+	if maxTokens <= 0 {
+		core.Print(stderr, "%s vision: max-tokens must be > 0", cliName())
+		return 1
+	}
+
+	tm, err := native.LoadTokenModelDir(modelPath, maxTokens+4096)
 	if err != nil {
 		core.Print(stderr, "%s vision: load: %v", cliName(), err)
 		return 1
 	}
-	defer m.CloseModel()
-	if m.VisionTower == nil && m.MultiModalProjector == nil {
+	if c, ok := tm.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+	m, ok := tm.(nativeVisionCommandModel)
+	if !ok || !m.AcceptsImageInput() {
 		core.Print(stderr, "%s vision: this checkpoint has no vision tower", cliName())
 		return 1
 	}
-	if m.Cfg == nil || m.Cfg.ImageTokenID == 0 {
+	if m.ImagePlaceholderTokenID() == 0 {
 		core.Print(stderr, "%s vision: model config declares no image_token_id", cliName())
 		return 1
 	}
-	imageCfg, videoCfg, err := gemma4.LoadGemma4ImageFeatureConfigs(metal.ResolveModelRoot(fs.Arg(0)))
+
+	imageCfg, videoCfg, err := gemma4.LoadGemma4ImageFeatureConfigs(modelPath)
 	if err != nil {
 		core.Print(stderr, "%s vision: %v", cliName(), err)
 		return 1
 	}
 
-	loadPixels := func(path string, cfg *gemma4.Gemma4ImageFeatureConfig) (*metal.Array, int, error) {
-		read := core.ReadFile(path)
-		if !read.OK {
-			return nil, 0, core.E("mlx.vision", core.Sprintf("read %s", path), nil)
-		}
-		data, ok := read.Value.([]byte)
-		if !ok {
-			return nil, 0, core.E("mlx.vision", core.Sprintf("read %s returned non-byte data", path), nil)
-		}
-		return m.Gemma4ImagePixels(data, cfg)
+	tok, err := tokenizer.LoadTokenizer(core.PathJoin(modelPath, "tokenizer.json"))
+	if err != nil {
+		core.Print(stderr, "%s vision: tokenizer: %v", cliName(), err)
+		return 1
 	}
 
 	content := ""
-	var imagePixels, videoFrames []*metal.Array
-	defer func() {
-		metal.Free(imagePixels...)
-		metal.Free(videoFrames...)
-	}()
+	var imageFeatures, videoFeatures []byte
 	wantImageTokens := 0
 	for _, path := range imagePaths {
-		pixels, softTokens, loadErr := loadPixels(path, imageCfg)
+		projected, softTokens, loadErr := nativeVisionProjectedFeatures(m, path, imageCfg)
 		if loadErr != nil {
 			core.Print(stderr, "%s vision: %s: %v", cliName(), path, loadErr)
 			return 1
 		}
-		imagePixels = append(imagePixels, pixels)
+		imageFeatures = append(imageFeatures, projected...)
 		wantImageTokens += softTokens
-		content += gemma4.Gemma4BOIToken
-		for range softTokens {
-			content += gemma4.Gemma4ImageToken
+		block := m.ImagePlaceholderBlock(softTokens)
+		if block == "" {
+			core.Print(stderr, "%s vision: model config declares no image placeholder tokens", cliName())
+			return 1
 		}
-		content += gemma4.Gemma4EOIToken + "\n"
+		content += block + "\n"
 	}
 	wantVideoTokens := 0
 	for i, path := range framePaths {
-		pixels, softTokens, loadErr := loadPixels(path, videoCfg)
+		if m.VideoPlaceholderTokenID() == 0 {
+			core.Print(stderr, "%s vision: model config declares no video_token_id", cliName())
+			return 1
+		}
+		projected, softTokens, loadErr := nativeVisionProjectedFeatures(m, path, videoCfg)
 		if loadErr != nil {
 			core.Print(stderr, "%s vision: %s: %v", cliName(), path, loadErr)
 			return 1
 		}
-		videoFrames = append(videoFrames, pixels)
+		videoFeatures = append(videoFeatures, projected...)
 		wantVideoTokens += softTokens
 		seconds := 0
-		if *fps > 0 {
-			seconds = int(float64(i) / *fps)
+		if fps > 0 {
+			seconds = int(float64(i) / fps)
 		}
 		content += core.Sprintf("%02d:%02d ", seconds/60, seconds%60)
-		content += gemma4.Gemma4BOIToken
-		for range softTokens {
-			content += gemma4.Gemma4VideoToken
+		block := m.VideoPlaceholderBlock(softTokens)
+		if block == "" {
+			core.Print(stderr, "%s vision: model config declares no video placeholder tokens", cliName())
+			return 1
 		}
-		content += gemma4.Gemma4EOIToken + " "
+		content += block + " "
 	}
 	if len(framePaths) > 0 {
 		content += "\n"
 	}
-	content += *prompt
+	content += prompt
 
 	formatted := content
-	if *chatFlag {
+	if chatFlag {
 		formatted = gemma4chat.Format([]chat.Message{{Role: "user", Content: content}}, chat.Config{})
 	}
-	ids := m.Tok.Encode(formatted)
-	if got := countTokenID(ids, m.Cfg.ImageTokenID); got != wantImageTokens {
+	ids := tok.Encode(formatted)
+	if got := countTokenID(ids, m.ImagePlaceholderTokenID()); got != wantImageTokens {
 		core.Print(stderr, "%s vision: tokenizer produced %d image placeholders, want %d", cliName(), got, wantImageTokens)
 		return 1
 	}
-	if m.Cfg.VideoTokenID != 0 {
-		if got := countTokenID(ids, m.Cfg.VideoTokenID); got != wantVideoTokens {
+	if wantVideoTokens > 0 {
+		if got := countTokenID(ids, m.VideoPlaceholderTokenID()); got != wantVideoTokens {
 			core.Print(stderr, "%s vision: tokenizer produced %d video placeholders, want %d", cliName(), got, wantVideoTokens)
 			return 1
 		}
-	} else if wantVideoTokens > 0 {
-		core.Print(stderr, "%s vision: model config declares no video_token_id", cliName())
-		return 1
 	}
 
-	res, err := multimodalGreedyDecode(ctx, m, ids, imagePixels, nil, videoFrames, *maxTokens)
+	res, err := nativeVisionGreedyDecode(ctx, m, tok, ids, imageFeatures, videoFeatures, maxTokens)
 	if err != nil {
 		core.Print(stderr, "%s vision: %v", cliName(), err)
 		return 1
 	}
 
-	core.WriteString(stdout, m.Tok.Decode(res.Generated))
+	core.WriteString(stdout, tok.Decode(res.Generated))
 	core.WriteString(stdout, "\n\n")
 	rate := 0.0
 	if res.DecodeDur > 0 {
@@ -159,9 +183,152 @@ func runVisionCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	core.WriteString(stdout, core.Sprintf(
 		"vision %d image(s) %d frame(s) · %d soft tokens · prefill %dms · %d generated · %.1f tok/s\n",
-		len(imagePixels), len(videoFrames), wantImageTokens+wantVideoTokens,
+		len(imagePaths), len(framePaths), wantImageTokens+wantVideoTokens,
 		res.PrefillDur.Milliseconds(), len(res.Generated), rate))
 	return 0
+}
+
+func nativeVisionProjectedFeatures(m nativeVisionCommandModel, path string, cfg *gemma4.Gemma4ImageFeatureConfig) ([]byte, int, error) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return nil, 0, core.E("mlx.vision", core.Sprintf("read %s", path), nil)
+	}
+	data, ok := read.Value.([]byte)
+	if !ok {
+		return nil, 0, core.E("mlx.vision", core.Sprintf("read %s returned non-byte data", path), nil)
+	}
+	patches, softTokens, err := native.VisionImagePatches(data, nativeVisionFeatureConfig(cfg))
+	if err != nil {
+		return nil, 0, err
+	}
+	if softTokens <= 0 {
+		return nil, 0, core.NewError("native vision features produced no soft tokens")
+	}
+	projected, err := m.ProjectImageFeatures(patches)
+	if err != nil {
+		return nil, 0, core.E("mlx.vision", "project", err)
+	}
+	return projected, softTokens, nil
+}
+
+func nativeVisionFeatureConfig(cfg *gemma4.Gemma4ImageFeatureConfig) *native.VisionImageFeatureConfig {
+	if cfg == nil {
+		return nil
+	}
+	return &native.VisionImageFeatureConfig{
+		PatchSize:         cfg.PatchSize,
+		MaxSoftTokens:     cfg.MaxSoftTokens,
+		PoolingKernelSize: cfg.PoolingKernelSize,
+		RescaleFactor:     cfg.RescaleFactor,
+		DoResize:          cfg.DoResize,
+		DoConvertRGB:      cfg.DoConvertRGB,
+	}
+}
+
+func nativeVisionGreedyDecode(ctx context.Context, m nativeVisionCommandModel, tok *tokenizer.Tokenizer, ids []int32, imageFeatures, videoFeatures []byte, maxTokens int) (multimodalDecodeResult, error) {
+	var res multimodalDecodeResult
+
+	start := time.Now()
+	embeddings, err := nativeVisionPromptEmbeddings(m, ids, imageFeatures, videoFeatures)
+	if err != nil {
+		return res, err
+	}
+	stepper, err := m.OpenSession()
+	if err != nil {
+		return res, err
+	}
+	if c, ok := stepper.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+	sess, ok := stepper.(nativeVisionCommandSession)
+	if !ok {
+		return res, core.NewError("native vision session does not support multimodal prefill")
+	}
+	if err := sess.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+		return res, err
+	}
+	res.PrefillDur = time.Since(start)
+
+	stopIDs := nativeCommandStopIDs(tok)
+	eos := -1
+	if tok.HasEOSToken() {
+		eos = int(tok.EOSToken())
+	}
+	emit := func(id int32) bool {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return false
+			}
+		}
+		_, stop := stopIDs[id]
+		return !stop
+	}
+
+	decodeStart := time.Now()
+	res.Generated, err = sess.GenerateFromCacheEach(maxTokens, eos, emit)
+	res.DecodeDur = time.Since(decodeStart)
+	if err != nil {
+		return res, err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+	}
+	if len(res.Generated) > 0 {
+		if _, stop := stopIDs[res.Generated[len(res.Generated)-1]]; stop {
+			res.Generated = res.Generated[:len(res.Generated)-1]
+		}
+	}
+	return res, nil
+}
+
+func nativeVisionPromptEmbeddings(m nativeVisionCommandModel, ids []int32, imageFeatures, videoFeatures []byte) ([][]byte, error) {
+	imageID := m.ImagePlaceholderTokenID()
+	videoID := m.VideoPlaceholderTokenID()
+	embeddings := make([][]byte, len(ids))
+	imageOff, videoOff := 0, 0
+	imageUsed, videoUsed := 0, 0
+	for i, id := range ids {
+		emb, err := m.Embed(id)
+		if err != nil {
+			return nil, err
+		}
+		if len(emb) == 0 {
+			return nil, core.NewError("native vision prompt embedding is empty")
+		}
+		switch {
+		case id == imageID:
+			if imageOff+len(emb) > len(imageFeatures) {
+				return nil, core.NewError("native image feature rows do not match placeholder embeddings")
+			}
+			embeddings[i] = append([]byte(nil), imageFeatures[imageOff:imageOff+len(emb)]...)
+			imageOff += len(emb)
+			imageUsed++
+		case videoID != 0 && id == videoID:
+			if videoOff+len(emb) > len(videoFeatures) {
+				return nil, core.NewError("native video feature rows do not match placeholder embeddings")
+			}
+			embeddings[i] = append([]byte(nil), videoFeatures[videoOff:videoOff+len(emb)]...)
+			videoOff += len(emb)
+			videoUsed++
+		default:
+			embeddings[i] = append([]byte(nil), emb...)
+		}
+	}
+	if len(imageFeatures) > 0 && imageUsed == 0 {
+		return nil, core.NewError("native vision prompt has no image placeholders")
+	}
+	if len(videoFeatures) > 0 && videoUsed == 0 {
+		return nil, core.NewError("native vision prompt has no video placeholders")
+	}
+	if imageOff != len(imageFeatures) {
+		return nil, core.NewError("native vision prompt has unused image feature rows")
+	}
+	if videoOff != len(videoFeatures) {
+		return nil, core.NewError("native vision prompt has unused video feature rows")
+	}
+	return embeddings, nil
 }
 
 func splitPathList(list string) []string {

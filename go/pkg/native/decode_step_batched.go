@@ -39,8 +39,15 @@ type decodeLayerBatchedScratchKey struct {
 	dModel, qDim, kvDim, nHeads, dFF, K int
 }
 
+type decodeLayerBatchedScratchPool struct {
+	mu    sync.Mutex
+	items []*decodeLayerBatchedScratch
+}
+
 type decodeLayerBatchedScratch struct {
 	xs, out                     *pinnedNoCopyBytes
+	xsView                      cachedNoCopyBytesView
+	outView                     cachedNoCopyBytesView
 	asc                         attnScratch
 	msc                         mlpScratch
 	hBuf                        metal.MTLBuffer
@@ -87,25 +94,33 @@ func (s *decodeLayerBatchedScratch) Close() {
 		s.out.Close()
 		s.out = nil
 	}
+	s.xsView.Close()
+	s.outView.Close()
 	s.asc = attnScratch{}
 	s.msc = mlpScratch{}
 	s.hBuf = nil
 	s.offBuf = nil
 }
 
-func decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K int) *sync.Pool {
+func (s *decodeLayerBatchedScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	return s.outView.buffer(out)
+}
+
+func decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K int) *decodeLayerBatchedScratchPool {
 	key := decodeLayerBatchedScratchKey{dModel: dModel, qDim: qDim, kvDim: kvDim, nHeads: nHeads, dFF: dFF, K: K}
 	if v, ok := decodeLayerBatchedScratchPools.Load(key); ok {
-		return v.(*sync.Pool)
+		return v.(*decodeLayerBatchedScratchPool)
 	}
-	pool := new(sync.Pool)
+	pool := &decodeLayerBatchedScratchPool{}
 	actual, _ := decodeLayerBatchedScratchPools.LoadOrStore(key, pool)
-	return actual.(*sync.Pool)
+	return actual.(*decodeLayerBatchedScratchPool)
 }
 
 func getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K int) (*decodeLayerBatchedScratch, error) {
-	if v := decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K).Get(); v != nil {
-		s := v.(*decodeLayerBatchedScratch)
+	if s := decodeLayerBatchedScratchPoolFor(dModel, qDim, kvDim, nHeads, dFF, K).Get(); s != nil {
 		if s.matches(dModel, qDim, kvDim, nHeads, dFF, K) {
 			return s, nil
 		}
@@ -120,12 +135,43 @@ func putDecodeLayerBatchedScratch(s *decodeLayerBatchedScratch) {
 	}
 }
 
+func (p *decodeLayerBatchedScratchPool) Get() *decodeLayerBatchedScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *decodeLayerBatchedScratchPool) Put(s *decodeLayerBatchedScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
+}
+
 // DecodeLayerBatchedKV runs one full decode layer (attention half + gemma MLP half, both residuals)
 // for K query tokens at positions [basePos, basePos+K) in one command buffer, growing the seq-major
 // KV caches at rows basePos..basePos+K-1. xs is the K input hiddens [K, dModel] bf16; the result is
 // the K output hiddens [K, dModel] bf16. kCache/vCache are updated in place. Byte-identical to
 // stepping the same K rows one at a time with DecodeStepKV (same kernels, same cache evolution).
 func DecodeLayerBatchedKV(
+	xs, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K int,
+	base, scale, eps float32,
+) ([]byte, error) {
+	return DecodeLayerBatchedKVInto(nil, xs, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps)
+}
+
+func DecodeLayerBatchedKVInto(
+	out []byte,
 	xs, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown []byte,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K int,
 	base, scale, eps float32,
@@ -154,7 +200,13 @@ func DecodeLayerBatchedKV(
 		return nil, core.NewError("native.DecodeLayerBatchedKV: MLP weight size mismatch")
 	}
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
-	out := make([]byte, K*rowBytes)
+	outLen := K * rowBytes
+	callerOut := cap(out) >= outLen
+	if callerOut {
+		out = out[:outLen]
+	} else {
+		out = make([]byte, outLen)
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		// the layer weights are uploaded ONCE and reused across all K rows — the win over K separate
@@ -182,12 +234,22 @@ func DecodeLayerBatchedKV(
 			return
 		}
 		defer putDecodeLayerBatchedScratch(sc)
-		xsBuf, err := sc.xs.copyBuffer(xs)
-		if err != nil {
-			encErr = err
-			return
+		xsBuf, ok := sc.xsView.buffer(xs)
+		if !ok {
+			xsBuf, err = sc.xs.copyBuffer(xs)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		outBuf := sc.out.buf
+		directOut := false
+		if callerOut {
+			if tmp, ok := sc.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		for i := 0; i < K; i++ {
 			sc.offBuf[i] = scalarI32(int32(basePos + i))
 		}
@@ -215,7 +277,9 @@ func DecodeLayerBatchedKV(
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, sc.out.bytes)
+		if !directOut {
+			copy(out, sc.out.bytes[:outLen])
+		}
 		if encErr != nil {
 			return
 		}

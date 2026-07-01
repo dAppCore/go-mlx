@@ -89,7 +89,11 @@ func TestVisionProjectorMLPBranch(t *testing.T) {
 	requireNativeRuntime(t)
 	rows := toBF16Bytes([]float32{3, 4})
 	identity := toBF16Bytes([]float32{1, 0, 0, 1})
-	got, err := visionProjector(rows, &VisionProjectorWeights{Linear1: identity, Linear2: identity, Eps: 0}, 2)
+	got, err := visionProjector(rows, &VisionProjectorWeights{
+		Linear1: VisionProjectorLinear{Weight: identity},
+		Linear2: VisionProjectorLinear{Weight: identity},
+		Eps:     0,
+	}, 2)
 	if err != nil {
 		t.Fatalf("visionProjector MLP branch: %v", err)
 	}
@@ -99,6 +103,82 @@ func TestVisionProjectorMLPBranch(t *testing.T) {
 	for i := range want {
 		if diff := values[i] - want[i]; diff < -0.02 || diff > 0.02 {
 			t.Fatalf("MLP projector value %d = %v, want about %v", i, values[i], want[i])
+		}
+	}
+}
+
+func TestVisionProjectorQuantizedRows(t *testing.T) {
+	requireNativeRuntime(t)
+	const inDim, outDim, groupSize, bits = 64, 2, 64, 4
+	rows := f32ToBf16Slice(syntheticFloat32(inDim, 5))
+	projector := VisionProjectorWeights{
+		Projection: VisionProjectorLinear{
+			Weight:    make([]byte, outDim*(inDim*bits/32)*4),
+			Scales:    toBF16Bytes([]float32{1, 1}),
+			Biases:    toBF16Bytes([]float32{0, 0}),
+			OutDim:    outDim,
+			InDim:     inDim,
+			GroupSize: groupSize,
+			Bits:      bits,
+		},
+		Eps: 1e-6,
+	}
+	got, err := visionProjector(rows, &projector, inDim)
+	if err != nil {
+		t.Fatalf("visionProjector(quant): %v", err)
+	}
+	if len(got) != outDim*bf16Size {
+		t.Fatalf("quant projector bytes = %d, want %d", len(got), outDim*bf16Size)
+	}
+}
+
+func TestVisionProjectorDenseBias(t *testing.T) {
+	requireNativeRuntime(t)
+	rows := toBF16Bytes([]float32{3, 4})
+	projector := VisionProjectorWeights{
+		Projection: VisionProjectorLinear{
+			Weight: toBF16Bytes([]float32{
+				0, 0,
+				0, 0,
+			}),
+			Bias: toBF16Bytes([]float32{1, -2}),
+		},
+		Eps: 0,
+	}
+	got, err := visionProjector(rows, &projector, 2)
+	if err != nil {
+		t.Fatalf("visionProjector(bias): %v", err)
+	}
+	want := []float32{1, -2}
+	values := bf16Floats(got)
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("projector bias value %d = %v, want %v", i, values[i], want[i])
+		}
+	}
+}
+
+func TestVisionMLPAddsLinearBiases(t *testing.T) {
+	requireNativeRuntime(t)
+	identity := toBF16Bytes([]float32{1, 0, 0, 1})
+	zero := toBF16Bytes([]float32{0, 0, 0, 0})
+	weights := &VisionLayerWeights{
+		WGate: zero, BGate: toBF16Bytes([]float32{1, 2}),
+		WUp: zero, BUp: toBF16Bytes([]float32{3, 4}),
+		WDown: identity, BDown: toBF16Bytes([]float32{5, 6}),
+	}
+	got, err := visionMLP(toBF16Bytes([]float32{7, 8}), weights, 1, 2)
+	if err != nil {
+		t.Fatalf("visionMLP(bias): %v", err)
+	}
+	want := []float32{
+		geluTanhScalar(1)*3 + 5,
+		geluTanhScalar(2)*4 + 6,
+	}
+	values := bf16Floats(got)
+	for i := range want {
+		if diff := values[i] - want[i]; diff < -0.03 || diff > 0.03 {
+			t.Fatalf("MLP bias value %d = %v, want about %v", i, values[i], want[i])
 		}
 	}
 }

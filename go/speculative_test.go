@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/decode"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/internal/metaltest"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	gemma4chat "dappco.re/go/mlx/pkg/metal/model/gemma4/chat"
+	gemma4chat "dappco.re/go/mlx/pkg/model/gemma4/chat"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,56 @@ func TestSpeculative_Model_GenerateSpeculative_Good(t *testing.T) {
 	}
 	if draftNative.lastGenerateConfig.MaxTokens != 2 {
 		t.Fatalf("draft MaxTokens = %d, want 2", draftNative.lastGenerateConfig.MaxTokens)
+	}
+}
+
+type fakeNativeSpeculativeModel struct {
+	fakeNativeModel
+	called bool
+	draft  NativeModel
+	prompt string
+	cfg    SpeculativeDecodeConfig
+	result SpeculativeDecodeResult
+	err    error
+}
+
+func (m *fakeNativeSpeculativeModel) GenerateNativeSpeculative(_ context.Context, draft NativeModel, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, bool, error) {
+	m.called = true
+	m.draft = draft
+	m.prompt = prompt
+	m.cfg = cfg
+	return m.result, true, m.err
+}
+
+func TestSpeculative_Model_GenerateSpeculative_NativeFastPath_Good(t *testing.T) {
+	fast := &fakeNativeSpeculativeModel{
+		fakeNativeModel: fakeNativeModel{tokens: []metal.Token{{ID: 9, Text: "generic"}}},
+		result: SpeculativeDecodeResult{
+			Mode:   SpeculativeDecodeModeMTP,
+			Prompt: "prompt",
+			Text:   "native-fast",
+			Tokens: []decode.Token{{ID: 7, Text: "native-fast"}},
+		},
+	}
+	draftNative := &fakeNativeModel{tokens: []metal.Token{{ID: 1, Text: "draft"}}}
+	target := &Model{model: fast}
+	draft := &Model{model: draftNative}
+
+	result, err := target.GenerateSpeculative(context.Background(), draft, "prompt", SpeculativeDecodeConfig{
+		MaxTokens:   3,
+		DraftTokens: 2,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSpeculative() error = %v", err)
+	}
+	if !fast.called {
+		t.Fatal("GenerateSpeculative did not use native speculative fast path")
+	}
+	if fast.draft != draftNative || fast.prompt != "prompt" || fast.cfg.MaxTokens != 3 || fast.cfg.DraftTokens != 2 {
+		t.Fatalf("native fast path args draft=%T prompt=%q cfg=%+v", fast.draft, fast.prompt, fast.cfg)
+	}
+	if result.Text != "native-fast" || result.Mode != SpeculativeDecodeModeMTP {
+		t.Fatalf("GenerateSpeculative() = %+v, want native MTP result", result)
 	}
 }
 

@@ -281,6 +281,160 @@ func TestArchDecodeStateSetupAllocationBudget(t *testing.T) {
 	})
 }
 
+func TestArchDecodeStateDevicePagedKVOwnerShareMatchesLinearState(t *testing.T) {
+	requireSDPAPagedKernel(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 128, 2, 1, 64, 256, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	specs := []model.LayerSpec{
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV},
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV},
+	}
+	layers := []DecodeLayerWeights{
+		decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 31),
+		decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 37),
+	}
+	inputs := [][]byte{
+		toBF16Bytes(syntheticFloat32(dModel, 401)),
+		toBF16Bytes(syntheticFloat32(dModel, 409)),
+		toBF16Bytes(syntheticFloat32(dModel, 419)),
+	}
+
+	var testErr error
+	withAutoreleasePool(func() {
+		linearLB, linearMoE, err := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, nil)
+		if err != nil {
+			testErr = err
+			return
+		}
+		pagedLB, pagedMoE, err := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, nil)
+		if err != nil {
+			testErr = err
+			return
+		}
+		linear := newArchDecodeState(specs, linearLB, linearMoE, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false, maxLen)
+		defer linear.Close()
+		paged := newArchDecodeState(specs, pagedLB, pagedMoE, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false, maxLen)
+		defer paged.Close()
+		if err := paged.initDevicePagedKV(2); err != nil {
+			testErr = err
+			return
+		}
+		for pos, input := range inputs {
+			want, err := linear.stepToken(input, pos)
+			if err != nil {
+				testErr = err
+				return
+			}
+			got, err := paged.stepToken(input, pos)
+			if err != nil {
+				testErr = err
+				return
+			}
+			if !bytes.Equal(got, want) {
+				if cos := cosineBF16(got, want); cos < 0.999 {
+					testErr = core.NewError(core.Sprintf("paged arch state pos %d cosine = %.6f", pos, cos))
+					return
+				}
+			}
+		}
+		if len(paged.pagedKV) != len(specs) || paged.pagedKV[0] == nil || paged.pagedKV[1] != nil {
+			testErr = core.NewError("paged arch state did not initialise owner-only device pages")
+			return
+		}
+		if got := paged.pagedKV[0].length; got != len(inputs) {
+			testErr = core.NewError(core.Sprintf("paged arch state length = %d, want %d", got, len(inputs)))
+			return
+		}
+		if got := len(paged.pagedKV[0].kPages); got != 2 {
+			testErr = core.NewError(core.Sprintf("paged arch state pages = %d, want 2", got))
+			return
+		}
+	})
+	if testErr != nil {
+		t.Fatal(testErr)
+	}
+}
+
+func TestArchDecodeStateDevicePagedKVSerializesAndRestores(t *testing.T) {
+	requireSDPAPagedKernel(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	specs := []model.LayerSpec{{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}}
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 43)}
+	inputs := [][]byte{
+		toBF16Bytes(syntheticFloat32(dModel, 701)),
+		toBF16Bytes(syntheticFloat32(dModel, 709)),
+		toBF16Bytes(syntheticFloat32(dModel, 719)),
+	}
+
+	var testErr error
+	withAutoreleasePool(func() {
+		lb, moe, err := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, nil)
+		if err != nil {
+			testErr = err
+			return
+		}
+		state := newArchDecodeState(specs, lb, moe, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false, maxLen)
+		defer state.Close()
+		if err := state.initDevicePagedKV(2); err != nil {
+			testErr = err
+			return
+		}
+		for pos, input := range inputs {
+			if _, err := state.stepToken(input, pos); err != nil {
+				testErr = err
+				return
+			}
+		}
+		arch := model.Arch{Hidden: dModel, Heads: nHeads, KVHeads: nKV, HeadDim: headDim, FF: dFF, Layer: specs}
+		sess := &ArchSession{arch: arch, state: state, maxLen: maxLen, pos: len(inputs), cachedIDs: []int32{1, 2, 3}}
+		data, err := sess.SerializeState()
+		if err != nil {
+			testErr = err
+			return
+		}
+		_, _, kWant, vWant, err := sess.snapshotCacheViews(0)
+		if err != nil {
+			testErr = err
+			return
+		}
+
+		restoredLB, restoredMoE, err := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, nil)
+		if err != nil {
+			testErr = err
+			return
+		}
+		restoredState := newArchDecodeState(specs, restoredLB, restoredMoE, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false, maxLen)
+		defer restoredState.Close()
+		if err := restoredState.initDevicePagedKV(2); err != nil {
+			testErr = err
+			return
+		}
+		restored := &ArchSession{arch: arch, state: restoredState, maxLen: maxLen}
+		if err := restored.RestoreState(data); err != nil {
+			testErr = err
+			return
+		}
+		if restored.pos != len(inputs) || restored.state.pagedKV[0].length != len(inputs) {
+			testErr = core.NewError("restored paged state did not retain position and page length")
+			return
+		}
+		_, _, kGot, vGot, err := restored.snapshotCacheViews(0)
+		if err != nil {
+			testErr = err
+			return
+		}
+		n := maxLen * nKV * headDim * bf16Size
+		eqBytes(t, "restored paged K cache", unsafe.Slice(kGot, n), unsafe.Slice(kWant, n))
+		eqBytes(t, "restored paged V cache", unsafe.Slice(vGot, n), unsafe.Slice(vWant, n))
+	})
+	if testErr != nil {
+		t.Fatal(testErr)
+	}
+}
+
 func TestBuildBF16ArchLayerBufsScratchReusesKVCaches(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -440,6 +594,58 @@ func TestArchDecodeStateHostPinnedScratchReusesBacking(t *testing.T) {
 	s.Close()
 	if s.hostPinnedScratch != nil {
 		t.Fatal("Close did not clear pinned host scratch")
+	}
+}
+
+func TestArchDecodeStateHostPLEInputBufferUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const nLayers, pliDim = 3, 16
+	pli := toBF16Bytes(syntheticFloat32(nLayers*pliDim, 17))
+	s := archDecodeState{specs: make([]model.LayerSpec, nLayers), pliDim: pliDim, perLayerInput: pli}
+	buf, err := s.hostPLEInputBuffer(len(pli))
+	if err != nil {
+		t.Fatalf("hostPLEInputBuffer: %v", err)
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&pli[0])); got != want {
+		t.Fatalf("PLE input buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, err := s.hostPLEInputBuffer(len(pli))
+	if err != nil {
+		t.Fatalf("hostPLEInputBuffer reused: %v", err)
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("hostPLEInputBuffer did not reuse the pinned no-copy view")
+	}
+	s.Close()
+	if s.pleInputScratch != nil {
+		t.Fatal("Close did not clear PLE input buffer")
+	}
+}
+
+func TestArchDecodeStateInputEmbBufferUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel = 64
+	emb := toBF16Bytes(syntheticFloat32(dModel, 19))
+	var s archDecodeState
+	buf, ok := s.inputEmbBuffer(emb, dModel)
+	if !ok {
+		t.Fatal("inputEmbBuffer ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&emb[0])); got != want {
+		t.Fatalf("input embedding buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := s.inputEmbBuffer(emb, dModel)
+	if !ok {
+		t.Fatal("reused inputEmbBuffer ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("inputEmbBuffer did not reuse the pinned no-copy view")
+	}
+	s.Close()
+	if s.inputEmbScratch != nil {
+		t.Fatal("Close did not clear input embedding buffer")
 	}
 }
 

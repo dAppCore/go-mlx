@@ -38,7 +38,7 @@ func TestRunAudio_NoModelArg_Bad(t *testing.T) {
 	}
 }
 
-// audio with a clip + a bad model path reaches the gemma4 load-error path
+// audio with a clip + a bad model path reaches the native load-error path
 // (exit 1) — confirms the runner advances past arg parsing into the real load.
 func TestRunAudio_BadModelPath_Bad(t *testing.T) {
 	dir := t.TempDir()
@@ -50,6 +50,22 @@ func TestRunAudio_BadModelPath_Bad(t *testing.T) {
 	code := runCommand(context.Background(), []string{"audio", "-audio", wav, core.JoinPath(dir, "absent-model")}, stdout, stderr)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (gemma4 load failure)", code)
+	}
+	if !core.Contains(stderr.String(), "audio: load") {
+		t.Fatalf("stderr = %q, want the audio load error", stderr.String())
+	}
+}
+
+func TestRunNativeAudioCommand_BadModelPath_Bad(t *testing.T) {
+	dir := t.TempDir()
+	wav := core.JoinPath(dir, "clip.wav")
+	if r := core.WriteFile(wav, []byte("RIFF"), 0o644); !r.OK {
+		t.Fatal(r.Value)
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runNativeAudioCommand(context.Background(), core.JoinPath(dir, "absent-model"), wav, "Transcribe.", 8, true, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (native load failure)", code)
 	}
 	if !core.Contains(stderr.String(), "audio: load") {
 		t.Fatalf("stderr = %q, want the audio load error", stderr.String())

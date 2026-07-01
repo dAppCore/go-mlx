@@ -35,6 +35,59 @@ func TestMatMulBF16NTAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestMatMulBF16SteelScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 4, 256, 128
+	in, _ := matMulBF16NTFixture(M, K, N)
+	scratch, err := getMatMulBF16SteelScratch(M, K, N)
+	if err != nil {
+		t.Fatalf("get MatMulBF16 steel scratch: %v", err)
+	}
+	defer putMatMulBF16SteelScratch(scratch)
+	aBuf, _, _, err := scratch.buffers(in, bf16SteelNT)
+	if err != nil {
+		t.Fatalf("MatMulBF16 steel scratch buffers: %v", err)
+	}
+	if got, want := uintptr(aBuf.Contents()), uintptr(unsafe.Pointer(&in[0])); got != want {
+		t.Fatalf("A buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+}
+
+func TestMatMulBF16SteelScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMatMulBF16SteelScratch(4, 256, 128)
+	if err != nil {
+		t.Fatalf("get small MatMulBF16 steel scratch: %v", err)
+	}
+	putMatMulBF16SteelScratch(small)
+	large, err := getMatMulBF16SteelScratch(8, 512, 256)
+	if err != nil {
+		t.Fatalf("get large MatMulBF16 steel scratch: %v", err)
+	}
+	putMatMulBF16SteelScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMatMulBF16SteelScratch(4, 256, 128)
+	if err != nil {
+		t.Fatalf("get small MatMulBF16 steel scratch again: %v", err)
+	}
+	defer putMatMulBF16SteelScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MatMulBF16 steel scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMatMulBF16SteelScratch(8, 512, 256)
+	if err != nil {
+		t.Fatalf("get large MatMulBF16 steel scratch again: %v", err)
+	}
+	defer putMatMulBF16SteelScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MatMulBF16 steel scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
 func TestMatMulBF16NTIntoUsesCallerBacking(t *testing.T) {
 	requireNativeRuntime(t)
 

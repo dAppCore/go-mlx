@@ -266,106 +266,108 @@ func DecodeLayerICBInto(
 
 		// ===== attention half (ops 0-5): h = x + Wo·sdpa(rope(Wq·rms(x))) =====
 		// 0: rms x -> attnNormed
-		setRMS(icb.IndirectComputeCommandAtIndex(0), xBuf, anwBuf, attnNormed)
+		setRMS(indirectComputeCommandAtIndexFast(icb, 0), xBuf, anwBuf, attnNormed)
 
 		// 1: gemv Wq @ attnNormed -> q  (dModel -> qDim)
-		c := icb.IndirectComputeCommandAtIndex(1)
-		c.SetBarrier()
+		c := indirectComputeCommandAtIndexFast(icb, 1)
+		setICBBarrier(c)
 		setGemv(c, gemvQPSO, wqBuf, attnNormed, q, dModel, qDim, bmQ, bnQ, smQ, tmQ)
 
 		// 2: rope q -> qr
-		c = icb.IndirectComputeCommandAtIndex(2)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 2)
+		setICBBarrier(c)
 		emitRope(fastICBSink{c}, ropePSO, q, qr, 0, 0, offBuf, nil, nHeads, headDim, headDim, scale, log2base)
 
 		// 3: sdpa qr, k, v -> attn
-		c = icb.IndirectComputeCommandAtIndex(3)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 3)
+		setICBBarrier(c)
 		emitSDPA(fastICBSink{c}, sdpaPSO, qr, kBuf, vBuf, attn, 0, nB, nHeads, nKVHeads, 0, int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
 
 		// 4: gemv Wo @ attn -> attnOut  (qDim -> dModel)
-		c = icb.IndirectComputeCommandAtIndex(4)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 4)
+		setICBBarrier(c)
 		setGemv(c, gemvOPSO, woBuf, attn, attnOut, qDim, dModel, bmO, bnO, smO, tmO)
 
 		// 5: add x + attnOut -> h
-		c = icb.IndirectComputeCommandAtIndex(5)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 5)
+		setICBBarrier(c)
 		setBinary(c, addPSO, xBuf, attnOut, h, addModelB, dModel)
 
 		// ===== MLP half (ops 6-20): out = h + Wdown·(gelu(Wgate·rms(h))·(Wup·rms(h))) =====
 		// 6: rms h -> mlpNormed
-		c = icb.IndirectComputeCommandAtIndex(6)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 6)
+		setICBBarrier(c)
 		setRMS(c, h, mnwBuf, mlpNormed)
 
 		// 7: gemv Wgate @ mlpNormed -> gate  (dModel -> dFF)
-		c = icb.IndirectComputeCommandAtIndex(7)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 7)
+		setICBBarrier(c)
 		setGemv(c, gemvFPSO, wgBuf, mlpNormed, gate, dModel, dFF, bmF, bnF, smF, tmF)
 
 		// 8: gemv Wup @ mlpNormed -> up  (dModel -> dFF)
-		c = icb.IndirectComputeCommandAtIndex(8)
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, 8)
+		setICBBarrier(c)
 		setGemv(c, gemvFPSO, wuBuf, mlpNormed, up, dModel, dFF, bmF, bnF, smF, tmF)
 
 		// gelu(gate)·up — fused kernel (one command, cmd 9) when loaded; composed chain (cmd 9-18) otherwise
 		if hasFusedGELU {
-			c = icb.IndirectComputeCommandAtIndex(9)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 9)
+			setICBBarrier(c)
 			emitBinary(fastICBSink{c}, geluICBPSO, gate, 0, up, 0, gated, 0, dFF)
 		} else {
 			// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
 			//                    scaled=0.7978…·inner; tnh=tanh(scaled);
 			//                    onePlus=tnh+1; halfG=0.5·g; gelu=halfG·onePlus
-			c = icb.IndirectComputeCommandAtIndex(9)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 9)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, gate, gate, x2, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(10)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 10)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, x2, gate, x3, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(11)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 11)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, x3, c044, x3s, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(12)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 12)
+			setICBBarrier(c)
 			setBinary(c, addPSO, gate, x3s, inner, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(13)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 13)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, inner, c079, scaled, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(14)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 14)
+			setICBBarrier(c)
 			emitUnary(fastICBSink{c}, tanhPSO, scaled, tnh, dFF)
-			c = icb.IndirectComputeCommandAtIndex(15)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 15)
+			setICBBarrier(c)
 			setBinary(c, addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(16)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 16)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, gate, c05, halfG, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(17)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 17)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-			c = icb.IndirectComputeCommandAtIndex(18)
-			c.SetBarrier()
+			c = indirectComputeCommandAtIndexFast(icb, 18)
+			setICBBarrier(c)
 			setBinary(c, mulPSO, gelu, up, gated, cntFFB, dFF)
 		}
 
 		// down-proj: gemv Wdown @ gated -> down  (dFF -> dModel) — cmd dpIdx (10 fused / 19 composed)
-		c = icb.IndirectComputeCommandAtIndex(uint(dpIdx))
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, uint(dpIdx))
+		setICBBarrier(c)
 		setGemv(c, gemvDPSO, wdBuf, gated, down, dFF, dModel, bmD, bnD, smD, tmD)
 
 		// residual: add h + down -> outBuf — cmd dpIdx+1
-		c = icb.IndirectComputeCommandAtIndex(uint(dpIdx + 1))
-		c.SetBarrier()
+		c = indirectComputeCommandAtIndexFast(icb, uint(dpIdx+1))
+		setICBBarrier(c)
 		setBinary(c, addPSO, h, down, outBuf, addModelB, dModel)
 
 		rng := foundation.NSRange{Location: 0, Length: uint(nCmds)}
+		ioScratch.residentIDs = resourceIDsForFastUse(ioScratch.residentIDs, resident)
+		residentIDs := ioScratch.residentIDs
 		for r := 0; r < replays; r++ {
 			cb := commandBufferFast(queue)
 			enc := computeCommandEncoderFast(cb)
-			enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			enc.ExecuteCommandsInBufferWithRange(icb, rng)
+			useResourcesIDsFast(enc, resident, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			executeCommandsInBufferWithRangeFast(enc, icb, rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb)
 			waitUntilCompletedFast(cb)
@@ -632,9 +634,9 @@ func DecodeTokenICBInto(
 		// output add (the shared scratch is reused, so the stack must serialise).
 		recordLayer := func(base int, inBuf, outBuf metal.MTLBuffer) {
 			cmd := func(op int) metal.MTLIndirectComputeCommand {
-				c := icb.IndirectComputeCommandAtIndex(uint(base + op))
+				c := indirectComputeCommandAtIndexFast(icb, uint(base+op))
 				if base+op != 0 {
-					c.SetBarrier()
+					setICBBarrier(c)
 				}
 				return c
 			}
@@ -682,11 +684,13 @@ func DecodeTokenICBInto(
 		lastOut := in // after the final swap, `in` is the last layer's output
 
 		rng := foundation.NSRange{Location: 0, Length: uint(total)}
+		ioScratch.residentIDs = resourceIDsForFastUse(ioScratch.residentIDs, resident)
+		residentIDs := ioScratch.residentIDs
 		for r := 0; r < replays; r++ {
 			cb := commandBufferFast(queue)
 			enc := computeCommandEncoderFast(cb)
-			enc.UseResourcesCountUsage(resident, uint(len(resident)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			enc.ExecuteCommandsInBufferWithRange(icb, rng)
+			useResourcesIDsFast(enc, resident, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			executeCommandsInBufferWithRangeFast(enc, icb, rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb)
 			waitUntilCompletedFast(cb)

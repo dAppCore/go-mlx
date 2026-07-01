@@ -118,8 +118,8 @@ func TestDecodeLayerICBAllocationBudget(t *testing.T) {
 	if decodeErr != nil {
 		t.Fatalf("DecodeLayerICB: %v", decodeErr)
 	}
-	if allocs > 370 {
-		t.Fatalf("DecodeLayerICB allocations = %.0f, want <= 370", allocs)
+	if allocs > 166 {
+		t.Fatalf("DecodeLayerICB allocations = %.0f, want <= 166", allocs)
 	}
 }
 
@@ -231,8 +231,8 @@ func TestDecodeTokenICBAllocationBudget(t *testing.T) {
 	if decodeErr != nil {
 		t.Fatalf("DecodeTokenICB: %v", decodeErr)
 	}
-	if allocs > 370 {
-		t.Fatalf("DecodeTokenICB allocations = %.0f, want <= 370", allocs)
+	if allocs > 166 {
+		t.Fatalf("DecodeTokenICB allocations = %.0f, want <= 166", allocs)
 	}
 }
 

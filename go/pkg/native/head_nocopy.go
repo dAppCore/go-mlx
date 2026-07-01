@@ -23,8 +23,9 @@ import (
 // head weight ONCE and reuses it every token: zero per-token upload, zero growth.
 //
 // HOW the weight is bound, by dtype:
-//   - bf16: a no-copy view into the shared shard mmap (the gemv reads the shard buffer reliably —
-//     proven byte-identical in the full session).
+//   - bf16: a no-copy view into the shared shard mmap, or the caller's resident in-memory backing
+//     when no shard mapping exists (the gemv reads the shard buffer reliably — proven byte-identical
+//     in the full session).
 //   - 4-bit: uploaded ONCE into a retained owned buffer at session build, then reused. The 4-bit
 //     affine_qmv reading a NO-COPY view of the shard mmap is unreliable when other quant buffers
 //     coexist in the session (NaN — the same class of issue that keeps the quant LAYER weights on
@@ -51,7 +52,12 @@ type headEncoder struct {
 	eps, softCap    float32
 	greedyScratch   sync.Pool
 	topKScratch     sync.Pool
-	hiddenScratch   sync.Pool
+	hiddenScratch   headHiddenScratchPool
+}
+
+type headHiddenScratchPool struct {
+	mu    sync.Mutex
+	items []*headHiddenScratch
 }
 
 type headGreedyScratch struct {
@@ -84,6 +90,30 @@ type headGreedyScratch struct {
 type headHiddenScratch struct {
 	n      int
 	pinned *pinnedNoCopyBytes
+	view   cachedNoCopyBytesView
+}
+
+func (p *headHiddenScratchPool) Get() any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *headHiddenScratchPool) Put(v any) {
+	s, ok := v.(*headHiddenScratch)
+	if !ok || s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
 }
 
 type headTopKScratch struct {
@@ -164,8 +194,8 @@ func newHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte,
 		return nil, nil
 	}
 	if sb == nil {
-		h.finalNorm = copyView(finalNormW)
-		h.weight = copyView(weight)
+		h.finalNorm = bufView{buf: residentBytes(finalNormW)}
+		h.weight = bufView{buf: residentBytes(weight)}
 		h.initSoftcapBuffers()
 		return h, nil
 	}
@@ -208,6 +238,7 @@ func (s *headHiddenScratch) Close() {
 		s.pinned.Close()
 		s.pinned = nil
 	}
+	s.view.Close()
 	s.n = 0
 }
 
@@ -238,10 +269,17 @@ func (h *headEncoder) hiddenBuffer(hidden []byte) (*headHiddenScratch, metal.MTL
 		}
 		return nil, sharedBytes(hidden), nil
 	}
-	buf, err := scratch.pinned.copyBuffer(hidden)
-	if err != nil {
-		scratch.Close()
-		return nil, sharedBytes(hidden), nil
+	var buf metal.MTLBuffer
+	var ok bool
+	if len(hidden) >= 64 {
+		buf, ok = scratch.view.buffer(hidden)
+	}
+	if !ok {
+		buf, err = scratch.pinned.copyBuffer(hidden)
+		if err != nil {
+			scratch.Close()
+			return nil, sharedBytes(hidden), nil
+		}
 	}
 	return scratch, buf, nil
 }
@@ -468,6 +506,13 @@ func (s *headGreedyScratch) logitsOutputView(out []byte) (metal.MTLBuffer, bool)
 		return s.logitsOutView, true
 	}
 	s.closeLogitsOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.logitsOutViewPtr = ptr
+		s.logitsOutViewLen = len(out)
+		s.logitsOutView = buf
+		s.logitsOutViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -1031,8 +1076,8 @@ func (h *headEncoder) topKSampleUsable(topK int) bool {
 		if h.scales.buf == nil || h.biases.buf == nil {
 			return false
 		}
-		return qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK) ||
-			q4LMHeadTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
+		return q4LMHeadTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK) ||
+			qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
 	}
 	return bf16LMHeadTopKUsable(h.dModel, h.vocab, topK)
 }
@@ -1070,10 +1115,11 @@ func (h *headEncoder) sampleTopKTokenBufferInPool(hiddenBuf metal.MTLBuffer, par
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	var scratch *headTopKScratch
-	if h.quant && qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, params.TopK) {
-		scratch, ok, err = h.encodeTopKSampleObject(enc, hiddenBuf, params, draw, history)
+	preferFusedQ4 := h.quant && q4LMHeadTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, params.TopK)
+	if h.quant {
+		scratch, ok, err = h.encodeTopKSampleObject(enc, hiddenBuf, params, draw, history, preferFusedQ4)
 	} else {
-		scratch, ok, err = h.encodeTopKSample(enc, hiddenBuf, params, draw, history, false)
+		scratch, ok, err = h.encodeTopKSample(enc, hiddenBuf, params, draw, history, preferFusedQ4)
 	}
 	if !ok || err != nil {
 		endEncodingFast(enc)
@@ -1097,6 +1143,10 @@ func (h *headEncoder) sampleTopKTokenBufferInPool(hiddenBuf metal.MTLBuffer, par
 }
 
 func (h *headEncoder) sampleTopKCandidatesInto(hidden []byte, topK int, suppress []int32, outLogits []byte, outIDs []int32, preferFusedQ4 bool) (logits []byte, ids []int32, ok bool, err error) {
+	return h.sampleTopKCandidatesWithHistoryInto(hidden, topK, suppress, nil, 1, outLogits, outIDs, preferFusedQ4)
+}
+
+func (h *headEncoder) sampleTopKCandidatesWithHistoryInto(hidden []byte, topK int, suppress []int32, history []int32, repeatPenalty float32, outLogits []byte, outIDs []int32, preferFusedQ4 bool) (logits []byte, ids []int32, ok bool, err error) {
 	if len(hidden) != h.dModel*bf16Size {
 		return nil, nil, true, core.NewError("native.headEncoder.sampleTopKCandidates: hidden must be dModel bf16 bytes")
 	}
@@ -1112,7 +1162,7 @@ func (h *headEncoder) sampleTopKCandidatesInto(hidden []byte, topK int, suppress
 		defer h.putHiddenScratch(hiddenScratch)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		scratch, ok, encErr = h.encodeTopKCandidates(enc, hiddenBuf, topK, suppress, preferFusedQ4)
+		scratch, ok, encErr = h.encodeTopKCandidatesWithHistory(enc, hiddenBuf, topK, suppress, history, repeatPenalty, preferFusedQ4)
 		if !ok || encErr != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -1136,6 +1186,10 @@ func (h *headEncoder) sampleTopKCandidatesInto(hidden []byte, topK int, suppress
 }
 
 func (h *headEncoder) sampleTopKCandidatesBufferInto(hiddenBuf metal.MTLBuffer, topK int, suppress []int32, outLogits []byte, outIDs []int32, preferFusedQ4 bool) (logits []byte, ids []int32, ok bool, err error) {
+	return h.sampleTopKCandidatesBufferWithHistoryInto(hiddenBuf, topK, suppress, nil, 1, outLogits, outIDs, preferFusedQ4)
+}
+
+func (h *headEncoder) sampleTopKCandidatesBufferWithHistoryInto(hiddenBuf metal.MTLBuffer, topK int, suppress []int32, history []int32, repeatPenalty float32, outLogits []byte, outIDs []int32, preferFusedQ4 bool) (logits []byte, ids []int32, ok bool, err error) {
 	if hiddenBuf == nil {
 		return nil, nil, true, core.NewError("native.headEncoder.sampleTopKCandidates: missing hidden buffer")
 	}
@@ -1144,7 +1198,7 @@ func (h *headEncoder) sampleTopKCandidatesBufferInto(hiddenBuf metal.MTLBuffer, 
 	withAutoreleasePool(func() {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		scratch, ok, encErr = h.encodeTopKCandidates(enc, hiddenBuf, topK, suppress, preferFusedQ4)
+		scratch, ok, encErr = h.encodeTopKCandidatesWithHistory(enc, hiddenBuf, topK, suppress, history, repeatPenalty, preferFusedQ4)
 		if !ok || encErr != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -1179,9 +1233,9 @@ func (h *headEncoder) encodeTopKSample(enc metal.MTLComputeCommandEncoder, hidde
 	return scratch, true, nil
 }
 
-func (h *headEncoder) encodeTopKSampleObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (scratch *headTopKScratch, ok bool, err error) {
+func (h *headEncoder) encodeTopKSampleObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
 	var candidateCount int
-	scratch, candidateCount, ok, err = h.encodeTopKCandidateRowsObject(enc, hiddenBuf, params.TopK, params.SuppressTokens, history, params.RepeatPenalty)
+	scratch, candidateCount, ok, err = h.encodeTopKCandidateRowsObject(enc, hiddenBuf, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, preferFusedQ4)
 	if !ok || err != nil {
 		return scratch, ok, err
 	}
@@ -1192,8 +1246,12 @@ func (h *headEncoder) encodeTopKSampleObject(enc metal.MTLComputeCommandEncoderO
 }
 
 func (h *headEncoder) encodeTopKCandidates(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, topK int, suppress []int32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
+	return h.encodeTopKCandidatesWithHistory(enc, hiddenBuf, topK, suppress, nil, 1, preferFusedQ4)
+}
+
+func (h *headEncoder) encodeTopKCandidatesWithHistory(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, topK int, suppress []int32, history []int32, repeatPenalty float32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
 	var candidateCount int
-	scratch, candidateCount, ok, err = h.encodeTopKCandidateRows(enc, hiddenBuf, topK, suppress, nil, 1, preferFusedQ4)
+	scratch, candidateCount, ok, err = h.encodeTopKCandidateRows(enc, hiddenBuf, topK, suppress, history, repeatPenalty, preferFusedQ4)
 	if !ok || err != nil {
 		return scratch, ok, err
 	}
@@ -1203,15 +1261,35 @@ func (h *headEncoder) encodeTopKCandidates(enc metal.MTLComputeCommandEncoder, h
 	return scratch, true, nil
 }
 
-func (h *headEncoder) encodeTopKCandidateRowsObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, topK int, suppress []int32, history []int32, repeatPenalty float32) (scratch *headTopKScratch, candidateCount int, ok bool, err error) {
+func (h *headEncoder) encodeTopKCandidateRowsObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, topK int, suppress []int32, history []int32, repeatPenalty float32, preferFusedQ4 bool) (scratch *headTopKScratch, candidateCount int, ok bool, err error) {
 	if h.finalNorm.buf == nil || h.weight.buf == nil || topK <= 0 || topK > headSampleTopKMaxK || topK > h.vocab {
 		return nil, 0, false, nil
 	}
-	if !h.quant || h.scales.buf == nil || h.biases.buf == nil || !qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK) {
+	if !h.quant || h.scales.buf == nil || h.biases.buf == nil {
 		return nil, 0, false, nil
 	}
-	candidateCount = ((h.vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile) * topK
-	scratch = h.getTopKScratch(candidateCount, topK, true)
+	q4Usable := q4LMHeadTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
+	fusedQuantTopK := preferFusedQ4 && q4Usable
+	fusedCandidatesPerTile := topK
+	needLogits := true
+	if fusedQuantTopK {
+		needLogits = false
+		fusedCandidatesPerTile = q4LMHeadTopKCandidatesPerTile(topK)
+		candidateCount = q4LMHeadTopKCandidateCount(h.vocab, topK)
+	} else {
+		qmvUsable := qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
+		if qmvUsable {
+			candidateCount = ((h.vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile) * topK
+		} else if q4Usable {
+			needLogits = false
+			fusedQuantTopK = true
+			fusedCandidatesPerTile = q4LMHeadTopKCandidatesPerTile(topK)
+			candidateCount = q4LMHeadTopKCandidateCount(h.vocab, topK)
+		} else {
+			return nil, 0, false, nil
+		}
+	}
+	scratch = h.getTopKScratch(candidateCount, topK, needLogits)
 	normed := scratch.normed
 	suppressBuf := scratch.suppressBuffer(suppress)
 	historyBuf := scratch.historyBuffer(history)
@@ -1222,13 +1300,22 @@ func (h *headEncoder) encodeTopKCandidateRowsObject(enc metal.MTLComputeCommandE
 		return scratch, candidateCount, true, err
 	}
 	emitRMSNorm(sink, rmsPSO, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps, rmsThreadgroup(h.dModel, rmsPSO))
-	qmvPSO, err := pipelineFor(qmvBF16KernelName(h.vocab, h.dModel, h.groupSize, h.bits))
-	if err != nil {
-		return scratch, candidateCount, true, err
-	}
-	emitQMV(sink, qmvPSO, h.weight.buf, h.weight.off, h.scales.buf, h.scales.off, h.biases.buf, h.biases.off, normed, scratch.logits, 0, h.dModel, h.vocab)
-	if err = encBF16LogitsTopKTilesBF16Object(enc, scratch.logits, scratch.candidateValues, scratch.candidateIndices, suppressBuf, historyBuf, h.vocab, len(suppress), historyCount, topK, repeatPenalty, h.softCap); err != nil {
-		return scratch, candidateCount, true, err
+	if fusedQuantTopK {
+		if err = encQ4LMHeadTopKTilesBF16Object(enc, normed, h.weight.buf, h.scales.buf, h.biases.buf,
+			scratch.candidateValues, scratch.candidateIndices, suppressBuf, historyBuf,
+			0, h.weight.off, h.scales.off, h.biases.off,
+			h.dModel, h.vocab, h.groupSize, len(suppress), historyCount, topK, fusedCandidatesPerTile, repeatPenalty, h.softCap); err != nil {
+			return scratch, candidateCount, true, err
+		}
+	} else {
+		qmvPSO, err := pipelineFor(qmvBF16KernelName(h.vocab, h.dModel, h.groupSize, h.bits))
+		if err != nil {
+			return scratch, candidateCount, true, err
+		}
+		emitQMV(sink, qmvPSO, h.weight.buf, h.weight.off, h.scales.buf, h.scales.off, h.biases.buf, h.biases.off, normed, scratch.logits, 0, h.dModel, h.vocab)
+		if err = encBF16LogitsTopKTilesBF16Object(enc, scratch.logits, scratch.candidateValues, scratch.candidateIndices, suppressBuf, historyBuf, h.vocab, len(suppress), historyCount, topK, repeatPenalty, h.softCap); err != nil {
+			return scratch, candidateCount, true, err
+		}
 	}
 	return scratch, candidateCount, true, nil
 }
@@ -1245,21 +1332,23 @@ func (h *headEncoder) encodeTopKCandidateRows(enc metal.MTLComputeCommandEncoder
 		if h.scales.buf == nil || h.biases.buf == nil {
 			return nil, 0, false, nil
 		}
-		qmvUsable := qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
 		q4Usable := q4LMHeadTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
 		if preferFusedQ4 && q4Usable {
 			fusedQuantTopK = true
 			fusedCandidatesPerTile = q4LMHeadTopKCandidatesPerTile(topK)
 			candidateCount = q4LMHeadTopKCandidateCount(h.vocab, topK)
-		} else if qmvUsable {
-			needLogits = true
-			candidateCount = ((h.vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile) * topK
-		} else if q4Usable {
-			fusedQuantTopK = true
-			fusedCandidatesPerTile = q4LMHeadTopKCandidatesPerTile(topK)
-			candidateCount = q4LMHeadTopKCandidateCount(h.vocab, topK)
 		} else {
-			return nil, 0, false, nil
+			qmvUsable := qmvLogitsTopKUsable(h.dModel, h.vocab, h.groupSize, h.bits, topK)
+			if qmvUsable {
+				needLogits = true
+				candidateCount = ((h.vocab + bf16LogitsArgmaxRowsPerTile - 1) / bf16LogitsArgmaxRowsPerTile) * topK
+			} else if q4Usable {
+				fusedQuantTopK = true
+				fusedCandidatesPerTile = q4LMHeadTopKCandidatesPerTile(topK)
+				candidateCount = q4LMHeadTopKCandidateCount(h.vocab, topK)
+			} else {
+				return nil, 0, false, nil
+			}
 		}
 	} else {
 		if !bf16LMHeadTopKUsable(h.dModel, h.vocab, topK) {

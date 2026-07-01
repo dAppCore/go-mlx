@@ -28,14 +28,14 @@ func encCopyCast(enc metal.MTLComputeCommandEncoder, kernel string, src, dst met
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(src, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(dst, 0, 1)
+	setPSO(enc, pso)
+	setBuf(enc, src, 0, 0)
+	setBuf(enc, dst, 0, 1)
 	group := uint(256)
 	if uint(n) < group {
 		group = uint(n)
 	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
+	dispatchThreads(enc,
 		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)

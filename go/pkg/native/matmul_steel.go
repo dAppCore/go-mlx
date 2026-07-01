@@ -30,13 +30,13 @@ var (
 	steelSplitKNameMu    sync.Mutex
 	steelSplitKNameCache = map[steelSplitKNameKey]string{}
 
-	matMulF32SteelScratchPool   sync.Pool
+	matMulF32SteelScratchPools  sync.Map
 	errMatMulF32SteelScratchDim = core.NewError("native.matMulF32SteelScratch: dimension mismatch")
 
-	matMulF32SplitKParamsScratchPool sync.Pool
-	errMatMulF32SplitKParamsDim      = core.NewError("native.matMulF32SplitKParamsScratch: dimension mismatch")
+	matMulF32SplitKParamsScratchPools sync.Map
+	errMatMulF32SplitKParamsDim       = core.NewError("native.matMulF32SplitKParamsScratch: dimension mismatch")
 
-	matMulF32SplitKAccumScratchPool sync.Pool
+	matMulF32SplitKAccumScratchPools sync.Map
 )
 
 type steelPipelineKeyParts struct {
@@ -184,12 +184,18 @@ type matMulF32SteelScratch struct {
 	bm, bn, bk    int
 	ldb           int
 	a, out        *pinnedNoCopyBytes
+	aView         cachedNoCopyBytesView
 	params        *pinnedNoCopyBytes
 	paramsFilled  bool
 	outViewPtr    uintptr
 	outViewLen    int
 	outView       metal.MTLBuffer
 	outViewPinned *pinnedNoCopyBytes
+}
+
+type matMulF32SteelScratchKey struct {
+	M, K, N, ldb int
+	bm, bn, bk   int
 }
 
 func newMatMulF32SteelScratch(M, K, N, ldb int, t steelTiling) (*matMulF32SteelScratch, error) {
@@ -218,8 +224,21 @@ func newMatMulF32SteelScratch(M, K, N, ldb int, t steelTiling) (*matMulF32SteelS
 	}, nil
 }
 
+func matMulF32SteelScratchPoolFor(M, K, N, ldb int, t steelTiling) *sync.Pool {
+	key := matMulF32SteelScratchKey{M: M, K: K, N: N, ldb: ldb, bm: t.bm, bn: t.bn, bk: t.bk}
+	if v, ok := matMulF32SteelScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := &sync.Pool{}
+	if v, loaded := matMulF32SteelScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
 func getMatMulF32SteelScratch(M, K, N, ldb int, t steelTiling) (*matMulF32SteelScratch, error) {
-	if v := matMulF32SteelScratchPool.Get(); v != nil {
+	pool := matMulF32SteelScratchPoolFor(M, K, N, ldb, t)
+	if v := pool.Get(); v != nil {
 		s := v.(*matMulF32SteelScratch)
 		if s.M == M && s.K == K && s.N == N && s.ldb == ldb &&
 			s.bm == t.bm && s.bn == t.bn && s.bk == t.bk &&
@@ -233,7 +252,8 @@ func getMatMulF32SteelScratch(M, K, N, ldb int, t steelTiling) (*matMulF32SteelS
 
 func putMatMulF32SteelScratch(s *matMulF32SteelScratch) {
 	if s != nil {
-		matMulF32SteelScratchPool.Put(s)
+		t := steelTiling{bm: s.bm, bn: s.bn, bk: s.bk}
+		matMulF32SteelScratchPoolFor(s.M, s.K, s.N, s.ldb, t).Put(s)
 	}
 }
 
@@ -253,6 +273,7 @@ func (s *matMulF32SteelScratch) Close() {
 		s.params.Close()
 		s.params = nil
 	}
+	s.aView.Close()
 	s.closeOutputView()
 	s.M, s.K, s.N = 0, 0, 0
 	s.bm, s.bn, s.bk, s.ldb = 0, 0, 0, 0
@@ -282,6 +303,13 @@ func (s *matMulF32SteelScratch) outputView(out []float32) (metal.MTLBuffer, bool
 	}
 	s.closeOutputView()
 	outBytes := float32Bytes(out)
+	if buf, ok := registeredPinnedNoCopyBytes(outBytes); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(outBytes)
 	if !noCopy {
 		if pinner != nil {
@@ -305,9 +333,14 @@ func (s *matMulF32SteelScratch) buffers(a []float32) (metal.MTLBuffer, metal.MTL
 	if len(a) != s.M*s.K || len(s.out.bytes) != s.M*s.N*4 || len(s.params.bytes) != 72 {
 		return nil, nil, nil, errMatMulF32SteelScratchDim
 	}
-	aBuf, err := s.a.copyBuffer(float32Bytes(a))
-	if err != nil {
-		return nil, nil, nil, err
+	aBytes := float32Bytes(a)
+	aBuf, ok := s.aView.buffer(aBytes)
+	if !ok {
+		var err error
+		aBuf, err = s.a.copyBuffer(aBytes)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	if !s.paramsFilled {
 		tn, tm := (s.N+s.bn-1)/s.bn, (s.M+s.bm-1)/s.bm
@@ -346,6 +379,18 @@ type matMulF32SplitKParamsScratch struct {
 	paramsFilled          bool
 }
 
+type matMulF32SplitKParamsScratchKey struct {
+	M, K, N               int
+	tilesN, tilesM        int
+	partitions, stride    int
+	partSize, kIterations int
+}
+
+type matMulF32SplitKParamsScratchPool struct {
+	mu    sync.Mutex
+	items []*matMulF32SplitKParamsScratch
+}
+
 func newMatMulF32SplitKParamsScratch(M, K, N, tilesN, tilesM, partitions, stride, partSize, kIterations int) (*matMulF32SplitKParamsScratch, error) {
 	if M <= 0 || K <= 0 || N <= 0 || tilesN <= 0 || tilesM <= 0 || partitions <= 0 || stride <= 0 || partSize <= 0 || kIterations <= 0 {
 		return nil, core.NewError("native.newMatMulF32SplitKParamsScratch: invalid dimensions")
@@ -362,9 +407,48 @@ func newMatMulF32SplitKParamsScratch(M, K, N, tilesN, tilesM, partitions, stride
 	}, nil
 }
 
+func matMulF32SplitKParamsScratchPoolFor(M, K, N, tilesN, tilesM, partitions, stride, partSize, kIterations int) *matMulF32SplitKParamsScratchPool {
+	key := matMulF32SplitKParamsScratchKey{
+		M: M, K: K, N: N,
+		tilesN: tilesN, tilesM: tilesM,
+		partitions: partitions, stride: stride,
+		partSize: partSize, kIterations: kIterations,
+	}
+	if v, ok := matMulF32SplitKParamsScratchPools.Load(key); ok {
+		return v.(*matMulF32SplitKParamsScratchPool)
+	}
+	pool := &matMulF32SplitKParamsScratchPool{}
+	if v, loaded := matMulF32SplitKParamsScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*matMulF32SplitKParamsScratchPool)
+	}
+	return pool
+}
+
+func (p *matMulF32SplitKParamsScratchPool) Get() *matMulF32SplitKParamsScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *matMulF32SplitKParamsScratchPool) Put(s *matMulF32SplitKParamsScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
+}
+
 func getMatMulF32SplitKParamsScratch(M, K, N, tilesN, tilesM, partitions, stride, partSize, kIterations int) (*matMulF32SplitKParamsScratch, error) {
-	if v := matMulF32SplitKParamsScratchPool.Get(); v != nil {
-		s := v.(*matMulF32SplitKParamsScratch)
+	pool := matMulF32SplitKParamsScratchPoolFor(M, K, N, tilesN, tilesM, partitions, stride, partSize, kIterations)
+	if s := pool.Get(); s != nil {
 		if s.M == M && s.K == K && s.N == N &&
 			s.tilesN == tilesN && s.tilesM == tilesM &&
 			s.partitions == partitions && s.stride == stride &&
@@ -378,8 +462,9 @@ func getMatMulF32SplitKParamsScratch(M, K, N, tilesN, tilesM, partitions, stride
 }
 
 func putMatMulF32SplitKParamsScratch(s *matMulF32SplitKParamsScratch) {
-	if s != nil {
-		matMulF32SplitKParamsScratchPool.Put(s)
+	if s != nil && s.M > 0 && s.K > 0 && s.N > 0 && s.tilesN > 0 && s.tilesM > 0 &&
+		s.partitions > 0 && s.stride > 0 && s.partSize > 0 && s.kIterations > 0 && s.params != nil {
+		matMulF32SplitKParamsScratchPoolFor(s.M, s.K, s.N, s.tilesN, s.tilesM, s.partitions, s.stride, s.partSize, s.kIterations).Put(s)
 	}
 }
 
@@ -439,6 +524,15 @@ type matMulF32SplitKAccumScratch struct {
 	split            *pinnedNoCopyBytes
 }
 
+type matMulF32SplitKAccumScratchKey struct {
+	M, N, partitions int
+}
+
+type matMulF32SplitKAccumScratchPool struct {
+	mu    sync.Mutex
+	items []*matMulF32SplitKAccumScratch
+}
+
 func newMatMulF32SplitKAccumScratch(M, N, partitions int) (*matMulF32SplitKAccumScratch, error) {
 	if M <= 0 || N <= 0 || partitions <= 0 {
 		return nil, core.NewError("native.newMatMulF32SplitKAccumScratch: invalid dimensions")
@@ -450,9 +544,43 @@ func newMatMulF32SplitKAccumScratch(M, N, partitions int) (*matMulF32SplitKAccum
 	return &matMulF32SplitKAccumScratch{M: M, N: N, partitions: partitions, split: split}, nil
 }
 
+func matMulF32SplitKAccumScratchPoolFor(M, N, partitions int) *matMulF32SplitKAccumScratchPool {
+	key := matMulF32SplitKAccumScratchKey{M: M, N: N, partitions: partitions}
+	if v, ok := matMulF32SplitKAccumScratchPools.Load(key); ok {
+		return v.(*matMulF32SplitKAccumScratchPool)
+	}
+	pool := &matMulF32SplitKAccumScratchPool{}
+	if v, loaded := matMulF32SplitKAccumScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*matMulF32SplitKAccumScratchPool)
+	}
+	return pool
+}
+
+func (p *matMulF32SplitKAccumScratchPool) Get() *matMulF32SplitKAccumScratch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		return nil
+	}
+	s := p.items[n-1]
+	p.items[n-1] = nil
+	p.items = p.items[:n-1]
+	return s
+}
+
+func (p *matMulF32SplitKAccumScratchPool) Put(s *matMulF32SplitKAccumScratch) {
+	if s == nil {
+		return
+	}
+	p.mu.Lock()
+	p.items = append(p.items, s)
+	p.mu.Unlock()
+}
+
 func getMatMulF32SplitKAccumScratch(M, N, partitions int) (*matMulF32SplitKAccumScratch, error) {
-	if v := matMulF32SplitKAccumScratchPool.Get(); v != nil {
-		s := v.(*matMulF32SplitKAccumScratch)
+	pool := matMulF32SplitKAccumScratchPoolFor(M, N, partitions)
+	if s := pool.Get(); s != nil {
 		if s.M == M && s.N == N && s.partitions == partitions && s.split != nil {
 			return s, nil
 		}
@@ -462,8 +590,8 @@ func getMatMulF32SplitKAccumScratch(M, N, partitions int) (*matMulF32SplitKAccum
 }
 
 func putMatMulF32SplitKAccumScratch(s *matMulF32SplitKAccumScratch) {
-	if s != nil {
-		matMulF32SplitKAccumScratchPool.Put(s)
+	if s != nil && s.M > 0 && s.N > 0 && s.partitions > 0 && s.split != nil {
+		matMulF32SplitKAccumScratchPoolFor(s.M, s.N, s.partitions).Put(s)
 	}
 }
 

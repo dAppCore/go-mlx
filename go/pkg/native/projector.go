@@ -80,6 +80,10 @@ type qmvWeight struct {
 	gs, bits           int
 }
 
+func (w qmvWeight) present() bool { return w.wq.buf != nil }
+
+func (w qmvWeight) dense() bool { return w.present() && w.scales.buf == nil && w.biases.buf == nil }
+
 // qmvProjector drives a bf16-activation 4-bit qmv per projection.
 type qmvProjector struct {
 	q, k, v, o, gate, up, down qmvWeight
@@ -87,7 +91,7 @@ type qmvProjector struct {
 	groupSize, bits            int
 }
 
-func (m qmvProjector) hasV() bool { return m.v.wq.buf != nil }
+func (m qmvProjector) hasV() bool { return m.v.present() }
 
 func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	var w qmvWeight
@@ -109,6 +113,9 @@ func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal
 		w, outDim, inDim = m.down, m.dModel, m.dFF
 	default:
 		return core.NewError("native: bad projIndex")
+	}
+	if w.dense() {
+		return encGemvBF16To(enc, w.wq.buf, vec, out, w.wq.off, outOff, outDim, inDim)
 	}
 	gs, bits := m.groupSize, m.bits // per-weight geometry (mixed-precision packs); fall back to the layer default
 	if w.bits > 0 {

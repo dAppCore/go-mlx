@@ -136,6 +136,8 @@ func TestDecodeLayerResidualScratchPoolKeepsDimensionsResident(t *testing.T) {
 	putDecodeLayerResidualScratch(small)
 	large := getDecodeLayerResidualScratch(160)
 	putDecodeLayerResidualScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotSmall := getDecodeLayerResidualScratch(96)
 	defer putDecodeLayerResidualScratch(gotSmall)

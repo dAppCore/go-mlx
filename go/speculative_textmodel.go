@@ -193,6 +193,10 @@ func (s *speculativeTextModel) Close() error {
 //
 //	if mlx.IsSpeculativeTextModel(tm) { /* pair lane */ }
 func IsSpeculativeTextModel(tm inference.TextModel) bool {
-	_, ok := tm.(*speculativeTextModel)
-	return ok
+	switch tm.(type) {
+	case *speculativeTextModel, *nativeSpeculativeTextModel:
+		return true
+	default:
+		return false
+	}
 }

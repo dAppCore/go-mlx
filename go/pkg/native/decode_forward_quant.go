@@ -12,9 +12,10 @@ import (
 )
 
 // QuantWeight is one projection's affine-quantised weight: MLX's packed codes + bf16 scales +
-// bf16 biases (one scale/bias per group per row). GroupSize/Bits are the weight's OWN affine
-// geometry — mixed-precision packs (e4b-qat: the MLP is 8-bit while attention is 4-bit) vary it
-// per weight; 0 ⇒ fall back to the projector's layer-default groupSize/bits (uniform packs).
+// bf16 biases (one scale/bias per group per row). Sidecar-less Packed is also accepted by the
+// arch quant path as a dense bf16 matrix after pack-level fusion. GroupSize/Bits are the weight's
+// OWN affine geometry — mixed-precision packs (e4b-qat: the MLP is 8-bit while attention is 4-bit)
+// vary it per weight; 0 ⇒ fall back to the projector's layer-default groupSize/bits (uniform packs).
 type QuantWeight struct {
 	Packed, Scales, Biases []byte
 	GroupSize, Bits        int
@@ -222,24 +223,24 @@ func DecodeForwardQuant(
 		for t := 0; t < T; t++ {
 			sc.seed(t, inputs[t])
 
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
 			in, out := sc.xA, sc.xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
 				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, sc.offBuf, sc.hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
-					enc.EndEncoding()
+					endEncodingFast(enc)
 					return
 				}
 				if encErr = encMLPHalfBF16(enc, sc.hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
-					enc.EndEncoding()
+					endEncodingFast(enc)
 					return
 				}
 				in, out = out, in
 			}
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 			sc.copyBuffer(outputs[t], in)
 		}
 	})

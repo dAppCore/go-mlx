@@ -2,7 +2,10 @@
 
 package gemma4
 
-import "dappco.re/go/mlx/pkg/model"
+import (
+	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/safetensors"
+)
 
 // init registers gemma4's ArchSpec for the model_type ids the family declares, so the engine's reactive
 // loader (model.Load) parses + assembles it with no central switch — adding an arch is a config + this
@@ -20,5 +23,19 @@ func init() {
 			return cfg, nil
 		},
 		Weights: model.StandardWeightNames(),
+		Vision: func(tensors map[string]safetensors.Tensor, cfg model.ArchConfig) (*model.LoadedVision, error) {
+			textCfg, ok := cfg.(*Gemma4TextConfig)
+			if !ok {
+				return nil, nil
+			}
+			return AssembleVision(SanitizeVisionWeights(tensors), textCfg)
+		},
+		Audio: func(tensors map[string]safetensors.Tensor, cfg model.ArchConfig) (*model.LoadedAudio, error) {
+			textCfg, ok := cfg.(*Gemma4TextConfig)
+			if !ok {
+				return nil, nil
+			}
+			return AssembleAudio(SanitizeAudioWeights(tensors), textCfg)
+		},
 	})
 }

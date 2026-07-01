@@ -61,6 +61,30 @@ func TestMoERouterTopKKernelMatchesHostSelection(t *testing.T) {
 	}
 }
 
+func TestRouterTopKBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	scores := toBF16Bytes([]float32{0.5, 2.0, -1.0, 2.0, 0.25, 1.5, 3.0, 0.75})
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	const numExperts, topK = 8, 3
+	if _, _, err := routerTopKBF16(scores, scale, numExperts, topK); err != nil {
+		t.Fatalf("routerTopKBF16 warmup: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(20, func() {
+		idx, weights, err := routerTopKBF16(scores, scale, numExperts, topK)
+		if err != nil {
+			t.Fatalf("routerTopKBF16: %v", err)
+		}
+		if len(idx) != topK || len(weights) != topK*bf16Size {
+			t.Fatalf("routerTopKBF16 returned %d idx/%d weight bytes", len(idx), len(weights))
+		}
+	})
+	if allocs > 25 {
+		t.Fatalf("routerTopKBF16 allocations = %.0f, want <= 25", allocs)
+	}
+}
+
 func TestMoERouterDeviceTopKAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -114,6 +138,88 @@ func TestMoERouterQuantDeviceTopKAllocationBudget(t *testing.T) {
 	})
 	if allocs > 364 {
 		t.Fatalf("MoERouterQuant warmed device top-k allocations = %.0f, want <= 364", allocs)
+	}
+}
+
+func TestRouterDeviceScratchInputViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, numExperts, topK = 64, 8, 2
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	scratch, err := getRouterDeviceScratch(dModel, numExperts, topK)
+	if err != nil {
+		t.Fatalf("getRouterDeviceScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.inputView(x)
+	if !ok {
+		t.Fatal("inputView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("inputView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := scratch.inputView(x)
+	if !ok {
+		t.Fatal("reused inputView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("inputView did not reuse the cached no-copy buffer")
+	}
+}
+
+func TestRouterDeviceScratchInputViewReusesPinnedOwnerBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, numExperts, topK = 64, 8, 2
+	pinned, err := newPinnedNoCopyBytes(dModel * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+
+	scratch, err := getRouterDeviceScratch(dModel, numExperts, topK)
+	if err != nil {
+		t.Fatalf("getRouterDeviceScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.inputView(pinned.bytes)
+	if !ok {
+		t.Fatal("inputView ok = false")
+	}
+	requirePinnedOwnerBuffer(t, "router input view", buf, pinned)
+}
+
+func TestRouterDeviceScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getRouterDeviceScratch(65, 9, 3)
+	if err != nil {
+		t.Fatalf("get small router device scratch: %v", err)
+	}
+	putRouterDeviceScratch(small)
+	large, err := getRouterDeviceScratch(97, 17, 4)
+	if err != nil {
+		t.Fatalf("get large router device scratch: %v", err)
+	}
+	putRouterDeviceScratch(large)
+
+	gotSmall, err := getRouterDeviceScratch(65, 9, 3)
+	if err != nil {
+		t.Fatalf("get small router device scratch again: %v", err)
+	}
+	defer putRouterDeviceScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("router device scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getRouterDeviceScratch(97, 17, 4)
+	if err != nil {
+		t.Fatalf("get large router device scratch again: %v", err)
+	}
+	defer putRouterDeviceScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("router device scratch pool evicted the large shape after reusing the small shape")
 	}
 }
 
@@ -333,6 +439,8 @@ func TestMoERouterHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) {
 	defer scratch.Close()
 	normPtr := unsafe.Pointer(&scratch.normed.bytes[0])
 	scorePtr := unsafe.Pointer(&scratch.scores.bytes[0])
+	var idxPtr unsafe.Pointer
+	var weightPtr unsafe.Pointer
 
 	for i := 0; i < 2; i++ {
 		gotIdx, gotWeights, err := moeRouterBF16HostSelectWithScratch(x, normWScaled, routerW, scale, numExperts, topK, dModel, eps, scratch)
@@ -341,6 +449,15 @@ func TestMoERouterHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) {
 		}
 		if unsafe.Pointer(&scratch.normed.bytes[0]) != normPtr || unsafe.Pointer(&scratch.scores.bytes[0]) != scorePtr {
 			t.Fatal("router host scratch did not keep stable norm/score backing")
+		}
+		if len(scratch.selectScores) != numExperts || len(scratch.selectIdx) != topK || len(scratch.selectWeights) != topK*bf16Size {
+			t.Fatalf("router host scratch selector lengths = scores:%d idx:%d weights:%d", len(scratch.selectScores), len(scratch.selectIdx), len(scratch.selectWeights))
+		}
+		if i == 0 {
+			idxPtr = unsafe.Pointer(&scratch.selectIdx[0])
+			weightPtr = unsafe.Pointer(&scratch.selectWeights[0])
+		} else if unsafe.Pointer(&scratch.selectIdx[0]) != idxPtr || unsafe.Pointer(&scratch.selectWeights[0]) != weightPtr {
+			t.Fatal("router host scratch did not keep stable selector backing")
 		}
 		if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
 			t.Fatalf("router host fallback lengths = %d/%d, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))
@@ -480,6 +597,8 @@ func TestMoERouterQuantHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) 
 	defer scratch.Close()
 	normPtr := unsafe.Pointer(&scratch.normed.bytes[0])
 	scorePtr := unsafe.Pointer(&scratch.scores.bytes[0])
+	var idxPtr unsafe.Pointer
+	var weightPtr unsafe.Pointer
 
 	for i := 0; i < 2; i++ {
 		gotIdx, gotWeights, err := moeRouterQuantHostSelectWithScratch(x, normWScaled, bufView{}, routerW, scale, numExperts, topK, dModel, groupSize, bits, eps, scratch)
@@ -488,6 +607,15 @@ func TestMoERouterQuantHostSelectScratchReusesNormAndScoreBuffers(t *testing.T) 
 		}
 		if unsafe.Pointer(&scratch.normed.bytes[0]) != normPtr || unsafe.Pointer(&scratch.scores.bytes[0]) != scorePtr {
 			t.Fatal("router quant host scratch did not keep stable norm/score backing")
+		}
+		if len(scratch.selectScores) != numExperts || len(scratch.selectIdx) != topK || len(scratch.selectWeights) != topK*bf16Size {
+			t.Fatalf("router quant host scratch selector lengths = scores:%d idx:%d weights:%d", len(scratch.selectScores), len(scratch.selectIdx), len(scratch.selectWeights))
+		}
+		if i == 0 {
+			idxPtr = unsafe.Pointer(&scratch.selectIdx[0])
+			weightPtr = unsafe.Pointer(&scratch.selectWeights[0])
+		} else if unsafe.Pointer(&scratch.selectIdx[0]) != idxPtr || unsafe.Pointer(&scratch.selectWeights[0]) != weightPtr {
+			t.Fatal("router quant host scratch did not keep stable selector backing")
 		}
 		if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
 			t.Fatalf("router quant host fallback lengths = %d/%d, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))

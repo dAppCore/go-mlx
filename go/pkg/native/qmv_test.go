@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	mlxmetal "dappco.re/go/mlx/pkg/metal"
+	"github.com/tmc/apple/metal"
 )
 
 func TestQMVBF16KernelNameCachesGeometryString(t *testing.T) {
@@ -194,6 +195,8 @@ func TestQMVBF16ScratchPoolKeepsAlternatingDimensions(t *testing.T) {
 		t.Fatalf("getQMVBF16Scratch b: %v", err)
 	}
 	putQMVBF16Scratch(b)
+	forceNativeGC()
+	forceNativeGC()
 
 	gotA, err := getQMVBF16Scratch(64, 64)
 	if err != nil {
@@ -210,6 +213,93 @@ func TestQMVBF16ScratchPoolKeepsAlternatingDimensions(t *testing.T) {
 	defer putQMVBF16Scratch(gotB)
 	if gotB != b {
 		t.Fatal("QMV BF16 scratch pool did not preserve the 8x64 scratch across an alternating dimension")
+	}
+}
+
+func TestQMVBF16ScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 64, 128
+	x := toBF16Bytes(syntheticFloat32(inDim, 5))
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	var xBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		xBuf, _, err = scratch.buffers(x)
+		if err != nil {
+			t.Fatalf("scratch.buffers warmup %d: %v", i, err)
+		}
+	}
+	if got, want := uintptr(xBuf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("x buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reusedX, _, err := scratch.buffers(x)
+	if err != nil {
+		t.Fatalf("scratch.buffers reused: %v", err)
+	}
+	if reusedX.GetID() != xBuf.GetID() {
+		t.Fatal("scratch.buffers did not reuse cached no-copy input view")
+	}
+}
+
+func TestQMVBF16ScratchBuffersUsePinnedCallerBackingOnFirstCall(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 64, 128
+	pinned, err := newPinnedNoCopyBytes(inDim * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+	copy(pinned.bytes, toBF16Bytes(syntheticFloat32(inDim, 53)))
+
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	xBuf, _, err := scratch.buffers(pinned.bytes)
+	if err != nil {
+		t.Fatalf("scratch.buffers: %v", err)
+	}
+	if got, want := xBuf.GetID(), pinned.buf.GetID(); got != want {
+		t.Fatalf("first x buffer id = %d, want pinned caller buffer %d", got, want)
+	}
+	if got, want := uintptr(xBuf.Contents()), uintptr(unsafe.Pointer(&pinned.bytes[0])); got != want {
+		t.Fatalf("first x buffer pointer = %#x, want pinned caller backing %#x", got, want)
+	}
+}
+
+func TestQMVBF16ScratchOutputViewReusesPinnedOwnerBuffer(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 64, 128
+	pinned, err := newPinnedNoCopyBytes(outDim * bf16Size)
+	if err != nil {
+		t.Fatalf("newPinnedNoCopyBytes: %v", err)
+	}
+	defer pinned.Close()
+
+	scratch, err := getQMVBF16Scratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	outBuf, ok := scratch.outputView(pinned.bytes)
+	if !ok {
+		t.Fatal("QMV BF16 output view did not accept pinned caller bytes")
+	}
+	if got, want := outBuf.GetID(), pinned.buf.GetID(); got != want {
+		t.Fatalf("QMV BF16 output view buffer id = %d, want pinned owner buffer %d", got, want)
+	}
+	if got, want := uintptr(outBuf.Contents()), uintptr(unsafe.Pointer(&pinned.bytes[0])); got != want {
+		t.Fatalf("QMV BF16 output view pointer = %#x, want pinned backing %#x", got, want)
 	}
 }
 
@@ -230,6 +320,36 @@ func TestQMVAllocationBudget(t *testing.T) {
 	})
 	if allocs > 10 {
 		t.Fatalf("QMV allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestQMVFloatScratchBuffersUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 64, 128
+	x := syntheticFloat32(inDim, 5)
+	scratch, err := getQMVFloatScratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	var xBuf metal.MTLBuffer
+	for i := 0; i < 3; i++ {
+		xBuf, _, err = scratch.buffers(x)
+		if err != nil {
+			t.Fatalf("scratch.buffers warmup %d: %v", i, err)
+		}
+	}
+	if got, want := uintptr(xBuf.Contents()), uintptr(unsafe.Pointer(&x[0])); got != want {
+		t.Fatalf("x buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reusedX, _, err := scratch.buffers(x)
+	if err != nil {
+		t.Fatalf("scratch.buffers reused: %v", err)
+	}
+	if reusedX.GetID() != xBuf.GetID() {
+		t.Fatal("scratch.buffers did not reuse cached no-copy input view")
 	}
 }
 

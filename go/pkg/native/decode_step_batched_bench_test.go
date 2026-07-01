@@ -26,13 +26,62 @@ func BenchmarkDecodeLayerBatchedKV4x256(b *testing.B) {
 	copy(kCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 10)))
 	copy(vCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 11)))
 	xs := toBF16Bytes(syntheticFloat32(K*dModel, 12))
+	kc := make([]byte, len(kCache))
+	vc := make([]byte, len(vCache))
+	copy(kc, kCache)
+	copy(vc, vCache)
+	if _, err := DecodeLayerBatchedKV(xs, attnNormW, wQ, wK, wV, wO, kc, vc, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
 
 	b.SetBytes(int64(len(xs) + len(kCache) + len(vCache)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kc := append([]byte(nil), kCache...)
-		vc := append([]byte(nil), vCache...)
+		copy(kc, kCache)
+		copy(vc, vCache)
 		if _, err := DecodeLayerBatchedKV(xs, attnNormW, wQ, wK, wV, wO, kc, vc, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDecodeLayerBatchedKVInto4x256(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K = 256, 4, 2, 64, 32, 512, 5, 4
+	const base, scale, eps = float32(10000), float32(1.0 / 8.0), float32(1e-6)
+	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	attnNormW := toBF16Bytes(syntheticFloat32(dModel, 1))
+	mlpNormW := toBF16Bytes(syntheticFloat32(dModel, 2))
+	wQ := toBF16Bytes(syntheticFloat32(qDim*dModel, 3))
+	wK := toBF16Bytes(syntheticFloat32(kvDim*dModel, 4))
+	wV := toBF16Bytes(syntheticFloat32(kvDim*dModel, 5))
+	wO := toBF16Bytes(syntheticFloat32(dModel*qDim, 6))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 8))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 9))
+	kCache := make([]byte, maxLen*kvDim*bf16Size)
+	vCache := make([]byte, maxLen*kvDim*bf16Size)
+	copy(kCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 10)))
+	copy(vCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 11)))
+	xs := toBF16Bytes(syntheticFloat32(K*dModel, 12))
+	out := make([]byte, K*dModel*bf16Size)
+	kc := make([]byte, len(kCache))
+	vc := make([]byte, len(vCache))
+	copy(kc, kCache)
+	copy(vc, vCache)
+	if _, err := DecodeLayerBatchedKVInto(out, xs, attnNormW, wQ, wK, wV, wO, kc, vc, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps); err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(int64(len(xs) + len(kCache) + len(vCache)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(kc, kCache)
+		copy(vc, vCache)
+		if _, err := DecodeLayerBatchedKVInto(out, xs, attnNormW, wQ, wK, wV, wO, kc, vc, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps); err != nil {
 			b.Fatal(err)
 		}
 	}

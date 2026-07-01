@@ -139,3 +139,50 @@ func BenchmarkMoEExpertsQuantFusedGateUpIntoTop2Of4(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkGatherQMVBF16ByExpertIndexTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const numExperts, topK, outDim, inDim, groupSize, bits = 4, 2, 64, 96, 32, 4
+	if _, err := gatherQMVBF16SteelPipeline(outDim, inDim, groupSize, bits); err != nil {
+		b.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	idx := []int32{3, 1}
+	w := quantMoELayerWeightsGuard(b, numExperts, 1, inDim, 128, outDim, groupSize, bits).ExpGate
+	x := toBF16Bytes(syntheticFloat32(inDim, 37))
+	b.SetBytes(int64(len(x) + len(w.Packed) + len(w.Scales) + len(w.Biases)))
+	b.ReportAllocs()
+	if _, err := gatherQMVBF16ByExpertIndex(x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gatherQMVBF16ByExpertIndex(x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGatherQMVBF16ByExpertIndexIntoTop2Of4(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const numExperts, topK, outDim, inDim, groupSize, bits = 4, 2, 64, 96, 32, 4
+	if _, err := gatherQMVBF16SteelPipeline(outDim, inDim, groupSize, bits); err != nil {
+		b.Skipf("gather qmv kernel unavailable: %v", err)
+	}
+	idx := []int32{3, 1}
+	w := quantMoELayerWeightsGuard(b, numExperts, 1, inDim, 128, outDim, groupSize, bits).ExpGate
+	x := toBF16Bytes(syntheticFloat32(inDim, 37))
+	out := make([]byte, topK*outDim*bf16Size)
+	b.SetBytes(int64(len(x) + len(w.Packed) + len(w.Scales) + len(w.Biases)))
+	b.ReportAllocs()
+	if _, err := gatherQMVBF16ByExpertIndexInto(out, x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gatherQMVBF16ByExpertIndexInto(out, x, idx, w, numExperts, topK, outDim, inDim, groupSize, bits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

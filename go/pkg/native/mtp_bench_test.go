@@ -74,3 +74,34 @@ func BenchmarkMTPDecodeSequentialFallback(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkMTPVerifyBatchedFallbackReusedHiddenRows(b *testing.B) {
+	requireNativeRuntime(b)
+	mk := newMTPDecodeFixture(b)
+	dense := mk()
+	for _, id := range []int32{1, 2, 3} {
+		if _, err := dense.stepID(id); err != nil {
+			b.Fatalf("prefill dense stepID(%d): %v", id, err)
+		}
+	}
+	dense.greedy = func(hidden []byte, suppress []int32) (int32, bool, error) {
+		return dense.headEnc.greedyInPool(hidden, suppress)
+	}
+	ids := []int32{4, 5, 6, 7}
+	greedys := make([]int32, len(ids))
+	if _, ok, err := dense.verifyBatchedInto(ids, greedys); err != nil {
+		b.Fatalf("verifyBatched warmup: %v", err)
+	} else if !ok {
+		b.Fatal("verifyBatched warmup ok = false")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, err := dense.verifyBatchedInto(ids, greedys); err != nil {
+			b.Fatalf("verifyBatched: %v", err)
+		} else if !ok {
+			b.Fatal("verifyBatched ok = false")
+		}
+	}
+}

@@ -36,8 +36,8 @@ func TestDecodeForwardArchICBQuantAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardArchICBQuant: %v", forwardErr)
 	}
-	if allocs > 1900 {
-		t.Fatalf("DecodeForwardArchICBQuant allocations = %.0f, want <= 1900", allocs)
+	if allocs > 195 {
+		t.Fatalf("DecodeForwardArchICBQuant allocations = %.0f, want <= 195", allocs)
 	}
 }
 
@@ -64,8 +64,8 @@ func TestDecodeForwardArchICBQuantIntoAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardArchICBQuantInto: %v", forwardErr)
 	}
-	if allocs > 1780 {
-		t.Fatalf("DecodeForwardArchICBQuantInto allocations = %.0f, want <= 1780", allocs)
+	if allocs > 195 {
+		t.Fatalf("DecodeForwardArchICBQuantInto allocations = %.0f, want <= 195", allocs)
 	}
 }
 
@@ -99,6 +99,31 @@ func TestDecodeForwardArchICBQuantIntoReusesOutputBacking(t *testing.T) {
 			t.Fatalf("DecodeForwardArchICBQuantInto token %d did not reuse caller-owned output backing", tok)
 		}
 		eqBytes(t, "DecodeForwardArchICBQuantInto token", got[tok], want[tok])
+	}
+}
+
+func TestDecodeForwardArchICBQuantMixedDenseProjectionMatchesReencode(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	const groupSize, bits = 64, 4
+	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layer := quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)
+	layer.Q = QuantWeight{Packed: toBF16Bytes(syntheticFloat32(nHeads*headDim*dModel, 101))}
+	layer.Down = QuantWeight{Packed: toBF16Bytes(syntheticFloat32(dModel*dFF, 103))}
+	layers := []QuantizedLayerWeights{layer}
+
+	want, err := DecodeForwardArchQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant mixed dense projection: %v", err)
+	}
+	got, err := DecodeForwardArchICBQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant mixed dense projection: %v", err)
+	}
+	for tok := range want {
+		eqBytes(t, "mixed dense projection token", got[tok], want[tok])
 	}
 }
 

@@ -39,6 +39,7 @@ type ArchSession struct {
 	headEnc       *headEncoder
 	headFuncPtr   uintptr
 	greedyFuncPtr uintptr
+	finalNorm     []byte
 	// perLayerInput, when set (gemma4 E2B/E4B), computes the per-token PerLayerInputs tensor
 	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
 	// for models without the PLE tower.
@@ -62,6 +63,11 @@ type ArchSession struct {
 	stateBlockViewsICB bool
 	stateBlockLayers   []SessionStateLayerBlock
 	stateBlockBounds   []int
+	turboQuantRotated  []float64
+	turboQuantNormed   []float64
+	turboQuantPayloads []nativeTurboQuantKVPagePayload
+	turboQuantCache    map[nativeTurboQuantKVPayloadCacheKey]nativeTurboQuantKVPagePayload
+	kvBlockCachedIDs   []int32
 	pos                int // tokens already in the cache (the next token decodes at this position)
 	maxLen             int
 	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
@@ -71,9 +77,11 @@ type ArchSession struct {
 	// mirrors metal's prompt-cache entry hidden/logits replay: an exact prompt hit can decode
 	// immediately from saved state instead of re-prefilling the last prompt token or re-running the
 	// first head projection just to recreate it.
-	cachedPromptIDs    []int32
-	cachedPromptHidden []byte
-	cachedPromptLogits []byte
+	cachedPromptIDs          []int32
+	cachedPromptHidden       []byte
+	cachedPromptLogits       []byte
+	cachedPromptHiddenPinned *pinnedNoCopyBytes
+	cachedPromptLogitsPinned *pinnedNoCopyBytes
 	// retainedHidden is the hidden state at the current session boundary. It is
 	// the native equivalent of metal's retained logits boundary for token-only
 	// session operation: PrefillTokens/AppendTokens populate it, and
@@ -104,6 +112,8 @@ type ArchSession struct {
 	sampleOrder           []int32
 	sampleSuppressTokens  []int32
 	embedScratch          []byte
+	mtpVerifyHiddenPinned *pinnedNoCopyBytes
+	mtpVerifyHiddenRows   [][]byte
 	nextInputToken        metal.MTLBuffer
 	nextInputTokenPtr     *int32
 	nextInputTokenPinned  *pinnedNoCopyBytes
@@ -151,6 +161,11 @@ func (s *ArchSession) closeSessionOwnedScratch() {
 	s.sampleOrder = nil
 	s.sampleSuppressTokens = nil
 	s.embedScratch = nil
+	if s.mtpVerifyHiddenPinned != nil {
+		s.mtpVerifyHiddenPinned.Close()
+		s.mtpVerifyHiddenPinned = nil
+	}
+	s.mtpVerifyHiddenRows = nil
 
 	s.nextInputToken = nil
 	s.nextInputTokenPtr = nil
@@ -188,6 +203,7 @@ func (s *ArchSession) closeModelAndDecodeStateReferences() {
 	s.headEnc = nil
 	s.headFuncPtr = 0
 	s.greedyFuncPtr = 0
+	s.finalNorm = nil
 	s.perLayerInput = nil
 	s.encNextInputsGPU = nil
 	s.plScratchNew = nil
@@ -200,10 +216,23 @@ func (s *ArchSession) closeModelAndDecodeStateReferences() {
 	s.stateBlockViewsICB = false
 	s.stateBlockLayers = nil
 	s.stateBlockBounds = nil
+	s.turboQuantRotated = nil
+	s.turboQuantNormed = nil
+	s.turboQuantPayloads = nil
+	s.turboQuantCache = nil
+	s.kvBlockCachedIDs = nil
 	s.cachedIDs = nil
 	s.cachedPromptIDs = nil
 	s.cachedPromptHidden = nil
 	s.cachedPromptLogits = nil
+	if s.cachedPromptHiddenPinned != nil {
+		s.cachedPromptHiddenPinned.Close()
+		s.cachedPromptHiddenPinned = nil
+	}
+	if s.cachedPromptLogitsPinned != nil {
+		s.cachedPromptLogitsPinned.Close()
+		s.cachedPromptLogitsPinned = nil
+	}
 	if s.retainedHiddenPinned != nil {
 		s.retainedHiddenPinned.Close()
 		s.retainedHiddenPinned = nil
@@ -375,6 +404,21 @@ func (s *ArchSession) repeatPenaltyLogitsScratch(logits []byte, vocab int, histo
 	if penalty <= 1 || len(history) == 0 {
 		return logits, nil
 	}
+	ids := s.repeatPenaltyIDsScratch(vocab, history)
+	if len(ids) == 0 {
+		return logits, nil
+	}
+	if cap(s.samplePenaltyLogits) < len(logits) {
+		s.samplePenaltyLogits = make([]byte, len(logits))
+	} else {
+		s.samplePenaltyLogits = s.samplePenaltyLogits[:len(logits)]
+	}
+	copy(s.samplePenaltyLogits, logits)
+	applyRepeatPenaltySortedIDsBF16(s.samplePenaltyLogits, ids, penalty)
+	return s.samplePenaltyLogits, nil
+}
+
+func (s *ArchSession) repeatPenaltyIDsScratch(vocab int, history []int32) []int32 {
 	if cap(s.samplePenaltyIDs) < len(history) {
 		s.samplePenaltyIDs = make([]int32, 0, len(history))
 	} else {
@@ -386,18 +430,11 @@ func (s *ArchSession) repeatPenaltyLogitsScratch(logits []byte, vocab int, histo
 		}
 	}
 	if len(s.samplePenaltyIDs) == 0 {
-		return logits, nil
+		return nil
 	}
 	slices.Sort(s.samplePenaltyIDs)
 	s.samplePenaltyIDs = slices.Compact(s.samplePenaltyIDs)
-	if cap(s.samplePenaltyLogits) < len(logits) {
-		s.samplePenaltyLogits = make([]byte, len(logits))
-	} else {
-		s.samplePenaltyLogits = s.samplePenaltyLogits[:len(logits)]
-	}
-	copy(s.samplePenaltyLogits, logits)
-	applyRepeatPenaltySortedIDsBF16(s.samplePenaltyLogits, s.samplePenaltyIDs, penalty)
-	return s.samplePenaltyLogits, nil
+	return s.samplePenaltyIDs
 }
 
 func (s *ArchSession) suppressionTokensScratch(base, extra []int32) []int32 {
@@ -453,7 +490,7 @@ func (s *ArchSession) nextInputEmbBuffer(dModel int) metal.MTLBuffer {
 	if n <= 0 {
 		return nil
 	}
-	if s.nextInputEmb == nil || int(s.nextInputEmb.Length()) != n {
+	if s.nextInputEmb == nil || int(bufferLengthFast(s.nextInputEmb)) != n {
 		if s.nextInputEmbPinned != nil {
 			s.nextInputEmbPinned.Close()
 			s.nextInputEmbPinned = nil
@@ -550,6 +587,10 @@ func newArchSessionShardsWithHead(g *BF16Model, arch model.Arch, maxLen int, sb 
 		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm, maxLen)
 		state.ropeFreqs = uploadRopePeriods(arch.RopeFreqs) // YaRN long-context spectrum (nil ⇒ base rope)
+		if err := state.initDevicePagedKV(defaultPagedKVPageSize); err != nil {
+			buildErr = err
+			return
+		}
 		// gemma4 per-layer-input tower (E2B/E4B), bf16 sibling of the quant session: the per-layer
 		// gates carry bf16 bytes (bits 0 ⇒ the decode applies PerLayerInputGateBF16, not the qmv).
 		if g.HasPLE() {
@@ -577,7 +618,7 @@ func newArchSessionShardsWithHead(g *BF16Model, arch model.Arch, maxLen int, sb 
 			}
 		}
 		sess = &ArchSession{
-			arch: arch, state: state, maxLen: maxLen, headEnc: head,
+			arch: arch, state: state, maxLen: maxLen, headEnc: head, finalNorm: g.FinalNorm,
 			embed: func(id int32) ([]byte, error) {
 				return embedTokenBF16(g.Embed, id, arch.Vocab, arch.Hidden, embedScale)
 			},
@@ -715,7 +756,7 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 			}
 		}
 		sess = &ArchSession{
-			arch: arch, state: state, maxLen: maxLen, headEnc: head,
+			arch: arch, state: state, maxLen: maxLen, headEnc: head, finalNorm: g.FinalNorm,
 			embed: func(id int32) ([]byte, error) {
 				return embedTokenQuant(g.Embed, g.EmbedScales, g.EmbedBiases, id, arch.Vocab, arch.Hidden, gs, bits, embedScale)
 			},
@@ -904,18 +945,54 @@ func (s *ArchSession) PrefillTokens(ids []int32) error {
 	return nil
 }
 
+// PrefillTokenEmbeddings resets the retained decode state and prefills already
+// tokenised ids with caller-supplied embeddings. It is the multimodal sibling
+// of PrefillTokens: image placeholder ids still drive PLE/cache metadata, while
+// their embedding rows can be replaced by projected vision features.
+func (s *ArchSession) PrefillTokenEmbeddings(ids []int32, embeddings [][]byte) error {
+	if len(ids) == 0 {
+		return core.NewError("native.ArchSession.PrefillTokenEmbeddings: empty prompt tokens")
+	}
+	if len(ids) != len(embeddings) {
+		return core.NewError("native.ArchSession.PrefillTokenEmbeddings: token and embedding counts differ")
+	}
+	if len(ids) > s.maxLen {
+		return core.NewError("native.ArchSession.PrefillTokenEmbeddings: sequence would exceed maxLen cache rows")
+	}
+	s.pos = 0
+	s.resetCachedPromptEntry()
+	s.resetRetainedHidden()
+	resident := s.cachedIDs[:0]
+	s.cachedIDs = resident
+	var hidden []byte
+	for i, id := range ids {
+		h, err := s.StepWithID(id, embeddings[i])
+		if err != nil {
+			s.pos = 0
+			s.cachedIDs = resident[:0]
+			s.resetRetainedHidden()
+			return err
+		}
+		hidden = h
+	}
+	s.cachedIDs = append(resident, ids...)
+	s.rememberRetainedHidden(hidden)
+	return nil
+}
+
 // AppendTokens appends already-tokenised prompt ids to the retained session
 // state without replaying the existing prefix.
 func (s *ArchSession) AppendTokens(ids []int32) error {
 	if len(ids) == 0 {
 		return core.NewError("native.ArchSession.AppendTokens: empty prompt tokens")
 	}
-	if s.pos == 0 || len(s.retainedHidden) != s.arch.Hidden*bf16Size {
+	if s.pos == 0 {
 		return core.NewError("native.ArchSession.AppendTokens: no retained prefill state")
 	}
 	if s.pos+len(ids) > s.maxLen {
 		return core.NewError("native.ArchSession.AppendTokens: sequence would exceed maxLen cache rows")
 	}
+	s.resetRetainedLogits()
 	hidden, err := s.prefillRetainedTokens(ids, "native.ArchSession.AppendTokens")
 	if err != nil {
 		s.cachedIDs = nil
@@ -973,6 +1050,22 @@ func (s *ArchSession) GenerateSampledFromCacheEach(maxNew int, stopTokens []int3
 	return gen, nil
 }
 
+// BoundaryNormedHidden returns the post-final-RMSNorm hidden vector at the
+// retained session boundary. Gemma 4 assistant drafting seeds from this target
+// feature, matching the vector the target LM head consumes.
+func (s *ArchSession) BoundaryNormedHidden() ([]byte, error) {
+	if s == nil {
+		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: nil session")
+	}
+	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: no retained prefill state")
+	}
+	if len(s.finalNorm) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: final norm is unavailable")
+	}
+	return RMSNormBF16(s.retainedHidden, s.finalNorm, 1, s.arch.Hidden, s.arch.Eps)
+}
+
 // BoundaryLogits returns the bf16 logits at the retained session boundary.
 // Restore paths can use these logits to select the first continuation token
 // without recomputing the restored prompt prefix.
@@ -1014,6 +1107,10 @@ func (s *ArchSession) BoundaryLogits() ([]byte, error) {
 // firstLogits; subsequent tokens use the resident K/V cache and normal native
 // step path, so the prompt prefix is not replayed.
 func (s *ArchSession) GenerateFromCacheLogitsEach(firstLogits []byte, maxNew, eosID int, yield func(int32) bool) ([]int32, error) {
+	return s.generateFromCacheLogitsEach(firstLogits, maxNew, eosID, nil, nil, yield)
+}
+
+func (s *ArchSession) generateFromCacheLogitsEach(firstLogits []byte, maxNew, eosID int, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
 	if maxNew <= 0 {
 		return nil, core.NewError("native.ArchSession.GenerateFromCacheLogits: maxNew must be > 0")
 	}
@@ -1026,7 +1123,7 @@ func (s *ArchSession) GenerateFromCacheLogitsEach(firstLogits []byte, maxNew, eo
 	var gen []int32
 	var err error
 	withAutoreleasePool(func() {
-		gen, err = s.generateFromLogitsInPool(firstLogits, maxNew, eosID, yield)
+		gen, err = s.generateFromLogitsInPool(firstLogits, maxNew, eosID, suppress, transform, yield)
 	})
 	if err != nil {
 		s.cachedIDs = nil
@@ -1070,11 +1167,23 @@ func (s *ArchSession) GenerateSampledFromCacheLogitsEach(firstLogits []byte, max
 // GenerateFromCacheEachTransformed is GenerateFromCacheEach with a committed-token
 // transform applied before each generated token is written to the cache.
 func (s *ArchSession) GenerateFromCacheEachTransformed(maxNew, eosID int, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateFromCacheEachWithSuppressionAndTransform(maxNew, eosID, nil, transform, yield)
+}
+
+// GenerateFromCacheEachWithSuppression is GenerateFromCacheEach with suppressed
+// token ids masked before greedy argmax.
+func (s *ArchSession) GenerateFromCacheEachWithSuppression(maxNew, eosID int, suppress []int32, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateFromCacheEachWithSuppressionAndTransform(maxNew, eosID, suppress, nil, yield)
+}
+
+// GenerateFromCacheEachWithSuppressionAndTransform combines restored-cache
+// greedy token suppression with a committed-token transform.
+func (s *ArchSession) GenerateFromCacheEachWithSuppressionAndTransform(maxNew, eosID int, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
 	if maxNew <= 0 {
 		return nil, core.NewError("native.ArchSession.GenerateFromCache: maxNew must be > 0")
 	}
-	if transform == nil && len(s.retainedLogits) == s.arch.Vocab*bf16Size {
-		return s.GenerateFromCacheLogitsEach(s.retainedLogits, maxNew, eosID, yield)
+	if len(s.retainedLogits) == s.arch.Vocab*bf16Size {
+		return s.generateFromCacheLogitsEach(s.retainedLogits, maxNew, eosID, suppress, transform, yield)
 	}
 	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
 		return nil, core.NewError("native.ArchSession.GenerateFromCache: no retained prefill state")
@@ -1086,7 +1195,7 @@ func (s *ArchSession) GenerateFromCacheEachTransformed(maxNew, eosID int, transf
 	var gen []int32
 	var err error
 	withAutoreleasePool(func() {
-		gen, err = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, nil, nil, transform, yield)
+		gen, err = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, nil, suppress, transform, yield)
 	})
 	if err != nil {
 		s.cachedIDs = nil
@@ -1103,6 +1212,12 @@ func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, 
 	}
 	if s.pos+len(ids) > s.maxLen {
 		return nil, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	// Persisted block restores can resume from K/V plus boundary logits only.
+	// In that shape, the token step path matches decode parity while batched
+	// prompt append needs a live retained hidden boundary.
+	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
+		return s.prefillPromptRetainedInPool(ids)
 	}
 	if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, scope); ok || err != nil {
 		return hidden, err
@@ -1157,6 +1272,53 @@ func (s *ArchSession) prefillRetainedTokensBatchedDense(ids []int32, scope strin
 	}
 	if s.pos+len(ids) > s.maxLen {
 		return nil, false, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if s.verifyBatchedCrossesSlidingRingWrap(len(ids)) {
+		return s.prefillRetainedTokensBatchedDenseChunks(ids, scope)
+	}
+	return s.prefillRetainedTokensBatchedDenseOne(ids, scope)
+}
+
+func (s *ArchSession) prefillRetainedTokensBatchedDenseChunks(ids []int32, scope string) ([]byte, bool, error) {
+	var hidden []byte
+	for len(ids) > 0 {
+		n := s.batchedDensePrefillChunkLen(len(ids))
+		if n <= 0 {
+			return nil, false, core.NewError("native.prefillRetainedTokensBatchedDense: invalid sliding chunk")
+		}
+		nextHidden, ok, err := s.prefillRetainedTokensBatchedDenseOne(ids[:n], scope)
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		hidden = nextHidden
+		ids = ids[n:]
+	}
+	return hidden, true, nil
+}
+
+func (s *ArchSession) batchedDensePrefillChunkLen(limit int) int {
+	if limit <= 1 || s == nil || s.arch.SlidingWindow <= 0 || s.arch.SlidingWindow >= s.maxLen {
+		return limit
+	}
+	remain := s.arch.SlidingWindow - s.pos%s.arch.SlidingWindow
+	if remain <= 0 {
+		remain = s.arch.SlidingWindow
+	}
+	if remain > limit {
+		return limit
+	}
+	return remain
+}
+
+func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope string) ([]byte, bool, error) {
+	if len(ids) == 0 {
+		return nil, false, nil
+	}
+	if s.pos+len(ids) > s.maxLen {
+		return nil, false, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if s.verifyBatchedCrossesSlidingRingWrap(len(ids)) {
+		return nil, false, nil
 	}
 	if s.perLayerInput != nil || s.state.icb != nil {
 		return nil, false, nil
@@ -1269,6 +1431,11 @@ func (s *ArchSession) resetRetainedHidden() {
 	}
 	s.resetRetainedLogits()
 	if s.retainedHiddenPinned != nil && s.retainedHiddenPinned.bytes != nil {
+		if s.retainedHiddenPinned == s.cachedPromptHiddenPinned {
+			s.retainedHiddenPinned = nil
+			s.retainedHidden = nil
+			return
+		}
 		s.retainedHidden = s.retainedHiddenPinned.bytes[:0]
 		return
 	}
@@ -1297,6 +1464,11 @@ func (s *ArchSession) resetRetainedLogits() {
 		return
 	}
 	if s.retainedLogitsPinned != nil && s.retainedLogitsPinned.bytes != nil {
+		if s.retainedLogitsPinned == s.cachedPromptLogitsPinned {
+			s.retainedLogitsPinned = nil
+			s.retainedLogits = nil
+			return
+		}
 		s.retainedLogits = s.retainedLogitsPinned.bytes[:0]
 		return
 	}
@@ -1308,10 +1480,17 @@ func (s *ArchSession) ensureRetainedHiddenPinned(n int) (*pinnedNoCopyBytes, boo
 		return nil, false
 	}
 	if s.retainedHiddenPinned != nil {
-		if len(s.retainedHiddenPinned.bytes) == n && s.retainedHiddenPinned.buf != nil {
+		if s.retainedHiddenPinned == s.cachedPromptHiddenPinned &&
+			len(s.retainedHidden) == len(s.cachedPromptHidden) &&
+			len(s.retainedHidden) != 0 &&
+			unsafe.Pointer(&s.retainedHidden[0]) == unsafe.Pointer(&s.cachedPromptHidden[0]) {
+			s.retainedHiddenPinned = nil
+			s.retainedHidden = nil
+		} else if len(s.retainedHiddenPinned.bytes) == n && s.retainedHiddenPinned.buf != nil {
 			return s.retainedHiddenPinned, true
+		} else {
+			s.closeRetainedHiddenPinned()
 		}
-		s.closeRetainedHiddenPinned()
 	}
 	pinned, err := newPinnedNoCopyBytes(n)
 	if err != nil {
@@ -1325,6 +1504,11 @@ func (s *ArchSession) closeRetainedHiddenPinned() {
 	if s == nil || s.retainedHiddenPinned == nil {
 		return
 	}
+	if s.retainedHiddenPinned == s.cachedPromptHiddenPinned {
+		s.retainedHiddenPinned = nil
+		s.retainedHidden = nil
+		return
+	}
 	s.retainedHiddenPinned.Close()
 	s.retainedHiddenPinned = nil
 	s.retainedHidden = nil
@@ -1335,10 +1519,17 @@ func (s *ArchSession) ensureRetainedLogitsPinned(n int) (*pinnedNoCopyBytes, boo
 		return nil, false
 	}
 	if s.retainedLogitsPinned != nil {
-		if len(s.retainedLogitsPinned.bytes) == n && s.retainedLogitsPinned.buf != nil {
+		if s.retainedLogitsPinned == s.cachedPromptLogitsPinned &&
+			len(s.retainedLogits) == len(s.cachedPromptLogits) &&
+			len(s.retainedLogits) != 0 &&
+			unsafe.Pointer(&s.retainedLogits[0]) == unsafe.Pointer(&s.cachedPromptLogits[0]) {
+			s.retainedLogitsPinned = nil
+			s.retainedLogits = nil
+		} else if len(s.retainedLogitsPinned.bytes) == n && s.retainedLogitsPinned.buf != nil {
 			return s.retainedLogitsPinned, true
+		} else {
+			s.closeRetainedLogitsPinned()
 		}
-		s.closeRetainedLogitsPinned()
 	}
 	pinned, err := newPinnedNoCopyBytes(n)
 	if err != nil {
@@ -1350,6 +1541,11 @@ func (s *ArchSession) ensureRetainedLogitsPinned(n int) (*pinnedNoCopyBytes, boo
 
 func (s *ArchSession) closeRetainedLogitsPinned() {
 	if s == nil || s.retainedLogitsPinned == nil {
+		return
+	}
+	if s.retainedLogitsPinned == s.cachedPromptLogitsPinned {
+		s.retainedLogitsPinned = nil
+		s.retainedLogits = nil
 		return
 	}
 	s.retainedLogitsPinned.Close()
@@ -1368,13 +1564,18 @@ func (s *ArchSession) retainedHiddenBuffer() metal.MTLBuffer {
 }
 
 func (s *ArchSession) retainedHiddenBufferFor(hidden []byte) metal.MTLBuffer {
-	if s == nil || len(hidden) == 0 || len(hidden) != len(s.retainedHidden) || len(s.retainedHidden) == 0 {
+	if s == nil || len(hidden) == 0 {
 		return nil
 	}
-	if unsafe.Pointer(&hidden[0]) != unsafe.Pointer(&s.retainedHidden[0]) {
-		return nil
+	if len(hidden) == len(s.retainedHidden) && len(s.retainedHidden) != 0 && unsafe.Pointer(&hidden[0]) == unsafe.Pointer(&s.retainedHidden[0]) {
+		if buf := s.retainedHiddenBuffer(); buf != nil {
+			return buf
+		}
 	}
-	return s.retainedHiddenBuffer()
+	if len(hidden) == len(s.cachedPromptHidden) && len(s.cachedPromptHidden) != 0 && unsafe.Pointer(&hidden[0]) == unsafe.Pointer(&s.cachedPromptHidden[0]) {
+		return s.cachedPromptHiddenBuffer()
+	}
+	return nil
 }
 
 func (s *ArchSession) retainedLogitsBuffer() metal.MTLBuffer {
@@ -1388,13 +1589,48 @@ func (s *ArchSession) retainedLogitsBuffer() metal.MTLBuffer {
 }
 
 func (s *ArchSession) retainedLogitsBufferFor(logits []byte) metal.MTLBuffer {
-	if s == nil || len(logits) == 0 || len(logits) != len(s.retainedLogits) || len(s.retainedLogits) == 0 {
+	if s == nil || len(logits) == 0 {
 		return nil
 	}
-	if unsafe.Pointer(&logits[0]) != unsafe.Pointer(&s.retainedLogits[0]) {
-		return nil
+	if len(logits) == len(s.retainedLogits) && len(s.retainedLogits) != 0 && unsafe.Pointer(&logits[0]) == unsafe.Pointer(&s.retainedLogits[0]) {
+		if buf := s.retainedLogitsBuffer(); buf != nil {
+			return buf
+		}
 	}
-	return s.retainedLogitsBuffer()
+	if len(logits) == len(s.cachedPromptLogits) && len(s.cachedPromptLogits) != 0 && unsafe.Pointer(&logits[0]) == unsafe.Pointer(&s.cachedPromptLogits[0]) {
+		return s.cachedPromptLogitsBuffer()
+	}
+	return nil
+}
+
+func (s *ArchSession) mtpVerifyHiddenRowsScratch(k, rowBytes int) ([][]byte, bool) {
+	if s == nil || k <= 0 || rowBytes <= 0 {
+		return nil, false
+	}
+	need := k * rowBytes
+	if s.mtpVerifyHiddenPinned != nil {
+		if len(s.mtpVerifyHiddenPinned.bytes) != need || s.mtpVerifyHiddenPinned.buf == nil {
+			s.mtpVerifyHiddenPinned.Close()
+			s.mtpVerifyHiddenPinned = nil
+			s.mtpVerifyHiddenRows = nil
+		}
+	}
+	if s.mtpVerifyHiddenPinned == nil {
+		pinned, err := newPinnedNoCopyBytes(need)
+		if err != nil {
+			return nil, false
+		}
+		s.mtpVerifyHiddenPinned = pinned
+	}
+	if cap(s.mtpVerifyHiddenRows) < k {
+		s.mtpVerifyHiddenRows = make([][]byte, k)
+	} else {
+		s.mtpVerifyHiddenRows = s.mtpVerifyHiddenRows[:k]
+	}
+	for i := 0; i < k; i++ {
+		s.mtpVerifyHiddenRows[i] = s.mtpVerifyHiddenPinned.bytes[i*rowBytes : (i+1)*rowBytes]
+	}
+	return s.mtpVerifyHiddenRows, true
 }
 
 // Step decodes one token's embedding at the current cache position over the
@@ -1585,20 +1821,23 @@ func (s *ArchSession) generateFromHiddenSuppressedEach(hidden []byte, maxNew, eo
 	return gen, err
 }
 
-func (s *ArchSession) generateFromLogitsInPool(firstLogits []byte, maxNew, eosID int, yield func(int32) bool) ([]int32, error) {
-	next, err := greedyBF16Suppressed(firstLogits, s.arch.Vocab, nil)
+func (s *ArchSession) generateFromLogitsInPool(firstLogits []byte, maxNew, eosID int, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	next, err := greedyBF16Suppressed(firstLogits, s.arch.Vocab, suppress)
 	if err != nil {
 		return nil, err
+	}
+	if transform != nil {
+		next = transform(next)
 	}
 	gen := make([]int32, 0, maxNew)
 	gen = append(gen, next)
 	stop := (yield != nil && !yield(next)) || (eosID >= 0 && int(next) == eosID)
 	if s.encNextInputsGPU != nil && s.plScratchNew != nil && s.state.icb != nil && s.headEnc != nil && s.greedy != nil &&
-		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest {
+		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest && transform == nil {
 		if pipelinedGPUDecodeEnabled && s.recordPeerICB != nil {
-			return s.generatePipelinedGPUTail(gen, maxNew, eosID, nil, yield, stop)
+			return s.generatePipelinedGPUTail(gen, maxNew, eosID, suppress, yield, stop)
 		}
-		return s.generateChainedGPUTail(gen, maxNew, eosID, nil, yield, stop)
+		return s.generateChainedGPUTail(gen, maxNew, eosID, suppress, yield, stop)
 	}
 	var hidden []byte
 	for !stop && len(gen) < maxNew {
@@ -1606,8 +1845,11 @@ func (s *ArchSession) generateFromLogitsInPool(firstLogits []byte, maxNew, eosID
 		if hidden, err = s.stepIDRetainedInPool(prev); err != nil {
 			return nil, err
 		}
-		if next, err = s.headGreedyOrLogits(hidden, nil, nil, nil, false); err != nil {
+		if next, err = s.headGreedyOrLogits(hidden, suppress, nil, nil, false); err != nil {
 			return nil, err
+		}
+		if transform != nil {
+			next = transform(next)
 		}
 		gen = append(gen, next)
 		s.rememberRetainedHidden(hidden)
@@ -1682,7 +1924,7 @@ func (s *ArchSession) sampleTokenFromLogits(logits []byte, sampler *model.Sample
 	if sampleLogitsTokenCPUPreferred(params, s.arch.Vocab) {
 		return sampleSmallVocabBF16(logits, s.arch.Vocab, sampler, params)
 	}
-	if !retainedLogitsCompactSampleEligible(params, history) {
+	if !s.retainedLogitsCompactSampleEligible(params) {
 		logitsBuf := s.retainedLogitsBufferFor(logits)
 		if logitsBuf != nil && s.retainedLogitsSampleParamsEligible(params) {
 			token, ok, err := s.headEnc.sampleLogitsBufferInPool(logitsBuf, params, sampler.Draw(), history)
@@ -1694,13 +1936,15 @@ func (s *ArchSession) sampleTokenFromLogits(logits []byte, sampler *model.Sample
 			}
 		}
 	}
-	if params.TopK > 0 && params.TopK <= headSampleTopKMaxK && (params.RepeatPenalty <= 1 || len(history) == 0) {
-		candidateLogits, candidateIDs, ok, err := s.sampleTopKCandidatesFromLogits(logits, params.TopK, params.SuppressTokens)
+	if s.retainedLogitsCompactSampleEligible(params) {
+		candidateLogits, candidateIDs, ok, err := s.sampleTopKCandidatesFromLogits(logits, params, history)
 		if err != nil {
 			return 0, err
 		}
 		if ok {
-			return sampleSortedBF16Candidates(candidateLogits, candidateIDs, sampler, params)
+			candidateParams := params
+			candidateParams.RepeatPenalty = 1
+			return sampleSortedBF16Candidates(candidateLogits, candidateIDs, sampler, candidateParams)
 		}
 	}
 	pickLogits := logits
@@ -1714,15 +1958,16 @@ func (s *ArchSession) sampleTokenFromLogits(logits []byte, sampler *model.Sample
 	return s.sampleVocabBF16(pickLogits, s.arch.Vocab, sampler, params)
 }
 
-func retainedLogitsCompactSampleEligible(params model.SampleParams, history []int32) bool {
-	return params.TopK > 0 && params.TopK <= headSampleTopKMaxK && (params.RepeatPenalty <= 1 || len(history) == 0)
+func (s *ArchSession) retainedLogitsCompactSampleEligible(params model.SampleParams) bool {
+	return s != nil && params.TopK > 0 && params.TopK <= headSampleTopKMaxK && params.TopK <= s.arch.Vocab
 }
 
-func (s *ArchSession) sampleTopKCandidatesFromLogits(logits []byte, topK int, suppress []int32) ([]byte, []int32, bool, error) {
+func (s *ArchSession) sampleTopKCandidatesFromLogits(logits []byte, params model.SampleParams, history []int32) ([]byte, []int32, bool, error) {
 	vocab := s.arch.Vocab
 	if len(logits) != vocab*bf16Size {
 		return nil, nil, true, core.NewError("native.ArchSession.sampleTopKCandidatesFromLogits: logits must be vocab bf16 bytes")
 	}
+	topK := params.TopK
 	if topK <= 0 || topK > headSampleTopKMaxK || topK > vocab {
 		return nil, nil, false, nil
 	}
@@ -1737,13 +1982,32 @@ func (s *ArchSession) sampleTopKCandidatesFromLogits(logits []byte, topK int, su
 		s.sampleCandidateIDs = s.sampleCandidateIDs[:topK]
 	}
 	var scores [headSampleTopKMaxK]float32
+	var penaltyIDs []int32
+	if params.RepeatPenalty > 1 && len(history) > 0 {
+		penaltyIDs = s.repeatPenaltyIDsScratch(vocab, history)
+	}
+	penaltyPos := 0
 	count := 0
 	for id := 0; id < vocab; id++ {
-		if tokenSuppressed(id, suppress) {
+		if tokenSuppressed(id, params.SuppressTokens) {
 			continue
 		}
 		off := id * bf16Size
-		v := bf16ToF32(logits[off], logits[off+1])
+		lo, hi := logits[off], logits[off+1]
+		for penaltyPos < len(penaltyIDs) && penaltyIDs[penaltyPos] < int32(id) {
+			penaltyPos++
+		}
+		if penaltyPos < len(penaltyIDs) && penaltyIDs[penaltyPos] == int32(id) {
+			v := bf16ToF32(lo, hi)
+			if v > 0 {
+				v /= params.RepeatPenalty
+			} else {
+				v *= params.RepeatPenalty
+			}
+			h := f32ToBF16(v)
+			lo, hi = byte(h), byte(h>>8)
+		}
+		v := bf16ToF32(lo, hi)
 		insert := count
 		for insert > 0 && (v > scores[insert-1] || (v == scores[insert-1] && int32(id) < s.sampleCandidateIDs[insert-1])) {
 			insert--
@@ -1765,8 +2029,8 @@ func (s *ArchSession) sampleTopKCandidatesFromLogits(logits []byte, topK int, su
 		scores[insert] = v
 		s.sampleCandidateIDs[insert] = int32(id)
 		dst := insert * bf16Size
-		s.sampleCandidateLogits[dst] = logits[off]
-		s.sampleCandidateLogits[dst+1] = logits[off+1]
+		s.sampleCandidateLogits[dst] = lo
+		s.sampleCandidateLogits[dst+1] = hi
 	}
 	if count == 0 {
 		return nil, nil, true, core.NewError("native.ArchSession.sampleTopKCandidatesFromLogits: all vocab ids are suppressed")
@@ -2639,9 +2903,6 @@ func (s *ArchSession) sampleTopKParamsEligible(params model.SampleParams) bool {
 	if params.TopK <= 0 || params.TopK > headSampleTopKMaxK {
 		return false
 	}
-	if params.RepeatPenalty > 1 {
-		return false
-	}
 	return true
 }
 
@@ -2709,11 +2970,15 @@ func sampledTopOneGreedyParamsEligible(params model.SampleParams, history []int3
 // resident TopK head over the resulting hidden in the same command buffer. The
 // host waits once, then reads this step's hidden plus only K candidate logits.
 func (s *ArchSession) stepSampleTopKCandidatesInPool(id int32, params model.SampleParams) (hidden, logits []byte, ids []int32, ok bool, err error) {
+	return s.stepSampleTopKCandidatesWithHistoryInPool(id, params, nil)
+}
+
+func (s *ArchSession) stepSampleTopKCandidatesWithHistoryInPool(id int32, params model.SampleParams, history []int32) (hidden, logits []byte, ids []int32, ok bool, err error) {
 	if s.state.icb == nil || icbDisabledForTest || !s.sampleTopKParamsEligible(params) {
 		return nil, nil, nil, false, nil
 	}
 	if s.encNextInputsGPU != nil && s.plScratchNew != nil && !chainedGPUInputsDisabled {
-		return s.stepSampleTopKCandidatesGPUInputsInPool(id, params)
+		return s.stepSampleTopKCandidatesGPUInputsWithHistoryInPool(id, params, history)
 	}
 	emb, err := s.embedID(id)
 	if err != nil {
@@ -2748,7 +3013,7 @@ func (s *ArchSession) stepSampleTopKCandidatesInPool(id int32, params model.Samp
 		if !directOut {
 			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
 		}
-		scratch, ok, err = s.headEnc.encodeTopKCandidates(enc, lastOut, params.TopK, params.SuppressTokens, false)
+		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistory(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, false)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -2781,6 +3046,10 @@ func (s *ArchSession) stepSampleTopKCandidatesInPool(id int32, params model.Samp
 }
 
 func (s *ArchSession) stepSampleTopKCandidatesGPUInputsInPool(id int32, params model.SampleParams) (hidden, logits []byte, ids []int32, ok bool, err error) {
+	return s.stepSampleTopKCandidatesGPUInputsWithHistoryInPool(id, params, nil)
+}
+
+func (s *ArchSession) stepSampleTopKCandidatesGPUInputsWithHistoryInPool(id int32, params model.SampleParams, history []int32) (hidden, logits []byte, ids []int32, ok bool, err error) {
 	icb := s.state.icb
 	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
 		return nil, nil, nil, false, nil
@@ -2814,7 +3083,7 @@ func (s *ArchSession) stepSampleTopKCandidatesGPUInputsInPool(id int32, params m
 				return
 			}
 		}
-		scratch, ok, err = s.headEnc.encodeTopKCandidates(enc, lastOut, params.TopK, params.SuppressTokens, false)
+		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistory(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, false)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -2929,7 +3198,7 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsInPool(enc metal.MTLComputeComm
 	if err := s.encNextInputsGPU(enc, tokBuf, icb.ping0, sc); err != nil {
 		return nil, err
 	}
-	enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 	return icb.encodeStepBodyNoInput(enc, s.pos), nil
 }
 
@@ -2944,7 +3213,7 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLC
 	if err := s.encNextInputsGPU(enc, tokBuf, icb.ping0, sc); err != nil {
 		return nil, false, err
 	}
-	enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 	lastOut, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, out)
 	return lastOut, ok, nil
 }
@@ -3360,24 +3629,24 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 	withAutoreleasePool(func() {
 		// Seed: produce emb(gen[last])/pli(gen[last]) into ping0/pleInput from the first token.
 		tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
-		seedCB := queue.CommandBuffer()
-		seedEnc := seedCB.ComputeCommandEncoder()
+		seedCB := commandBufferFast(queue)
+		seedEnc := computeCommandEncoderFast(seedCB)
 		if e := s.encNextInputsGPU(seedEnc, tokBuf, icb.ping0, sc); e != nil {
-			seedEnc.EndEncoding()
+			endEncodingFast(seedEnc)
 			rerr = e
 			return
 		}
-		seedEnc.EndEncoding()
-		seedCB.Commit()
-		seedCB.WaitUntilCompleted()
+		endEncodingFast(seedEnc)
+		commitCommandBufferFast(seedCB)
+		waitUntilCompletedFast(seedCB)
 
 		for !stop && len(gen) < maxNew {
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
 			lastOut := icb.encodeStepBodyNoInput(enc, s.pos) // caches the token in ping0 (gen[last]) at s.pos
 			scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
 			if !gok || gerr != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				if scratch != nil {
 					s.headEnc.putGreedyScratch(scratch)
 				}
@@ -3389,9 +3658,9 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 			// Produce THIS token's emb+pli on-GPU (into ping0/pleInput) for the NEXT step. Within the
 			// encoder the stepBody read of ping0/pleInput is ordered before this write (serial dispatch).
 			s.encNextInputsGPU(enc, scratch.outToken, icb.ping0, sc)
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
 			if pieceTimingOn {
 				chainedGPUSpanNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
 			}
@@ -3408,18 +3677,207 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 
 		// Cache the last produced token (its emb is in ping0 but stepBody hasn't run), matching the serial
 		// loop's final stepID, and retain that hidden as the session boundary.
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		_, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		s.pos++
 		if directHidden != nil {
 			s.retainedHidden = directHidden
 		} else {
 			s.rememberRetainedHiddenFrom(icb.lastOutPtr)
 		}
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
+	return gen, nil
+}
+
+// generateChainedGPUOneShotTail is the one-shot sibling of generateChainedGPUTail. It uses the
+// same GPU next-input seam for generated tokens after the first, but intentionally skips the final
+// no-input cache step because GenerateOneShot closes the session boundary after returning tokens.
+func (s *ArchSession) generateChainedGPUOneShotTail(gen []int32, maxNew, eosID int, stop bool) ([]int32, error) {
+	if len(gen) == 0 {
+		return gen, core.NewError("native.ArchSession.generateChainedGPUOneShotTail: empty generation seed")
+	}
+	if !stop && eosID < 0 && pipelinedGPUDecodeEnabled && s.recordPeerICB != nil {
+		return s.generatePipelinedGPUOneShotTail(gen, maxNew)
+	}
+	icb := s.state.icb
+	sc := s.gpuTailPLScratchBuffer(0)
+	sc.out = icb.pleInput
+	var rerr error
+	withAutoreleasePool(func() {
+		tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
+		seedCB := commandBufferFast(queue)
+		seedEnc := computeCommandEncoderFast(seedCB)
+		if e := s.encNextInputsGPU(seedEnc, tokBuf, icb.ping0, sc); e != nil {
+			endEncodingFast(seedEnc)
+			rerr = e
+			return
+		}
+		endEncodingFast(seedEnc)
+		commitCommandBufferFast(seedCB)
+		waitUntilCompletedFast(seedCB)
+
+		for !stop && len(gen) < maxNew {
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+			scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, nil)
+			if !gok || gerr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putGreedyScratch(scratch)
+				}
+				if rerr = gerr; rerr == nil {
+					rerr = core.NewError("native.ArchSession.generateChainedGPUOneShotTail: GPU head argmax unavailable mid-chain")
+				}
+				return
+			}
+			if e := s.encNextInputsGPU(enc, scratch.outToken, icb.ping0, sc); e != nil {
+				endEncodingFast(enc)
+				s.headEnc.putGreedyScratch(scratch)
+				rerr = e
+				return
+			}
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			if pieceTimingOn {
+				chainedGPUSpanNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+			}
+			tk := scratch.token()
+			s.headEnc.putGreedyScratch(scratch)
+			s.pos++
+			if tk < 0 || int(tk) >= s.arch.Vocab {
+				rerr = core.NewError("native.ArchSession.generateChainedGPUOneShotTail: invalid token")
+				return
+			}
+			gen = append(gen, tk)
+			stop = eosID >= 0 && int(tk) == eosID
+		}
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
+	return gen, nil
+}
+
+// generatePipelinedGPUOneShotTail is the submit-ahead one-shot decode path. It keeps one command
+// buffer in flight ahead while the generated token is known not to be final by budget, then drains
+// the last needed step without submitting a final cache step. EOS-aware calls stay on the synchronous
+// one-shot tail so a stop token is not speculatively cached before the host can observe it.
+func (s *ArchSession) generatePipelinedGPUOneShotTail(gen []int32, maxNew int) ([]int32, error) {
+	if len(gen) == 0 {
+		return gen, core.NewError("native.ArchSession.generatePipelinedGPUOneShotTail: empty generation seed")
+	}
+	if len(gen) >= maxNew {
+		return gen, nil
+	}
+	icbB, err := s.peerICB()
+	if err != nil {
+		return nil, err
+	}
+	icbs := [2]*archICBReplay{s.state.icb, icbB}
+	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
+	type infl struct {
+		cb      metal.MTLCommandBufferObject
+		scratch *headGreedyScratch
+	}
+	var rerr error
+	withAutoreleasePool(func() {
+		tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
+		sc[0].out = icbs[0].pleInput
+		seedCB := commandBufferFast(queue)
+		seedEnc := computeCommandEncoderFast(seedCB)
+		if e := s.encNextInputsGPU(seedEnc, tokBuf, icbs[0].ping0, sc[0]); e != nil {
+			endEncodingFast(seedEnc)
+			rerr = e
+			return
+		}
+		endEncodingFast(seedEnc)
+		commitCommandBufferFast(seedCB)
+		waitUntilCompletedFast(seedCB)
+
+		submit := func(i int) (infl, bool) {
+			icb, tgt := icbs[i], icbs[1-i]
+			sc[i].out = tgt.pleInput
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
+			lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+			scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, nil)
+			if !gok || gerr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putGreedyScratch(scratch)
+				}
+				if rerr = gerr; rerr == nil {
+					rerr = core.NewError("native.ArchSession.generatePipelinedGPUOneShotTail: GPU head argmax unavailable mid-chain")
+				}
+				return infl{}, false
+			}
+			if e := s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i]); e != nil {
+				endEncodingFast(enc)
+				s.headEnc.putGreedyScratch(scratch)
+				rerr = e
+				return infl{}, false
+			}
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			s.pos++
+			return infl{cb: cb, scratch: scratch}, true
+		}
+
+		read := func(p infl) (int32, bool) {
+			waitUntilCompletedFast(p.cb)
+			if pieceTimingOn {
+				chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
+			}
+			tk := p.scratch.token()
+			s.headEnc.putGreedyScratch(p.scratch)
+			if tk < 0 || int(tk) >= s.arch.Vocab {
+				rerr = core.NewError("native.ArchSession.generatePipelinedGPUOneShotTail: invalid token")
+				return 0, false
+			}
+			return tk, true
+		}
+
+		prev, ok := submit(0)
+		if !ok {
+			return
+		}
+		i := 1
+		for len(gen) < maxNew {
+			if len(gen)+1 < maxNew {
+				nxt, ok := submit(i)
+				if !ok {
+					waitUntilCompletedFast(prev.cb)
+					s.headEnc.putGreedyScratch(prev.scratch)
+					return
+				}
+				i = 1 - i
+				tk, valid := read(prev)
+				if !valid {
+					waitUntilCompletedFast(nxt.cb)
+					s.headEnc.putGreedyScratch(nxt.scratch)
+					return
+				}
+				gen = append(gen, tk)
+				prev = nxt
+				continue
+			}
+			tk, valid := read(prev)
+			if valid {
+				gen = append(gen, tk)
+			}
+			return
+		}
+		waitUntilCompletedFast(prev.cb)
+		s.headEnc.putGreedyScratch(prev.scratch)
 	})
 	if rerr != nil {
 		return nil, rerr
@@ -3458,7 +3916,7 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 	icbs := [2]*archICBReplay{s.state.icb, icbB}
 	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
 	type infl struct {
-		cb           metal.MTLCommandBuffer
+		cb           metal.MTLCommandBufferObject
 		lastOut      *byte
 		directHidden []byte
 		scratch      *headGreedyScratch
@@ -3468,27 +3926,27 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 		// Seed icbA's inputs from the first token.
 		tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
 		sc[0].out = icbs[0].pleInput
-		seedCB := queue.CommandBuffer()
-		seedEnc := seedCB.ComputeCommandEncoder()
+		seedCB := commandBufferFast(queue)
+		seedEnc := computeCommandEncoderFast(seedCB)
 		if e := s.encNextInputsGPU(seedEnc, tokBuf, icbs[0].ping0, sc[0]); e != nil {
-			seedEnc.EndEncoding()
+			endEncodingFast(seedEnc)
 			rerr = e
 			return
 		}
-		seedEnc.EndEncoding()
-		seedCB.Commit()
-		seedCB.WaitUntilCompleted()
+		endEncodingFast(seedEnc)
+		commitCommandBufferFast(seedCB)
+		waitUntilCompletedFast(seedCB)
 
 		// submit encodes+commits one step on ICB i, writing the next step's emb+pli into ICB 1-i (no wait).
 		submit := func(i int) (infl, bool) {
 			icb, tgt := icbs[i], icbs[1-i]
 			sc[i].out = tgt.pleInput
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
+			cb := commandBufferFast(queue)
+			enc := computeCommandEncoderFast(cb)
 			lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 			scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
 			if !gok || gerr != nil {
-				enc.EndEncoding()
+				endEncodingFast(enc)
 				if scratch != nil {
 					s.headEnc.putGreedyScratch(scratch)
 				}
@@ -3498,14 +3956,14 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 				return infl{}, false
 			}
 			s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i])
-			enc.EndEncoding()
-			cb.Commit()
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
 			s.pos++
 			return infl{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, scratch: scratch}, true
 		}
 
 		read := func(p infl) (int32, bool) {
-			p.cb.WaitUntilCompleted()
+			waitUntilCompletedFast(p.cb)
 			if pieceTimingOn {
 				chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
 			}
@@ -3526,14 +3984,14 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 		for len(gen) < maxNew && !stop {
 			nxt, ok := submit(i)
 			if !ok {
-				prev.cb.WaitUntilCompleted()
+				waitUntilCompletedFast(prev.cb)
 				s.headEnc.putGreedyScratch(prev.scratch)
 				return
 			}
 			i = 1 - i
 			tk, valid := read(prev)
 			if !valid {
-				nxt.cb.WaitUntilCompleted()
+				waitUntilCompletedFast(nxt.cb)
 				s.headEnc.putGreedyScratch(nxt.scratch)
 				return
 			}
@@ -3573,7 +4031,13 @@ func (s *ArchSession) greedyFromHiddenInPool(hidden []byte, suppress []int32) (i
 		}
 	}
 	_ptHead := ptStart()
-	logits, err := s.head(hidden, true)
+	var logits []byte
+	var err error
+	if s.canUseHeadLogitsScratch() {
+		logits, err = s.headLogitsScratch(hidden, true)
+	} else {
+		logits, err = s.head(hidden, true)
+	}
 	ptEnd(2, _ptHead)
 	if err != nil {
 		return 0, err
@@ -3744,21 +4208,29 @@ func (s *ArchSession) GenerateOneShot(promptIDs []int32, maxNew, eosID int) ([]i
 
 func (s *ArchSession) generateOneShotFromHiddenInPool(hidden []byte, maxNew, eosID int) ([]int32, error) {
 	gen := make([]int32, 0, maxNew)
-	for len(gen) < maxNew {
-		next, err := s.greedyFromHiddenInPool(hidden, nil)
+	next, err := s.greedyFromHiddenInPool(hidden, nil)
+	if err != nil {
+		return nil, err
+	}
+	gen = append(gen, next)
+	stop := eosID >= 0 && int(next) == eosID
+
+	if !stop && len(gen) < maxNew &&
+		s.encNextInputsGPU != nil && s.plScratchNew != nil && s.state.icb != nil && s.headEnc != nil && s.greedy != nil &&
+		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest {
+		return s.generateChainedGPUOneShotTail(gen, maxNew, eosID, stop)
+	}
+
+	for !stop && len(gen) < maxNew {
+		if hidden, err = s.stepIDInPool(next); err != nil {
+			return nil, err
+		}
+		next, err = s.greedyFromHiddenInPool(hidden, nil)
 		if err != nil {
 			return nil, err
 		}
 		gen = append(gen, next)
-		if eosID >= 0 && int(next) == eosID {
-			break
-		}
-		if len(gen) >= maxNew {
-			break
-		}
-		if hidden, err = s.stepIDInPool(next); err != nil {
-			return nil, err
-		}
+		stop = eosID >= 0 && int(next) == eosID
 	}
 	return gen, nil
 }
@@ -3817,7 +4289,7 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 			if !ok && err == nil {
 				err = core.NewError("native.ArchSession.generateSampledFromHiddenInPool: logits token path declined after eligibility check")
 			}
-		} else if candidateLogits, candidateIDs, ok, topKErr := s.sampleTopKCandidatesFromHiddenInPool(hidden, pickParams); topKErr != nil {
+		} else if candidateLogits, candidateIDs, ok, topKErr := s.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, pickParams, history); topKErr != nil {
 			return nil, history, topKErr
 		} else if ok {
 			next, err = sampler.SampleCandidates(candidateLogits, candidateIDs, pickParams)
@@ -3892,7 +4364,7 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 			}
 		}
 		if !stepped && !sampledGreedyParamsEligible(nextPickParams) {
-			if chainedHidden, chainedLogits, chainedIDs, ok, chainErr := s.stepSampleTopKCandidatesInPool(next, nextPickParams); chainErr != nil {
+			if chainedHidden, chainedLogits, chainedIDs, ok, chainErr := s.stepSampleTopKCandidatesWithHistoryInPool(next, nextPickParams, history); chainErr != nil {
 				return nil, history, chainErr
 			} else if ok {
 				hidden, readyLogits, readyIDs = chainedHidden, chainedLogits, chainedIDs
@@ -3939,8 +4411,13 @@ func (s *ArchSession) sampledPipelinedGPUTailCanContinue(params model.SamplePara
 }
 
 func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, yield func(int32) bool, cacheFinal bool, initialGenerated int, history []int32) ([]int32, []int32, error) {
-	if cacheFinal && s.sampledPipelinedGPUTailCanContinue(params, history, nil) {
-		return s.generateSampledPipelinedGPUTail(gen, maxNew, stopTokens, sampler, params, yield, initialGenerated, history)
+	if s.sampledPipelinedGPUTailCanContinue(params, history, nil) {
+		if cacheFinal {
+			return s.generateSampledPipelinedGPUTail(gen, maxNew, stopTokens, sampler, params, yield, initialGenerated, history)
+		}
+		if yield == nil && len(stopTokens) == 0 {
+			return s.generateSampledPipelinedGPUOneShotTail(gen, maxNew, sampler, params, initialGenerated, history)
+		}
 	}
 	icb := s.state.icb
 	sc := s.gpuTailPLScratchBuffer(0)
@@ -4071,7 +4548,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
 
 	type inflightSampledStep struct {
-		cb           metal.MTLCommandBuffer
+		cb           metal.MTLCommandBufferObject
 		lastOut      *byte
 		directHidden []byte
 		topK         *headTopKScratch
@@ -4089,7 +4566,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	}
 
 	read := func(p inflightSampledStep) (int32, bool) {
-		p.cb.WaitUntilCompleted()
+		waitUntilCompletedFast(p.cb)
 		if pieceTimingOn {
 			chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
 		}
@@ -4195,14 +4672,14 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	for len(gen) < maxNew && !stop {
 		nxt, ok := submit(i, len(gen)+1)
 		if !ok {
-			prev.cb.WaitUntilCompleted()
+			waitUntilCompletedFast(prev.cb)
 			release(prev)
 			return gen, history, rerr
 		}
 		i = 1 - i
 		token, valid := read(prev)
 		if !valid {
-			nxt.cb.WaitUntilCompleted()
+			waitUntilCompletedFast(nxt.cb)
 			release(nxt)
 			return gen, history, rerr
 		}
@@ -4225,7 +4702,181 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 	return gen, history, nil
 }
 
+func (s *ArchSession) generateSampledPipelinedGPUOneShotTail(gen []int32, maxNew int, sampler *model.Sampler, params model.SampleParams, initialGenerated int, history []int32) ([]int32, []int32, error) {
+	if len(gen) == 0 {
+		return gen, history, core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: empty generation seed")
+	}
+	if len(gen) >= maxNew {
+		return gen, history, nil
+	}
+	icbB, err := s.peerICB()
+	if err != nil {
+		return gen, history, err
+	}
+	icbs := [2]*archICBReplay{s.state.icb, icbB}
+	sc := [2]*plGPUScratch{s.gpuTailPLScratchBuffer(0), s.gpuTailPLScratchBuffer(1)}
+
+	type inflightSampledStep struct {
+		cb           metal.MTLCommandBufferObject
+		lastOut      *byte
+		directHidden []byte
+		topK         *headTopKScratch
+		logits       *headGreedyScratch
+	}
+	var rerr error
+
+	release := func(p inflightSampledStep) {
+		if p.topK != nil {
+			s.headEnc.putTopKScratch(p.topK)
+		}
+		if p.logits != nil {
+			s.headEnc.putGreedyScratch(p.logits)
+		}
+	}
+
+	read := func(p inflightSampledStep) (int32, bool) {
+		waitUntilCompletedFast(p.cb)
+		if pieceTimingOn {
+			chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
+		}
+		var token int32
+		switch {
+		case p.topK != nil:
+			token = p.topK.token()
+		case p.logits != nil:
+			token = p.logits.token()
+		default:
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: missing sampled scratch")
+			return 0, false
+		}
+		release(p)
+		if token < 0 || int(token) >= s.arch.Vocab {
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: sampled invalid token")
+			return 0, false
+		}
+		return token, true
+	}
+
+	submit := func(i, generatedBefore int) (inflightSampledStep, bool) {
+		pickParams := params
+		if params.MinTokensBeforeStop > 0 && initialGenerated+generatedBefore < params.MinTokensBeforeStop {
+			pickParams.SuppressTokens = s.suppressionTokensScratch(params.SuppressTokens, nil)
+		}
+		if !s.sampledPipelinedGPUTailCanContinue(pickParams, history, nil) {
+			rerr = core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: sampled parameters changed to a non-pipeline shape")
+			return inflightSampledStep{}, false
+		}
+		draw := sampler.Draw()
+		icb, tgt := icbs[i], icbs[1-i]
+		sc[i].out = tgt.pleInput
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
+		if s.sampleTopKTokenParamsEligible(pickParams) {
+			scratch, ok, stepErr := s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			if !ok || stepErr != nil {
+				endEncodingFast(enc)
+				if scratch != nil {
+					s.headEnc.putTopKScratch(scratch)
+				}
+				if stepErr == nil {
+					stepErr = core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: TopK token path declined mid-pipeline")
+				}
+				rerr = stepErr
+				return inflightSampledStep{}, false
+			}
+			if stepErr = s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i]); stepErr != nil {
+				endEncodingFast(enc)
+				s.headEnc.putTopKScratch(scratch)
+				rerr = stepErr
+				return inflightSampledStep{}, false
+			}
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			s.pos++
+			return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, topK: scratch}, true
+		}
+		scratch, ok, stepErr := s.headEnc.encodeLogitsSample(enc, lastOut, pickParams, draw, history)
+		if !ok || stepErr != nil {
+			endEncodingFast(enc)
+			if scratch != nil {
+				s.headEnc.putGreedyScratch(scratch)
+			}
+			if stepErr == nil {
+				stepErr = core.NewError("native.ArchSession.generateSampledPipelinedGPUOneShotTail: logits token path declined mid-pipeline")
+			}
+			rerr = stepErr
+			return inflightSampledStep{}, false
+		}
+		if stepErr = s.encNextInputsGPU(enc, scratch.outToken, tgt.ping0, sc[i]); stepErr != nil {
+			endEncodingFast(enc)
+			s.headEnc.putGreedyScratch(scratch)
+			rerr = stepErr
+			return inflightSampledStep{}, false
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		s.pos++
+		return inflightSampledStep{cb: cb, lastOut: icb.lastOutPtr, directHidden: directHidden, logits: scratch}, true
+	}
+
+	tokBuf := s.nextInputTokenBuffer(gen[len(gen)-1])
+	sc[0].out = icbs[0].pleInput
+	seedCB := commandBufferFast(queue)
+	seedEnc := computeCommandEncoderFast(seedCB)
+	if err := s.encNextInputsGPU(seedEnc, tokBuf, icbs[0].ping0, sc[0]); err != nil {
+		endEncodingFast(seedEnc)
+		return gen, history, err
+	}
+	endEncodingFast(seedEnc)
+	commitCommandBufferFast(seedCB)
+	waitUntilCompletedFast(seedCB)
+
+	prev, ok := submit(0, len(gen))
+	if !ok {
+		return gen, history, rerr
+	}
+	i := 1
+	for len(gen) < maxNew {
+		if len(gen)+1 < maxNew {
+			nxt, ok := submit(i, len(gen)+1)
+			if !ok {
+				waitUntilCompletedFast(prev.cb)
+				release(prev)
+				return gen, history, rerr
+			}
+			i = 1 - i
+			token, valid := read(prev)
+			if !valid {
+				waitUntilCompletedFast(nxt.cb)
+				release(nxt)
+				return gen, history, rerr
+			}
+			gen = append(gen, token)
+			prev = nxt
+			continue
+		}
+		token, valid := read(prev)
+		if valid {
+			gen = append(gen, token)
+		}
+		if prev.directHidden != nil {
+			s.retainedHidden = prev.directHidden
+		} else {
+			s.rememberRetainedHiddenFrom(prev.lastOut)
+		}
+		return gen, history, rerr
+	}
+	waitUntilCompletedFast(prev.cb)
+	release(prev)
+	return gen, history, rerr
+}
+
 func (s *ArchSession) sampleTopKCandidatesFromHiddenInPool(hidden []byte, params model.SampleParams) ([]byte, []int32, bool, error) {
+	return s.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, params, nil)
+}
+
+func (s *ArchSession) sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden []byte, params model.SampleParams, history []int32) ([]byte, []int32, bool, error) {
 	if !s.sampleTopKParamsEligible(params) {
 		return nil, nil, false, nil
 	}
@@ -4234,9 +4885,9 @@ func (s *ArchSession) sampleTopKCandidatesFromHiddenInPool(hidden []byte, params
 	var ok bool
 	var err error
 	if hiddenBuf := s.retainedHiddenBufferFor(hidden); hiddenBuf != nil {
-		logits, ids, ok, err = s.headEnc.sampleTopKCandidatesBufferInto(hiddenBuf, params.TopK, params.SuppressTokens, s.sampleCandidateLogits, s.sampleCandidateIDs, false)
+		logits, ids, ok, err = s.headEnc.sampleTopKCandidatesBufferWithHistoryInto(hiddenBuf, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, s.sampleCandidateLogits, s.sampleCandidateIDs, false)
 	} else {
-		logits, ids, ok, err = s.headEnc.sampleTopKCandidatesInto(hidden, params.TopK, params.SuppressTokens, s.sampleCandidateLogits, s.sampleCandidateIDs, false)
+		logits, ids, ok, err = s.headEnc.sampleTopKCandidatesWithHistoryInto(hidden, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, s.sampleCandidateLogits, s.sampleCandidateIDs, false)
 	}
 	if ok {
 		s.sampleCandidateLogits, s.sampleCandidateIDs = logits, ids

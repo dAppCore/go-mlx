@@ -13,6 +13,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/native"
 	pkgtokenizer "dappco.re/go/mlx/pkg/tokenizer"
 )
 
@@ -35,17 +36,18 @@ func (m *promptCacheTextTokenModel) OpenSession() (model.DecodeStepper, error) {
 }
 
 type promptCacheTextSession struct {
-	warmed             []int32
-	generated          []int32
-	generatedMax       int
-	generatedEOS       int
-	sampledStopTokens  []int32
-	sampledParams      model.SampleParams
-	generateEachCalls  int
-	cachedEachCalls    int
-	cachedSampledCalls int
-	streamedYieldCount int
-	clearCallCount     int
+	warmed              []int32
+	generated           []int32
+	generatedMax        int
+	generatedEOS        int
+	sampledStopTokens   []int32
+	sampledParams       model.SampleParams
+	generateEachCalls   int
+	cachedEachCalls     int
+	cachedSampledCalls  int
+	cachedSuppressCalls int
+	streamedYieldCount  int
+	clearCallCount      int
 }
 
 func (s *promptCacheTextSession) Step([]byte) ([]byte, error) { return []byte{0}, nil }
@@ -97,6 +99,34 @@ func (s *promptCacheTextSession) GenerateCachedSampledEach(ids []int32, maxNew i
 		}
 	}
 	return gen, nil
+}
+
+func (s *promptCacheTextSession) GenerateCachedEachWithSuppressionAndTransform(ids []int32, maxNew, eos int, suppress []int32, transform native.TokenTransform, yield func(int32) bool) ([]int32, error) {
+	s.generated = append(s.generated[:0], ids...)
+	s.generatedMax = maxNew
+	s.generatedEOS = eos
+	s.cachedSuppressCalls++
+	out := make([]int32, 0, maxNew)
+	for _, id := range []int32{7, 8} {
+		if tokenInSet(id, suppress) {
+			continue
+		}
+		if transform != nil {
+			id = transform(id)
+		}
+		out = append(out, id)
+		s.streamedYieldCount++
+		if yield != nil && !yield(id) {
+			break
+		}
+		if eos >= 0 && int(id) == eos {
+			break
+		}
+		if len(out) >= maxNew {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (s *promptCacheTextSession) streamIDs(ids []int32, yield func(int32) bool) []int32 {
@@ -371,6 +401,46 @@ func TestNativeTextModelWarmPromptCacheUsesCachedSampledSession(t *testing.T) {
 	}
 }
 
+func TestNativeTextModelWarmPromptCacheMinTokensBeforeStopUsesCachedGreedyStages(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	session := &promptCacheTextSession{}
+	native := &nativeTextModel{
+		tm:     &promptCacheTextTokenModel{session: session},
+		tok:    tok,
+		maxLen: 32,
+	}
+	promptIDs := tok.Encode("hello")
+	if err := native.WarmPromptCache(context.Background(), "hello"); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+
+	var got []int32
+	for tok := range native.Generate(context.Background(), "hello", inference.WithMaxTokens(2), inference.WithStopTokens(7), inference.WithMinTokensBeforeStop(1)) {
+		got = append(got, tok.ID)
+	}
+	if err := native.Err(); err != nil {
+		t.Fatalf("Generate Err: %v", err)
+	}
+	if !reflect.DeepEqual(got, []int32{8, 7}) {
+		t.Fatalf("cached min-stop ids = %v, want [8 7]", got)
+	}
+	if session.cachedSuppressCalls != 1 {
+		t.Fatalf("GenerateCachedEachWithSuppressionAndTransform calls = %d, want 1", session.cachedSuppressCalls)
+	}
+	if session.cachedEachCalls != 1 {
+		t.Fatalf("GenerateCachedEach calls = %d, want 1", session.cachedEachCalls)
+	}
+	if session.cachedSampledCalls != 0 {
+		t.Fatalf("GenerateCachedSampledEach calls = %d, want 0", session.cachedSampledCalls)
+	}
+	if !reflect.DeepEqual(session.generated, append(append([]int32(nil), promptIDs...), 8)) {
+		t.Fatalf("second-stage prompt ids = %v, want original prompt plus first generated token", session.generated)
+	}
+}
+
 func TestNativeTextModelCacheServiceWarmsAndClearsPromptCache(t *testing.T) {
 	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
 	if err != nil {
@@ -383,6 +453,9 @@ func TestNativeTextModelCacheServiceWarmsAndClearsPromptCache(t *testing.T) {
 		maxLen: 32,
 	}
 	var service inference.CacheService = native
+	var lister interface {
+		CacheEntries(context.Context, map[string]string) ([]inference.CacheBlockRef, error)
+	} = native
 	labels := map[string]string{"scope": "native"}
 	promptIDs := tok.Encode("hello")
 
@@ -405,6 +478,31 @@ func TestNativeTextModelCacheServiceWarmsAndClearsPromptCache(t *testing.T) {
 	if !reflect.DeepEqual(warmed.Labels, labels) || !reflect.DeepEqual(warmed.Stats.Labels, labels) {
 		t.Fatalf("WarmCache labels = %+v stats=%+v, want %v", warmed.Labels, warmed.Stats.Labels, labels)
 	}
+	entries, err := lister.CacheEntries(context.Background(), labels)
+	if err != nil {
+		t.Fatalf("CacheEntries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "native-prompt" || entries[0].TokenCount != len(promptIDs) {
+		t.Fatalf("CacheEntries = %+v, want native prompt block with %d tokens", entries, len(promptIDs))
+	}
+	if !reflect.DeepEqual(entries[0].Labels, labels) {
+		t.Fatalf("CacheEntries labels = %+v, want %v", entries[0].Labels, labels)
+	}
+	entries[0].Labels["scope"] = "mutated"
+	again, err := lister.CacheEntries(context.Background(), labels)
+	if err != nil {
+		t.Fatalf("CacheEntries again: %v", err)
+	}
+	if again[0].Labels["scope"] != "native" {
+		t.Fatalf("CacheEntries returned mutable internal labels: %+v", again[0].Labels)
+	}
+	miss, err := lister.CacheEntries(context.Background(), map[string]string{"scope": "other"})
+	if err != nil {
+		t.Fatalf("CacheEntries miss: %v", err)
+	}
+	if len(miss) != 0 {
+		t.Fatalf("CacheEntries non-matching labels = %+v, want none", miss)
+	}
 
 	stats, err := service.CacheStats(context.Background())
 	if err != nil {
@@ -412,6 +510,16 @@ func TestNativeTextModelCacheServiceWarmsAndClearsPromptCache(t *testing.T) {
 	}
 	if stats.Blocks != 1 {
 		t.Fatalf("CacheStats blocks = %d, want 1", stats.Blocks)
+	}
+	unchanged, err := service.ClearCache(context.Background(), map[string]string{"scope": "other"})
+	if err != nil {
+		t.Fatalf("ClearCache non-match: %v", err)
+	}
+	if unchanged.Blocks != 1 {
+		t.Fatalf("ClearCache non-match blocks = %d, want 1", unchanged.Blocks)
+	}
+	if session.clearCallCount != 0 {
+		t.Fatalf("ClearCache non-match calls = %d, want 0", session.clearCallCount)
 	}
 
 	cleared, err := service.ClearCache(context.Background(), labels)
@@ -426,6 +534,90 @@ func TestNativeTextModelCacheServiceWarmsAndClearsPromptCache(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cleared.Labels, labels) {
 		t.Fatalf("ClearCache labels = %v, want %v", cleared.Labels, labels)
+	}
+	entries, err = lister.CacheEntries(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("CacheEntries after clear: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("CacheEntries after clear = %+v, want none", entries)
+	}
+}
+
+func TestNativeTextModelSchedulerModelSchedulesPromptGeneration(t *testing.T) {
+	var _ inference.SchedulerModel = (*nativeTextModel)(nil)
+	var _ inference.CancellableModel = (*nativeTextModel)(nil)
+	var _ inference.ProbeableModel = (*nativeTextModel)(nil)
+
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	session := &promptCacheTextSession{}
+	native := &nativeTextModel{
+		tm:     &promptCacheTextTokenModel{session: session},
+		tok:    tok,
+		maxLen: 32,
+	}
+	probeEvents := make(chan string, 8)
+	native.SetProbeSink(inference.ProbeSinkFunc(func(event inference.ProbeEvent) {
+		if event.Scheduler == nil {
+			return
+		}
+		select {
+		case probeEvents <- event.Scheduler.Event:
+		default:
+		}
+	}))
+
+	handle, tokens, err := native.Schedule(context.Background(), inference.ScheduledRequest{
+		ID:      "native-sched",
+		Prompt:  "hello",
+		Sampler: inference.SamplerConfig{MaxTokens: 2},
+		Labels:  map[string]string{"scope": "native"},
+	})
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if handle.ID != "native-sched" || handle.Labels["scope"] != "native" {
+		t.Fatalf("Schedule handle = %+v, want native-sched with labels", handle)
+	}
+
+	var got []int32
+	for token := range tokens {
+		if token.RequestID != "native-sched" {
+			t.Fatalf("scheduled token request ID = %q, want native-sched", token.RequestID)
+		}
+		if token.Labels["scope"] != "native" || token.Labels["queue_latency_ms"] == "" {
+			t.Fatalf("scheduled token labels = %+v, want scope and queue latency", token.Labels)
+		}
+		got = append(got, token.Token.ID)
+	}
+	if !reflect.DeepEqual(got, []int32{12, 13}) {
+		t.Fatalf("scheduled token ids = %v, want [12 13]", got)
+	}
+	seenProbe := map[string]bool{}
+	for {
+		select {
+		case event := <-probeEvents:
+			seenProbe[event] = true
+		default:
+			goto probesDrained
+		}
+	}
+probesDrained:
+	for _, event := range []string{"queued", "start", "first_token", "complete"} {
+		if !seenProbe[event] {
+			t.Fatalf("native scheduler probes = %v, want event %q", seenProbe, event)
+		}
+	}
+
+	cancelled, err := native.CancelRequest(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("CancelRequest missing: %v", err)
+	}
+	if cancelled.ID != "missing" || cancelled.Cancelled || cancelled.Reason != "not_found" {
+		t.Fatalf("CancelRequest missing = %+v, want not_found", cancelled)
 	}
 }
 
@@ -508,12 +700,13 @@ func TestNativeTextModelChatChunksUsesFormattedChunkStream(t *testing.T) {
 	}
 	session := &promptCacheTextSession{}
 	native := &nativeTextModel{
-		tm:     &promptCacheTextTokenModel{session: session},
-		tok:    tok,
-		maxLen: 256,
+		tm:        &promptCacheTextTokenModel{session: session},
+		tok:       tok,
+		modelType: "gemma4",
+		maxLen:    256,
 	}
 	messages := []inference.Message{{Role: "user", Content: "hello"}}
-	prompt := formatGemmaChat(messages)
+	prompt := native.formatChat(messages, inference.DefaultGenerateConfig())
 	chunkBytes := 5
 	want := []int32{}
 	for i := 0; i < len(prompt); i += chunkBytes {

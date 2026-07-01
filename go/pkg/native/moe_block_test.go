@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 // buildMoEWeights makes a MoELayerWeights with deterministic pseudo-random bf16
@@ -218,6 +220,74 @@ func TestMLPTransformBF16WritesDirectlyToReturnedOutput(t *testing.T) {
 	}
 }
 
+func TestMLPTransformScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMLPTransformScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransform scratch: %v", err)
+	}
+	putMLPTransformScratch(small)
+	large, err := getMLPTransformScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransform scratch: %v", err)
+	}
+	putMLPTransformScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMLPTransformScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransform scratch again: %v", err)
+	}
+	defer putMLPTransformScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MLPTransform scratch pool evicted the small dimension after using a larger dimension")
+	}
+	gotLarge, err := getMLPTransformScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransform scratch again: %v", err)
+	}
+	defer putMLPTransformScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MLPTransform scratch pool evicted the large dimension after reusing the small dimension")
+	}
+}
+
+func TestMLPTransformMegaScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMLPTransformMegaScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransformMega scratch: %v", err)
+	}
+	putMLPTransformMegaScratch(small)
+	large, err := getMLPTransformMegaScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransformMega scratch: %v", err)
+	}
+	putMLPTransformMegaScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMLPTransformMegaScratch(64, 128)
+	if err != nil {
+		t.Fatalf("get small MLPTransformMega scratch again: %v", err)
+	}
+	defer putMLPTransformMegaScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MLPTransformMega scratch pool evicted the small dimension after using a larger dimension")
+	}
+	gotLarge, err := getMLPTransformMegaScratch(96, 192)
+	if err != nil {
+		t.Fatalf("get large MLPTransformMega scratch again: %v", err)
+	}
+	defer putMLPTransformMegaScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MLPTransformMega scratch pool evicted the large dimension after reusing the small dimension")
+	}
+}
+
 func TestMoEBlockBF16AllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	resetResidentBufsForTest()
@@ -238,8 +308,8 @@ func TestMoEBlockBF16AllocationBudget(t *testing.T) {
 	if blockErr != nil {
 		t.Fatalf("MoEBlockBF16: %v", blockErr)
 	}
-	if allocs > 2950 {
-		t.Fatalf("MoEBlockBF16 allocations = %.0f, want <= 2950", allocs)
+	if allocs > 4 {
+		t.Fatalf("MoEBlockBF16 allocations = %.0f, want <= 4", allocs)
 	}
 }
 
@@ -263,6 +333,7 @@ func TestMoEBlockBF16IntoWritesDirectlyToCallerOutput(t *testing.T) {
 	}
 	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
 	copy(scratch.out.bytes, sentinel)
+	seededScratch := scratch
 	putMoEBlockBF16Scratch(scratch)
 
 	out := make([]byte, dModel*bf16Size)
@@ -276,12 +347,7 @@ func TestMoEBlockBF16IntoWritesDirectlyToCallerOutput(t *testing.T) {
 	}
 	eqBytes(t, "MoEBlockBF16Into direct output", got, want)
 
-	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
-	if err != nil {
-		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
-	}
-	defer putMoEBlockBF16Scratch(scratch)
-	if !bytes.Equal(scratch.out.bytes, sentinel) {
+	if !bytes.Equal(seededScratch.out.bytes, sentinel) {
 		t.Fatal("MoEBlockBF16Into wrote through pooled block output instead of caller output")
 	}
 }
@@ -306,6 +372,7 @@ func TestMoEBlockBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T
 	}
 	sentinel := bytes.Repeat([]byte{0x3c}, len(scratch.out.bytes))
 	copy(scratch.out.bytes, sentinel)
+	seededScratch := scratch
 	putMoEBlockBF16Scratch(scratch)
 
 	input, err := newPinnedNoCopyBytes(len(h))
@@ -328,13 +395,62 @@ func TestMoEBlockBF16WithBufferOutputWritesDirectlyToProvidedBuffer(t *testing.T
 	}
 	eqBytes(t, "MoEBlockBF16 direct Metal output", out.bytes, want)
 
-	scratch, err = getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
-	if err != nil {
-		t.Fatalf("getMoEBlockBF16Scratch after call: %v", err)
-	}
-	defer putMoEBlockBF16Scratch(scratch)
-	if !bytes.Equal(scratch.out.bytes, sentinel) {
+	if !bytes.Equal(seededScratch.out.bytes, sentinel) {
 		t.Fatal("moeBlockBF16WithBufferOutputInPool wrote through pooled block output")
+	}
+}
+
+func TestMoEBlockScratchInputViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, expertDFF, topK = 64, 128, 96, 2
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	scratch, err := getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.inputView(h)
+	if !ok {
+		t.Fatal("inputView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&h[0])); got != want {
+		t.Fatalf("inputView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := scratch.inputView(h)
+	if !ok {
+		t.Fatal("reused inputView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("inputView did not reuse the cached no-copy buffer")
+	}
+}
+
+func TestMoEBlockScratchWeightsViewUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, expertDFF, topK = 64, 128, 96, 2
+	weights := toBF16Bytes([]float32{0.75, 0.25})
+	scratch, err := getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK)
+	if err != nil {
+		t.Fatalf("getMoEBlockBF16Scratch: %v", err)
+	}
+	defer scratch.Close()
+
+	buf, ok := scratch.weightsView(weights)
+	if !ok {
+		t.Fatal("weightsView ok = false")
+	}
+	if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&weights[0])); got != want {
+		t.Fatalf("weightsView buffer pointer = %#x, want caller backing %#x", got, want)
+	}
+	reused, ok := scratch.weightsView(weights)
+	if !ok {
+		t.Fatal("reused weightsView ok = false")
+	}
+	if reused.GetID() != buf.GetID() {
+		t.Fatal("weightsView did not reuse the cached no-copy buffer")
 	}
 }
 
@@ -409,6 +525,40 @@ func TestMoEBlockBF16ScratchClose(t *testing.T) {
 	s.Close()
 }
 
+func TestMoEBlockBF16ScratchPoolKeepsShapesResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMoEBlockBF16Scratch(64, 128, 96, 2)
+	if err != nil {
+		t.Fatalf("get small MoEBlockBF16 scratch: %v", err)
+	}
+	putMoEBlockBF16Scratch(small)
+	large, err := getMoEBlockBF16Scratch(96, 192, 144, 3)
+	if err != nil {
+		t.Fatalf("get large MoEBlockBF16 scratch: %v", err)
+	}
+	putMoEBlockBF16Scratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMoEBlockBF16Scratch(64, 128, 96, 2)
+	if err != nil {
+		t.Fatalf("get small MoEBlockBF16 scratch again: %v", err)
+	}
+	defer putMoEBlockBF16Scratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MoEBlockBF16 scratch pool evicted the small shape after using a larger shape")
+	}
+	gotLarge, err := getMoEBlockBF16Scratch(96, 192, 144, 3)
+	if err != nil {
+		t.Fatalf("get large MoEBlockBF16 scratch again: %v", err)
+	}
+	defer putMoEBlockBF16Scratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MoEBlockBF16 scratch pool evicted the large shape after reusing the small shape")
+	}
+}
+
 func TestMoEBlockPostCombineRejectsInvalidInputs(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -449,6 +599,80 @@ func TestMoEBlockPostCombineScratchClose(t *testing.T) {
 		t.Fatal("Close did not clear pinned buffers and dimensions")
 	}
 	s.Close()
+}
+
+func TestMoEBlockPostCombineScratchPoolKeepsDimensionsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	small, err := getMoEBlockPostCombineScratch(64)
+	if err != nil {
+		t.Fatalf("get small MoEBlockPostCombine scratch: %v", err)
+	}
+	putMoEBlockPostCombineScratch(small)
+	large, err := getMoEBlockPostCombineScratch(96)
+	if err != nil {
+		t.Fatalf("get large MoEBlockPostCombine scratch: %v", err)
+	}
+	putMoEBlockPostCombineScratch(large)
+	forceNativeGC()
+	forceNativeGC()
+
+	gotSmall, err := getMoEBlockPostCombineScratch(64)
+	if err != nil {
+		t.Fatalf("get small MoEBlockPostCombine scratch again: %v", err)
+	}
+	defer putMoEBlockPostCombineScratch(gotSmall)
+	if gotSmall != small {
+		t.Fatal("MoEBlockPostCombine scratch pool evicted the small dimension after using a larger dimension")
+	}
+	gotLarge, err := getMoEBlockPostCombineScratch(96)
+	if err != nil {
+		t.Fatalf("get large MoEBlockPostCombine scratch again: %v", err)
+	}
+	defer putMoEBlockPostCombineScratch(gotLarge)
+	if gotLarge != large {
+		t.Fatal("MoEBlockPostCombine scratch pool evicted the large dimension after reusing the small dimension")
+	}
+}
+
+func TestMoEBlockPostCombineScratchInputViewsUseCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel = 64
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	h1 := toBF16Bytes(syntheticFloat32(dModel, 31))
+	h2 := toBF16Bytes(syntheticFloat32(dModel, 37))
+	scratch, err := getMoEBlockPostCombineScratch(dModel)
+	if err != nil {
+		t.Fatalf("getMoEBlockPostCombineScratch: %v", err)
+	}
+	defer scratch.Close()
+
+	cases := []struct {
+		name string
+		in   []byte
+		view func([]byte) (metal.MTLBuffer, bool)
+	}{
+		{name: "residual", in: h, view: scratch.residualView},
+		{name: "branch1", in: h1, view: scratch.branch1View},
+		{name: "branch2", in: h2, view: scratch.branch2View},
+	}
+	for _, tc := range cases {
+		buf, ok := tc.view(tc.in)
+		if !ok {
+			t.Fatalf("%s view ok = false", tc.name)
+		}
+		if got, want := uintptr(buf.Contents()), uintptr(unsafe.Pointer(&tc.in[0])); got != want {
+			t.Fatalf("%s view buffer pointer = %#x, want caller backing %#x", tc.name, got, want)
+		}
+		reused, ok := tc.view(tc.in)
+		if !ok {
+			t.Fatalf("reused %s view ok = false", tc.name)
+		}
+		if reused.GetID() != buf.GetID() {
+			t.Fatalf("%s view did not reuse the cached no-copy buffer", tc.name)
+		}
+	}
 }
 
 func TestMoEBlockBF16CachesLocalDenseWeightsWithExperts(t *testing.T) {

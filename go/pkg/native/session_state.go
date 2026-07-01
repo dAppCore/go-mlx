@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"encoding/binary"
 	"unsafe"
 
@@ -47,7 +48,7 @@ func (s *ArchSession) SerializeState() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		n := int(k.Length())
+		n := int(bufferLengthFast(k))
 		lengths[li] = n
 		total += 4 + 2*n
 	}
@@ -109,11 +110,30 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		}
 		n := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
+		if cache := s.state.layerPagedKV(li); cache != nil {
+			spec := s.state.specs[li]
+			rows := s.stateCacheRows(spec)
+			if _, err := s.stateCacheRowBytes(n, rows); err != nil {
+				return err
+			}
+			if off+2*n > len(data) {
+				return core.NewError("native.RestoreState: truncated snapshot")
+			}
+			tokens := pos
+			if tokens > rows {
+				tokens = rows
+			}
+			if err := cache.loadLinearSnapshot(data[off:off+n], data[off+n:off+2*n], tokens); err != nil {
+				return err
+			}
+			off += 2 * n
+			continue
+		}
 		k, _, kPtr, vPtr, err := s.snapshotCacheViews(li)
 		if err != nil {
 			return err
 		}
-		if int(k.Length()) != n {
+		if int(bufferLengthFast(k)) != n {
 			return core.NewError("native.RestoreState: cache size mismatch (snapshot vs session)")
 		}
 		if off+2*n > len(data) {
@@ -125,10 +145,10 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		off += n
 	}
 	s.pos = pos
-	s.cachedIDs = nil
-	s.clearCachedPromptHidden()
+	s.cachedIDs = s.cachedIDs[:0]
 	s.resetRetainedHidden()
 	if off == len(data) {
+		s.clearCachedPromptHidden()
 		return nil
 	}
 	if off+4 > len(data) {
@@ -140,14 +160,20 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		return core.NewError("native.RestoreState: truncated prompt-cache metadata")
 	}
 	if nIDs > 0 {
-		s.cachedIDs = make([]int32, nIDs)
+		if cap(s.cachedIDs) < nIDs {
+			s.cachedIDs = make([]int32, nIDs)
+		} else {
+			s.cachedIDs = s.cachedIDs[:nIDs]
+		}
 		for i := range s.cachedIDs {
 			s.cachedIDs[i] = int32(binary.LittleEndian.Uint32(data[off:]))
 			off += 4
 		}
 	}
+	promptEntryRestored := false
 	for off < len(data) {
 		if off+4 > len(data) {
+			s.clearCachedPromptHidden()
 			return core.NewError("native.RestoreState: truncated prompt-cache entry metadata")
 		}
 		magic := binary.LittleEndian.Uint32(data[off:])
@@ -156,14 +182,20 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		switch magic {
 		case sessionPromptEntryMagic:
 			off, err = s.restorePromptEntrySnapshot(data, off)
+			promptEntryRestored = err == nil
 		case sessionRetainedHiddenMagic:
 			off, err = s.restoreRetainedHiddenSnapshot(data, off)
 		default:
+			s.clearCachedPromptHidden()
 			return core.NewError("native.RestoreState: trailing prompt-cache metadata")
 		}
 		if err != nil {
+			s.clearCachedPromptHidden()
 			return err
 		}
+	}
+	if !promptEntryRestored {
+		s.clearCachedPromptHidden()
 	}
 	return nil
 }
@@ -227,7 +259,12 @@ func (s *ArchSession) restorePromptEntrySnapshot(data []byte, off int) (int, err
 	if off+4*nIDs > len(data) {
 		return off, core.NewError("native.RestoreState: truncated prompt-cache entry ids")
 	}
-	ids := make([]int32, nIDs)
+	var ids []int32
+	if cap(s.cachedPromptIDs) < nIDs {
+		ids = make([]int32, nIDs)
+	} else {
+		ids = s.cachedPromptIDs[:nIDs]
+	}
 	for i := range ids {
 		ids[i] = int32(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
@@ -240,9 +277,7 @@ func (s *ArchSession) restorePromptEntrySnapshot(data []byte, off int) (int, err
 	if err != nil {
 		return off, err
 	}
-	s.cachedPromptIDs = ids
-	s.cachedPromptHidden = hidden
-	s.cachedPromptLogits = logits
+	s.rememberCachedPromptEntry(ids, hidden, logits)
 	return next, nil
 }
 
@@ -250,6 +285,15 @@ func (s *ArchSession) restoreRetainedHiddenSnapshot(data []byte, off int) (int, 
 	hidden, next, err := readPromptEntryBytes(data, off, s.arch.Hidden*bf16Size, "retained hidden")
 	if err != nil {
 		return off, err
+	}
+	if s.cachedPromptHiddenPinned != nil && len(s.cachedPromptHidden) == len(hidden) && bytes.Equal(s.cachedPromptHidden, hidden) {
+		s.resetRetainedLogits()
+		if s.retainedHiddenPinned != nil && s.retainedHiddenPinned != s.cachedPromptHiddenPinned {
+			s.retainedHiddenPinned.Close()
+		}
+		s.retainedHiddenPinned = s.cachedPromptHiddenPinned
+		s.retainedHidden = s.cachedPromptHidden
+		return next, nil
 	}
 	s.rememberRetainedHidden(hidden)
 	return next, nil
@@ -267,9 +311,7 @@ func readPromptEntryBytes(data []byte, off, want int, label string) ([]byte, int
 	if off+n > len(data) {
 		return nil, off, core.NewError("native.RestoreState: truncated prompt-cache entry " + label)
 	}
-	buf := make([]byte, n)
-	copy(buf, data[off:off+n])
-	return buf, off + n, nil
+	return data[off : off+n], off + n, nil
 }
 
 func (s *ArchSession) snapshotCacheViews(li int) (metal.MTLBuffer, metal.MTLBuffer, *byte, *byte, error) {
@@ -303,6 +345,9 @@ func (s *ArchSession) snapshotCacheViews(li int) (metal.MTLBuffer, metal.MTLBuff
 	}
 	if li >= len(s.state.lb) {
 		return nil, nil, nil, nil, core.NewError("native.sessionState: cache index out of range")
+	}
+	if cache := s.state.layerPagedKV(li); cache != nil {
+		return cache.linearSnapshot(s.stateCacheRows(s.state.specs[li]))
 	}
 	lb := &s.state.lb[li]
 	k, v := lb.kCache, lb.vCache

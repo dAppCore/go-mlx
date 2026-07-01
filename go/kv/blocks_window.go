@@ -81,7 +81,23 @@ func kvSnapshotLayerRawWindowLen(raw []byte, dtype string, shape []int32, seqLen
 		return 0
 	}
 	_, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
-	if bytesPerValue <= 0 || len(shape) != 4 {
+	if bytesPerValue <= 0 {
+		return -1
+	}
+	if len(shape) == 3 {
+		L, H, D := int(shape[0]), int(shape[1]), int(shape[2])
+		if L <= 0 || H <= 0 || D <= 0 {
+			return -1
+		}
+		if len(raw) != L*H*D*bytesPerValue {
+			return -1
+		}
+		if seqLen > 0 && L > seqLen {
+			return -1
+		}
+		return L
+	}
+	if len(shape) != 4 {
 		return -1
 	}
 	elements := 1
@@ -181,7 +197,28 @@ func sliceKVSnapshotLayerRawTensorOpt(raw []byte, dtype string, shape []int32, s
 		return nil, nil, nil
 	}
 	_, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
-	if bytesPerValue <= 0 || len(shape) != 4 {
+	if bytesPerValue <= 0 {
+		return nil, nil, errUnsupportedLayerRawTensor
+	}
+	if len(shape) == 3 {
+		L, H, D := int(shape[0]), int(shape[1]), int(shape[2])
+		if L <= 0 || H <= 0 || D <= 0 || start < 0 || end <= start || end > L {
+			return nil, nil, errLayerRawTensorRangeInvalid
+		}
+		rowBytes := H * D * bytesPerValue
+		if len(raw) != L*rowBytes {
+			return nil, nil, errLayerRawByteLenMismatch
+		}
+		begin := start * rowBytes
+		finish := end * rowBytes
+		outShape := core.SliceClone(shape)
+		outShape[0] = int32(end - start)
+		if clone {
+			return core.SliceClone(raw[begin:finish]), outShape, nil
+		}
+		return raw[begin:finish:finish], outShape, nil
+	}
+	if len(shape) != 4 {
 		return nil, nil, errUnsupportedLayerRawTensor
 	}
 	B, H, L, D := int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])

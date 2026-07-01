@@ -82,10 +82,13 @@ func mlpTransformBF16Into(out []byte, x, wGate, wUp, wDown []byte, dModel, dFF i
 			return
 		}
 		defer putMLPTransformScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		msc := scratch.mlp
@@ -96,27 +99,27 @@ func mlpTransformBF16Into(out []byte, x, wGate, wUp, wDown []byte, dModel, dFF i
 			directOut = true
 		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if encErr = encGemvBF16(enc, wgBuf, xBuf, msc.gate, dFF, dModel); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encGemvBF16(enc, wuBuf, xBuf, msc.up, dFF, dModel); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encGemvBF16(enc, wdBuf, msc.gated, outBuf, dModel, dFF); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		if !directOut {
 			copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
 		}
@@ -127,11 +130,38 @@ func mlpTransformBF16Into(out []byte, x, wGate, wUp, wDown []byte, dModel, dFF i
 type moeBlockPostCombineScratch struct {
 	dModel                       int
 	h, h1, h2, out               *pinnedNoCopyBytes
+	hPinned, h1Pinned, h2Pinned  *pinnedNoCopyBytes
 	h1Normed, h2Normed, combined metal.MTLBuffer
 	ffResidual                   metal.MTLBuffer
 }
 
-var moeBlockPostCombineScratchPool sync.Pool
+type scratchLIFOPool[T any] struct {
+	mu    sync.Mutex
+	items []T
+}
+
+func (p *scratchLIFOPool[T]) Get() T {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.items)
+	if n == 0 {
+		var zero T
+		return zero
+	}
+	item := p.items[n-1]
+	var zero T
+	p.items[n-1] = zero
+	p.items = p.items[:n-1]
+	return item
+}
+
+func (p *scratchLIFOPool[T]) Put(item T) {
+	p.mu.Lock()
+	p.items = append(p.items, item)
+	p.mu.Unlock()
+}
+
+var moeBlockPostCombineScratchPools sync.Map
 
 func newMoEBlockPostCombineScratch(dModel int) (*moeBlockPostCombineScratch, error) {
 	size := dModel * bf16Size
@@ -171,8 +201,8 @@ func newMoEBlockPostCombineScratch(dModel int) (*moeBlockPostCombineScratch, err
 }
 
 func getMoEBlockPostCombineScratch(dModel int) (*moeBlockPostCombineScratch, error) {
-	if v := moeBlockPostCombineScratchPool.Get(); v != nil {
-		s := v.(*moeBlockPostCombineScratch)
+	pool := moeBlockPostCombineScratchPoolFor(dModel)
+	if s := pool.Get(); s != nil {
 		if s != nil &&
 			s.dModel == dModel &&
 			s.h != nil && s.h.buf != nil &&
@@ -190,6 +220,17 @@ func getMoEBlockPostCombineScratch(dModel int) (*moeBlockPostCombineScratch, err
 	return newMoEBlockPostCombineScratch(dModel)
 }
 
+func moeBlockPostCombineScratchPoolFor(dModel int) *scratchLIFOPool[*moeBlockPostCombineScratch] {
+	if v, ok := moeBlockPostCombineScratchPools.Load(dModel); ok {
+		return v.(*scratchLIFOPool[*moeBlockPostCombineScratch])
+	}
+	pool := &scratchLIFOPool[*moeBlockPostCombineScratch]{}
+	if v, loaded := moeBlockPostCombineScratchPools.LoadOrStore(dModel, pool); loaded {
+		return v.(*scratchLIFOPool[*moeBlockPostCombineScratch])
+	}
+	return pool
+}
+
 func putMoEBlockPostCombineScratch(s *moeBlockPostCombineScratch) {
 	if s != nil &&
 		s.h != nil && s.h.buf != nil &&
@@ -200,7 +241,7 @@ func putMoEBlockPostCombineScratch(s *moeBlockPostCombineScratch) {
 		s.h2Normed != nil &&
 		s.combined != nil &&
 		s.ffResidual != nil {
-		moeBlockPostCombineScratchPool.Put(s)
+		moeBlockPostCombineScratchPoolFor(s.dModel).Put(s)
 	}
 }
 
@@ -212,19 +253,79 @@ func (s *moeBlockPostCombineScratch) Close() {
 		s.h.Close()
 		s.h = nil
 	}
+	if s.hPinned != nil {
+		s.hPinned.Close()
+		s.hPinned = nil
+	}
 	if s.h1 != nil {
 		s.h1.Close()
 		s.h1 = nil
 	}
+	if s.h1Pinned != nil {
+		s.h1Pinned.Close()
+		s.h1Pinned = nil
+	}
 	if s.h2 != nil {
 		s.h2.Close()
 		s.h2 = nil
+	}
+	if s.h2Pinned != nil {
+		s.h2Pinned.Close()
+		s.h2Pinned = nil
 	}
 	if s.out != nil {
 		s.out.Close()
 		s.out = nil
 	}
 	s.dModel = 0
+}
+
+func postCombineInputView(slot **pinnedNoCopyBytes, x []byte) (metal.MTLBuffer, bool) {
+	if len(x) == 0 {
+		return nil, false
+	}
+	if pinned := *slot; pinned != nil && len(pinned.bytes) == len(x) && &pinned.bytes[0] == &x[0] {
+		return pinned.buf, true
+	}
+	if *slot != nil {
+		(*slot).Close()
+		*slot = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(x); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(x)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: x, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	*slot = pinned
+	return buf, true
+}
+
+func (s *moeBlockPostCombineScratch) residualView(h []byte) (metal.MTLBuffer, bool) {
+	if s == nil {
+		return nil, false
+	}
+	return postCombineInputView(&s.hPinned, h)
+}
+
+func (s *moeBlockPostCombineScratch) branch1View(h1 []byte) (metal.MTLBuffer, bool) {
+	if s == nil {
+		return nil, false
+	}
+	return postCombineInputView(&s.h1Pinned, h1)
+}
+
+func (s *moeBlockPostCombineScratch) branch2View(h2 []byte) (metal.MTLBuffer, bool) {
+	if s == nil {
+		return nil, false
+	}
+	return postCombineInputView(&s.h2Pinned, h2)
 }
 
 func moeBlockPostCombineBF16(h, h1, h2 []byte, post1 []byte, post1View bufView, post2 []byte, post2View bufView, post []byte, postView bufView, dModel int, eps float32) ([]byte, error) {
@@ -254,47 +355,56 @@ func moeBlockPostCombineBF16(h, h1, h2 []byte, post1 []byte, post1View bufView, 
 			return
 		}
 		defer putMoEBlockPostCombineScratch(scratch)
-		hBuf, err := scratch.h.copyBuffer(h)
-		if err != nil {
-			encErr = err
-			return
+		hBuf, ok := scratch.residualView(h)
+		if !ok {
+			hBuf, err = scratch.h.copyBuffer(h)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
-		h1Buf, err := scratch.h1.copyBuffer(h1)
-		if err != nil {
-			encErr = err
-			return
+		h1Buf, ok := scratch.branch1View(h1)
+		if !ok {
+			h1Buf, err = scratch.h1.copyBuffer(h1)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
-		h2Buf, err := scratch.h2.copyBuffer(h2)
-		if err != nil {
-			encErr = err
-			return
+		h2Buf, ok := scratch.branch2View(h2)
+		if !ok {
+			h2Buf, err = scratch.h2.copyBuffer(h2)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 
-		cb := queue.CommandBuffer()
-		enc := cb.ComputeCommandEncoder()
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
 		if encErr = encRMSNormBF16(enc, h1Buf, post1Buf.buf, scratch.h1Normed, post1Buf.off, dModel, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encRMSNormBF16(enc, h2Buf, post2Buf.buf, scratch.h2Normed, post2Buf.off, dModel, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encAddBF16(enc, scratch.h1Normed, scratch.h2Normed, scratch.combined, dModel); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encRMSNormBF16(enc, scratch.combined, postBuf.buf, scratch.ffResidual, postBuf.off, dModel, eps); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
 		if encErr = encAddBF16(enc, hBuf, scratch.ffResidual, scratch.out.buf, dModel); encErr != nil {
-			enc.EndEncoding()
+			endEncodingFast(enc)
 			return
 		}
-		enc.EndEncoding()
-		cb.Commit()
-		cb.WaitUntilCompleted()
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
 		copy(out, scratch.out.bytes[:size])
 	})
 	return out, encErr
@@ -302,7 +412,10 @@ func moeBlockPostCombineBF16(h, h1, h2 []byte, post1 []byte, post1View bufView, 
 
 type moeBlockBF16Scratch struct {
 	dModel, dFF, expertDFF, topK int
-	h, weights, out              *pinnedNoCopyBytes
+	h, weights, idx, out         *pinnedNoCopyBytes
+	hPinned                      *pinnedNoCopyBytes
+	weightsPinned                *pinnedNoCopyBytes
+	idxPinned                    *pinnedNoCopyBytes
 	outPinned                    *pinnedNoCopyBytes
 	mlp                          mlpScratch
 	localIn, expertIn            metal.MTLBuffer
@@ -315,7 +428,11 @@ type moeBlockBF16Scratch struct {
 	localMegaArrivePtr           *uint32
 }
 
-var moeBlockBF16ScratchPool sync.Pool
+type moeBlockBF16ScratchKey struct {
+	dModel, dFF, expertDFF, topK int
+}
+
+var moeBlockBF16ScratchPools sync.Map
 
 func newMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scratch, error) {
 	size := dModel * bf16Size
@@ -332,10 +449,21 @@ func newMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scra
 		h.Close()
 		return nil, err
 	}
+	idxSize := topK * 4
+	if idxSize <= 0 {
+		idxSize = 4
+	}
+	idx, err := newPinnedNoCopyBytes(idxSize)
+	if err != nil {
+		h.Close()
+		weights.Close()
+		return nil, err
+	}
 	out, err := newPinnedNoCopyBytes(size)
 	if err != nil {
 		h.Close()
 		weights.Close()
+		idx.Close()
 		return nil, err
 	}
 	scratchDFF := dFF
@@ -349,6 +477,7 @@ func newMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scra
 		topK:         topK,
 		h:            h,
 		weights:      weights,
+		idx:          idx,
 		out:          out,
 		mlp:          newMLPScratch(dModel, scratchDFF),
 		localIn:      scratchBF16(dModel),
@@ -363,12 +492,28 @@ func newMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scra
 	}, nil
 }
 
+func moeBlockBF16ScratchPoolFor(dModel, dFF, expertDFF, topK int) *scratchLIFOPool[*moeBlockBF16Scratch] {
+	key := moeBlockBF16ScratchKey{dModel: dModel, dFF: dFF, expertDFF: expertDFF, topK: topK}
+	if v, ok := moeBlockBF16ScratchPools.Load(key); ok {
+		return v.(*scratchLIFOPool[*moeBlockBF16Scratch])
+	}
+	pool := &scratchLIFOPool[*moeBlockBF16Scratch]{}
+	if v, loaded := moeBlockBF16ScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*scratchLIFOPool[*moeBlockBF16Scratch])
+	}
+	return pool
+}
+
 func getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scratch, error) {
-	if v := moeBlockBF16ScratchPool.Get(); v != nil {
-		s := v.(*moeBlockBF16Scratch)
+	pool := moeBlockBF16ScratchPoolFor(dModel, dFF, expertDFF, topK)
+	if s := pool.Get(); s != nil {
 		wantWeights := topK * bf16Size
 		if wantWeights <= 0 {
 			wantWeights = bf16Size
+		}
+		wantIdx := topK * 4
+		if wantIdx <= 0 {
+			wantIdx = 4
 		}
 		if s != nil &&
 			s.dModel == dModel &&
@@ -377,6 +522,7 @@ func getMoEBlockBF16Scratch(dModel, dFF, expertDFF, topK int) (*moeBlockBF16Scra
 			s.topK == topK &&
 			s.h != nil && s.h.buf != nil &&
 			s.weights != nil && s.weights.buf != nil && len(s.weights.bytes) == wantWeights &&
+			s.idx != nil && s.idx.buf != nil && len(s.idx.bytes) == wantIdx &&
 			s.out != nil && s.out.buf != nil &&
 			s.mlp.gate != nil &&
 			s.mlp.up != nil &&
@@ -402,6 +548,7 @@ func putMoEBlockBF16Scratch(s *moeBlockBF16Scratch) {
 	if s != nil &&
 		s.h != nil && s.h.buf != nil &&
 		s.weights != nil && s.weights.buf != nil &&
+		s.idx != nil && s.idx.buf != nil &&
 		s.out != nil && s.out.buf != nil &&
 		s.mlp.gate != nil &&
 		s.mlp.up != nil &&
@@ -416,7 +563,7 @@ func putMoEBlockBF16Scratch(s *moeBlockBF16Scratch) {
 		s.expertNormed != nil &&
 		s.combined != nil &&
 		s.ffResidual != nil {
-		moeBlockBF16ScratchPool.Put(s)
+		moeBlockBF16ScratchPoolFor(s.dModel, s.dFF, s.expertDFF, s.topK).Put(s)
 	}
 }
 
@@ -444,9 +591,25 @@ func (s *moeBlockBF16Scratch) Close() {
 		s.h.Close()
 		s.h = nil
 	}
+	if s.hPinned != nil {
+		s.hPinned.Close()
+		s.hPinned = nil
+	}
 	if s.weights != nil {
 		s.weights.Close()
 		s.weights = nil
+	}
+	if s.weightsPinned != nil {
+		s.weightsPinned.Close()
+		s.weightsPinned = nil
+	}
+	if s.idx != nil {
+		s.idx.Close()
+		s.idx = nil
+	}
+	if s.idxPinned != nil {
+		s.idxPinned.Close()
+		s.idxPinned = nil
 	}
 	if s.out != nil {
 		s.out.Close()
@@ -462,6 +625,89 @@ func (s *moeBlockBF16Scratch) Close() {
 	s.dModel, s.dFF, s.expertDFF, s.topK = 0, 0, 0, 0
 }
 
+func (s *moeBlockBF16Scratch) inputView(h []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(h) == 0 {
+		return nil, false
+	}
+	if s.hPinned != nil && len(s.hPinned.bytes) == len(h) && &s.hPinned.bytes[0] == &h[0] {
+		return s.hPinned.buf, true
+	}
+	if s.hPinned != nil {
+		s.hPinned.Close()
+		s.hPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(h); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(h)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: h, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.hPinned = pinned
+	return buf, true
+}
+
+func (s *moeBlockBF16Scratch) weightsView(weights []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(weights) == 0 {
+		return nil, false
+	}
+	if s.weightsPinned != nil && len(s.weightsPinned.bytes) == len(weights) && &s.weightsPinned.bytes[0] == &weights[0] {
+		return s.weightsPinned.buf, true
+	}
+	if s.weightsPinned != nil {
+		s.weightsPinned.Close()
+		s.weightsPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(weights); ok {
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(weights)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: weights, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.weightsPinned = pinned
+	return buf, true
+}
+
+func (s *moeBlockBF16Scratch) indexView(idx []int32) (metal.MTLBuffer, bool) {
+	if s == nil || len(idx) == 0 {
+		return nil, false
+	}
+	idxBytes := unsafe.Slice((*byte)(unsafe.Pointer(&idx[0])), len(idx)*4)
+	if s.idxPinned != nil && len(s.idxPinned.bytes) == len(idxBytes) && &s.idxPinned.bytes[0] == &idxBytes[0] {
+		return s.idxPinned.buf, true
+	}
+	if s.idxPinned != nil {
+		return nil, false
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(idxBytes); ok {
+		runtime.KeepAlive(idx)
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(idxBytes)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: idxBytes, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.idxPinned = pinned
+	runtime.KeepAlive(idx)
+	return buf, true
+}
+
 func (s *moeBlockBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 	if s == nil || len(out) == 0 {
 		return nil, false
@@ -472,6 +718,9 @@ func (s *moeBlockBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 	if s.outPinned != nil {
 		s.outPinned.Close()
 		s.outPinned = nil
+	}
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		return buf, true
 	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
@@ -617,19 +866,27 @@ func moeBlockBF16AfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out
 		defer putMoEBlockBF16Scratch(scratch)
 		inputBuf := hBuf
 		if inputBuf == nil {
-			inputBuf, err = scratch.h.copyBuffer(h)
-			if err != nil {
-				encErr = err
-				return
+			var ok bool
+			inputBuf, ok = scratch.inputView(h)
+			if !ok {
+				inputBuf, err = scratch.h.copyBuffer(h)
+				if err != nil {
+					encErr = err
+					return
+				}
 			}
 		}
 		weightsBuf := weightBuf
 		if topK > 0 {
 			if weightsBuf == nil {
-				weightsBuf, err = scratch.weights.copyBuffer(weights)
-				if err != nil {
-					encErr = err
-					return
+				var ok bool
+				weightsBuf, ok = scratch.weightsView(weights)
+				if !ok {
+					weightsBuf, err = scratch.weights.copyBuffer(weights)
+					if err != nil {
+						encErr = err
+						return
+					}
 				}
 			}
 		} else {
@@ -889,13 +1146,21 @@ type mlpTransformScratch struct {
 	dModel, dFF int
 	x           *pinnedNoCopyBytes
 	mlp         mlpScratch
+	inViewPtr   uintptr
+	inViewLen   int
+	inView      metal.MTLBuffer
+	inPinned    *pinnedNoCopyBytes
 	outViewPtr  uintptr
 	outViewLen  int
 	outView     metal.MTLBuffer
 	outPinned   *pinnedNoCopyBytes
 }
 
-var mlpTransformScratchPool sync.Pool
+type mlpTransformScratchKey struct {
+	dModel, dFF int
+}
+
+var mlpTransformScratchPools sync.Map
 
 func newMLPTransformScratch(dModel, dFF int) (*mlpTransformScratch, error) {
 	x, err := newPinnedNoCopyBytes(dModel * bf16Size)
@@ -910,9 +1175,21 @@ func newMLPTransformScratch(dModel, dFF int) (*mlpTransformScratch, error) {
 	}, nil
 }
 
+func mlpTransformScratchPoolFor(dModel, dFF int) *scratchLIFOPool[*mlpTransformScratch] {
+	key := mlpTransformScratchKey{dModel: dModel, dFF: dFF}
+	if v, ok := mlpTransformScratchPools.Load(key); ok {
+		return v.(*scratchLIFOPool[*mlpTransformScratch])
+	}
+	pool := &scratchLIFOPool[*mlpTransformScratch]{}
+	if v, loaded := mlpTransformScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*scratchLIFOPool[*mlpTransformScratch])
+	}
+	return pool
+}
+
 func getMLPTransformScratch(dModel, dFF int) (*mlpTransformScratch, error) {
-	if v := mlpTransformScratchPool.Get(); v != nil {
-		s := v.(*mlpTransformScratch)
+	pool := mlpTransformScratchPoolFor(dModel, dFF)
+	if s := pool.Get(); s != nil {
 		if s != nil &&
 			s.dModel == dModel &&
 			s.dFF == dFF &&
@@ -931,7 +1208,7 @@ func getMLPTransformScratch(dModel, dFF int) (*mlpTransformScratch, error) {
 
 func putMLPTransformScratch(s *mlpTransformScratch) {
 	if s != nil && s.x != nil && s.x.buf != nil && s.mlp.gate != nil && s.mlp.up != nil && s.mlp.gated != nil && s.mlp.down != nil {
-		mlpTransformScratchPool.Put(s)
+		mlpTransformScratchPoolFor(s.dModel, s.dFF).Put(s)
 	}
 }
 
@@ -943,8 +1220,22 @@ func (s *mlpTransformScratch) Close() {
 		s.x.Close()
 		s.x = nil
 	}
+	s.closeInputView()
 	s.closeOutputView()
 	s.dModel, s.dFF = 0, 0
+}
+
+func (s *mlpTransformScratch) closeInputView() {
+	if s == nil {
+		return
+	}
+	if s.inPinned != nil {
+		s.inPinned.Close()
+	}
+	s.inViewPtr = 0
+	s.inViewLen = 0
+	s.inView = nil
+	s.inPinned = nil
 }
 
 func (s *mlpTransformScratch) closeOutputView() {
@@ -960,6 +1251,38 @@ func (s *mlpTransformScratch) closeOutputView() {
 	s.outPinned = nil
 }
 
+func (s *mlpTransformScratch) inputView(x []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(x) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&x[0]))
+	if s.inView != nil && s.inViewPtr == ptr && s.inViewLen == len(x) {
+		return s.inView, true
+	}
+	s.closeInputView()
+	if buf, ok := registeredPinnedNoCopyBytes(x); ok {
+		s.inViewPtr = ptr
+		s.inViewLen = len(x)
+		s.inView = buf
+		s.inPinned = nil
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(x)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: x, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.inViewPtr = ptr
+	s.inViewLen = len(x)
+	s.inView = buf
+	s.inPinned = pinned
+	return buf, true
+}
+
 func (s *mlpTransformScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 	if s == nil || len(out) == 0 {
 		return nil, false
@@ -969,6 +1292,13 @@ func (s *mlpTransformScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -991,13 +1321,17 @@ type mlpTransformMegaScratch struct {
 	gated, out, arrive metal.MTLBuffer
 	outBytes           []byte
 	arrivePtr          *uint32
+	inViewPtr          uintptr
+	inViewLen          int
+	inView             metal.MTLBuffer
+	inPinned           *pinnedNoCopyBytes
 	outViewPtr         uintptr
 	outViewLen         int
 	outView            metal.MTLBuffer
 	outPinned          *pinnedNoCopyBytes
 }
 
-var mlpTransformMegaScratchPool sync.Pool
+var mlpTransformMegaScratchPools sync.Map
 
 func newMLPTransformMegaScratch(dModel, dFF int) (*mlpTransformMegaScratch, error) {
 	x, err := newPinnedNoCopyBytes(dModel * bf16Size)
@@ -1019,9 +1353,21 @@ func newMLPTransformMegaScratch(dModel, dFF int) (*mlpTransformMegaScratch, erro
 	}, nil
 }
 
+func mlpTransformMegaScratchPoolFor(dModel, dFF int) *scratchLIFOPool[*mlpTransformMegaScratch] {
+	key := mlpTransformScratchKey{dModel: dModel, dFF: dFF}
+	if v, ok := mlpTransformMegaScratchPools.Load(key); ok {
+		return v.(*scratchLIFOPool[*mlpTransformMegaScratch])
+	}
+	pool := &scratchLIFOPool[*mlpTransformMegaScratch]{}
+	if v, loaded := mlpTransformMegaScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*scratchLIFOPool[*mlpTransformMegaScratch])
+	}
+	return pool
+}
+
 func getMLPTransformMegaScratch(dModel, dFF int) (*mlpTransformMegaScratch, error) {
-	if v := mlpTransformMegaScratchPool.Get(); v != nil {
-		s := v.(*mlpTransformMegaScratch)
+	pool := mlpTransformMegaScratchPoolFor(dModel, dFF)
+	if s := pool.Get(); s != nil {
 		if s != nil && s.dModel == dModel && s.dFF == dFF && s.x != nil && s.x.buf != nil && s.gated != nil && s.out != nil && s.arrive != nil && len(s.outBytes) == dModel*bf16Size && s.arrivePtr != nil {
 			return s, nil
 		}
@@ -1032,7 +1378,7 @@ func getMLPTransformMegaScratch(dModel, dFF int) (*mlpTransformMegaScratch, erro
 
 func putMLPTransformMegaScratch(s *mlpTransformMegaScratch) {
 	if s != nil && s.x != nil && s.x.buf != nil && s.gated != nil && s.out != nil && s.arrive != nil && len(s.outBytes) == s.dModel*bf16Size && s.arrivePtr != nil {
-		mlpTransformMegaScratchPool.Put(s)
+		mlpTransformMegaScratchPoolFor(s.dModel, s.dFF).Put(s)
 	}
 }
 
@@ -1049,8 +1395,22 @@ func (s *mlpTransformMegaScratch) Close() {
 	s.arrive = nil
 	s.outBytes = nil
 	s.arrivePtr = nil
+	s.closeInputView()
 	s.closeOutputView()
 	s.dModel, s.dFF = 0, 0
+}
+
+func (s *mlpTransformMegaScratch) closeInputView() {
+	if s == nil {
+		return
+	}
+	if s.inPinned != nil {
+		s.inPinned.Close()
+	}
+	s.inViewPtr = 0
+	s.inViewLen = 0
+	s.inView = nil
+	s.inPinned = nil
 }
 
 func (s *mlpTransformMegaScratch) closeOutputView() {
@@ -1066,6 +1426,38 @@ func (s *mlpTransformMegaScratch) closeOutputView() {
 	s.outPinned = nil
 }
 
+func (s *mlpTransformMegaScratch) inputView(x []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(x) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&x[0]))
+	if s.inView != nil && s.inViewPtr == ptr && s.inViewLen == len(x) {
+		return s.inView, true
+	}
+	s.closeInputView()
+	if buf, ok := registeredPinnedNoCopyBytes(x); ok {
+		s.inViewPtr = ptr
+		s.inViewLen = len(x)
+		s.inView = buf
+		s.inPinned = nil
+		return buf, true
+	}
+	buf, pinner, noCopy := residentNoCopyBytes(x)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: x, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.inViewPtr = ptr
+	s.inViewLen = len(x)
+	s.inView = buf
+	s.inPinned = pinned
+	return buf, true
+}
+
 func (s *mlpTransformMegaScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
 	if s == nil || len(out) == 0 {
 		return nil, false
@@ -1075,6 +1467,13 @@ func (s *mlpTransformMegaScratch) outputView(out []byte) (metal.MTLBuffer, bool)
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -1175,12 +1574,26 @@ func moeBlockQuantAfterRouterWithBufferOutputInPool(h []byte, hBuf, outputBuf me
 }
 
 func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, outputBuf metal.MTLBuffer, idx []int32, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
+	return moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, hBuf, out, outputBuf, idx, nil, weights, weightBuf, w, dModel, dFF, eps, useAutoreleasePool, useCallerOut)
+}
+
+func moeBlockQuantAfterRouterWithDeviceIndexBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuffer, idx []int32, idxBuf metal.MTLBuffer, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32) error {
+	if outputBuf == nil {
+		return core.NewError("native.moeBlockQuantAfterRouter: output buffer is nil")
+	}
+	_, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, hBuf, nil, outputBuf, idx, idxBuf, weights, weightBuf, w, dModel, dFF, eps, false, false)
+	return err
+}
+
+func moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h []byte, hBuf metal.MTLBuffer, out []byte, outputBuf metal.MTLBuffer, idx []int32, idxBuf metal.MTLBuffer, weights []byte, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel, dFF int, eps float32, useAutoreleasePool bool, useCallerOut bool) ([]byte, error) {
 	expertDFF, numExperts, topK := w.ExpertDFF, w.NumExperts, w.TopK
 	size := dModel * bf16Size
 	if len(h) != size {
 		return nil, core.NewError("native.moeBlockQuantAfterRouter: h must be dModel bf16 bytes")
 	}
-	if len(idx) != topK || len(weights) != topK*bf16Size {
+	idxOnDevice := idxBuf != nil
+	weightsOnDevice := weightBuf != nil
+	if (!idxOnDevice && len(idx) != topK) || (idxOnDevice && idx != nil && len(idx) != topK) || (!weightsOnDevice && len(weights) != topK*bf16Size) || (weightsOnDevice && weights != nil && len(weights) != topK*bf16Size) {
 		return nil, core.NewError("native.moeBlockQuantAfterRouter: idx/weights length must equal topK")
 	}
 	if len(w.PreFFNormW) != size || len(w.PreFFNorm2W) != size || len(w.PostFFNorm1W) != size || len(w.PostFFNorm2W) != size || len(w.PostFFNormW) != size {
@@ -1245,9 +1658,11 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		expertDownPackedPer = dModel * expertDFF * expDownBits / 8
 		expertDownScalePer = dModel * (expertDFF / expDownGroupSize) * bf16Size
 	}
-	for i := range idx {
-		if idx[i] < 0 || int(idx[i]) >= numExperts {
-			return nil, core.NewError("native.moeBlockQuantAfterRouter: expert index out of range")
+	if !idxOnDevice {
+		for i := range idx {
+			if idx[i] < 0 || int(idx[i]) >= numExperts {
+				return nil, core.NewError("native.moeBlockQuantAfterRouter: expert index out of range")
+			}
 		}
 	}
 
@@ -1296,25 +1711,60 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 			return nil, err
 		}
 	}
-	var expGatePSO, expUpPSO, expGateUpPSO metal.MTLComputePipelineState
+	hostIdxAvailable := len(idx) == topK
+	useGatherExperts := (idxBuf != nil || hostIdxAvailable) && topK > 0 && expDownBits == 4
 	if fusedExperts {
-		expGateUpPSO, err = qmvPSO(expertDFF, dModel, expGateUpGroupSize, expGateUpBits)
-		if err != nil {
-			return nil, err
-		}
+		useGatherExperts = useGatherExperts && expGateUpBits == 4
 	} else {
-		expGatePSO, err = qmvPSO(expertDFF, dModel, expGateGroupSize, expGateBits)
-		if err != nil {
-			return nil, err
+		useGatherExperts = useGatherExperts && expGateBits == 4 && expUpBits == 4 && expGateGroupSize == expUpGroupSize && expGateBits == expUpBits
+	}
+	var gatherExpertInPSO, gatherExpertDownPSO metal.MTLComputePipelineState
+	var gatherExpertInMeta, gatherExpertDownMeta *gatherQMVBF16Meta
+	if useGatherExperts {
+		inGroup, inBits := expGateGroupSize, expGateBits
+		inRows := expertDFF
+		if fusedExperts {
+			inGroup, inBits = expGateUpGroupSize, expGateUpBits
+			inRows = 2 * expertDFF
 		}
-		expUpPSO, err = qmvPSO(expertDFF, dModel, expUpGroupSize, expUpBits)
+		gatherExpertInPSO, err = gatherQMVBF16SteelPipeline(expertDFF, dModel, inGroup, inBits)
+		if err == nil {
+			gatherExpertDownPSO, err = gatherQMVBF16SteelPipeline(dModel, expertDFF, expDownGroupSize, expDownBits)
+		}
+		if err == nil {
+			gatherExpertInMeta, err = gatherQMVBF16Metadata(numExperts, expertDFF, dModel, inGroup, inBits, inRows)
+		}
+		if err == nil {
+			gatherExpertDownMeta, err = gatherQMVBF16Metadata(numExperts, dModel, expertDFF, expDownGroupSize, expDownBits, dModel)
+		}
 		if err != nil {
-			return nil, err
+			useGatherExperts = false
 		}
 	}
-	expDownPSO, err := qmvPSO(dModel, expertDFF, expDownGroupSize, expDownBits)
-	if err != nil {
-		return nil, err
+	if !useGatherExperts && len(idx) != topK {
+		return nil, core.NewError("native.moeBlockQuantAfterRouter: host idx required when gathered device expert routing is unavailable")
+	}
+	var expGatePSO, expUpPSO, expGateUpPSO, expDownPSO metal.MTLComputePipelineState
+	if !useGatherExperts {
+		if fusedExperts {
+			expGateUpPSO, err = qmvPSO(expertDFF, dModel, expGateUpGroupSize, expGateUpBits)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			expGatePSO, err = qmvPSO(expertDFF, dModel, expGateGroupSize, expGateBits)
+			if err != nil {
+				return nil, err
+			}
+			expUpPSO, err = qmvPSO(expertDFF, dModel, expUpGroupSize, expUpBits)
+			if err != nil {
+				return nil, err
+			}
+		}
+		expDownPSO, err = qmvPSO(dModel, expertDFF, expDownGroupSize, expDownBits)
+		if err != nil {
+			return nil, err
+		}
 	}
 	rmsPSO, err := pipelineFor(rmsKernelBF16(dModel))
 	if err != nil {
@@ -1334,6 +1784,9 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		}
 	}
 	scalePSO, scaleErr := bf16MulScalarPipeline()
+	if scaleErr != nil && len(weights) != topK*bf16Size {
+		return nil, core.NewError("native.moeBlockQuantAfterRouter: host weights required when device scalar scaling is unavailable")
+	}
 	pre1Buf := bf16WeightView(w.PreFFNormW, w.preFFNormView)
 	pre2Buf := bf16WeightView(w.PreFFNorm2W, w.preFFNorm2View)
 	post1Buf := bf16WeightView(w.PostFFNorm1W, w.postFFNorm1View)
@@ -1348,21 +1801,43 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 			return
 		}
 		defer putMoEBlockBF16Scratch(scratch)
+		routeIdxBuf := idxBuf
+		if useGatherExperts && routeIdxBuf == nil {
+			var ok bool
+			routeIdxBuf, ok = scratch.indexView(idx)
+			if !ok {
+				idxBytes := unsafe.Slice((*byte)(unsafe.Pointer(&idx[0])), len(idx)*4)
+				routeIdxBuf, err = scratch.idx.copyBuffer(idxBytes)
+				runtime.KeepAlive(idx)
+				if err != nil {
+					encErr = err
+					return
+				}
+			}
+		}
 		inputBuf := hBuf
 		if inputBuf == nil {
-			inputBuf, err = scratch.h.copyBuffer(h)
-			if err != nil {
-				encErr = err
-				return
+			var ok bool
+			inputBuf, ok = scratch.inputView(h)
+			if !ok {
+				inputBuf, err = scratch.h.copyBuffer(h)
+				if err != nil {
+					encErr = err
+					return
+				}
 			}
 		}
 		weightsBuf := weightBuf
 		if topK > 0 {
 			if weightsBuf == nil {
-				weightsBuf, err = scratch.weights.copyBuffer(weights)
-				if err != nil {
-					encErr = err
-					return
+				var ok bool
+				weightsBuf, ok = scratch.weightsView(weights)
+				if !ok {
+					weightsBuf, err = scratch.weights.copyBuffer(weights)
+					if err != nil {
+						encErr = err
+						return
+					}
 				}
 			}
 		} else {
@@ -1396,6 +1871,9 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		}
 		emitQ := func(pso metal.MTLComputePipelineState, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff, outOff uint, inDim, outDim int) {
 			emitQMV(sink, pso, wq, wqOff, scales, scalesOff, biases, biasesOff, x, out, outOff, inDim, outDim)
+		}
+		emitGatherQ := func(pso metal.MTLComputePipelineState, meta *gatherQMVBF16Meta, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff uint, route int, inDim, outDim, groupSize, bits, rowBase int) {
+			emitGatherQMVBF16Steel(sink, pso, meta, x, wq, wqOff, scales, scalesOff, biases, biasesOff, routeIdxBuf, uint(route*4), out, 0, outDim, inDim, groupSize, bits, rowBase)
 		}
 		emitGelu := func(gate, up, out metal.MTLBuffer, n int) error {
 			if useFusedGelu {
@@ -1440,30 +1918,49 @@ func moeBlockQuantAfterRouterWithBufferPooled(h []byte, hBuf metal.MTLBuffer, ou
 		}
 		emitRMS(inputBuf, pre2Buf.buf, scratch.expertIn, pre2Buf.off)
 		for i := 0; i < topK; i++ {
-			e := int(idx[i])
-			downPackedOff, downScaleOff := uint(e*expertDownPackedPer), uint(e*expertDownScalePer)
-			if fusedExperts {
-				gatePackedOff, gateScaleOff := uint(e*2*expertGatePackedPer), uint(e*2*expertGateScalePer)
-				upPackedOff, upScaleOff := gatePackedOff+uint(expertGatePackedPer), gateScaleOff+uint(expertGateScalePer)
-				emitQ(expGateUpPSO, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.gate, expGateUpPacked.off+gatePackedOff, expGateUpScales.off+gateScaleOff, expGateUpBiases.off+gateScaleOff, 0, dModel, expertDFF)
-				emitQ(expGateUpPSO, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.up, expGateUpPacked.off+upPackedOff, expGateUpScales.off+upScaleOff, expGateUpBiases.off+upScaleOff, 0, dModel, expertDFF)
+			if useGatherExperts {
+				if fusedExperts {
+					emitGatherQ(gatherExpertInPSO, gatherExpertInMeta, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.gate, expGateUpPacked.off, expGateUpScales.off, expGateUpBiases.off, i, dModel, expertDFF, expGateUpGroupSize, expGateUpBits, 0)
+					emitGatherQ(gatherExpertInPSO, gatherExpertInMeta, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.up, expGateUpPacked.off, expGateUpScales.off, expGateUpBiases.off, i, dModel, expertDFF, expGateUpGroupSize, expGateUpBits, expertDFF)
+				} else {
+					emitGatherQ(gatherExpertInPSO, gatherExpertInMeta, expGatePacked.buf, expGateScales.buf, expGateBiases.buf, scratch.expertIn, msc.gate, expGatePacked.off, expGateScales.off, expGateBiases.off, i, dModel, expertDFF, expGateGroupSize, expGateBits, 0)
+					emitGatherQ(gatherExpertInPSO, gatherExpertInMeta, expUpPacked.buf, expUpScales.buf, expUpBiases.buf, scratch.expertIn, msc.up, expUpPacked.off, expUpScales.off, expUpBiases.off, i, dModel, expertDFF, expUpGroupSize, expUpBits, 0)
+				}
 			} else {
-				gatePackedOff, gateScaleOff := uint(e*expertGatePackedPer), uint(e*expertGateScalePer)
-				emitQ(expGatePSO, expGatePacked.buf, expGateScales.buf, expGateBiases.buf, scratch.expertIn, msc.gate, expGatePacked.off+gatePackedOff, expGateScales.off+gateScaleOff, expGateBiases.off+gateScaleOff, 0, dModel, expertDFF)
-				emitQ(expUpPSO, expUpPacked.buf, expUpScales.buf, expUpBiases.buf, scratch.expertIn, msc.up, expUpPacked.off+gatePackedOff, expUpScales.off+gateScaleOff, expUpBiases.off+gateScaleOff, 0, dModel, expertDFF)
+				e := int(idx[i])
+				if fusedExperts {
+					gatePackedOff, gateScaleOff := uint(e*2*expertGatePackedPer), uint(e*2*expertGateScalePer)
+					upPackedOff, upScaleOff := gatePackedOff+uint(expertGatePackedPer), gateScaleOff+uint(expertGateScalePer)
+					emitQ(expGateUpPSO, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.gate, expGateUpPacked.off+gatePackedOff, expGateUpScales.off+gateScaleOff, expGateUpBiases.off+gateScaleOff, 0, dModel, expertDFF)
+					emitQ(expGateUpPSO, expGateUpPacked.buf, expGateUpScales.buf, expGateUpBiases.buf, scratch.expertIn, msc.up, expGateUpPacked.off+upPackedOff, expGateUpScales.off+upScaleOff, expGateUpBiases.off+upScaleOff, 0, dModel, expertDFF)
+				} else {
+					gatePackedOff, gateScaleOff := uint(e*expertGatePackedPer), uint(e*expertGateScalePer)
+					emitQ(expGatePSO, expGatePacked.buf, expGateScales.buf, expGateBiases.buf, scratch.expertIn, msc.gate, expGatePacked.off+gatePackedOff, expGateScales.off+gateScaleOff, expGateBiases.off+gateScaleOff, 0, dModel, expertDFF)
+					emitQ(expUpPSO, expUpPacked.buf, expUpScales.buf, expUpBiases.buf, scratch.expertIn, msc.up, expUpPacked.off+gatePackedOff, expUpScales.off+gateScaleOff, expUpBiases.off+gateScaleOff, 0, dModel, expertDFF)
+				}
 			}
 			if encErr = emitGelu(msc.gate, msc.up, msc.gated, expertDFF); encErr != nil {
 				endEncodingFast(enc)
 				return
 			}
-			emitQ(expDownPSO, expDownPacked.buf, expDownScales.buf, expDownBiases.buf, msc.gated, msc.down, expDownPacked.off+downPackedOff, expDownScales.off+downScaleOff, expDownBiases.off+downScaleOff, 0, expertDFF, dModel)
+			if useGatherExperts {
+				emitGatherQ(gatherExpertDownPSO, gatherExpertDownMeta, expDownPacked.buf, expDownScales.buf, expDownBiases.buf, msc.gated, msc.down, expDownPacked.off, expDownScales.off, expDownBiases.off, i, expertDFF, dModel, expDownGroupSize, expDownBits, 0)
+			} else {
+				e := int(idx[i])
+				downPackedOff, downScaleOff := uint(e*expertDownPackedPer), uint(e*expertDownScalePer)
+				emitQ(expDownPSO, expDownPacked.buf, expDownScales.buf, expDownBiases.buf, msc.gated, msc.down, expDownPacked.off+downPackedOff, expDownScales.off+downScaleOff, expDownBiases.off+downScaleOff, 0, expertDFF, dModel)
+			}
+			var weightBytes []byte
+			if len(weights) >= (i+1)*bf16Size {
+				weightBytes = weights[i*bf16Size : (i+1)*bf16Size]
+			}
 			if i == 0 {
-				if encErr = emitScale(msc.down, weightsBuf, scratch.expertAcc, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+				if encErr = emitScale(msc.down, weightsBuf, scratch.expertAcc, uint(i*bf16Size), weightBytes, dModel); encErr != nil {
 					endEncodingFast(enc)
 					return
 				}
 			} else {
-				if encErr = emitScale(msc.down, weightsBuf, scratch.expertScaled, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+				if encErr = emitScale(msc.down, weightsBuf, scratch.expertScaled, uint(i*bf16Size), weightBytes, dModel); encErr != nil {
 					endEncodingFast(enc)
 					return
 				}
@@ -1636,10 +2133,13 @@ func mlpTransformQuantMegaWithViewsInto(out []byte, x []byte, gate, up, down qua
 			return
 		}
 		defer putMLPTransformMegaScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		*scratch.arrivePtr = 0
 		outBuf := scratch.out
@@ -1705,10 +2205,13 @@ func mlpTransformQuantComposedWithViewsInto(out []byte, x []byte, gate, up, down
 			return
 		}
 		defer putMLPTransformScratch(scratch)
-		xBuf, err := scratch.x.copyBuffer(x)
-		if err != nil {
-			encErr = err
-			return
+		xBuf, ok := scratch.inputView(x)
+		if !ok {
+			xBuf, err = scratch.x.copyBuffer(x)
+			if err != nil {
+				encErr = err
+				return
+			}
 		}
 		msc := scratch.mlp
 		outBuf := msc.down
@@ -1781,11 +2284,31 @@ func moeBlockQuantWithBufferOutputInPool(h []byte, hBuf, outputBuf metal.MTLBuff
 	}
 	numExperts, topK := w.NumExperts, w.TopK
 
+	if quantMoEDeviceRouterBuffersUsable(w, dModel) {
+		weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKBuffersWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
+		if ok || err != nil {
+			if err != nil {
+				return err
+			}
+			var idxBuf metal.MTLBuffer
+			if routerScratch != nil {
+				idxBuf = routerScratch.idxBuf
+			}
+			err = moeBlockQuantAfterRouterWithDeviceIndexBufferOutputInPool(h, hBuf, outputBuf, nil, idxBuf, nil, weightBuf, w, dModel, dFF, eps)
+			putRouterDeviceScratch(routerScratch)
+			return err
+		}
+	}
 	if idx, weights, weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKNoCopyWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps); ok || err != nil {
 		if err != nil {
 			return err
 		}
-		err = moeBlockQuantAfterRouterWithBufferOutputInPool(h, hBuf, outputBuf, idx, weights, weightBuf, w, dModel, dFF, eps)
+		var idxBuf metal.MTLBuffer
+		if routerScratch != nil {
+			idxBuf = routerScratch.idxBuf
+		}
+		idxView, weightView := quantMoEHostRouterViewsForDeviceBuffers(idx, weights, idxBuf, weightBuf, w, dModel)
+		err = moeBlockQuantAfterRouterWithDeviceIndexBufferOutputInPool(h, hBuf, outputBuf, idxView, idxBuf, weightView, weightBuf, w, dModel, dFF, eps)
 		putRouterDeviceScratch(routerScratch)
 		return err
 	}
@@ -1818,16 +2341,31 @@ func moeBlockQuantWithBufferPooledInto(out []byte, h []byte, hBuf metal.MTLBuffe
 		return blockOut, blockErr
 	}
 
+	if quantMoEDeviceRouterBuffersUsable(w, dModel) {
+		weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKBuffersWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
+		if ok || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			var idxBuf metal.MTLBuffer
+			if routerScratch != nil {
+				idxBuf = routerScratch.idxBuf
+			}
+			blockOut, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, hBuf, out, nil, nil, idxBuf, nil, weightBuf, w, dModel, dFF, eps, false, useCallerOut)
+			putRouterDeviceScratch(routerScratch)
+			return blockOut, err
+		}
+	}
 	if idx, weights, weightBuf, routerScratch, ok, err := moeRouterQuantDeviceTopKNoCopyWithBufferInPool(h, hBuf, w.RouterNormWScaled, w.routerNormView, w.Router, w.PerExpertScale, w.perExpertScaleView, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps); ok || err != nil {
 		if err != nil {
 			return nil, err
 		}
-		var blockOut []byte
-		if useCallerOut {
-			blockOut, err = moeBlockQuantAfterRouterWithBufferIntoInPool(out, h, hBuf, idx, weights, weightBuf, w, dModel, dFF, eps)
-		} else {
-			blockOut, err = moeBlockQuantAfterRouterWithBufferInPool(h, hBuf, idx, weights, weightBuf, w, dModel, dFF, eps)
+		var idxBuf metal.MTLBuffer
+		if routerScratch != nil {
+			idxBuf = routerScratch.idxBuf
 		}
+		idxView, weightView := quantMoEHostRouterViewsForDeviceBuffers(idx, weights, idxBuf, weightBuf, w, dModel)
+		blockOut, err := moeBlockQuantAfterRouterWithDeviceIndexBufferPooled(h, hBuf, out, nil, idxView, idxBuf, weightView, weightBuf, w, dModel, dFF, eps, false, useCallerOut)
 		putRouterDeviceScratch(routerScratch)
 		return blockOut, err
 	}
@@ -1839,4 +2377,32 @@ func moeBlockQuantWithBufferPooledInto(out []byte, h []byte, hBuf metal.MTLBuffe
 		return moeBlockQuantAfterRouterWithBufferIntoInPool(out, h, hBuf, idx, weights, nil, w, dModel, dFF, eps)
 	}
 	return moeBlockQuantAfterRouterWithBufferInPool(h, hBuf, idx, weights, nil, w, dModel, dFF, eps)
+}
+
+func quantMoEHostRouterViewsForDeviceBuffers(idx []int32, weights []byte, idxBuf, weightBuf metal.MTLBuffer, w MoEQuantLayerWeights, dModel int) ([]int32, []byte) {
+	if idxBuf == nil || weightBuf == nil || !quantMoEDeviceRouterBuffersUsable(w, dModel) {
+		return idx, weights
+	}
+	return nil, nil
+}
+
+func quantMoEDeviceRouterBuffersUsable(w MoEQuantLayerWeights, dModel int) bool {
+	if w.TopK <= 0 || w.NumExperts <= 0 || w.ExpertDFF <= 0 {
+		return false
+	}
+	if _, err := bf16MulScalarPipeline(); err != nil {
+		return false
+	}
+	expertDFF, numExperts := w.ExpertDFF, w.NumExperts
+	downGroup, downBits := quantWeightGeometryForShape(w.ExpDown, numExperts*dModel, expertDFF, w.ExpertGroupSize, w.ExpertBits)
+	if downGroup <= 0 || downBits != 4 || expertDFF%downGroup != 0 {
+		return false
+	}
+	if len(w.ExpGateUp.Packed) > 0 {
+		gateUpGroup, gateUpBits := quantWeightGeometryForShape(w.ExpGateUp, numExperts*2*expertDFF, dModel, w.ExpertGroupSize, w.ExpertBits)
+		return gateUpGroup > 0 && gateUpBits == 4 && dModel%gateUpGroup == 0
+	}
+	gateGroup, gateBits := quantWeightGeometryForShape(w.ExpGate, numExperts*expertDFF, dModel, w.ExpertGroupSize, w.ExpertBits)
+	upGroup, upBits := quantWeightGeometryForShape(w.ExpUp, numExperts*expertDFF, dModel, w.ExpertGroupSize, w.ExpertBits)
+	return gateGroup > 0 && upGroup > 0 && gateBits == 4 && upBits == 4 && dModel%gateGroup == 0 && dModel%upGroup == 0 && gateGroup == upGroup && gateBits == upBits
 }

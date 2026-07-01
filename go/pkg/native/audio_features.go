@@ -297,6 +297,20 @@ func (e *AudioFeatureExtractor) Extract(samples []float32) ([]float32, []bool, i
 	return features, mask, numFrames, nil
 }
 
+// AudioInputFeatures converts one mono waveform through the native host extractor and returns the
+// bf16 [frames, melBins] rows consumed by the native audio encoder.
+func AudioInputFeatures(samples []float32, extractor *AudioFeatureExtractor) ([]byte, int, int, error) {
+	features, _, frames, err := extractor.Extract(samples)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if frames <= 0 || len(features)%frames != 0 {
+		return nil, 0, 0, core.NewError("native.AudioInputFeatures: invalid audio feature geometry")
+	}
+	melBins := len(features) / frames
+	return f32ToBf16Slice(features), frames, melBins, nil
+}
+
 // htkMelFilterBank ports HF audio_utils.mel_filter_bank with mel_scale="htk", norm=nil: triangular
 // filters over linspace'd HTK-mel centres, evaluated at the FFT bin frequencies. Returned mel-major
 // ([numMel][bins]) for the row-dot in Extract.

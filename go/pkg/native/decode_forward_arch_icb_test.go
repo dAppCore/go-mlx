@@ -109,8 +109,8 @@ func TestDecodeForwardArchICBAllocationBudget(t *testing.T) {
 	if forwardErr != nil {
 		t.Fatalf("DecodeForwardArchICB: %v", forwardErr)
 	}
-	if allocs > 1620 {
-		t.Fatalf("DecodeForwardArchICB allocations = %.0f, want <= 1620", allocs)
+	if allocs > 240 {
+		t.Fatalf("DecodeForwardArchICB allocations = %.0f, want <= 240", allocs)
 	}
 }
 
@@ -173,6 +173,39 @@ func TestArchICBReplayScratchOutputViewsUseCallerBacking(t *testing.T) {
 	}
 	if reused[0].GetID() != firstID {
 		t.Fatal("arch outputViews rebuilt an unchanged caller output view")
+	}
+}
+
+func TestArchICBReplayScratchOutputViewsReusePinnedOwnerBuffers(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 64, 1, 1, 64, 128, 1
+	pinned := make([]*pinnedNoCopyBytes, 2)
+	t.Cleanup(func() {
+		for _, p := range pinned {
+			if p != nil {
+				p.Close()
+			}
+		}
+	})
+	sc := newArchICBReplayScratch(dModel, nHeads*headDim, nKV*headDim, dFF, dFF, nLayers, 0, 0, true, false)
+	t.Cleanup(sc.closeOutputViews)
+
+	outputs := make([][]byte, len(pinned))
+	for i := range pinned {
+		var err error
+		pinned[i], err = newPinnedNoCopyBytes(dModel * bf16Size)
+		if err != nil {
+			t.Fatalf("newPinnedNoCopyBytes(%d): %v", i, err)
+		}
+		outputs[i] = pinned[i].bytes
+	}
+	views, ok := sc.outputViews(outputs, dModel*bf16Size)
+	if !ok {
+		t.Fatal("arch outputViews did not create no-copy views for pinned-owner outputs")
+	}
+	for i := range pinned {
+		requirePinnedOwnerBuffer(t, core.Sprintf("arch output view %d", i), views[i], pinned[i])
 	}
 }
 

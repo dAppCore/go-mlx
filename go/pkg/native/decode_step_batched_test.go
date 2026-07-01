@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 )
@@ -114,6 +115,111 @@ func TestDecodeLayerBatchedKVAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestDecodeLayerBatchedKVUsesCallerInputBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K = 64, 1, 1, 64, 8, 128, 2, 2
+	const base, scale, eps = float32(10000), float32(1.0 / 8.0), float32(1e-6)
+	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	attnNormW := toBF16Bytes(syntheticFloat32(dModel, 1))
+	mlpNormW := toBF16Bytes(syntheticFloat32(dModel, 2))
+	wQ := toBF16Bytes(syntheticFloat32(qDim*dModel, 3))
+	wK := toBF16Bytes(syntheticFloat32(kvDim*dModel, 4))
+	wV := toBF16Bytes(syntheticFloat32(kvDim*dModel, 5))
+	wO := toBF16Bytes(syntheticFloat32(dModel*qDim, 6))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 8))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 9))
+	kCache := make([]byte, maxLen*kvDim*bf16Size)
+	vCache := make([]byte, maxLen*kvDim*bf16Size)
+	copy(kCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 10)))
+	copy(vCache, toBF16Bytes(syntheticFloat32(basePos*kvDim, 11)))
+	xs := toBF16Bytes(syntheticFloat32(K*dModel, 12))
+	scratch, err := getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+	if err != nil {
+		t.Fatalf("get DecodeLayerBatched scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.xs.bytes))
+	copy(scratch.xs.bytes, sentinel)
+	putDecodeLayerBatchedScratch(scratch)
+
+	if _, err := DecodeLayerBatchedKV(xs, attnNormW, wQ, wK, wV, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps); err != nil {
+		t.Fatalf("DecodeLayerBatchedKV: %v", err)
+	}
+	gotScratch, err := getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+	if err != nil {
+		t.Fatalf("get DecodeLayerBatched scratch after call: %v", err)
+	}
+	defer putDecodeLayerBatchedScratch(gotScratch)
+	if gotScratch != scratch {
+		t.Fatal("DecodeLayerBatchedKV did not reuse the prepared scratch")
+	}
+	if !bytes.Equal(gotScratch.xs.bytes, sentinel) {
+		t.Fatal("DecodeLayerBatchedKV copied input rows into pooled scratch instead of using caller backing")
+	}
+}
+
+func TestDecodeLayerBatchedKVIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K = 64, 1, 1, 64, 8, 128, 2, 2
+	const base, scale, eps = float32(10000), float32(1.0 / 8.0), float32(1e-6)
+	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	attnNormW := toBF16Bytes(syntheticFloat32(dModel, 1))
+	mlpNormW := toBF16Bytes(syntheticFloat32(dModel, 2))
+	wQ := toBF16Bytes(syntheticFloat32(qDim*dModel, 3))
+	wK := toBF16Bytes(syntheticFloat32(kvDim*dModel, 4))
+	wV := toBF16Bytes(syntheticFloat32(kvDim*dModel, 5))
+	wO := toBF16Bytes(syntheticFloat32(dModel*qDim, 6))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 8))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 9))
+	kCache0 := make([]byte, maxLen*kvDim*bf16Size)
+	vCache0 := make([]byte, maxLen*kvDim*bf16Size)
+	copy(kCache0, toBF16Bytes(syntheticFloat32(basePos*kvDim, 10)))
+	copy(vCache0, toBF16Bytes(syntheticFloat32(basePos*kvDim, 11)))
+	xs := toBF16Bytes(syntheticFloat32(K*dModel, 12))
+
+	kWant := append([]byte(nil), kCache0...)
+	vWant := append([]byte(nil), vCache0...)
+	want, err := DecodeLayerBatchedKV(xs, attnNormW, wQ, wK, wV, wO, kWant, vWant, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeLayerBatchedKV reference: %v", err)
+	}
+
+	out := make([]byte, K*dModel*bf16Size)
+	outPtr := &out[0]
+	scratch, err := getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+	if err != nil {
+		t.Fatalf("get DecodeLayerBatched scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x5a}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putDecodeLayerBatchedScratch(scratch)
+
+	kGot := append([]byte(nil), kCache0...)
+	vGot := append([]byte(nil), vCache0...)
+	got, err := DecodeLayerBatchedKVInto(out, xs, attnNormW, wQ, wK, wV, wO, kGot, vGot, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, basePos, K, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeLayerBatchedKVInto: %v", err)
+	}
+	if len(got) != len(out) || &got[0] != outPtr {
+		t.Fatal("DecodeLayerBatchedKVInto did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "DecodeLayerBatchedKVInto output", got, want)
+	eqBytes(t, "DecodeLayerBatchedKVInto kCache", kGot, kWant)
+	eqBytes(t, "DecodeLayerBatchedKVInto vCache", vGot, vWant)
+
+	scratch, err = getDecodeLayerBatchedScratch(dModel, qDim, kvDim, nHeads, dFF, K)
+	if err != nil {
+		t.Fatalf("get DecodeLayerBatched scratch after call: %v", err)
+	}
+	defer putDecodeLayerBatchedScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("DecodeLayerBatchedKVInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestDecodeLayerBatchedScratchPoolKeepsShapesResident(t *testing.T) {
 	decodeLayerBatchedScratchPools = sync.Map{}
 	t.Cleanup(func() { decodeLayerBatchedScratchPools = sync.Map{} })
@@ -128,6 +234,8 @@ func TestDecodeLayerBatchedScratchPoolKeepsShapesResident(t *testing.T) {
 
 	putDecodeLayerBatchedScratch(small)
 	putDecodeLayerBatchedScratch(large)
+	forceNativeGC()
+	forceNativeGC()
 
 	if got := smallPool.Get(); got != small {
 		t.Fatal("DecodeLayerBatched scratch pool evicted the small shape after using the larger shape")

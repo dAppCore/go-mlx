@@ -6,10 +6,12 @@ package native
 
 import (
 	"math"
+	"runtime"
 	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/kernel"
 	"github.com/tmc/apple/metal"
 )
 
@@ -133,6 +135,7 @@ type archDecodeState struct {
 	specs        []model.LayerSpec
 	lb           []archLayerBufs
 	moeWeights   []*MoELayerWeights
+	pagedKV      []*devicePagedKVCache
 	asc          attnScratch
 	msc          mlpScratch
 	coreScratch  *archDecodeCoreScratch
@@ -150,22 +153,26 @@ type archDecodeState struct {
 	globalHeadDim   int             // the full head dim global layers rope over (passed as rotaryDim to the freqs path)
 	valueNormOnes   metal.MTLBuffer // gemma4 value-norm: [maxHeadDim] ones weight for the no-scale per-head RMSNorm on V; nil = no value-norm (Mistral)
 
-	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
-	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
-	base, localBase, scale, eps                           float32 // localBase = sliding-layer RoPE theta
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, maxLen int
+	rotaryDim, rotaryDimLocal                                     int     // partial-rotary dims (global / sliding); == headDim is full
+	base, localBase, scale, eps                                   float32 // localBase = sliding-layer RoPE theta
 
 	// gemma4 per-layer-input tower (E2B/E4B): when ple is non-nil, each layer's output is gated
 	// by PerLayerInputGateQuant before layer_scalar, fed its pliDim slice of perLayerInput (the
 	// PerLayerInputs tensor, set per token). nil = no PLE tower (dense models — byte-identical).
-	ple               []pleLayer
-	perLayerInput     []byte // [numLayers·pliDim] bf16, set before each token's stepToken
-	perLayerInputBuf  metal.MTLBuffer
-	perLayerInputLen  int
-	pliDim            int
-	hostScratch       []byte // reusable dModel bf16 host handoff for tests and non-buffer host-orchestrated branches
-	hostPinnedScratch *pinnedNoCopyBytes
-	pleGateScratch    *perLayerInputGateScratch
-	pleInputScratch   *pinnedNoCopyBytes
+	ple                  []pleLayer
+	perLayerInput        []byte // [numLayers·pliDim] bf16, set before each token's stepToken
+	perLayerInputBuf     metal.MTLBuffer
+	perLayerInputLen     int
+	pliDim               int
+	hostScratch          []byte // reusable dModel bf16 host handoff for tests and non-buffer host-orchestrated branches
+	hostPinnedScratch    *pinnedNoCopyBytes
+	inputEmbScratch      *pinnedNoCopyBytes
+	inputEmbCandidate    uintptr
+	inputEmbCandidateLen int
+	inputEmbCandidateHit int
+	pleGateScratch       *perLayerInputGateScratch
+	pleInputScratch      *pinnedNoCopyBytes
 
 	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
 	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
@@ -233,6 +240,60 @@ func (s *archDecodeState) perLayerInputGateScratch() *perLayerInputGateScratch {
 	return s.pleGateScratch
 }
 
+func (s *archDecodeState) inputEmbBuffer(inputEmb []byte, dModel int) (metal.MTLBuffer, bool) {
+	if s == nil || len(inputEmb) != dModel*bf16Size || len(inputEmb) == 0 {
+		return nil, false
+	}
+	if s.inputEmbScratch != nil && len(s.inputEmbScratch.bytes) == len(inputEmb) && &s.inputEmbScratch.bytes[0] == &inputEmb[0] {
+		return s.inputEmbScratch.buf, true
+	}
+	if s.inputEmbScratch != nil {
+		s.inputEmbScratch.Close()
+		s.inputEmbScratch = nil
+	}
+	if isMappedShardBytes(inputEmb) {
+		return nil, false
+	}
+	pinner := pinGoBytes(inputEmb)
+	if pinner == nil {
+		return nil, false
+	}
+	buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+		unsafe.Pointer(&inputEmb[0]),
+		uint(len(inputEmb)),
+		metal.MTLResourceStorageModeShared,
+		func(kernel.Pointer, uint64) {},
+	)
+	if buf == nil || buf.GetID() == 0 {
+		pinner.Unpin()
+		return nil, false
+	}
+	s.inputEmbScratch = &pinnedNoCopyBytes{bytes: inputEmb, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(s.inputEmbScratch, (*pinnedNoCopyBytes).Close)
+	return buf, true
+}
+
+func (s *archDecodeState) stableInputEmbBuffer(inputEmb []byte, dModel int) (metal.MTLBuffer, bool) {
+	if s == nil || len(inputEmb) != dModel*bf16Size || len(inputEmb) == 0 {
+		return nil, false
+	}
+	if s.inputEmbScratch != nil && len(s.inputEmbScratch.bytes) == len(inputEmb) && &s.inputEmbScratch.bytes[0] == &inputEmb[0] {
+		return s.inputEmbScratch.buf, true
+	}
+	ptr := uintptr(unsafe.Pointer(&inputEmb[0]))
+	if s.inputEmbCandidate != ptr || s.inputEmbCandidateLen != len(inputEmb) {
+		s.inputEmbCandidate = ptr
+		s.inputEmbCandidateLen = len(inputEmb)
+		s.inputEmbCandidateHit = 1
+		return nil, false
+	}
+	s.inputEmbCandidateHit++
+	if s.inputEmbCandidateHit < 3 {
+		return nil, false
+	}
+	return s.inputEmbBuffer(inputEmb, dModel)
+}
+
 func (s *archDecodeState) hostPLEInputBuffer(want int) (metal.MTLBuffer, error) {
 	if s == nil {
 		return nil, core.NewError("native.archDecodeState.hostPLEInputBuffer: state is nil")
@@ -240,16 +301,37 @@ func (s *archDecodeState) hostPLEInputBuffer(want int) (metal.MTLBuffer, error) 
 	if len(s.perLayerInput) != want {
 		return nil, core.NewError("native.archDecodeState.hostPLEInputBuffer: PLE tensor size mismatch")
 	}
-	if s.pleInputScratch == nil || len(s.pleInputScratch.bytes) != want {
-		if s.pleInputScratch != nil {
-			s.pleInputScratch.Close()
-			s.pleInputScratch = nil
+	if want <= 0 {
+		return nil, core.NewError("native.archDecodeState.hostPLEInputBuffer: PLE tensor must be non-empty")
+	}
+	if s.pleInputScratch != nil && len(s.pleInputScratch.bytes) == want && &s.pleInputScratch.bytes[0] == &s.perLayerInput[0] {
+		return s.pleInputScratch.buf, nil
+	}
+	if s.pleInputScratch != nil {
+		s.pleInputScratch.Close()
+		s.pleInputScratch = nil
+	}
+	if !isMappedShardBytes(s.perLayerInput) {
+		pinner := pinGoBytes(s.perLayerInput)
+		if pinner != nil {
+			buf := device.NewBufferWithBytesNoCopyLengthOptionsDeallocator(
+				unsafe.Pointer(&s.perLayerInput[0]),
+				uint(want),
+				metal.MTLResourceStorageModeShared,
+				func(kernel.Pointer, uint64) {},
+			)
+			if buf != nil && buf.GetID() != 0 {
+				s.pleInputScratch = &pinnedNoCopyBytes{bytes: s.perLayerInput, buf: buf, pinner: pinner}
+				runtime.SetFinalizer(s.pleInputScratch, (*pinnedNoCopyBytes).Close)
+				return buf, nil
+			}
+			pinner.Unpin()
 		}
-		var err error
-		s.pleInputScratch, err = newPinnedNoCopyBytes(want)
-		if err != nil {
-			return nil, err
-		}
+	}
+	var err error
+	s.pleInputScratch, err = newPinnedNoCopyBytes(want)
+	if err != nil {
+		return nil, err
 	}
 	return s.pleInputScratch.copyBuffer(s.perLayerInput)
 }
@@ -266,6 +348,20 @@ func (s *archDecodeState) Close() {
 		s.pleInputScratch.Close()
 		s.pleInputScratch = nil
 	}
+	if s.inputEmbScratch != nil {
+		s.inputEmbScratch.Close()
+		s.inputEmbScratch = nil
+	}
+	s.denseBatch.Close()
+	for _, cache := range s.pagedKV {
+		if cache != nil {
+			cache.Close()
+		}
+	}
+	s.pagedKV = nil
+	s.inputEmbCandidate = 0
+	s.inputEmbCandidateLen = 0
+	s.inputEmbCandidateHit = 0
 	if s.hostPinnedScratch != nil && (s.coreScratch == nil || s.hostPinnedScratch != s.coreScratch.hostPinned) {
 		s.hostPinnedScratch.Close()
 	}
@@ -295,6 +391,215 @@ func (s *archDecodeState) bufferPtr(buf metal.MTLBuffer) *byte {
 		}
 	}
 	return (*byte)(buf.Contents())
+}
+
+func (s *archDecodeState) initDevicePagedKV(pageSize int) error {
+	if s == nil {
+		return core.NewError("native.archDecodeState.initDevicePagedKV: nil state")
+	}
+	for _, cache := range s.pagedKV {
+		if cache != nil {
+			cache.Close()
+		}
+	}
+	if len(s.specs) == 0 {
+		s.pagedKV = nil
+		return nil
+	}
+	pages := make([]*devicePagedKVCache, len(s.specs))
+	for li, spec := range s.specs {
+		if !spec.OwnsCache() {
+			continue
+		}
+		cacheMax := s.maxLen
+		ring := false
+		if s.slidingWindow > 0 && s.slidingWindow < s.maxLen && spec.Attention != model.GlobalAttention {
+			cacheMax = s.slidingWindow
+			ring = true
+		}
+		cache, err := newDevicePagedKVCache(kvHeadsOf(spec, s.nKVHeads), headDimOf(spec, s.headDim), cacheMax, pageSize)
+		if err != nil {
+			for _, prior := range pages {
+				if prior != nil {
+					prior.Close()
+				}
+			}
+			return err
+		}
+		cache.ring = ring
+		pages[li] = cache
+	}
+	s.pagedKV = pages
+	return nil
+}
+
+func (s *archDecodeState) layerPagedKV(li int) *devicePagedKVCache {
+	if s == nil || li < 0 || li >= len(s.pagedKV) {
+		return nil
+	}
+	return s.pagedKV[li]
+}
+
+func (s *archDecodeState) hasDevicePagedKV() bool {
+	if s == nil {
+		return false
+	}
+	for _, cache := range s.pagedKV {
+		if cache != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *archDecodeState) resetDevicePagedAttentionScratch() {
+	if s == nil {
+		return
+	}
+	for _, cache := range s.pagedKV {
+		cache.resetAttentionScratchCursor()
+	}
+}
+
+func (s *archDecodeState) reloadDevicePagedKVFromLinear(position int) error {
+	if s == nil || !s.hasDevicePagedKV() {
+		return nil
+	}
+	for li, spec := range s.specs {
+		cache := s.layerPagedKV(li)
+		if cache == nil || !spec.OwnsCache() {
+			continue
+		}
+		if li >= len(s.lb) || s.lb[li].kCache == nil || s.lb[li].vCache == nil {
+			return core.NewError("native.archDecodeState.reloadDevicePagedKVFromLinear: missing linear cache")
+		}
+		lkv, lhd := kvHeadsOf(spec, s.nKVHeads), headDimOf(spec, s.headDim)
+		rowBytes := lkv * lhd * bf16Size
+		if rowBytes <= 0 {
+			return core.NewError("native.archDecodeState.reloadDevicePagedKVFromLinear: invalid row bytes")
+		}
+		cacheBytes := int(bufferLengthFast(s.lb[li].kCache))
+		if cacheBytes%rowBytes != 0 || int(bufferLengthFast(s.lb[li].vCache)) != cacheBytes {
+			return core.NewError("native.archDecodeState.reloadDevicePagedKVFromLinear: cache size mismatch")
+		}
+		rows := cacheBytes / rowBytes
+		tokens := position
+		if tokens > rows {
+			tokens = rows
+		}
+		if tokens < 0 {
+			tokens = 0
+		}
+		s.lb[li].cacheKVContents()
+		if err := cache.loadLinearSnapshot(unsafe.Slice(s.lb[li].kCachePtr, cacheBytes), unsafe.Slice(s.lb[li].vCachePtr, cacheBytes), tokens); err != nil {
+			return err
+		}
+		if cache.ring {
+			cache.offset = position
+			cache.length = tokens
+			cache.linearSynced = tokens
+		}
+	}
+	return nil
+}
+
+func (s *archDecodeState) syncLinearKVFromDevicePaged(position int) error {
+	if s == nil || !s.hasDevicePagedKV() {
+		return nil
+	}
+	if position < 0 {
+		return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: negative position")
+	}
+	for li, spec := range s.specs {
+		cache := s.layerPagedKV(li)
+		if cache == nil || !spec.OwnsCache() {
+			continue
+		}
+		if position < cache.length {
+			if err := cache.truncate(position); err != nil {
+				return err
+			}
+		}
+		if cache.ring {
+			if li >= len(s.lb) || s.lb[li].kCache == nil || s.lb[li].vCache == nil {
+				return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: missing linear cache")
+			}
+			lkv, lhd := kvHeadsOf(spec, s.nKVHeads), headDimOf(spec, s.headDim)
+			rowBytes := lkv * lhd * bf16Size
+			if rowBytes <= 0 {
+				return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: invalid row bytes")
+			}
+			rows := cache.length
+			if rows > cache.maxSize && cache.maxSize > 0 {
+				rows = cache.maxSize
+			}
+			if rows <= 0 {
+				continue
+			}
+			n := rows * rowBytes
+			cacheBytes := int(bufferLengthFast(s.lb[li].kCache))
+			if n > cacheBytes || int(bufferLengthFast(s.lb[li].vCache)) != cacheBytes {
+				return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: cache size mismatch")
+			}
+			_, _, kPtr, vPtr, err := cache.linearSnapshot(rows)
+			if err != nil {
+				return err
+			}
+			s.lb[li].cacheKVContents()
+			copy(unsafe.Slice(s.lb[li].kCachePtr, n), unsafe.Slice(kPtr, n))
+			copy(unsafe.Slice(s.lb[li].vCachePtr, n), unsafe.Slice(vPtr, n))
+			cache.linearSynced = rows
+			continue
+		}
+		if position > cache.length {
+			return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: page cache shorter than position")
+		}
+		start := cache.linearSynced
+		if start > position {
+			start = position
+		}
+		if start == position {
+			continue
+		}
+		if li >= len(s.lb) || s.lb[li].kCache == nil || s.lb[li].vCache == nil {
+			return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: missing linear cache")
+		}
+		lkv, lhd := kvHeadsOf(spec, s.nKVHeads), headDimOf(spec, s.headDim)
+		rowBytes := lkv * lhd * bf16Size
+		if rowBytes <= 0 {
+			return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: invalid row bytes")
+		}
+		startBytes := start * rowBytes
+		n := position * rowBytes
+		cacheBytes := int(bufferLengthFast(s.lb[li].kCache))
+		if n > cacheBytes || int(bufferLengthFast(s.lb[li].vCache)) != cacheBytes {
+			return core.NewError("native.archDecodeState.syncLinearKVFromDevicePaged: cache size mismatch")
+		}
+		_, _, kPtr, vPtr, err := cache.linearSnapshot(position)
+		if err != nil {
+			return err
+		}
+		s.lb[li].cacheKVContents()
+		copy(unsafe.Slice(s.lb[li].kCachePtr, n)[startBytes:], unsafe.Slice(kPtr, n)[startBytes:])
+		copy(unsafe.Slice(s.lb[li].vCachePtr, n)[startBytes:], unsafe.Slice(vPtr, n)[startBytes:])
+		cache.linearSynced = position
+	}
+	return nil
+}
+
+func (s *archDecodeState) truncateDevicePagedKV(position int) error {
+	if s == nil || !s.hasDevicePagedKV() {
+		return nil
+	}
+	for _, cache := range s.pagedKV {
+		if cache == nil {
+			continue
+		}
+		if err := cache.truncate(position); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *archDecodeState) bufferBytes(buf metal.MTLBuffer, n int) []byte {
@@ -663,6 +968,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 		headDim:        headDim,
 		dFF:            dFF,
 		slidingWindow:  slidingWindow,
+		maxLen:         maxLen,
 		rotaryDim:      rotaryDim,
 		rotaryDimLocal: rotaryDimLocal,
 		base:           base, localBase: localBase, scale: scale, eps: eps,
@@ -734,8 +1040,13 @@ func (s *archDecodeState) stepTokenResultWithInput(inputEmb []byte, pos int, rea
 
 func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int, readResult, copyInput bool, dst []byte) ([]byte, error) {
 	*s.offPtr = int32(pos)
+	inputBuf := s.xA
 	if copyInput {
-		copy(s.bufferBytes(s.xA, s.dModel*bf16Size), inputEmb)
+		if buf, ok := s.stableInputEmbBuffer(inputEmb, s.dModel); ok {
+			inputBuf = buf
+		} else {
+			copy(s.bufferBytes(s.xA, s.dModel*bf16Size), inputEmb)
+		}
 	}
 	var pleInputBuf metal.MTLBuffer
 	if len(s.ple) > 0 {
@@ -759,7 +1070,11 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
-	in, out := s.xA, s.xB
+	s.resetDevicePagedAttentionScratch()
+	in, out := inputBuf, s.xB
+	if inputBuf != s.xA {
+		out = s.xA
+	}
 	var trWorstAbs float32
 	trWorstLayer, trFirstBad, trBadLayers := -1, -1, 0
 	for li := 0; li < len(s.specs); li++ {
@@ -778,13 +1093,23 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 			layerRopeFreqs, rotDim = s.globalRopeFreqs, lhd
 		}
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+			if cache := s.layerPagedKV(li); cache != nil {
+				if err := encAttnHalfKVPaged(enc, in, cache, s.offBuf, s.hBuf, 0, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
+			} else if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
 				endEncodingFast(enc)
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+			if cache := s.layerPagedKV(own); cache != nil {
+				if err := encAttnHalfSharedPaged(enc, in, cache, s.offBuf, s.hBuf, 0, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+					endEncodingFast(enc)
+					return nil, err
+				}
+			} else if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
 				endEncodingFast(enc)
 				return nil, err
 			}
@@ -902,7 +1227,11 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 			cb = commandBufferFast(queue)
 			enc = computeCommandEncoderFast(cb)
 		}
-		in, out = out, in
+		if in == inputBuf && inputBuf != s.xA {
+			in, out = out, s.xB
+		} else {
+			in, out = out, in
+		}
 	}
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)

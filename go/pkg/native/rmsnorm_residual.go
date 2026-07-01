@@ -22,12 +22,13 @@ var (
 )
 
 type rmsNormResidualBF16Scratch struct {
-	axisSize      int
-	x, res, out   *pinnedNoCopyBytes
-	outViewPtr    uintptr
-	outViewLen    int
-	outView       metal.MTLBuffer
-	outViewPinned *pinnedNoCopyBytes
+	axisSize       int
+	x, res, out    *pinnedNoCopyBytes
+	xView, resView cachedNoCopyBytesView
+	outViewPtr     uintptr
+	outViewLen     int
+	outView        metal.MTLBuffer
+	outViewPinned  *pinnedNoCopyBytes
 }
 
 func newRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, error) {
@@ -53,18 +54,17 @@ func newRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, e
 	return &rmsNormResidualBF16Scratch{axisSize: axisSize, x: x, res: res, out: out}, nil
 }
 
-func rmsResidualScratchPoolFor(axisSize int) *sync.Pool {
+func rmsResidualScratchPoolFor(axisSize int) *scratchLIFOPool[*rmsNormResidualBF16Scratch] {
 	if v, ok := rmsResidualScratchPools.Load(axisSize); ok {
-		return v.(*sync.Pool)
+		return v.(*scratchLIFOPool[*rmsNormResidualBF16Scratch])
 	}
-	pool := new(sync.Pool)
+	pool := &scratchLIFOPool[*rmsNormResidualBF16Scratch]{}
 	actual, _ := rmsResidualScratchPools.LoadOrStore(axisSize, pool)
-	return actual.(*sync.Pool)
+	return actual.(*scratchLIFOPool[*rmsNormResidualBF16Scratch])
 }
 
 func getRMSNormResidualBF16Scratch(axisSize int) (*rmsNormResidualBF16Scratch, error) {
-	if v := rmsResidualScratchPoolFor(axisSize).Get(); v != nil {
-		s := v.(*rmsNormResidualBF16Scratch)
+	if s := rmsResidualScratchPoolFor(axisSize).Get(); s != nil {
 		if s.axisSize == axisSize && s.x != nil && s.res != nil && s.out != nil {
 			return s, nil
 		}
@@ -91,6 +91,8 @@ func (s *rmsNormResidualBF16Scratch) Close() {
 		s.res.Close()
 		s.res = nil
 	}
+	s.xView.Close()
+	s.resView.Close()
 	if s.out != nil {
 		s.out.Close()
 		s.out = nil
@@ -121,6 +123,13 @@ func (s *rmsNormResidualBF16Scratch) outputView(out []byte) (metal.MTLBuffer, bo
 		return s.outView, true
 	}
 	s.closeOutputView()
+	if buf, ok := registeredPinnedNoCopyBytes(out); ok {
+		s.outViewPtr = ptr
+		s.outViewLen = len(out)
+		s.outView = buf
+		s.outViewPinned = nil
+		return buf, true
+	}
 	buf, pinner, noCopy := residentNoCopyBytes(out)
 	if !noCopy {
 		if pinner != nil {
@@ -145,13 +154,20 @@ func (s *rmsNormResidualBF16Scratch) buffers(x, res []byte) (metal.MTLBuffer, me
 	if len(x) != n || len(res) != n || len(s.out.bytes) != n {
 		return nil, nil, nil, errRMSResidualScratchDim
 	}
-	xBuf, err := s.x.copyBuffer(x)
-	if err != nil {
-		return nil, nil, nil, err
+	var err error
+	xBuf, xNoCopy := s.xView.buffer(x)
+	if !xNoCopy {
+		xBuf, err = s.x.copyBuffer(x)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
-	resBuf, err := s.res.copyBuffer(res)
-	if err != nil {
-		return nil, nil, nil, err
+	resBuf, resNoCopy := s.resView.buffer(res)
+	if !resNoCopy {
+		resBuf, err = s.res.copyBuffer(res)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	return xBuf, resBuf, s.out.buf, nil
 }
