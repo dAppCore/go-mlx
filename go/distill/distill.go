@@ -4,13 +4,13 @@ package distill
 
 import (
 	"context"
-	"math"
 	"sync"
 	"time"
 
 	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
+	distillinf "dappco.re/go/inference/distill"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/probe"
 )
@@ -19,39 +19,35 @@ const DistillCheckpointMetadataVersion = 1
 
 // Constant validation errors hoisted to package vars — each previously
 // allocated a fresh core.NewError on the (rare but hot under churn)
-// failure path. errDistillLogitNotFinite fires twice (per-batch finite
-// guard); errDistillCheckpointPath twice (Save/Resume paths).
+// failure path. errDistillCheckpointPath fires twice (Save/Resume paths).
+// The logit-shape/temperature/masked-token/KL validation errors that used
+// to live here moved with DistillationBatchLoss's maths to the shared
+// dappco.re/go/inference/distill engine (distillinf.BatchLoss returns its
+// own, textually-identical sentinels).
 var (
-	errDistillLogitNotFinite     = core.NewError("mlx: distillation logit is not finite")
 	errDistillCheckpointPath     = core.NewError("mlx: distillation checkpoint metadata path is required")
-	errTeacherLogitsEmpty        = core.NewError("mlx: teacher logits are empty")
-	errDistillTempInvalid        = core.NewError("mlx: distillation temperature must be finite and positive")
 	errDistillNeedTokenizer      = core.NewError("mlx: distillation runner requires Tokenizer or BuildBatches")
 	errDistillNeedTeacherLogits  = core.NewError("mlx: distillation runner requires TeacherLogits on teacher cache miss")
 	errDistillNeedStudentLogits  = core.NewError("mlx: distillation runner requires StudentLogits")
-	errDistillNoMaskedTokens     = core.NewError("mlx: distillation loss has no masked tokens")
-	errDistillLogitVocab         = core.NewError("mlx: distillation logit shape mismatch: vocabulary")
-	errDistillLogitSeq           = core.NewError("mlx: distillation logit shape mismatch: sequence")
-	errDistillLogitEmptyVocab    = core.NewError("mlx: distillation logit shape mismatch: empty vocabulary")
-	errDistillLogitBatch         = core.NewError("mlx: distillation logit shape mismatch: batch")
-	errDistillKLNotFinite        = core.NewError("mlx: distillation KL loss is not finite")
 	errDistillNoTrainableBatches = core.NewError("mlx: distillation dataset produced no trainable batches")
 	errDistillNoTokenizedBatches = core.NewError("mlx: distillation dataset produced no tokenized batches")
 	errDistillDatasetNeedsReset  = core.NewError("mlx: distillation dataset must implement Reset for multiple epochs")
 	errDistillDatasetNil         = core.NewError("mlx: distillation dataset is nil")
-	errDistillCoreResultFailed   = core.NewError("core result failed")
 )
 
-// DistillLossKind selects the scalar used to train the student.
-type DistillLossKind string
+// DistillLossKind selects the scalar used to train the student — an alias
+// onto the canonical distillinf.LossKind contract.
+type DistillLossKind = distillinf.LossKind
 
 const (
-	DistillLossKL               DistillLossKind = "kl"
-	DistillLossSoftCrossEntropy DistillLossKind = "soft_cross_entropy"
+	DistillLossKL               = distillinf.LossKL
+	DistillLossSoftCrossEntropy = distillinf.LossSoftCrossEntropy
 )
 
-// DistillLogits is a batch x sequence x vocabulary tensor in Go-native form.
-type DistillLogits [][][]float32
+// DistillLogits is a batch x sequence x vocabulary tensor in Go-native form
+// — an alias onto the canonical distillinf.Logits contract (never an MLX
+// array, always a plain, engine-agnostic value).
+type DistillLogits = distillinf.Logits
 
 // DistillConfig controls native knowledge distillation over dataset streams.
 type DistillConfig struct {
@@ -93,16 +89,9 @@ type DistillBatch struct {
 	CacheKey    string
 }
 
-// DistillLoss records per-batch distillation loss components.
-type DistillLoss struct {
-	Value            float64         `json:"value"`
-	KL               float64         `json:"kl"`
-	SoftCrossEntropy float64         `json:"soft_cross_entropy"`
-	TeacherEntropy   float64         `json:"teacher_entropy"`
-	Tokens           int             `json:"tokens"`
-	Temperature      float64         `json:"temperature"`
-	Kind             DistillLossKind `json:"kind"`
-}
+// DistillLoss records per-batch distillation loss components — an alias
+// onto the canonical distillinf.Loss contract.
+type DistillLoss = distillinf.Loss
 
 // DistillMetrics aggregates distillation counters and loss values.
 type DistillMetrics struct {
@@ -187,58 +176,19 @@ type DistillEvalResult struct {
 	Report  *eval.Report `json:"report,omitempty"`
 }
 
-// DistillTeacherLogitCache provides cache hooks for offline teacher logits.
-type DistillTeacherLogitCache interface {
-	GetTeacherLogits(context.Context, string) (DistillLogits, bool, error)
-	PutTeacherLogits(context.Context, string, DistillLogits) error
-}
+// DistillTeacherLogitCache provides cache hooks for offline teacher logits
+// — an alias onto the canonical distillinf.TeacherLogitCache contract.
+type DistillTeacherLogitCache = distillinf.TeacherLogitCache
 
-// MemoryDistillLogitCache is a small in-process teacher-logit cache for tests and local runs.
-type MemoryDistillLogitCache struct {
-	mu     sync.RWMutex
-	logits map[string]DistillLogits
-}
+// MemoryDistillLogitCache is a small in-process teacher-logit cache for
+// tests and local runs — an alias onto the canonical
+// distillinf.MemoryLogitCache implementation (identical locking + deep-
+// clone-on-Get/Put semantics, no engine dependency).
+type MemoryDistillLogitCache = distillinf.MemoryLogitCache
 
 // NewMemoryDistillLogitCache creates an in-memory teacher-logit cache.
 func NewMemoryDistillLogitCache() *MemoryDistillLogitCache {
-	return &MemoryDistillLogitCache{logits: map[string]DistillLogits{}}
-}
-
-// GetTeacherLogits returns cached teacher logits for key.
-func (c *MemoryDistillLogitCache) GetTeacherLogits(_ context.Context, key string) (DistillLogits, bool, error) {
-	if c == nil {
-		return nil, false, nil
-	}
-	c.mu.RLock()
-	logits, ok := c.logits[key]
-	c.mu.RUnlock()
-	// Skip the clone on miss — defer + clone overhead is wasted when
-	// there's nothing to copy. Releasing the read lock manually also
-	// shrinks the critical section: the clone now runs lock-free, which
-	// matters when teacher logits are large (B*S*V float32).
-	if !ok {
-		return nil, false, nil
-	}
-	return cloneDistillLogits(logits), true, nil
-}
-
-// PutTeacherLogits stores teacher logits for key.
-func (c *MemoryDistillLogitCache) PutTeacherLogits(_ context.Context, key string, logits DistillLogits) error {
-	if c == nil {
-		return nil
-	}
-	// Clone outside the write lock — the clone is a pure copy of caller
-	// data with no shared state, so it can race freely with other
-	// goroutines. Acquiring the lock only for the map assignment shrinks
-	// the critical section from O(B*S*V) to O(1).
-	cloned := cloneDistillLogits(logits)
-	c.mu.Lock()
-	if c.logits == nil {
-		c.logits = map[string]DistillLogits{}
-	}
-	c.logits[key] = cloned
-	c.mu.Unlock()
-	return nil
+	return distillinf.NewMemoryLogitCache()
 }
 
 // RunDistillation is an alias for RunKnowledgeDistillation.
@@ -531,20 +481,25 @@ var distillProbeTrainingPool = sync.Pool{
 	},
 }
 
+// normalizeDistillConfig delegates the Epochs/Temperature/Loss defaulting
+// to the shared dappco.re/go/inference/distill engine
+// (distillinf.NormalizeConfig), which carries the identical rules —
+// including the deliberate NaN-poison for an invalid Temperature so
+// DistillationBatchLoss rejects it explicitly rather than silently using a
+// nonsensical scale. Batch stays local: DistillConfig.Batch is
+// dataset.BatchConfig (this module's own mlx/dataset type, not the shared
+// distillinf.BatchConfig), so it is normalised by normalizeDatasetBatchConfig
+// (distill_compat.go) as before.
 func normalizeDistillConfig(cfg DistillConfig) DistillConfig {
 	cfg.Batch = normalizeDatasetBatchConfig(cfg.Batch)
-	if cfg.Epochs <= 0 {
-		cfg.Epochs = 1
-	}
-	if cfg.Temperature == 0 {
-		cfg.Temperature = 1
-	}
-	if cfg.Temperature < 0 || math.IsNaN(cfg.Temperature) || math.IsInf(cfg.Temperature, 0) {
-		cfg.Temperature = math.NaN()
-	}
-	if cfg.Loss == "" {
-		cfg.Loss = DistillLossKL
-	}
+	shared := distillinf.NormalizeConfig(distillinf.Config{
+		Epochs:      cfg.Epochs,
+		Temperature: cfg.Temperature,
+		Loss:        cfg.Loss,
+	})
+	cfg.Epochs = shared.Epochs
+	cfg.Temperature = shared.Temperature
+	cfg.Loss = shared.Loss
 	return cfg
 }
 
@@ -589,16 +544,6 @@ func (a *distillMetricAccumulator) snapshot() distillMetricsSnapshot {
 		softCE:  a.softCE * invTokens,
 		entropy: a.entropySum * invTokens,
 	}
-}
-
-func distillResultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return errDistillCoreResultFailed
 }
 
 func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples int) ([]dataset.Sample, error) {

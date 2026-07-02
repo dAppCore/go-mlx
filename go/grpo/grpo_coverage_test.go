@@ -50,36 +50,6 @@ func (d *errResetDataset) Reset() error {
 	return d.resetErr
 }
 
-// TestGrpo_grpoResultError_All covers every branch of the core.Result →
-// error adapter: an OK result yields nil, a failed result whose Value is
-// an error surfaces that error verbatim, and a failed result whose Value
-// is some non-error payload collapses to the generic sentinel rather than
-// panicking on the type assertion.
-func TestGrpo_grpoResultError_All(t *testing.T) {
-	if err := grpoResultError(core.Result{OK: true}); err != nil {
-		t.Fatalf("grpoResultError(ok) = %v, want nil", err)
-	}
-	// Even an OK result carrying a stray error Value must report success —
-	// OK is the authority, not the payload.
-	if err := grpoResultError(core.Result{OK: true, Value: core.NewError("ignored")}); err != nil {
-		t.Fatalf("grpoResultError(ok+payload) = %v, want nil", err)
-	}
-	sentinel := core.NewError("boom")
-	if err := grpoResultError(core.Result{OK: false, Value: sentinel}); err != sentinel {
-		t.Fatalf("grpoResultError(err value) = %v, want the wrapped error", err)
-	}
-	// A failed result whose Value is not an error (here an int) must not
-	// panic on the type assertion — it falls back to the generic message.
-	err := grpoResultError(core.Result{OK: false, Value: 42})
-	if err == nil || !core.Contains(core.Lower(err.Error()), "core result failed") {
-		t.Fatalf("grpoResultError(non-error value) = %v, want generic sentinel", err)
-	}
-	// A failed result with a nil Value also takes the fallback branch.
-	if err := grpoResultError(core.Result{OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
-		t.Fatalf("grpoResultError(nil value) = %v, want generic sentinel", err)
-	}
-}
-
 // TestGrpo_SaveGRPOCheckpointMetadata_FSErrors covers the three
 // filesystem failure branches of SaveGRPOCheckpointMetadata that the
 // happy-path tests never reach: a non-finite scalar that fails JSON

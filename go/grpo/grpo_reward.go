@@ -3,11 +3,10 @@
 package grpo
 
 import (
-	"math"
-
 	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
+	grpoinf "dappco.re/go/inference/grpo"
 )
 
 // GRPOSampleFromSFT extracts a reasoning prompt and expected answer.
@@ -179,178 +178,17 @@ func asciiHasPrefixFold(s, prefix string) bool {
 	return true
 }
 
-// containsFoldASCII reports whether s contains substr under ASCII
-// case-insensitive comparison. The second return is false when substr
-// contains any non-ASCII byte — in that case the caller must fall back
-// to the unicode-aware path (core.Lower + Contains) to preserve full
-// case-folding semantics. substr is the already-lowered expected
-// answer; if it's pure ASCII its bytes are all in 0..0x7f.
-func containsFoldASCII(s, substr string) (bool, bool) {
-	if len(substr) == 0 {
-		return true, true
-	}
-	// Scan substr once for any byte ≥ 0x80 — single forward scan
-	// is cheaper than checking inside the inner loop on every
-	// candidate offset, and the typical expected answer is short
-	// (single token / numeral) so the scan touches very few bytes.
-	for i := 0; i < len(substr); i++ {
-		if substr[i] >= 0x80 {
-			return false, false
-		}
-	}
-	if len(s) < len(substr) {
-		return false, true
-	}
-	first := substr[0]
-	last := len(s) - len(substr)
-	for i := 0; i <= last; i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c |= 0x20
-		}
-		if c != first {
-			continue
-		}
-		match := true
-		for j := 1; j < len(substr); j++ {
-			c2 := s[i+j]
-			if c2 >= 'A' && c2 <= 'Z' {
-				c2 |= 0x20
-			}
-			if c2 != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true, true
-		}
-	}
-	return false, true
-}
-
-// expectedIsASCIINoNL reports whether the expected answer is pure ASCII
-// and contains no newline byte. When both conditions hold, the contains-
-// answer reward can scan each fragment of the rollout (Answer / Text /
-// Reasoning) independently — the expected can't span across the implicit
-// "\n" join separator. Lets the caller skip the join allocation entirely
-// on the common ASCII path; non-ASCII or newline-bearing expected
-// strings fall back to the join + core.Lower path which preserves the
-// original cross-fragment + unicode-aware semantics.
-func expectedIsASCIINoNL(expected string) bool {
-	for i := 0; i < len(expected); i++ {
-		c := expected[i]
-		if c >= 0x80 || c == '\n' {
-			return false
-		}
-	}
-	return true
-}
-
-// defaultGRPORewardFuncs is the fallback []GRPORewardFunc used by
-// buildGRPOUpdate when GRPOConfig.RewardFuncs is empty. Package-level
-// so we don't allocate a fresh closure + 1-element slice once per
-// training step on the default-config path. The captured weight (1)
-// is fixed at init.
-var defaultGRPORewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
-
-// GRPORewardContainsAnswer rewards a rollout when it contains the expected answer.
+// GRPORewardContainsAnswer rewards a rollout when it contains the expected
+// answer — delegates to the shared dappco.re/go/inference/grpo engine
+// (grpoinf.RewardContainsAnswer), a byte-identical port of this reward
+// function's ASCII fast-path/unicode-fallback matching.
 func GRPORewardContainsAnswer(weight float64) GRPORewardFunc {
-	if weight == 0 {
-		weight = 1
-	}
-	return func(ctx GRPORewardContext) (GRPOReward, error) {
-		expected := core.Lower(core.Trim(ctx.Sample.ExpectedAnswer))
-		if expected == "" {
-			return GRPOReward{Name: "contains_answer", Weight: weight, Detail: "no expected answer"}, nil
-		}
-		score := 0.0
-		detail := "missing"
-		// Fast path: expected is pure ASCII AND contains no separator
-		// byte ("\n"). Then the expected can't span across the
-		// implicit "\n" join between Answer/Text/Reasoning, so we can
-		// scan each fragment independently — no core.Join allocation,
-		// no core.Lower(joined) allocation. The common reasoning-
-		// dataset shape (short numerals, names, single tokens) hits
-		// this path.
-		fragments := [3]string{ctx.Rollout.Answer, ctx.Rollout.Text, ctx.Rollout.Reasoning}
-		matched := false
-		fragmentsOK := true
-		// Single ASCII scan: separator-free + pure-ASCII in one walk
-		// over expected — the helper's contract is documented above
-		// asciiNoSeparatorASCII.
-		expectedASCII := expectedIsASCIINoNL(expected)
-		if expectedASCII {
-			for _, f := range fragments {
-				if hit, ok := containsFoldASCII(f, expected); !ok {
-					// fragment contains substr but substr was rejected —
-					// impossible at this point (we already proved ASCII
-					// above), so this branch is unreachable but kept for
-					// signal-clarity. Use the fallback for completeness.
-					fragmentsOK = false
-					break
-				} else if hit {
-					matched = true
-					break
-				}
-			}
-		} else {
-			fragmentsOK = false
-		}
-		if !fragmentsOK {
-			// Fallback: build the joined text once and case-fold via
-			// the unicode-aware core.Lower path. Preserves the original
-			// semantics for non-ASCII expected answers and for expected
-			// strings that contain newline (cross-fragment spans).
-			text := core.Join("\n", ctx.Rollout.Answer, ctx.Rollout.Text, ctx.Rollout.Reasoning)
-			matched = core.Contains(core.Lower(text), expected)
-		}
-		if matched {
-			score = weight
-			detail = "matched"
-		}
-		return GRPOReward{Name: "contains_answer", Score: score, Weight: weight, Detail: detail}, nil
-	}
+	return grpoinf.RewardContainsAnswer(weight)
 }
 
-// GRPORewardExactAnswer rewards exact normalized answer matches.
+// GRPORewardExactAnswer rewards exact normalized answer matches —
+// delegates to the shared dappco.re/go/inference/grpo engine
+// (grpoinf.RewardExactAnswer).
 func GRPORewardExactAnswer(weight float64) GRPORewardFunc {
-	if weight == 0 {
-		weight = 1
-	}
-	return func(ctx GRPORewardContext) (GRPOReward, error) {
-		expected := core.Lower(core.Trim(ctx.Sample.ExpectedAnswer))
-		answer := core.Lower(core.Trim(ctx.Rollout.Answer))
-		score := 0.0
-		detail := "missing"
-		if expected != "" && answer == expected {
-			score = weight
-			detail = "matched"
-		}
-		return GRPOReward{Name: "exact_answer", Score: score, Weight: weight, Detail: detail}, nil
-	}
-}
-
-func grpoRewardStats(rollouts []GRPORollout) (float64, float64) {
-	n := len(rollouts)
-	if n == 0 {
-		return 0, 0
-	}
-	// Index iteration — range over []GRPORollout copies the whole struct
-	// (Text/Reasoning/Answer strings, TokenIDs + RewardParts slice
-	// headers, all the float fields) on each iteration even though we
-	// only ever read the Reward float. Indexing skips the copy.
-	var sum float64
-	for i := range n {
-		sum += rollouts[i].Reward
-	}
-	invN := 1.0 / float64(n)
-	mean := sum * invN
-	var variance float64
-	for i := range n {
-		delta := rollouts[i].Reward - mean
-		variance += delta * delta
-	}
-	variance *= invN
-	return mean, math.Sqrt(variance)
+	return grpoinf.RewardExactAnswer(weight)
 }

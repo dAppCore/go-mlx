@@ -1,32 +1,34 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Byte-parity guard for appendBatchCacheKeyJSON, the hand-rolled emitter
-// behind DistillBatchCacheKey. The teacher-logit cache is keyed on the
-// SHA256 of these bytes, so the emitted JSON MUST be byte-for-byte
-// identical to what core.JSONMarshal (encoding/json) produced before the
-// emitter replaced it — any drift silently invalidates every cached
-// teacher entry. A parse-back round-trip would NOT catch format drift
-// that still changes the hash, so this diffs the emitter's raw bytes
-// against core.JSONMarshal directly over adversarial inputs, and pins the
-// NaN/Inf -> ok==false fallback contract (json.Marshal errors there, so
-// the emitter must signal the same so the caller takes the identical
-// Sprintf-based key).
+// Byte-parity guard for DistillBatchCacheKey, which now delegates its
+// emission to the shared dappco.re/go/inference/distill engine
+// (distillinf.BatchCacheKey — a byte-identical port of what this file
+// hand-rolled before the delegation). The teacher-logit cache is keyed on
+// the SHA256 of the emitted JSON, so any drift between the shared emitter
+// and core.JSONMarshal (encoding/json) would silently invalidate every
+// cached teacher entry. A parse-back round-trip would NOT catch format
+// drift that still changes the hash, so this diffs DistillBatchCacheKey's
+// hash against SHA256(core.JSONMarshal(...)) directly over adversarial
+// inputs, and pins the NaN/Inf fallback contract (json.Marshal errors
+// there, so the shared emitter must signal the same so the caller takes
+// the identical Sprintf-based key) — all through the public API, since the
+// hand-rolled byte emitter this test used to drive directly no longer has
+// a local copy to call.
 //
 // Run:    go test -run='BatchCacheKeyParity' ./distill/
 
 package distill
 
 import (
-	"bytes"
 	"math"
 	"testing"
 
 	core "dappco.re/go"
 )
 
-// batchCacheKeyPayload mirrors the exact anonymous struct DistillBatchCacheKey
-// marshals — same field order, same json tags — so core.JSONMarshal here is
-// the same oracle the production path used.
+// batchCacheKeyPayload mirrors the exact anonymous struct
+// distillinf.BatchCacheKey marshals — same field order, same json tags —
+// so core.JSONMarshal here is the same oracle the production path used.
 type batchCacheKeyPayload struct {
 	Tokens  [][]int     `json:"tokens"`
 	Targets [][]int     `json:"targets"`
@@ -40,10 +42,9 @@ type batchCacheKeyFixture struct {
 	mask    [][]float32
 }
 
-// batchCacheKeyParityFixtures are the adversarial inputs shared by the
-// byte-parity test (emitter bytes == core.JSONMarshal) and the
-// length-exactness test (batchCacheKeyJSONLen == len(emitted)). None
-// contain NaN/Inf — those have their own fallback test.
+// batchCacheKeyParityFixtures are the adversarial inputs the byte-parity
+// test (DistillBatchCacheKey's hash == SHA256(core.JSONMarshal(...))) runs
+// against. None contain NaN/Inf — those have their own fallback test.
 func batchCacheKeyParityFixtures() []batchCacheKeyFixture {
 	return []batchCacheKeyFixture{
 		{
@@ -95,7 +96,7 @@ func batchCacheKeyParityFixtures() []batchCacheKeyFixture {
 			mask:    [][]float32{{0, 0}},
 		},
 		{
-			// int64 magnitude extremes — pins appendCacheKeyInt64 incl. the
+			// int64 magnitude extremes — pins the int emitter incl. the
 			// MinInt64 uint64(-v) wrap. (int is 64-bit on this target.)
 			name:    "int_extremes",
 			tokens:  [][]int{{0, math.MaxInt64, math.MinInt64}},
@@ -154,62 +155,40 @@ func batchCacheKeyParityFixtures() []batchCacheKeyFixture {
 	}
 }
 
+// TestDistillLoss_BatchCacheKeyParity diffs DistillBatchCacheKey's hash
+// against SHA256(core.JSONMarshal(...)) over every adversarial fixture —
+// the same contract the deleted hand-rolled emitter used to prove
+// byte-for-byte, now proven through the public API since the emitter
+// itself now lives in the shared dappco.re/go/inference/distill engine.
 func TestDistillLoss_BatchCacheKeyParity(t *testing.T) {
 	for _, tc := range batchCacheKeyParityFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := batchCacheKeyPayload{Tokens: tc.tokens, Targets: tc.targets, Mask: tc.mask}
 			want := core.JSONMarshal(payload)
-			got, ok := appendBatchCacheKeyJSON(nil, tc.tokens, tc.targets, tc.mask)
+			batch := SFTBatch{
+				Batch:   Batch{Tokens: tc.tokens, LossMask: tc.mask},
+				Targets: tc.targets,
+			}
+			got := DistillBatchCacheKey(batch)
 			if !want.OK {
 				// json.Marshal failed (it cannot here — no NaN/Inf fixture in
-				// this slice), so the emitter must also signal fallback.
-				if ok {
-					t.Fatalf("core.JSONMarshal failed but emitter returned ok=true: %s", got)
-				}
-				return
+				// this slice); if it ever does, this fixture belongs in the
+				// NaN/Inf fallback test instead.
+				t.Fatalf("core.JSONMarshal unexpectedly failed for fixture %q: %v", tc.name, want.Value)
 			}
-			if !ok {
-				t.Fatalf("emitter returned ok=false but core.JSONMarshal succeeded: %s", want.Value)
-			}
-			wantBytes := want.Value.([]byte)
-			if !bytes.Equal(got, wantBytes) {
-				t.Fatalf("byte mismatch:\n  json: %s\n  hand: %s", wantBytes, got)
-			}
-		})
-	}
-}
-
-// TestDistillLoss_BatchCacheKeyLenExact pins batchCacheKeyJSONLen as the
-// EXACT emitted byte count for every parity fixture — not just an upper
-// bound. If it under-counts, appendBatchCacheKeyJSON's single make grows
-// (silently restoring the extra alloc this change removed); if it
-// over-counts, B/op regresses. Asserting equality also catches any drift
-// between float32JSONLen's measure logic and appendCacheKeyFloat32's emit
-// logic (they duplicate the format/cleanup branch) and any scaffold
-// miscount.
-func TestDistillLoss_BatchCacheKeyLenExact(t *testing.T) {
-	for _, tc := range batchCacheKeyParityFixtures() {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := appendBatchCacheKeyJSON(nil, tc.tokens, tc.targets, tc.mask)
-			if !ok {
-				t.Fatalf("emitter returned ok=false on a finite fixture")
-			}
-			n, lenOK := batchCacheKeyJSONLen(tc.tokens, tc.targets, tc.mask)
-			if !lenOK {
-				t.Fatalf("batchCacheKeyJSONLen returned ok=false on a finite fixture")
-			}
-			if n != len(got) {
-				t.Fatalf("batchCacheKeyJSONLen = %d, emitted %d bytes (%s)", n, len(got), got)
+			wantKey := core.SHA256Hex(want.Value.([]byte))
+			if got != wantKey {
+				t.Fatalf("DistillBatchCacheKey = %q, want SHA256(core.JSONMarshal) = %q", got, wantKey)
 			}
 		})
 	}
 }
 
 // TestDistillLoss_BatchCacheKeyParity_NaNInfFallback pins the NaN/Inf
-// contract directly: encoding/json errors on those (data.OK == false), so
-// the emitter MUST return ok == false, sending DistillBatchCacheKey down
-// the identical Sprintf-based fallback. Asserts both that json.Marshal
-// rejects the payload AND that the emitter agrees.
+// contract: encoding/json errors on those (core.JSONMarshal.OK == false),
+// so DistillBatchCacheKey must still return a stable, deterministic,
+// non-empty key — the Sprintf-based fallback the shared engine takes when
+// its own byte emitter signals it cannot produce a JSON-exact encoding.
 func TestDistillLoss_BatchCacheKeyParity_NaNInfFallback(t *testing.T) {
 	cases := []struct {
 		name string
@@ -231,8 +210,16 @@ func TestDistillLoss_BatchCacheKeyParity_NaNInfFallback(t *testing.T) {
 			if core.JSONMarshal(payload).OK {
 				t.Fatalf("expected core.JSONMarshal to error on NaN/Inf, but it succeeded")
 			}
-			if _, ok := appendBatchCacheKeyJSON(nil, tokens, targets, tc.mask); ok {
-				t.Fatal("emitter returned ok=true on NaN/Inf, want ok=false for the Sprintf fallback")
+			batch := SFTBatch{
+				Batch:   Batch{Tokens: tokens, LossMask: tc.mask},
+				Targets: targets,
+			}
+			got := DistillBatchCacheKey(batch)
+			if got == "" {
+				t.Fatal("DistillBatchCacheKey(NaN/Inf) = empty, want a stable fallback hash")
+			}
+			if again := DistillBatchCacheKey(batch); again != got {
+				t.Fatalf("DistillBatchCacheKey(NaN/Inf) = %q then %q, want deterministic", got, again)
 			}
 		})
 	}
@@ -242,7 +229,7 @@ func TestDistillLoss_BatchCacheKeyParity_NaNInfFallback(t *testing.T) {
 // public function: two SFTBatches that JSON-marshal to identical payload
 // bytes must hash to the same key, and the key must equal the SHA256 of
 // the core.JSONMarshal bytes (proving DistillBatchCacheKey still produces
-// the pre-emitter hash, not just self-consistent ones).
+// the pre-delegation hash, not just self-consistent ones).
 func TestDistillLoss_BatchCacheKeyParity_EndToEnd(t *testing.T) {
 	batch := SFTBatch{
 		Batch: Batch{

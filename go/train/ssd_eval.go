@@ -7,6 +7,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	traininf "dappco.re/go/inference/train"
 	"dappco.re/go/mlx/spine"
 )
 
@@ -27,13 +28,10 @@ type SSDCodeBenchmarkRunner struct {
 	RunTests func(context.Context, SSDCodeBenchmarkSample, SSDCodeCandidate) (SSDCodeExecution, error)
 }
 
-// SSDCodeBenchmarkSample is one code benchmark task.
-type SSDCodeBenchmarkSample struct {
-	ID     string            `json:"id,omitempty"`
-	Prompt string            `json:"prompt"`
-	Tests  []string          `json:"tests,omitempty"`
-	Meta   map[string]string `json:"meta,omitempty"`
-}
+// SSDCodeBenchmarkSample is one code benchmark task — an alias onto the
+// canonical traininf.SSDCodeBenchmarkSample contract (identical fields,
+// no engine dependency).
+type SSDCodeBenchmarkSample = traininf.SSDCodeBenchmarkSample
 
 // SSDCodeCandidate records one generated solution.
 type SSDCodeCandidate struct {
@@ -44,18 +42,10 @@ type SSDCodeCandidate struct {
 	Config      spine.GenerateConfig `json:"config"`
 }
 
-// SSDCodeExecution records the code-test outcome for one
-// generated solution.
-type SSDCodeExecution struct {
-	Passed      bool          `json:"passed"`
-	PassedTests int           `json:"passed_tests,omitempty"`
-	TotalTests  int           `json:"total_tests,omitempty"`
-	Duration    time.Duration `json:"duration,omitempty"`
-	DurationMS  int64         `json:"duration_ms,omitempty"`
-	Stdout      string        `json:"stdout,omitempty"`
-	Stderr      string        `json:"stderr,omitempty"`
-	Error       string        `json:"error,omitempty"`
-}
+// SSDCodeExecution records the code-test outcome for one generated
+// solution — an alias onto the canonical traininf.SSDCodeExecution
+// contract (identical fields, no engine dependency).
+type SSDCodeExecution = traininf.SSDCodeExecution
 
 // SSDCodeBenchmarkCandidateResult joins a candidate with
 // its native code-test execution result.
@@ -71,16 +61,10 @@ type SSDCodeBenchmarkSampleResult struct {
 	Candidates []SSDCodeBenchmarkCandidateResult `json:"candidates"`
 }
 
-// SSDCodeBenchmarkMetrics aggregates benchmark pass rates.
-type SSDCodeBenchmarkMetrics struct {
-	Samples    int                `json:"samples,omitempty"`
-	Candidates int                `json:"candidates,omitempty"`
-	Passed     int                `json:"passed,omitempty"`
-	Failed     int                `json:"failed,omitempty"`
-	PassRate   float64            `json:"pass_rate,omitempty"`
-	PassAtK    map[string]float64 `json:"pass_at_k,omitempty"`
-	Difficulty map[string]float64 `json:"difficulty,omitempty"`
-}
+// SSDCodeBenchmarkMetrics aggregates benchmark pass rates — an alias onto
+// the canonical traininf.SSDCodeBenchmarkMetrics contract (identical
+// fields, no engine dependency).
+type SSDCodeBenchmarkMetrics = traininf.SSDCodeBenchmarkMetrics
 
 // SSDCodeBenchmarkReport is the JSON-serialisable output of
 // a native SSD code benchmark run.
@@ -93,144 +77,39 @@ type SSDCodeBenchmarkReport struct {
 	Duration  time.Duration                  `json:"duration,omitempty"`
 }
 
-type ssdCodeBenchmarkJSONLRecord struct {
-	ID               string            `json:"id"`
-	QuestionID       string            `json:"question_id"`
-	TaskID           string            `json:"task_id"`
-	Prompt           string            `json:"prompt"`
-	Question         string            `json:"question"`
-	QuestionContent  string            `json:"question_content"`
-	Problem          string            `json:"problem"`
-	StarterCode      string            `json:"starter_code"`
-	EntryPoint       string            `json:"entry_point"`
-	IsStdin          *bool             `json:"is_stdin"`
-	ContestDate      string            `json:"contest_date"`
-	Test             string            `json:"test"`
-	Tests            []string          `json:"tests"`
-	PublicTestCases  []string          `json:"public_test_cases"`
-	PrivateTestCases []string          `json:"private_test_cases"`
-	Metadata         map[string]string `json:"metadata"`
-	Difficulty       string            `json:"difficulty"`
-	Platform         string            `json:"platform"`
-}
-
-// LoadSSDCodeBenchmarkJSONLFile loads benchmark tasks from
-// a JSONL file path.
+// LoadSSDCodeBenchmarkJSONLFile loads benchmark tasks from a JSONL file
+// path — delegates to the shared dappco.re/go/inference/train engine
+// (byte-identical parsing, ported verbatim from this package).
 func LoadSSDCodeBenchmarkJSONLFile(path string) ([]SSDCodeBenchmarkSample, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return nil, read.Value.(error)
-	}
-	return LoadSSDCodeBenchmarkJSONL(core.AsString(read.Value.([]byte)))
+	return traininf.LoadSSDCodeBenchmarkJSONLFile(path)
 }
 
-// LoadSSDLiveCodeBenchV6JSONLFile loads the LiveCodeBench-v6
-// task subset from a JSONL file path.
+// LoadSSDLiveCodeBenchV6JSONLFile loads the LiveCodeBench-v6 task subset
+// from a JSONL file path — delegates to the shared
+// dappco.re/go/inference/train engine.
 func LoadSSDLiveCodeBenchV6JSONLFile(path string) ([]SSDCodeBenchmarkSample, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return nil, read.Value.(error)
-	}
-	return LoadSSDLiveCodeBenchV6JSONL(core.AsString(read.Value.([]byte)))
+	return traininf.LoadSSDLiveCodeBenchV6JSONLFile(path)
 }
 
-// LoadSSDCodeBenchmarkJSONL loads LiveCodeBench-style JSONL
-// task rows into native SSD code benchmark samples.
+// LoadSSDCodeBenchmarkJSONL loads LiveCodeBench-style JSONL task rows into
+// native SSD code benchmark samples — delegates to the shared
+// dappco.re/go/inference/train engine.
 func LoadSSDCodeBenchmarkJSONL(raw string) ([]SSDCodeBenchmarkSample, error) {
-	lines := core.Split(raw, "\n")
-	samples := make([]SSDCodeBenchmarkSample, 0, len(lines))
-	for index, line := range lines {
-		line = core.Trim(line)
-		if line == "" {
-			continue
-		}
-		var record ssdCodeBenchmarkJSONLRecord
-		if result := core.JSONUnmarshalString(line, &record); !result.OK {
-			return nil, core.Errorf("mlx: parse SSD code benchmark JSONL record %d: %w", index+1, result.Value.(error))
-		}
-		sample, ok := record.ssdCodeBenchmarkSample()
-		if !ok {
-			continue
-		}
-		samples = append(samples, sample)
-	}
-	if len(samples) == 0 {
-		return nil, core.NewError("mlx: SSD code benchmark JSONL produced no samples")
-	}
-	return samples, nil
+	return traininf.LoadSSDCodeBenchmarkJSONL(raw)
 }
 
-// LoadSSDLiveCodeBenchV6JSONL loads LiveCodeBench-style
-// JSONL and filters it to the v6 contest-date window.
+// LoadSSDLiveCodeBenchV6JSONL loads LiveCodeBench-style JSONL and filters
+// it to the v6 contest-date window — delegates to the shared
+// dappco.re/go/inference/train engine.
 func LoadSSDLiveCodeBenchV6JSONL(raw string) ([]SSDCodeBenchmarkSample, error) {
-	samples, err := LoadSSDCodeBenchmarkJSONL(raw)
-	if err != nil {
-		return nil, err
-	}
-	samples = FilterSSDLiveCodeBenchV6Samples(samples)
-	if len(samples) == 0 {
-		return nil, core.NewError("mlx: LiveCodeBench-v6 JSONL produced no samples")
-	}
-	return samples, nil
+	return traininf.LoadSSDLiveCodeBenchV6JSONL(raw)
 }
 
-// FilterSSDLiveCodeBenchV6Samples keeps samples from the
-// LiveCodeBench-v6 contest-date window.
+// FilterSSDLiveCodeBenchV6Samples keeps samples from the LiveCodeBench-v6
+// contest-date window — delegates to the shared
+// dappco.re/go/inference/train engine.
 func FilterSSDLiveCodeBenchV6Samples(samples []SSDCodeBenchmarkSample) []SSDCodeBenchmarkSample {
-	filtered := make([]SSDCodeBenchmarkSample, 0, len(samples))
-	for _, sample := range samples {
-		if ssdLiveCodeBenchV6ContestDate(sample.Meta["contest_date"]) {
-			filtered = append(filtered, cloneSSDCodeBenchmarkSample(sample))
-		}
-	}
-	return filtered
-}
-
-func ssdLiveCodeBenchV6ContestDate(date string) bool {
-	date = core.Trim(date)
-	return date >= "2025-02-01" && date < "2025-06-01"
-}
-
-func (r ssdCodeBenchmarkJSONLRecord) ssdCodeBenchmarkSample() (SSDCodeBenchmarkSample, bool) {
-	prompt := firstSSDCodeBenchmarkString(r.Prompt, r.QuestionContent, r.Question, r.Problem)
-	if prompt == "" {
-		return SSDCodeBenchmarkSample{}, false
-	}
-	if starterCode := core.Trim(r.StarterCode); starterCode != "" {
-		prompt = core.Concat(prompt, "\n\nstarter code:\n", starterCode)
-	}
-	tests := appendSSDCodeBenchmarkTests(nil, r.Tests...)
-	tests = appendSSDCodeBenchmarkTests(tests, r.Test)
-	tests = appendSSDCodeBenchmarkTests(tests, r.PublicTestCases...)
-	tests = appendSSDCodeBenchmarkTests(tests, r.PrivateTestCases...)
-	meta := core.MapClone(r.Metadata)
-	if meta == nil {
-		meta = make(map[string]string, 2)
-	}
-	if difficulty := core.Trim(r.Difficulty); difficulty != "" {
-		meta["difficulty"] = difficulty
-	}
-	if platform := core.Trim(r.Platform); platform != "" {
-		meta["platform"] = platform
-	}
-	if entryPoint := core.Trim(r.EntryPoint); entryPoint != "" {
-		meta["entry_point"] = entryPoint
-	}
-	if contestDate := core.Trim(r.ContestDate); contestDate != "" {
-		meta["contest_date"] = contestDate
-	}
-	if r.IsStdin != nil {
-		meta["is_stdin"] = core.Sprintf("%t", *r.IsStdin)
-	}
-	if len(meta) == 0 {
-		meta = nil
-	}
-	return SSDCodeBenchmarkSample{
-		ID:     firstSSDCodeBenchmarkString(r.ID, r.QuestionID, r.TaskID),
-		Prompt: prompt,
-		Tests:  tests,
-		Meta:   meta,
-	}, true
+	return traininf.FilterSSDLiveCodeBenchV6Samples(samples)
 }
 
 // RunSSDCodeBenchmark samples candidate code solutions and
@@ -314,38 +193,18 @@ func RunSSDCodeBenchmark(ctx context.Context, runner SSDCodeBenchmarkRunner, sam
 	return report, nil
 }
 
-// SSDPostProcessCode extracts the final fenced code block
-// from a model response and applies the LiveCodeBench code cleanup.
+// SSDPostProcessCode extracts the final fenced code block from a model
+// response and applies the LiveCodeBench code cleanup — delegates to the
+// shared dappco.re/go/inference/train engine.
 func SSDPostProcessCode(response string) (string, bool) {
-	code, ok := lastSSDCodeFence(response)
-	if !ok {
-		return "", false
-	}
-	return ssdPostProcessCode(code), true
+	return traininf.SSDPostProcessCode(response)
 }
 
-// FormatSSDLiveCodeBenchPrompt returns the native prompt
-// shape used for LiveCodeBench-v6-style code-generation tasks.
+// FormatSSDLiveCodeBenchPrompt returns the native prompt shape used for
+// LiveCodeBench-v6-style code-generation tasks — delegates to the shared
+// dappco.re/go/inference/train engine.
 func FormatSSDLiveCodeBenchPrompt(sample SSDCodeBenchmarkSample) string {
-	prompt := core.Trim(sample.Prompt)
-	if prompt == "" {
-		return ""
-	}
-	if sample.Meta != nil && sample.Meta["is_stdin"] == "false" {
-		if entryPoint := core.Trim(sample.Meta["entry_point"]); entryPoint != "" {
-			return core.Concat(
-				"Write a Python solution for the problem. Return only the program inside one python code block.\n\nProblem:\n",
-				prompt,
-				"\n\nStarter code:\n```python\n",
-				entryPoint,
-				"\n```",
-			)
-		}
-	}
-	return core.Concat(
-		"Write a Python program for the problem. Read from stdin, write to stdout, and return only the program inside one python code block.\n\nProblem:\n",
-		prompt,
-	)
+	return traininf.FormatSSDLiveCodeBenchPrompt(sample)
 }
 
 func ssdCodeBenchmarkGeneratePrompt(sample SSDCodeBenchmarkSample) string {
@@ -517,66 +376,6 @@ func cloneSSDCodeBenchmarkSample(sample SSDCodeBenchmarkSample) SSDCodeBenchmark
 		Tests:  core.SliceClone(sample.Tests),
 		Meta:   core.MapClone(sample.Meta),
 	}
-}
-
-func firstSSDCodeBenchmarkString(values ...string) string {
-	for _, value := range values {
-		if trimmed := core.Trim(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func appendSSDCodeBenchmarkTests(target []string, values ...string) []string {
-	for _, value := range values {
-		if trimmed := core.Trim(value); trimmed != "" {
-			target = append(target, trimmed)
-		}
-	}
-	return target
-}
-
-func lastSSDCodeFence(response string) (string, bool) {
-	var last string
-	found := false
-	remaining := response
-	for {
-		start := core.Index(remaining, "```")
-		if start < 0 {
-			break
-		}
-		afterStart := remaining[start+3:]
-		newline := core.Index(afterStart, "\n")
-		if newline < 0 {
-			break
-		}
-		bodyStart := newline + 1
-		afterLanguage := afterStart[bodyStart:]
-		end := core.Index(afterLanguage, "```")
-		if end < 0 {
-			break
-		}
-		last = afterLanguage[:end]
-		found = true
-		remaining = afterLanguage[end+3:]
-	}
-	return last, found
-}
-
-func ssdPostProcessCode(code string) string {
-	code = firstSSDSegment(code, "</code>")
-	code = core.Replace(code, "```python", "")
-	code = firstSSDSegment(code, "```")
-	code = core.Replace(code, "<code>", "")
-	return code
-}
-
-func firstSSDSegment(value, delimiter string) string {
-	if index := core.Index(value, delimiter); index >= 0 {
-		return value[:index]
-	}
-	return value
 }
 
 func writeSSDCodeBenchmarkReport(path string, report *SSDCodeBenchmarkReport) error {

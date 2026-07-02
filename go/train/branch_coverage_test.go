@@ -42,24 +42,6 @@ func TestBranch_Metrics_AdamWLearningRate(t *testing.T) {
 	}
 }
 
-// --- sftResultError ---
-
-// TestBranch_SftResultError covers all three arms: an OK result maps to nil, a
-// failed result carrying an error returns that error, and a failed result with a
-// non-error value returns the generic fallback.
-func TestBranch_SftResultError(t *testing.T) {
-	if err := sftResultError(core.Result{OK: true}); err != nil {
-		t.Fatalf("sftResultError(OK) = %v, want nil", err)
-	}
-	wrapped := errors.New("boom")
-	if err := sftResultError(core.Result{OK: false, Value: wrapped}); !errors.Is(err, wrapped) {
-		t.Fatalf("sftResultError(error value) = %v, want %v", err, wrapped)
-	}
-	if err := sftResultError(core.Result{OK: false, Value: "not an error"}); err == nil {
-		t.Fatal("sftResultError(non-error value) = nil, want generic failure")
-	}
-}
-
 // --- val.go ---
 
 // TestBranch_BuildSFTValidationBatches_DatasetError surfaces an erroring

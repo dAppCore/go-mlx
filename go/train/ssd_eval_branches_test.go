@@ -130,8 +130,8 @@ func TestSsdEvalBranches_DifficultyEdges(t *testing.T) {
 		t.Fatalf("difficulty over empty k-list = %v, want nil", got)
 	}
 	results := []SSDCodeBenchmarkSampleResult{
-		{Sample: SSDCodeBenchmarkSample{ID: "nometa"}},                                            // Meta nil → skip
-		{Sample: SSDCodeBenchmarkSample{ID: "blank", Meta: map[string]string{"difficulty": " "}}}, // blank difficulty → skip
+		{Sample: SSDCodeBenchmarkSample{ID: "nometa"}},                                                // Meta nil → skip
+		{Sample: SSDCodeBenchmarkSample{ID: "blank", Meta: map[string]string{"difficulty": " "}}},     // blank difficulty → skip
 		{Sample: SSDCodeBenchmarkSample{ID: "nocand", Meta: map[string]string{"difficulty": "easy"}}}, // no candidates → skip
 	}
 	if got := computeSSDCodeBenchmarkDifficultyMetrics(results, 1); got != nil {
@@ -194,24 +194,6 @@ func TestSsdEvalBranches_KList(t *testing.T) {
 		if !equalIntSlices(got, tc.want) {
 			t.Fatalf("ssdCodeBenchmarkKList(%d) = %v, want %v", tc.nRepeat, got, tc.want)
 		}
-	}
-}
-
-// TestSsdEvalBranches_LastSSDCodeFenceUnclosed covers lastSSDCodeFence's break
-// arms: a fence opener with no newline after it, and an opened-but-never-closed
-// fence both yield no extracted body.
-func TestSsdEvalBranches_LastSSDCodeFenceUnclosed(t *testing.T) {
-	// "```" with no following newline → break before a body is found.
-	if body, ok := lastSSDCodeFence("text ``` still text"); ok || body != "" {
-		t.Fatalf("unclosed-no-newline fence = (%q, %v), want (\"\", false)", body, ok)
-	}
-	// Opener + language line but no closing fence → break.
-	if body, ok := lastSSDCodeFence("```python\ncode without a close"); ok || body != "" {
-		t.Fatalf("never-closed fence = (%q, %v), want (\"\", false)", body, ok)
-	}
-	// A complete fence still extracts (sanity for the found path).
-	if body, ok := lastSSDCodeFence("```python\nx=1\n```"); !ok || core.Trim(body) != "x=1" {
-		t.Fatalf("closed fence = (%q, %v), want (x=1, true)", body, ok)
 	}
 }
 

@@ -382,9 +382,9 @@ func TestDistill_RunKnowledgeDistillation_Good(t *testing.T) {
 		evalCalls := 0
 
 		result, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
-			TeacherInfo: func(context.Context) ModelInfo { return ModelInfo{Architecture: "qwen3", VocabSize: 2} },
-			StudentInfo: func(context.Context) ModelInfo { return ModelInfo{Architecture: "qwen3", VocabSize: 2} },
-			Tokenizer:   func(context.Context) *Tokenizer { return tokenizer },
+			TeacherInfo:  func(context.Context) ModelInfo { return ModelInfo{Architecture: "qwen3", VocabSize: 2} },
+			StudentInfo:  func(context.Context) ModelInfo { return ModelInfo{Architecture: "qwen3", VocabSize: 2} },
+			Tokenizer:    func(context.Context) *Tokenizer { return tokenizer },
 			TeacherCache: cache,
 			TeacherLogits: func(_ context.Context, batch DistillBatch) (DistillLogits, error) {
 				teacherCalls++
@@ -895,19 +895,6 @@ func TestDistill_DistillMetricAccumulator_NilAndZeroTokenGuards_Good(t *testing.
 	}
 	if snap := acc.snapshot(); snap != (distillMetricsSnapshot{}) {
 		t.Fatalf("empty snapshot = %+v, want zero snapshot", snap)
-	}
-}
-
-// TestDistill_DistillResultError_OKAndNonErrorValue_Good covers the result
-// adapter: an OK result carries no error; a failed result whose Value is not
-// an error falls back to the package sentinel rather than panicking.
-func TestDistill_DistillResultError_OKAndNonErrorValue_Good(t *testing.T) {
-	if err := distillResultError(core.Result{OK: true}); err != nil {
-		t.Fatalf("distillResultError(ok) = %v, want nil", err)
-	}
-	err := distillResultError(core.Result{OK: false, Value: "not-an-error"})
-	if err == nil {
-		t.Fatal("distillResultError(non-error value) = nil, want sentinel")
 	}
 }
 

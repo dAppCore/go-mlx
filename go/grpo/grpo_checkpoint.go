@@ -4,9 +4,9 @@ package grpo
 
 import (
 	"context"
-	"strconv"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/checkpoint"
 )
 
 func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate) error {
@@ -55,7 +55,10 @@ func NewGRPOCheckpointMetadata(path string, cfg GRPOConfig, result *GRPOResult, 
 	return meta
 }
 
-// SaveGRPOCheckpointMetadata writes checkpoint metadata beside policy artifacts.
+// SaveGRPOCheckpointMetadata writes checkpoint metadata beside policy
+// artifacts. The marshal-and-write mechanics are the shared checkpoint
+// engine (dappco.re/go/inference/checkpoint); only the Version/Path/
+// Experimental defaulting and the sidecar filename are grpo's own.
 func SaveGRPOCheckpointMetadata(path string, meta GRPOCheckpointMetadata) error {
 	if path == "" {
 		return core.NewError("mlx: experimental GRPO checkpoint metadata path is required")
@@ -67,21 +70,7 @@ func SaveGRPOCheckpointMetadata(path string, meta GRPOCheckpointMetadata) error 
 	if meta.Path == "" {
 		meta.Path = path
 	}
-	metadataPath := grpoCheckpointMetadataPath(path)
-	dir := core.PathDir(metadataPath)
-	if dir != "" && dir != "." {
-		if result := core.MkdirAll(dir, 0o755); !result.OK {
-			return core.E("GRPOCheckpointMetadata.Save", "ensure metadata dir", grpoResultError(result))
-		}
-	}
-	data := core.JSONMarshalIndent(meta, "", "  ")
-	if !data.OK {
-		return core.E("GRPOCheckpointMetadata.Save", "marshal metadata", grpoResultError(data))
-	}
-	if result := core.WriteFile(metadataPath, data.Value.([]byte), 0o600); !result.OK {
-		return core.E("GRPOCheckpointMetadata.Save", "write metadata", grpoResultError(result))
-	}
-	return nil
+	return checkpoint.Save(grpoCheckpointMetadataPath(path), meta)
 }
 
 // LoadGRPOCheckpointMetadata reads checkpoint metadata written by SaveGRPOCheckpointMetadata.
@@ -89,37 +78,29 @@ func LoadGRPOCheckpointMetadata(path string) (*GRPOCheckpointMetadata, error) {
 	if path == "" {
 		return nil, core.NewError("mlx: experimental GRPO checkpoint metadata path is required")
 	}
-	read := core.ReadFile(grpoCheckpointMetadataPath(path))
-	if !read.OK {
-		return nil, grpoResultError(read)
-	}
-	var meta GRPOCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadGRPOCheckpointMetadata", "parse metadata", grpoResultError(result))
-	}
-	if meta.Version == 0 {
-		meta.Version = GRPOCheckpointMetadataVersion
-	}
-	return &meta, nil
-}
-
-func loadGRPOResumeMetadata(path string) (*GRPOCheckpointMetadata, error) {
-	read := core.ReadFile(grpoCheckpointMetadataPath(path))
-	if !read.OK {
-		err := grpoResultError(read)
-		if core.IsNotExist(err) {
-			return nil, nil
-		}
+	meta, err := checkpoint.Load[GRPOCheckpointMetadata](grpoCheckpointMetadataPath(path))
+	if err != nil {
 		return nil, err
 	}
-	var meta GRPOCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadGRPOResumeMetadata", "parse metadata", grpoResultError(result))
+	if meta.Version == 0 {
+		meta.Version = GRPOCheckpointMetadataVersion
+	}
+	return meta, nil
+}
+
+// loadGRPOResumeMetadata reads checkpoint metadata for a resume path,
+// using the shared checkpoint engine's soft-missing-file semantics: an
+// absent sidecar returns (nil, nil) rather than an error, matching
+// --resume's "start fresh" contract.
+func loadGRPOResumeMetadata(path string) (*GRPOCheckpointMetadata, error) {
+	meta, err := checkpoint.LoadResume[GRPOCheckpointMetadata](grpoCheckpointMetadataPath(path))
+	if err != nil || meta == nil {
+		return meta, err
 	}
 	if meta.Version == 0 {
 		meta.Version = GRPOCheckpointMetadataVersion
 	}
-	return &meta, nil
+	return meta, nil
 }
 
 func grpoCheckpointMetadataPath(path string) string {
@@ -127,30 +108,9 @@ func grpoCheckpointMetadataPath(path string) string {
 }
 
 // grpoStepName renders the step-NNNNNN directory name used for GRPO
-// checkpoints. Same output as fmt.Sprintf("step-%06d", step) — six-
-// digit zero-pad below 1e6, untruncated digit count above. Built with
-// strconv.AppendInt so no fmt format-parser + no interface-boxing of
-// the int arg; pre-sized output keeps the alloc count at one.
+// checkpoints — delegates to the shared checkpoint engine
+// (dappco.re/go/inference/checkpoint) so grpo's copy of the zero-pad
+// logic cannot drift from distill/train's.
 func grpoStepName(step int) string {
-	const prefix = "step-"
-	const padTo = 6
-	// Allocate room for the prefix plus enough digits — 20 covers the
-	// max int64 width.
-	buf := make([]byte, 0, len(prefix)+20)
-	buf = append(buf, prefix...)
-	if step >= 0 && step < 100000 {
-		// Hand-rolled zero-pad — strconv.Itoa lacks a Printf-style
-		// width modifier, so for the typical sub-1e5 range we count
-		// leading zeros ourselves. Above 1e5 strconv emits the full
-		// width naturally.
-		digits := 1
-		for n := step / 10; n > 0; n /= 10 {
-			digits++
-		}
-		for i := digits; i < padTo; i++ {
-			buf = append(buf, '0')
-		}
-	}
-	buf = strconv.AppendInt(buf, int64(step), 10)
-	return string(buf)
+	return checkpoint.FormatStepDir(step)
 }

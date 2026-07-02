@@ -4,9 +4,9 @@ package distill
 
 import (
 	"context"
-	"strconv"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/checkpoint"
 )
 
 func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch *DistillBatch, loss *DistillLoss) error {
@@ -62,7 +62,10 @@ func NewDistillCheckpointMetadata(path string, cfg DistillConfig, result *Distil
 	return meta
 }
 
-// SaveDistillCheckpointMetadata writes checkpoint metadata beside student artifacts.
+// SaveDistillCheckpointMetadata writes checkpoint metadata beside student
+// artifacts. The marshal-and-write mechanics are the shared checkpoint
+// engine (dappco.re/go/inference/checkpoint); only the Version/Path
+// defaulting and the sidecar filename are distill's own.
 func SaveDistillCheckpointMetadata(path string, meta DistillCheckpointMetadata) error {
 	if path == "" {
 		return errDistillCheckpointPath
@@ -73,21 +76,7 @@ func SaveDistillCheckpointMetadata(path string, meta DistillCheckpointMetadata) 
 	if meta.Path == "" {
 		meta.Path = path
 	}
-	metadataPath := distillCheckpointMetadataPath(path)
-	dir := core.PathDir(metadataPath)
-	if dir != "" && dir != "." {
-		if result := core.MkdirAll(dir, 0o755); !result.OK {
-			return core.E("DistillCheckpointMetadata.Save", "ensure metadata dir", distillResultError(result))
-		}
-	}
-	data := core.JSONMarshalIndent(meta, "", "  ")
-	if !data.OK {
-		return core.E("DistillCheckpointMetadata.Save", "marshal metadata", distillResultError(data))
-	}
-	if result := core.WriteFile(metadataPath, data.Value.([]byte), 0o600); !result.OK {
-		return core.E("DistillCheckpointMetadata.Save", "write metadata", distillResultError(result))
-	}
-	return nil
+	return checkpoint.Save(distillCheckpointMetadataPath(path), meta)
 }
 
 // LoadDistillCheckpointMetadata reads checkpoint metadata written by SaveDistillCheckpointMetadata.
@@ -95,62 +84,39 @@ func LoadDistillCheckpointMetadata(path string) (*DistillCheckpointMetadata, err
 	if path == "" {
 		return nil, errDistillCheckpointPath
 	}
-	read := core.ReadFile(distillCheckpointMetadataPath(path))
-	if !read.OK {
-		return nil, distillResultError(read)
-	}
-	var meta DistillCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadDistillCheckpointMetadata", "parse metadata", distillResultError(result))
-	}
-	if meta.Version == 0 {
-		meta.Version = DistillCheckpointMetadataVersion
-	}
-	return &meta, nil
-}
-
-func loadDistillResumeMetadata(path string) (*DistillCheckpointMetadata, error) {
-	read := core.ReadFile(distillCheckpointMetadataPath(path))
-	if !read.OK {
-		err := distillResultError(read)
-		if core.IsNotExist(err) {
-			return nil, nil
-		}
+	meta, err := checkpoint.Load[DistillCheckpointMetadata](distillCheckpointMetadataPath(path))
+	if err != nil {
 		return nil, err
 	}
-	var meta DistillCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadDistillResumeMetadata", "parse metadata", distillResultError(result))
+	if meta.Version == 0 {
+		meta.Version = DistillCheckpointMetadataVersion
+	}
+	return meta, nil
+}
+
+// loadDistillResumeMetadata reads checkpoint metadata for a resume path,
+// using the shared checkpoint engine's soft-missing-file semantics: an
+// absent sidecar returns (nil, nil) rather than an error, matching
+// --resume's "start fresh" contract.
+func loadDistillResumeMetadata(path string) (*DistillCheckpointMetadata, error) {
+	meta, err := checkpoint.LoadResume[DistillCheckpointMetadata](distillCheckpointMetadataPath(path))
+	if err != nil || meta == nil {
+		return meta, err
 	}
 	if meta.Version == 0 {
 		meta.Version = DistillCheckpointMetadataVersion
 	}
-	return &meta, nil
+	return meta, nil
 }
 
 func distillCheckpointMetadataPath(path string) string {
 	return core.PathJoin(path, "distill_checkpoint.json")
 }
 
-// formatDistillStepDir builds the "step-NNNNNN" checkpoint dirname using
-// strconv.AppendInt with explicit zero padding, avoiding fmt's reflection
-// path on the per-checkpoint hot loop. Digit count is computed in place
-// instead of via a throwaway strconv.AppendInt(nil, ...) so the function
-// allocates exactly once — the returned string itself.
+// formatDistillStepDir builds the "step-NNNNNN" checkpoint dirname —
+// delegates to the shared checkpoint engine
+// (dappco.re/go/inference/checkpoint) so distill's copy of the zero-pad
+// logic cannot drift from grpo/train's.
 func formatDistillStepDir(step int) string {
-	const prefix = "step-"
-	const padTo = 6
-	buf := make([]byte, 0, len(prefix)+20)
-	buf = append(buf, prefix...)
-	if step >= 0 && step < 100000 {
-		digits := 1
-		for n := step / 10; n > 0; n /= 10 {
-			digits++
-		}
-		for i := digits; i < padTo; i++ {
-			buf = append(buf, '0')
-		}
-	}
-	buf = strconv.AppendInt(buf, int64(step), 10)
-	return string(buf)
+	return checkpoint.FormatStepDir(step)
 }

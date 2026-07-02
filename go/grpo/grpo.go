@@ -4,13 +4,13 @@ package grpo
 
 import (
 	"context"
-	"math"
 	"strconv"
 	"time"
 
 	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
+	grpoinf "dappco.re/go/inference/grpo"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -44,14 +44,9 @@ type GRPORunner struct {
 	SaveCheckpoint   func(context.Context, GRPOCheckpointContext) error
 }
 
-// GRPOSample is a reasoning prompt extracted from an SFT/JSONL sample.
-type GRPOSample struct {
-	Prompt          string            `json:"prompt"`
-	ReferenceAnswer string            `json:"reference_answer,omitempty"`
-	ExpectedAnswer  string            `json:"expected_answer,omitempty"`
-	Reasoning       string            `json:"reasoning,omitempty"`
-	Meta            map[string]string `json:"meta,omitempty"`
-}
+// GRPOSample is a reasoning prompt extracted from an SFT/JSONL sample — an
+// alias onto the canonical grpoinf.Sample contract.
+type GRPOSample = grpoinf.Sample
 
 // GRPORolloutRequest asks the policy for a group of completions.
 type GRPORolloutRequest struct {
@@ -62,51 +57,25 @@ type GRPORolloutRequest struct {
 	Config    GRPOConfig `json:"config"`
 }
 
-// GRPORollout is one sampled reasoning completion plus training annotations.
-type GRPORollout struct {
-	Text             string       `json:"text,omitempty"`
-	Reasoning        string       `json:"reasoning,omitempty"`
-	Answer           string       `json:"answer,omitempty"`
-	TokenIDs         []int32      `json:"token_ids,omitempty"`
-	LogProb          float64      `json:"log_prob,omitempty"`
-	ReferenceLogProb float64      `json:"reference_log_prob,omitempty"`
-	Reward           float64      `json:"reward,omitempty"`
-	RewardParts      []GRPOReward `json:"reward_parts,omitempty"`
-	Advantage        float64      `json:"advantage,omitempty"`
-	KL               float64      `json:"kl,omitempty"`
-	LossContribution float64      `json:"loss_contribution,omitempty"`
-}
+// GRPORollout is one sampled reasoning completion plus training
+// annotations — an alias onto the canonical grpoinf.Rollout contract.
+type GRPORollout = grpoinf.Rollout
 
-// GRPOReward is one named reward contribution.
-type GRPOReward struct {
-	Name   string  `json:"name"`
-	Score  float64 `json:"score"`
-	Weight float64 `json:"weight,omitempty"`
-	Detail string  `json:"detail,omitempty"`
-}
+// GRPOReward is one named reward contribution — an alias onto the
+// canonical grpoinf.Reward contract.
+type GRPOReward = grpoinf.Reward
 
-// GRPORewardContext is passed to reward functions.
-type GRPORewardContext struct {
-	Sample  GRPOSample
-	Rollout GRPORollout
-	Index   int
-}
+// GRPORewardContext is passed to reward functions — an alias onto the
+// canonical grpoinf.RewardContext contract.
+type GRPORewardContext = grpoinf.RewardContext
 
-// GRPORewardFunc scores one rollout.
-type GRPORewardFunc func(GRPORewardContext) (GRPOReward, error)
+// GRPORewardFunc scores one rollout — an alias onto the canonical
+// grpoinf.RewardFunc contract.
+type GRPORewardFunc = grpoinf.RewardFunc
 
-// GRPOUpdate is the grouped policy update consumed by a LoRA/autograd backend.
-type GRPOUpdate struct {
-	Step          int           `json:"step"`
-	Epoch         int           `json:"epoch"`
-	Sample        GRPOSample    `json:"sample"`
-	Rollouts      []GRPORollout `json:"rollouts"`
-	RewardMean    float64       `json:"reward_mean"`
-	RewardStd     float64       `json:"reward_std"`
-	KLMean        float64       `json:"kl_mean,omitempty"`
-	Loss          float64       `json:"loss"`
-	KLCoefficient float64       `json:"kl_coefficient,omitempty"`
-}
+// GRPOUpdate is the grouped policy update consumed by a LoRA/autograd
+// backend — an alias onto the canonical grpoinf.Update contract.
+type GRPOUpdate = grpoinf.Update
 
 // GRPOMetrics aggregates experimental GRPO counters.
 type GRPOMetrics struct {
@@ -305,6 +274,15 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cf
 	return nil
 }
 
+// buildGRPOUpdate resolves the KL reference pass (engine-bound: calls
+// runner.ReferenceLogProb, a live model call) and then delegates the
+// reward scoring, group-relative advantage, and KL-penalised loss
+// aggregation to the shared dappco.re/go/inference/grpo engine
+// (grpoinf.BuildUpdate) — a byte-identical port of what this function
+// computed directly before the delegation. The two upfront validation
+// checks stay local (rather than relying on grpoinf.BuildUpdate's own
+// equivalents) purely to preserve this package's existing "mlx:
+// experimental GRPO ..." error text for callers already matching on it.
 func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORolloutRequest, rollouts []GRPORollout, cfg GRPOConfig) (GRPOUpdate, error) {
 	if len(rollouts) == 0 {
 		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO rollout returned no completions")
@@ -312,59 +290,8 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	if len(rollouts) != request.GroupSize {
 		return GRPOUpdate{}, core.NewError(core.Sprintf("mlx: experimental GRPO rollout group size mismatch: got %d want %d", len(rollouts), request.GroupSize))
 	}
-	rewardFuncs := cfg.RewardFuncs
-	if len(rewardFuncs) == 0 {
-		// Default reward funcs slice is shared package-wide — the
-		// closure has no per-call state (weight=1 is captured at init)
-		// and scoreGRPORollout only reads from the slice. Previously a
-		// fresh closure + 1-element slice fired once per buildGRPOUpdate
-		// call (per training step) for callers using the default config.
-		rewardFuncs = defaultGRPORewardFuncs
-	}
-	// Hoist invariants out of the rollout loop — the KL branch flag and
-	// the cfg-side values never change across rollouts. The compiler
-	// can't prove that for an interface-method field (runner.Reference-
-	// LogProb), so it re-checks both per iteration unless we lift them.
-	computeKL := cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil
-	klCoef := cfg.KLCoefficient
-	advEps := cfg.AdvantageEpsilon
-	n := len(rollouts)
-	// Reuse a single GRPORewardContext across rollouts — the user-facing
-	// reward func still receives it by value (scoreGRPORollout derefs
-	// before each fn call), so we just refresh the Rollout + Index
-	// fields per iteration instead of building a fresh ctx struct
-	// (GRPOSample with map header + GRPORollout with strings + slices)
-	// every time. Sample is invariant across the group.
-	rewardCtx := GRPORewardContext{Sample: request.Sample}
-	// Pre-allocate one shared []GRPOReward backing for all rollouts'
-	// parts in this step. scoreGRPORollout carves a per-rollout view
-	// out of it instead of paying its own make per call. Capacity =
-	// n × len(funcs) is the upper bound (every fn produces one entry);
-	// the actual len consumed depends on how many funcs are non-nil.
-	// cloneGRPORollouts later copies these views OUT into the cloned
-	// rollouts' own flat backing, so the shared partsBacking can be
-	// GC'd at the end of buildGRPOUpdate without retaining anything.
-	partsBacking := make([]GRPOReward, 0, n*len(rewardFuncs))
-	for i := range n {
-		rewardCtx.Rollout = rollouts[i]
-		rewardCtx.Index = i
-		// Hand the running tail of partsBacking to scoreGRPORollout so
-		// it appends into the shared backing rather than allocating its
-		// own parts slice per rollout.
-		start := len(partsBacking)
-		filled, total, err := scoreGRPORollout(&rewardCtx, rewardFuncs, partsBacking)
-		if err != nil {
-			return GRPOUpdate{}, err
-		}
-		partsBacking = filled
-		// Slice rollouts[i].RewardParts as a 3-index view bounded to
-		// what scoreGRPORollout actually appended — capacity is locked
-		// so a subsequent append on this view can't overwrite the next
-		// rollout's range.
-		end := len(partsBacking)
-		rollouts[i].RewardParts = partsBacking[start:end:end]
-		rollouts[i].Reward = total
-		if computeKL {
+	if cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil {
+		for i := range rollouts {
 			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
 			if err != nil {
 				return GRPOUpdate{}, err
@@ -373,72 +300,19 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 			rollouts[i].KL = rollouts[i].LogProb - reference
 		}
 	}
-	rewardMean, rewardStd := grpoRewardStats(rollouts)
-	// Reciprocal mul, single division, single std-vs-eps branch outside
-	// the inner loop — when rewardStd ≤ advEps every rollout's advantage
-	// is zero so the (reward-mean)/std arithmetic can be skipped entirely.
-	invStd := 0.0
-	useStd := rewardStd > advEps
-	if useStd {
-		invStd = 1.0 / rewardStd
-	}
-	var loss float64
-	var klSum float64
-	for i := range n {
-		if useStd {
-			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) * invStd
-		} else {
-			rollouts[i].Advantage = 0
-		}
-		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + klCoef*rollouts[i].KL
-		loss += rollouts[i].LossContribution
-		klSum += rollouts[i].KL
-	}
-	invN := 1.0 / float64(n)
-	loss *= invN
-	klMean := klSum * invN
-	if math.IsNaN(loss) || math.IsInf(loss, 0) {
-		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO loss is not finite")
-	}
-	return GRPOUpdate{
-		Step:          request.Step,
-		Epoch:         request.Epoch,
-		Sample:        request.Sample,
-		Rollouts:      snapshotGRPORollouts(rollouts),
-		RewardMean:    rewardMean,
-		RewardStd:     rewardStd,
-		KLMean:        klMean,
-		Loss:          loss,
-		KLCoefficient: cfg.KLCoefficient,
-	}, nil
-}
-
-// scoreGRPORollout walks every reward func against ctx and appends a
-// GRPOReward per non-nil func into out. The caller passes in the
-// shared partsBacking and gets the grown slice back so it can carve a
-// per-rollout view at known offsets. Returning out instead of a fresh
-// allocation lets buildGRPOUpdate amortise N per-rollout allocations
-// down to a single n*len(funcs) make at the top of the step.
-func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc, out []GRPOReward) ([]GRPOReward, float64, error) {
-	var total float64
-	for _, fn := range funcs {
-		if fn == nil {
-			continue
-		}
-		reward, err := fn(*ctx)
-		if err != nil {
-			return out, 0, err
-		}
-		if reward.Name == "" {
-			reward.Name = "reward"
-		}
-		if math.IsNaN(reward.Score) || math.IsInf(reward.Score, 0) {
-			return out, 0, core.NewError("mlx: experimental GRPO reward is not finite")
-		}
-		out = append(out, reward)
-		total += reward.Score
-	}
-	return out, total, nil
+	// GroupSize: request.GroupSize, not cfg.GroupSize — the local check
+	// above already validated len(rollouts) against request.GroupSize (the
+	// two can legitimately diverge: GRPORolloutRequest.GroupSize is set
+	// once at request-construction time, while cfg is the caller's full,
+	// possibly-since-renormalised config), so grpoinf.BuildUpdate's own
+	// equivalent internal check must be handed the same reference the
+	// caller was already validated against.
+	return grpoinf.BuildUpdate(request.Step, request.Epoch, request.Sample, rollouts, grpoinf.Config{
+		GroupSize:        request.GroupSize,
+		KLCoefficient:    cfg.KLCoefficient,
+		AdvantageEpsilon: cfg.AdvantageEpsilon,
+		RewardFuncs:      cfg.RewardFuncs,
+	})
 }
 
 func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update *GRPOUpdate) {
@@ -518,16 +392,18 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate, epoch
 	})
 }
 
+// normalizeGRPOConfig delegates the GroupSize/Epochs/AdvantageEpsilon
+// defaulting to the shared dappco.re/go/inference/grpo engine
+// (grpoinf.NormalizeConfig), which carries the identical floor rules.
 func normalizeGRPOConfig(cfg GRPOConfig) GRPOConfig {
-	if cfg.GroupSize <= 0 {
-		cfg.GroupSize = 4
-	}
-	if cfg.Epochs <= 0 {
-		cfg.Epochs = 1
-	}
-	if cfg.AdvantageEpsilon <= 0 {
-		cfg.AdvantageEpsilon = 1e-8
-	}
+	shared := grpoinf.NormalizeConfig(grpoinf.Config{
+		GroupSize:        cfg.GroupSize,
+		Epochs:           cfg.Epochs,
+		AdvantageEpsilon: cfg.AdvantageEpsilon,
+	})
+	cfg.GroupSize = shared.GroupSize
+	cfg.Epochs = shared.Epochs
+	cfg.AdvantageEpsilon = shared.AdvantageEpsilon
 	return cfg
 }
 
@@ -574,69 +450,6 @@ func (a *grpoMetricAccumulator) snapshot() grpoMetricsSnapshot {
 		klMean:     a.klSum * invGroups,
 		loss:       a.lossSum * invGroups,
 	}
-}
-
-// snapshotGRPORollouts is the per-step variant of cloneGRPORollouts used
-// by buildGRPOUpdate. It differs in one detail with a real per-step
-// allocation payoff: it ADOPTS each rollout's RewardParts slice instead
-// of deep-copying it.
-//
-// buildGRPOUpdate scores every rollout into a single step-local
-// partsBacking ([]GRPOReward, allocated once at the top of the step) and
-// hands each rollout a locked [start:end:end] view into it. That backing
-// is private to this step — the runner never sees it — and it lives
-// exactly as long as the returned update needs it (the views keep it
-// alive on escape). cloneGRPORollouts would allocate a SECOND flat
-// rewardBacking and copy the identical reward data into it; that copy is
-// pure redundancy here, so this variant keeps the partsBacking views as
-// the update's permanent RewardParts home and skips the duplicate
-// allocation entirely (4 allocs/step → 3).
-//
-// TokenIDs are still deep-copied: those slices are RUNNER-owned (returned
-// by the Rollout callback), so the update must detach from that memory.
-// The output is otherwise byte-identical to cloneGRPORollouts — same
-// struct copy, same nil handling for absent inner slices, same locked
-// capacities — only the RewardParts backing identity differs, which is
-// not observable through value comparison or any documented contract.
-//
-// Not used for the standalone clone helper's callers (the bench + the
-// detachment test in grpo_test.go feed independently-allocated parts and
-// assert a full deep copy); those keep cloneGRPORollouts unchanged.
-func snapshotGRPORollouts(rollouts []GRPORollout) []GRPORollout {
-	out := make([]GRPORollout, len(rollouts))
-	// Bulk struct copy first — copy() lowers to memmove. This already
-	// carries each rollout's RewardParts slice HEADER across, so adopting
-	// the views is the default; we only need to override TokenIDs with a
-	// detached copy below.
-	copy(out, rollouts)
-	var totalTokens int
-	for i := range rollouts {
-		totalTokens += len(rollouts[i].TokenIDs)
-	}
-	var tokenBacking []int32
-	if totalTokens > 0 {
-		tokenBacking = make([]int32, totalTokens)
-	}
-	var tokenCursor int
-	for i := range rollouts {
-		if src := rollouts[i].TokenIDs; len(src) > 0 {
-			next := tokenCursor + len(src)
-			dst := tokenBacking[tokenCursor:next:next]
-			copy(dst, src)
-			out[i].TokenIDs = dst
-			tokenCursor = next
-		} else {
-			out[i].TokenIDs = nil
-		}
-		// RewardParts header was copied by the bulk copy above and is
-		// adopted as-is — empty/nil stays empty/nil, populated views stay
-		// pointing at the step-local partsBacking. Normalise a zero-length
-		// non-nil view to nil to match cloneGRPORollouts' nil handling.
-		if len(out[i].RewardParts) == 0 {
-			out[i].RewardParts = nil
-		}
-	}
-	return out
 }
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
@@ -688,14 +501,4 @@ func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 		}
 	}
 	return out
-}
-
-func grpoResultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return core.NewError("core result failed")
 }

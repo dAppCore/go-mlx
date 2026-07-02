@@ -562,27 +562,6 @@ func TestGrpo_buildGRPOUpdate_Ugly(t *testing.T) {
 	}
 }
 
-// TestGrpo_scoreGRPORollout_Ugly checks the reward-loop nil guard: a
-// RewardFuncs slice carrying a nil entry alongside a real one scores only
-// the real func and silently skips the nil rather than panicking. The
-// surviving func's score is the whole reward.
-func TestGrpo_scoreGRPORollout_Ugly(t *testing.T) {
-	ctx := GRPORewardContext{
-		Sample:  GRPOSample{ExpectedAnswer: "42"},
-		Rollout: GRPORollout{Answer: "42"},
-	}
-	out, total, err := scoreGRPORollout(&ctx, []GRPORewardFunc{nil, GRPORewardExactAnswer(2), nil}, nil)
-	if err != nil {
-		t.Fatalf("scoreGRPORollout() error = %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("reward parts = %+v, want only the non-nil func to contribute", out)
-	}
-	if total != 2 || out[0].Name != "exact_answer" {
-		t.Fatalf("total=%v parts=%+v, want exact_answer weight 2", total, out)
-	}
-}
-
 // TestGrpo_grpoMetricAccumulator_Ugly covers the nil/empty guards on the
 // metric accumulator: add on a nil receiver is a no-op and snapshot on a
 // nil or group-less accumulator returns the zero snapshot (no

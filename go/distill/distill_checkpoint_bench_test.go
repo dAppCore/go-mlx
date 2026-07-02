@@ -1,13 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Benchmarks for distill.go — knowledge distillation pipeline.
-// Per AX-11 — cloneDistillLogits fires on every teacher-cache Put
-// (cache miss path) and every Get (cache hit path); for B*S*V tensors
-// with B=4, S=128, V=32000, the alloc shape sets the per-step memory
-// pressure of any distillation run with teacher caching enabled.
-// emitDistillProbe / runDistillEpoch probe meta build per gradient
-// step. Pinning these alloc shapes is the load-bearing AX commitment
-// of this file.
+// Benchmarks for distill_checkpoint.go — checkpoint sidecar mechanics.
 //
 // Run:    go test -bench='BenchmarkDistill' -benchmem -run='^$' ./go
 

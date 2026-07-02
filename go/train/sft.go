@@ -9,6 +9,7 @@ package train
 
 import (
 	core "dappco.re/go"
+	traininf "dappco.re/go/inference/train"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
@@ -194,34 +195,17 @@ type SFTResult struct {
 
 // Metrics returns a stable JSON-friendly summary of an SFT run.
 func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
-	// Inline the four scalar defaults Metrics actually reads —
-	// normalizeSFTConfig calls normalizeSFTLoRAConfig which clones
-	// TargetKeys+TargetLayers (two SliceClones) every call. Metrics
-	// touches none of that. The trio of helpers Metrics calls below
-	// (SFTEffectiveBatchSize, etc.) all read only the already-normalised
-	// scalars now hoisted into local vars.
-	batchSize := cfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1
-	}
-	gradAccum := cfg.GradientAccumulationSteps
-	if gradAccum <= 0 {
-		gradAccum = 1
-	}
-	learningRate := cfg.LearningRate
-	if learningRate == 0 {
-		if cfg.AdamW.LearningRate != 0 || cfg.AdamW.LearningRateSet {
-			learningRate = cfg.AdamW.LearningRate
-		} else {
-			learningRate = 1e-5
-		}
-	}
-	effectiveBatchSize := batchSize * gradAccum
+	// normalizeSFTScalarConfig (not the combined normalizeSFTConfig) —
+	// normalizeSFTConfig also runs normalizeSFTLoRAConfig, which clones
+	// TargetKeys+TargetLayers (two SliceClones) every call, and Metrics
+	// touches none of that.
+	cfg = normalizeSFTScalarConfig(cfg)
+	effectiveBatchSize := cfg.BatchSize * cfg.GradientAccumulationSteps
 	if r == nil {
 		return SFTMetrics{
-			LearningRate:              learningRate,
-			BatchSize:                 batchSize,
-			GradientAccumulationSteps: gradAccum,
+			LearningRate:              cfg.LearningRate,
+			BatchSize:                 cfg.BatchSize,
+			GradientAccumulationSteps: cfg.GradientAccumulationSteps,
 			EffectiveBatchSize:        effectiveBatchSize,
 		}
 	}
@@ -235,9 +219,9 @@ func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
 		Epochs:                    r.Epochs,
 		Samples:                   r.Samples,
 		LastLoss:                  r.LastLoss,
-		LearningRate:              learningRate,
-		BatchSize:                 batchSize,
-		GradientAccumulationSteps: gradAccum,
+		LearningRate:              cfg.LearningRate,
+		BatchSize:                 cfg.BatchSize,
+		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
 		EffectiveBatchSize:        effectiveBatchSize,
 		CheckpointCount:           len(r.Checkpoints),
 		EvaluationCount:           len(r.Evaluations),
@@ -256,51 +240,44 @@ func NormalizeSFTConfigForModel(cfg SFTConfig, info spine.ModelInfo) SFTConfig {
 	return cfg
 }
 
+// normalizeSFTScalarConfig delegates the BatchSize/GradientAccumulationSteps/
+// Epochs/EvalMaxTokens/LearningRate defaulting to the shared
+// dappco.re/go/inference/train engine (traininf.NormalizeConfig), which
+// carries the identical floor/default rules. AdamW.LearningRate is an
+// engine-side fallback source with no shared equivalent (traininf.Config
+// has no AdamW field — LoRA/AdamW are engine types with no portable
+// counterpart, see traininf.Config's doc), so it is resolved here first:
+// when the caller left LearningRate unset but supplied an AdamW rate
+// (including an explicit zero via AdamW.LearningRateSet), that AdamW value
+// wins and the shared engine's generic 1e-5 default is never consulted.
 func normalizeSFTScalarConfig(cfg SFTConfig) SFTConfig {
-	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 1
-	}
-	if cfg.GradientAccumulationSteps <= 0 {
-		cfg.GradientAccumulationSteps = 1
-	}
-	if cfg.Epochs <= 0 {
-		cfg.Epochs = 1
-	}
-	if cfg.LearningRate == 0 {
-		if cfg.AdamW.LearningRate != 0 || cfg.AdamW.LearningRateSet {
-			cfg.LearningRate = cfg.AdamW.LearningRate
-		} else {
-			cfg.LearningRate = 1e-5
-		}
-	}
-	if cfg.EvalMaxTokens <= 0 {
-		cfg.EvalMaxTokens = 96
+	adamWFallback := cfg.LearningRate == 0 && (cfg.AdamW.LearningRate != 0 || cfg.AdamW.LearningRateSet)
+	shared := traininf.NormalizeConfig(traininf.Config{
+		BatchSize:                 cfg.BatchSize,
+		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
+		Epochs:                    cfg.Epochs,
+		LearningRate:              cfg.LearningRate,
+		EvalMaxTokens:             cfg.EvalMaxTokens,
+	})
+	cfg.BatchSize = shared.BatchSize
+	cfg.GradientAccumulationSteps = shared.GradientAccumulationSteps
+	cfg.Epochs = shared.Epochs
+	cfg.EvalMaxTokens = shared.EvalMaxTokens
+	if adamWFallback {
+		cfg.LearningRate = cfg.AdamW.LearningRate
+	} else {
+		cfg.LearningRate = shared.LearningRate
 	}
 	return cfg
 }
 
-// SFTEffectiveBatchSize returns the optimizer batch size after accumulation.
+// SFTEffectiveBatchSize returns the optimizer batch size after accumulation
+// — delegates to the shared dappco.re/go/inference/train engine so the
+// batch-size-floor-times-gradient-accumulation rule cannot drift from
+// distill/grpo's equivalents.
 func SFTEffectiveBatchSize(cfg SFTConfig) int {
-	// Inline only the two field defaults we need — avoids the
-	// six SliceClone operations normalizeSFTLoRAConfig performs on
-	// TargetKeys/TargetLayers backfills.
-	batchSize := cfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1
-	}
-	gradAccum := cfg.GradientAccumulationSteps
-	if gradAccum <= 0 {
-		gradAccum = 1
-	}
-	return batchSize * gradAccum
-}
-
-func sftResultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return core.NewError("core result failed")
+	return traininf.EffectiveBatchSize(traininf.Config{
+		BatchSize:                 cfg.BatchSize,
+		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
+	})
 }

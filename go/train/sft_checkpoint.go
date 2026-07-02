@@ -8,9 +8,8 @@
 package train
 
 import (
-	"strconv"
-
 	core "dappco.re/go"
+	"dappco.re/go/inference/checkpoint"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/profile"
@@ -31,7 +30,10 @@ func NewSFTArtifactMetadata(path string, model string, cfg SFTConfig, result *SF
 	return newSFTMetadata(path, path, model, cfg, result, epoch)
 }
 
-// SaveSFTCheckpointMetadata writes checkpoint metadata beside an adapter package.
+// SaveSFTCheckpointMetadata writes checkpoint metadata beside an adapter
+// package. The marshal-and-write mechanics are the shared checkpoint engine
+// (dappco.re/go/inference/checkpoint); only the Version/Path defaulting and
+// the sidecar filename are train's own.
 func SaveSFTCheckpointMetadata(path string, meta SFTCheckpointMetadata) error {
 	if path == "" {
 		return core.NewError("mlx: SFT checkpoint metadata path is required")
@@ -42,21 +44,7 @@ func SaveSFTCheckpointMetadata(path string, meta SFTCheckpointMetadata) error {
 	if meta.Path == "" {
 		meta.Path = path
 	}
-	metadataPath := sftCheckpointMetadataPath(path)
-	dir := core.PathDir(metadataPath)
-	if dir != "" && dir != "." {
-		if result := core.MkdirAll(dir, 0o755); !result.OK {
-			return core.E("SFTCheckpointMetadata.Save", "ensure metadata dir", sftResultError(result))
-		}
-	}
-	data := core.JSONMarshalIndent(meta, "", "  ")
-	if !data.OK {
-		return core.E("SFTCheckpointMetadata.Save", "marshal metadata", sftResultError(data))
-	}
-	if result := core.WriteFile(metadataPath, data.Value.([]byte), 0o600); !result.OK {
-		return core.E("SFTCheckpointMetadata.Save", "write metadata", sftResultError(result))
-	}
-	return nil
+	return checkpoint.Save(sftCheckpointMetadataPath(path), meta)
 }
 
 // LoadSFTCheckpointMetadata reads checkpoint metadata written by SaveSFTCheckpointMetadata.
@@ -64,18 +52,14 @@ func LoadSFTCheckpointMetadata(path string) (*SFTCheckpointMetadata, error) {
 	if path == "" {
 		return nil, core.NewError("mlx: SFT checkpoint metadata path is required")
 	}
-	read := core.ReadFile(sftCheckpointMetadataPath(path))
-	if !read.OK {
-		return nil, sftResultError(read)
-	}
-	var meta SFTCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadSFTCheckpointMetadata", "parse metadata", sftResultError(result))
+	meta, err := checkpoint.Load[SFTCheckpointMetadata](sftCheckpointMetadataPath(path))
+	if err != nil {
+		return nil, err
 	}
 	if meta.Version == 0 {
 		meta.Version = SFTCheckpointMetadataVersion
 	}
-	return &meta, nil
+	return meta, nil
 }
 
 // ApplySFTResumeMetadata attaches optional checkpoint metadata from ResumePath to a result.
@@ -216,23 +200,19 @@ func sftLoRAConfigFromMetal(source spine.LoRAConfig, cfg metal.LoRAConfig) spine
 	return out
 }
 
+// loadSFTResumeMetadata reads checkpoint metadata for a resume path, using
+// the shared checkpoint engine's soft-missing-file semantics: an absent
+// sidecar returns (nil, nil) rather than an error, matching --resume's
+// "start fresh" contract.
 func loadSFTResumeMetadata(path string) (*SFTCheckpointMetadata, error) {
-	read := core.ReadFile(sftCheckpointMetadataPath(path))
-	if !read.OK {
-		err := sftResultError(read)
-		if core.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var meta SFTCheckpointMetadata
-	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
-		return nil, core.E("LoadSFTResumeMetadata", "parse metadata", sftResultError(result))
+	meta, err := checkpoint.LoadResume[SFTCheckpointMetadata](sftCheckpointMetadataPath(path))
+	if err != nil || meta == nil {
+		return meta, err
 	}
 	if meta.Version == 0 {
 		meta.Version = SFTCheckpointMetadataVersion
 	}
-	return &meta, nil
+	return meta, nil
 }
 
 func sftCheckpointMetadataPath(path string) string {
@@ -243,24 +223,9 @@ func sftCheckpointMetadataPath(path string) string {
 }
 
 // sftStepName renders the step-NNNNNN directory name used for SFT
-// checkpoints — same output as fmt.Sprintf("step-%06d", step). Built
-// with strconv.AppendInt so no fmt format-parser and no interface
-// boxing of the int arg, with a pre-sized scratch buffer keeping the
-// alloc count at one.
+// checkpoints — delegates to the shared checkpoint engine
+// (dappco.re/go/inference/checkpoint) so train's copy of the zero-pad logic
+// cannot drift from distill/grpo's.
 func sftStepName(step int) string {
-	const prefix = "step-"
-	const padTo = 6
-	buf := make([]byte, 0, len(prefix)+20)
-	buf = append(buf, prefix...)
-	if step >= 0 && step < 100000 {
-		digits := 1
-		for n := step / 10; n > 0; n /= 10 {
-			digits++
-		}
-		for i := digits; i < padTo; i++ {
-			buf = append(buf, '0')
-		}
-	}
-	buf = strconv.AppendInt(buf, int64(step), 10)
-	return string(buf)
+	return checkpoint.FormatStepDir(step)
 }

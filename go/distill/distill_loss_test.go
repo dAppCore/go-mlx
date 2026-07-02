@@ -286,21 +286,3 @@ func TestDistillLoss_DistillBatchCacheKey_Ugly(t *testing.T) {
 		t.Fatalf("DistillBatchCacheKey(empty) = %q then %q, want deterministic", key, again)
 	}
 }
-
-// TestDistillLoss_cloneDistillLogits_Good covers cloneDistillLogits on the
-// degenerate shapes: a nil input clones to nil, and a batch with rows but
-// zero cells clones to a non-nil, equal-shaped result with no flat-cell
-// backing allocated.
-func TestDistillLoss_cloneDistillLogits_Good(t *testing.T) {
-	if got := cloneDistillLogits(nil); got != nil {
-		t.Fatalf("cloneDistillLogits(nil) = %v, want nil", got)
-	}
-	rowsNoCells := DistillLogits{{}, {}}
-	got := cloneDistillLogits(rowsNoCells)
-	if got == nil || len(got) != 2 {
-		t.Fatalf("cloneDistillLogits(rows-no-cells) = %v, want 2 empty rows", got)
-	}
-	if len(got[0]) != 0 || len(got[1]) != 0 {
-		t.Fatalf("cloned rows = %v, want both empty", got)
-	}
-}
