@@ -58,7 +58,7 @@ func BenchmarkBuildModelBook_Weights(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true, ChapterChars: defaultWeightChapterChars})
+		book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true, ChapterChars: 0}) // 0 = modelmgmt's default chapter size
 		if err != nil {
 			b.Fatalf("BuildModelBook: %v", err)
 		}
@@ -73,7 +73,7 @@ func BenchmarkBuildModelBook_Weights(b *testing.B) {
 // chapter-body assembly that copies the plate-sized strings into the zip.
 func BenchmarkWriteEPUB_Weights(b *testing.B) {
 	dir := benchModelDir(b, 4<<20)
-	book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true, ChapterChars: defaultWeightChapterChars})
+	book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true, ChapterChars: 0}) // 0 = modelmgmt's default chapter size
 	if err != nil {
 		b.Fatalf("BuildModelBook: %v", err)
 	}

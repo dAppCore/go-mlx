@@ -167,21 +167,27 @@ func TestBuildModelBook_MalformedWeights_Ugly(t *testing.T) {
 	}
 }
 
-func TestSafetensorsStats_Good(t *testing.T) {
-	tensors, elements, ok := safetensorsStats(tinySafetensors())
-	if !ok || tensors != 1 || elements != 6 {
-		t.Fatalf("stats = (%d tensors, %d elements, ok=%v), want (1, 6, true)", tensors, elements, ok)
-	}
-	if _, _, ok := safetensorsStats([]byte{1, 2, 3}); ok {
-		t.Fatal("garbage must not parse as a safetensors header")
-	}
-}
+// safetensorsStats and grouped now live in modelmgmt (as ebookSafetensorsStats
+// and grouped — see TestEbookModel_ebookSafetensorsStats_Good/_Ugly and
+// TestEbookModel_grouped_Good/_Ugly in dappco.re/go/inference/modelmgmt);
+// TestBuildModelBook_RoundTripsWeights_Good above already exercises both
+// through the public BuildModelBook contract.
 
-func TestGrouped_Good(t *testing.T) {
-	cases := map[int64]string{0: "0", 42: "42", 1000: "1,000", 999888777: "999,888,777", -1234: "-1,234"}
-	for n, want := range cases {
-		if got := grouped(n); got != want {
-			t.Fatalf("grouped(%d) = %q, want %q", n, got, want)
-		}
+// TestBuildModelBook_ColophonCreditsCLI_Good locks in the one deliberate
+// divergence from modelmgmt.BuildModelBook: the colophon must credit the
+// command a reader actually ran (`lthn-mlx ebook`), not modelmgmt's own
+// library entry point. See the DIVERGENCE note on BuildModelBook in model.go.
+func TestBuildModelBook_ColophonCreditsCLI_Good(t *testing.T) {
+	dir, _ := writeFixtureModel(t)
+	book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: false})
+	if err != nil {
+		t.Fatalf("BuildModelBook: %v", err)
+	}
+	colophon := book.Chapters[len(book.Chapters)-1]
+	if !core.Contains(colophon.Body, "lthn-mlx ebook") {
+		t.Fatalf("colophon must credit lthn-mlx ebook, got: %s", colophon.Body)
+	}
+	if core.Contains(colophon.Body, "modelmgmt.BuildModelBook") {
+		t.Fatal("colophon leaked modelmgmt's library-entry-point credit line")
 	}
 }

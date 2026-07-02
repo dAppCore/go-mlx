@@ -58,8 +58,9 @@ func TestWriteEPUB_ValidContainer_Good(t *testing.T) {
 	if zr.File[0].Method != zip.Store {
 		t.Fatal("mimetype must be stored uncompressed")
 	}
-	if got := readZipEntry(t, zr, "mimetype"); got != epubMimetype {
-		t.Fatalf("mimetype content = %q, want %q", got, epubMimetype)
+	const wantMimetype = "application/epub+zip" // EPUB3 spec-mandated content type
+	if got := readZipEntry(t, zr, "mimetype"); got != wantMimetype {
+		t.Fatalf("mimetype content = %q, want %q", got, wantMimetype)
 	}
 
 	readZipEntry(t, zr, "META-INF/container.xml")
@@ -87,12 +88,6 @@ func TestWriteEPUB_EmptyRejected_Bad(t *testing.T) {
 	}
 }
 
-func TestXMLEscape_Good(t *testing.T) {
-	if got := xmlEscape("a & b < c > d"); got != "a &amp; b &lt; c &gt; d" {
-		t.Fatalf("escape = %q", got)
-	}
-	// Ampersand first — no double-escaping of the entities it introduces.
-	if got := xmlEscape("<&>"); got != "&lt;&amp;&gt;" {
-		t.Fatalf("escape order wrong: %q", got)
-	}
-}
+// xmlEscape itself now lives in modelmgmt (TestEbook_xmlEscape_Good/_Ugly in
+// dappco.re/go/inference/modelmgmt) — WriteEPUB above already exercises it
+// end to end via the escaped title/rights assertions.
