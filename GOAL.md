@@ -15,7 +15,7 @@ Remaining feature tasks:
 - Harden the `pkg/model` + `pkg/native` block-diffusion first draft with focused correctness tests and one live-ish synthetic contract.
 - Implement full native target-GGUF loading (assistant-GGUF drafting and mmap dense + Q4_0/Q8_0 dequant exist; the target-model load path is the remaining high-value gap vs `pkg/metal`).
 - Make the native assistant-pair (MTP) decode lane production-usable: it engages and verifies but decodes an order below the plain native lane — profile the draft/verify loop and close the gap before calling the lane feature-complete.
-- Fix greedy-compatibility gating for speculative decode: at `-temp 0` with default top_p/top_k the MTP output diverges from the plain greedy stream (both engines) — lossless verify must hold, or the drafter must stand down for that config.
+- Greedy MTP residual: the boundary token is now reforged through the plain decode graph (metal side; see reforgeGreedyBoundaryForward), but multi-token-accept rounds still commit the batched kernel's K/V for MIDDLE accepted positions, which can diverge from plain AR on quantised targets. Decide adaptive/smaller block size vs strict-greedy stand-down, and carry the same boundary-reforge contract into the native MTP lane.
 - Close the native prefill gap vs `pkg/metal` (several-fold on small models; decode is close behind).
 - Finish native runtime parity review for ICB, PLE, no-copy head/weights, and paged/sliding KV paths.
 - Resolve `go vet`'s unsafe.Pointer report at `pkg/native/encsend.go:506`.

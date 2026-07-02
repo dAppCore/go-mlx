@@ -158,6 +158,89 @@ func fillVerifyResult(result *Gemma4AssistantVerifyResult, decision gemma4Verify
 	return nil
 }
 
+// reforgeGreedyBoundaryForward redoes the boundary position's forward through
+// the EXACT graph ModelSession's own decode step computes for it, instead of
+// trusting the batched verify row.
+//
+// Two independent numerical gaps compound here, both confirmed live on
+// gemma-4-E2B-it-4bit greedy generation (a 4-bit quantized target):
+//
+//  1. Batched (L>1) and single-position (L=1) attention are DIFFERENT compute
+//     kernels (FixedKVCache's native single-token fast path vs the general
+//     multi-query graph the batched verify forward rides). After a run of
+//     low-acceptance verify rounds, a batched verify row disagreed with a
+//     single-token forward of the SAME accepted prefix on the SAME cache
+//     state (699 vs the correct 568) — confirmed with the clone-verify path
+//     and with compiled-layer decode forced off too, so it is not one fast
+//     path's bug; the batched forward itself is not provably equal to N
+//     sequential steps on this engine.
+//  2. Separately, Gemma4Model.ForwardLastTokenLogitsAndHidden PREFERS a fused
+//     native last-token-output kernel (metal.NativeLastTokenOutputLogits);
+//     ModelSession's own decode step never reaches for it — every decode
+//     step is seqLen 1, and useLastTokenLogitsPrefill only prefers the fused
+//     kernel at seqLen >= 512 (prompt_cache.go). So plain AR decode ALWAYS
+//     computes the final RMSNorm -> output-projection -> softcap as separate
+//     graph ops. Calling ForwardLastTokenLogitsAndHidden here to "match plain
+//     AR" would silently reintroduce a different mismatch through the fused
+//     kernel — observed as a NEW divergence at an earlier position once (1)
+//     was fixed. forwardSingleTokenPlainPath is the one graph that both gaps
+//     require: plain single-token attention AND the unfused output graph.
+//
+// caches must already sit at (pre-round length + len(accepted) - 1) — i.e.
+// rolled back to EXCLUDE lastAccepted (the caller does this roll-back as
+// PART OF its own single truncate call, combined with dropping the rejected
+// suffix — see the callers: a SEPARATE second truncate call here would need
+// its own speculative-trim journal entry, and the live-verify journal is only
+// one update deep, already consumed by the caller's first truncate once the
+// sliding window has rotated). This re-forwards lastAccepted alone through
+// the plain single-token path, returning the genuinely-correct continuation
+// logits/hidden plus its argmax (the corrected replacement for a partial
+// accept). Costs one extra single-token forward per verify round that
+// accepted anything — the price of the contract: MTP greedy output must
+// equal plain greedy output, always. Greedy only: temperature>0 verification
+// already draws through the SAME keyed sampler chain plain decode uses and is
+// out of scope here.
+//
+// KNOWN RESIDUAL GAP: this closes the boundary — the ONE position every
+// carried-forward round pivots on — but a block that accepts MORE than one
+// drafted token in a single round (k>1) still commits the middle positions'
+// K/V exactly as the batched forward computed them; only the LAST accepted
+// position gets reforged. Redoing every accepted position sequentially would
+// remove the speculative win entirely (K single-token forwards plus the
+// batched verify forward is strictly more work than plain decode), so it is
+// not done. Observed live: after this fix closed the originally-reported
+// divergence, a longer real-model run surfaced a DIFFERENT divergence earlier
+// in the SAME generation, inside a multi-token accepted block. Provably
+// bit-exact MTP therefore is not achievable on this engine without giving up
+// batched verification altogether; this fix demonstrably closes the
+// higher-probability, previously-confirmed gap at the boundary.
+func (pair *Gemma4AssistantPair) reforgeGreedyBoundaryForward(caches []metal.Cache, lastAccepted int32, suppress []int32) (logits, hidden *metal.Array, next int32, err error) {
+	if pair == nil || pair.Target == nil {
+		return nil, nil, 0, errAsstVerifyNeedTargetModel
+	}
+	if len(caches) == 0 {
+		return nil, nil, 0, errAsstVerifyNeedTargetCaches
+	}
+	tok := metal.FromSingleInt32Matrix(lastAccepted)
+	logits, hidden = pair.Target.forwardSingleTokenPlainPath(tok, caches)
+	metal.Free(tok)
+	if logits == nil || hidden == nil || !logits.Valid() || !hidden.Valid() {
+		metal.Free(logits, hidden)
+		return nil, nil, 0, errAsstVerifyNoTargetToken
+	}
+	if err = metal.Eval(logits, hidden); err != nil {
+		metal.Free(logits, hidden)
+		return nil, nil, 0, core.E("gemma4.assistant verify (reforge)", "single-token forward", err)
+	}
+	metal.DetachCaches(caches)
+	next, err = gemma4AssistantGreedyToken(logits, suppress)
+	if err != nil {
+		metal.Free(logits, hidden)
+		return nil, nil, 0, err
+	}
+	return logits, hidden, next, nil
+}
+
 // verifyDraftBlockLive verifies a draft block ON THE LIVE CACHES: the
 // speculative-trim journal (metal.CachesArmSpeculativeTrim) is armed around
 // the one batched forward, and rejected tokens are trimmed back exactly —
@@ -249,7 +332,23 @@ func (pair *Gemma4AssistantPair) verifyDraftBlockLive(targetLogits *metal.Array,
 		result.Close()
 		return nil, err
 	}
-	if dropped := len(block) - len(decision.Accepted); dropped > 0 {
+	acceptedCount := len(decision.Accepted)
+	reforge := d.Sampler == nil && acceptedCount > 0
+	dropped := len(block) - acceptedCount
+	if reforge {
+		// Greedy losslessness: roll back ONE PAST the accepted prefix (down
+		// to acceptedCount-1) in the SAME single truncate call that drops the
+		// rejected suffix, then reforge the boundary through the plain
+		// single-token path instead of trusting the batched row (see
+		// reforgeGreedyBoundaryForward). A separate second truncate below the
+		// accepted length would need its own journal entry — the live-verify
+		// journal is only one update deep, already spent by this round's
+		// batched forward, and would refuse once the sliding window has
+		// rotated. One combined truncate stays within that single journal
+		// entry regardless of rotation.
+		dropped++
+	}
+	if dropped > 0 {
 		for i, c := range caches {
 			if !metal.CacheTruncateTo(c, c.Len()-dropped) {
 				// The journal was armed — a failed trim is an engine fault,
@@ -258,9 +357,22 @@ func (pair *Gemma4AssistantPair) verifyDraftBlockLive(targetLogits *metal.Array,
 				result.Close()
 				return nil, core.E("gemma4.assistant verify (live)",
 					core.Sprintf("cache %d (%T len=%d offset=%d) refused trim of %d after accepting %d of %d",
-						i, c, c.Len(), c.Offset(), dropped, len(decision.Accepted), len(block)),
+						i, c, c.Len(), c.Offset(), dropped, acceptedCount, len(block)),
 					errAsstVerifyLiveTrimFailed)
 			}
+		}
+	}
+	if reforge {
+		lastAccepted := decision.Accepted[acceptedCount-1]
+		freshLogits, freshHidden, freshNext, ferr := pair.reforgeGreedyBoundaryForward(caches, lastAccepted, d.Suppress)
+		if ferr != nil {
+			result.Close()
+			return nil, ferr
+		}
+		metal.Free(result.Logits, result.Hidden)
+		result.Logits, result.Hidden = freshLogits, freshHidden
+		if !decision.AllAccepted {
+			result.ReplacementToken = freshNext
 		}
 	}
 	return result, nil

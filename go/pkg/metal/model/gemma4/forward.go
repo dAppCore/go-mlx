@@ -82,6 +82,25 @@ func (m *Gemma4Model) forwardLastTokenOutputGraph(h *metal.Array) *metal.Array {
 	return out
 }
 
+// forwardSingleTokenPlainPath runs a ONE-token forward using the EXACT graph
+// ModelSession's own decode step computes (session.go's advanceTokenLocked ->
+// forwardLastTokenLogits -> Gemma4Model.Forward/ForwardMasked): the plain
+// RMSNorm -> output-projection -> softcap graph, NEVER the native fused
+// last-token-output kernel. useLastTokenLogitsPrefill only prefers that fused
+// kernel at seqLen >= defaultLastTokenPrefillMinTokens (512) — every decode
+// step is seqLen 1, so plain AR decode never takes it. A caller that needs
+// "the SAME token plain AR decode would forward, bit for bit" — the MTP
+// greedy-boundary reforge — must call this, not ForwardLastTokenLogitsAndHidden:
+// on a quantized target the fused and unfused paths can round differently
+// enough to flip a near-tied argmax.
+func (m *Gemma4Model) forwardSingleTokenPlainPath(tokens *metal.Array, caches []metal.Cache) (*metal.Array, *metal.Array) {
+	h, _, L := m.forwardHidden(tokens, nil, caches)
+	h = gemma4LastSequenceHidden(h, L)
+	h = gemma4ProjectionHidden(h)
+	h = gemma4ContiguousHidden(h)
+	return m.forwardLastTokenOutputGraph(h), h
+}
+
 // ForwardAllTokenLogitsAndHidden runs the forward pass returning logits AND the
 // pre-output-norm hidden state at EVERY sequence position (not just the last).
 // Batched MTP verification uses it to check a whole draft block in ONE target

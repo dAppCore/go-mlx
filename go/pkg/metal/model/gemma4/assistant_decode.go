@@ -842,6 +842,23 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 			result.Close()
 			return nil, err
 		}
+		// Greedy losslessness: roll the clone back to k-1 (one before the
+		// accepted prefix) and reforge the boundary through the plain
+		// single-token path instead of trusting the batched row — see
+		// reforgeGreedyBoundaryForward.
+		reforgeCaches, rerr := pair.cloneCachesTrimmedForReforge(result.Caches, targetCaches, 1, draftTokens[:k-1])
+		if rerr != nil {
+			result.Close()
+			return nil, rerr
+		}
+		result.Caches = reforgeCaches
+		freshLogits, freshHidden, _, ferr := pair.reforgeGreedyBoundaryForward(result.Caches, draftTokens[k-1], suppressTokens)
+		if ferr != nil {
+			result.Close()
+			return nil, ferr
+		}
+		metal.Free(result.Logits, result.Hidden)
+		result.Logits, result.Hidden = freshLogits, freshHidden
 		return result, nil
 	}
 
@@ -876,7 +893,26 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 		}
 	}
 
-	if !gemma4TruncateVerifyCaches(verifyCaches, len(draftTokens)-k) {
+	if k > 0 {
+		// Greedy losslessness: roll the clone back to k-1 (one before the
+		// accepted prefix, combining the "drop the rejected suffix" trim with
+		// the reforge roll-back in one pass) and reforge the boundary through
+		// the plain single-token path — see reforgeGreedyBoundaryForward.
+		reforgeCaches, rerr := pair.cloneCachesTrimmedForReforge(verifyCaches, targetCaches, len(draftTokens)-k+1, draftTokens[:k-1])
+		if rerr != nil {
+			result.Close()
+			return nil, rerr
+		}
+		result.Caches = reforgeCaches
+		freshLogits, freshHidden, freshNext, ferr := pair.reforgeGreedyBoundaryForward(result.Caches, draftTokens[k-1], suppressTokens)
+		if ferr != nil {
+			result.Close()
+			return nil, ferr
+		}
+		metal.Free(result.Logits, result.Hidden)
+		result.Logits, result.Hidden = freshLogits, freshHidden
+		result.ReplacementToken = freshNext
+	} else if !gemma4TruncateVerifyCaches(verifyCaches, len(draftTokens)-k) {
 		rebuilt, berr := pair.rebuildAcceptedPrefixCaches(targetCaches, draftTokens[:k])
 		if berr != nil {
 			result.Close()
@@ -926,6 +962,29 @@ func (pair *Gemma4AssistantPair) rebuildAcceptedPrefixCaches(targetCaches []meta
 	metal.DetachCaches(caches)
 	metal.Free(logits, hidden)
 	return caches, nil
+}
+
+// cloneCachesTrimmedForReforge returns verifyCaches trimmed to exactly
+// verifyCaches.Len()-dropped tokens — the caller-owned clone the greedy
+// reforge boundary check needs (rolled back one PAST the accepted prefix so
+// reforgeGreedyBoundaryForward can re-forward the last accepted token alone).
+// The clone carries no speculative-trim journal (unlike the live-verify
+// caches), so a cheap in-place truncate only ever works pre-rotation; past
+// the sliding window it always refuses (CacheTruncateTo's post-rotation
+// branch requires a journal). rebuildAcceptedPrefixCaches is the
+// journal-free fallback: a fresh clone of targetCaches replayed through
+// exactly acceptedPrefix, correct at any rotation state. Frees verifyCaches
+// when the fallback fires; the caller adopts whichever set is returned.
+func (pair *Gemma4AssistantPair) cloneCachesTrimmedForReforge(verifyCaches, targetCaches []metal.Cache, dropped int, acceptedPrefix []int32) ([]metal.Cache, error) {
+	if gemma4TruncateVerifyCaches(verifyCaches, dropped) {
+		return verifyCaches, nil
+	}
+	rebuilt, err := pair.rebuildAcceptedPrefixCaches(targetCaches, acceptedPrefix)
+	if err != nil {
+		return nil, err
+	}
+	metal.FreeCaches(verifyCaches)
+	return rebuilt, nil
 }
 
 func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (gemma4AssistantTargetKVByType, error) {

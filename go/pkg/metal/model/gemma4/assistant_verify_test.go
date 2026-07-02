@@ -551,3 +551,97 @@ func TestAssistantVerify_LiveVerifyTrimsInPlace_Good(t *testing.T) {
 		}
 	}
 }
+
+// reforgeGreedyBoundaryForward is the fix for the greedy-losslessness gap
+// confirmed live on gemma-4-E2B-it-4bit greedy generation: after a run of
+// low-acceptance verify rounds, the batched verify forward's row for "the
+// token after the just-accepted prefix" disagreed with a plain single-token
+// forward of that SAME prefix on the SAME cache state (a real 4-bit model,
+// 699 vs the correct 568) — MTP committed a token plain AR decode never
+// produces, breaking the "MTP greedy == plain greedy" contract. This proves
+// the mechanism itself, hermetically: given any cache state, it advances by
+// exactly one position and returns the SAME token an INDEPENDENT plain
+// single-token forward of the identical prefix produces — the reference
+// computation reforgeGreedyBoundaryForward must never disagree with, by
+// construction, since both call the exact same forwardSingleTokenPlainPath.
+func TestAssistantVerify_ReforgeGreedyBoundaryForward_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	_, pair := loadTinyGemma4AssistantRuntime(t)
+
+	caches := pair.Target.NewCache()
+	defer metal.FreeCaches(caches)
+	prefillLogits, _ := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
+	defer metal.Free(prefillLogits)
+	lastAccepted, err := gemma4AssistantGreedyToken(prefillLogits)
+	if err != nil {
+		t.Fatalf("greedy token: %v", err)
+	}
+	preOffsets := gemma4AssistantCacheOffsets(caches)
+
+	// Independent reference: a SEPARATE clone, forwarded through the plain
+	// single-token path directly rather than through the function under test.
+	refCaches, err := metal.CloneCachePrefixes(caches)
+	if err != nil {
+		t.Fatalf("clone reference: %v", err)
+	}
+	defer metal.FreeCaches(refCaches)
+	refTok := metal.FromSingleInt32Matrix(lastAccepted)
+	refLogits, refHidden := pair.Target.forwardSingleTokenPlainPath(refTok, refCaches)
+	metal.Free(refTok)
+	if err := metal.Eval(refLogits, refHidden); err != nil {
+		t.Fatalf("reference forward: %v", err)
+	}
+	defer metal.Free(refLogits, refHidden)
+	wantNext, err := gemma4AssistantGreedyToken(refLogits)
+	if err != nil {
+		t.Fatalf("reference greedy token: %v", err)
+	}
+
+	// Function under test, on its own clone at the SAME starting state.
+	testCaches, err := metal.CloneCachePrefixes(caches)
+	if err != nil {
+		t.Fatalf("clone under test: %v", err)
+	}
+	defer metal.FreeCaches(testCaches)
+	logits, hidden, next, err := pair.reforgeGreedyBoundaryForward(testCaches, lastAccepted, nil)
+	if err != nil {
+		t.Fatalf("reforgeGreedyBoundaryForward: %v", err)
+	}
+	defer metal.Free(logits, hidden)
+
+	if next != wantNext {
+		t.Fatalf("reforgeGreedyBoundaryForward next = %d, want %d (an independent single-token forward of the same prefix)", next, wantNext)
+	}
+	for i, c := range testCaches {
+		if got, want := c.Offset(), preOffsets[i]+1; got != want {
+			t.Fatalf("cache %d offset = %d, want pre+1 = %d", i, got, want)
+		}
+	}
+}
+
+// The greedy losslessness reforge must survive a sliding-window rotation:
+// verifyDraftBlockLive combines the rejected-suffix trim and the reforge
+// roll-back into ONE truncate call specifically because the live-verify
+// speculative-trim journal is only one update deep — a separate second
+// truncate call after the window has rotated would find the journal already
+// spent by the first and refuse (the exact regression this test pins: an
+// earlier version of the fix issued two truncates and broke here).
+func TestAssistantVerify_ReforgeSurvivesWindowRotation_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m, pair := loadTinyGemma4AssistantRuntime(t)
+
+	const prompt = "hello world hello"
+	cfg := metal.GenerateConfig{MaxTokens: 12} // long enough to rotate the tiny 4-token window
+	plain := collectPlainTokens(t, m, prompt, cfg)
+	if len(plain) == 0 {
+		t.Fatal("plain AR produced no tokens — fixture broke")
+	}
+	result, mtp := collectMTPTokens(t, m, pair, prompt, cfg, 2)
+	assertEquivalenceStable(t, "reforge-rotation", plain,
+		func() []int32 { return collectPlainTokens(t, m, prompt, cfg) },
+		mtp,
+		func() []int32 { _, again := collectMTPTokens(t, m, pair, prompt, cfg, 2); return again })
+	if result.DraftCalls == 0 || result.TargetVerifyCalls == 0 {
+		t.Fatalf("draft/verify calls = %d/%d, want the speculative lane to have run", result.DraftCalls, result.TargetVerifyCalls)
+	}
+}
