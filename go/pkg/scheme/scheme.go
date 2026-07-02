@@ -1,166 +1,75 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Package scheme is the engine's pluggable-component contract layer: the three
-// registries the engine resolves a model's components from — weight quant,
-// KV/state cache, and sequence mixer. A model's config declares a kind for
-// each; the engine looks it up and reacts, so adding a family member is
-// "register a scheme", never an engine branch. This is the same reactivity as
-// gemma4.FeaturesOf, one layer deeper: FeaturesOf says WHAT a model is, the
-// scheme registries say HOW the engine provides each piece.
+// Package scheme is a thin compatibility layer over the shared
+// dappco.re/go/inference/scheme package — the engine's pluggable-component
+// contract layer (weight quant, KV/state cache, sequence mixer) that
+// relocated there so every inference engine (metal on Apple, rocm on
+// AMD/CUDA/CPU) inherits ONE scheme catalogue instead of a per-engine copy.
+// Every type below is a genuine Go type alias and every function delegates
+// straight through, so this package and the shared one read and write the
+// SAME registry: a scheme registered via either import path resolves via the
+// other. This import path is the compatibility shim that keeps pkg/native
+// and pkg/metal compiling unchanged until they migrate to importing the
+// shared package directly.
 //
 //	q, _ := scheme.QuantFor(cfg.QuantKind)   // "affine", "q4_0", "mxfp4", …
 //	m, _ := scheme.MixerFor(cfg.MixerKind)   // "softmax-hybrid", "gla", "mamba2", …
 //	c, _ := scheme.CacheFor(cfg.KVCacheMode) // "q8", "turboquant", "compaction", …
 //	if !scheme.Compatible(m, c) { /* mixer needs a state this cache can't hold */ }
 //
-// Pure Go by design — these contracts carry no driver tensor type, so the
-// package relocates to go-inference unchanged and every Engine (metal on Apple,
-// rocm on AMD/CUDA/CPU) inherits one scheme catalogue. A driver attaches the
-// compute by registering a value that also satisfies its driver-side compute
-// interface; new families (the flash-linear-attention mixers, TurboQuant,
-// q4_0, Attention-Matching compaction) register in their own file — no edit
-// to the engine.
+// See dappco.re/go/inference/scheme for the full contract documentation —
+// StateKind/Mixer/CacheScheme/QuantScheme/DType and the mixer-owns-state
+// design note live there now.
 package scheme
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	shared "dappco.re/go/inference/scheme"
+)
 
-// StateKind is what a sequence mixer needs the cache layer to hold for it. The
-// mixer OWNS its state — it is the single truth of what it needs; a cache
-// scheme only allocates, persists, and streams that state. This contract is
-// what lets a Mamba/RWKV model load beside a softmax-attention one: each mixer
-// declares its state kind, and the engine pairs it with a cache scheme that
-// can serve that kind.
-type StateKind int
+// StateKind aliases the shared StateKind — see
+// dappco.re/go/inference/scheme.StateKind for the full contract (String()
+// comes along for free: an alias is the same type, not a new one).
+type StateKind = shared.StateKind
 
+// StateNone, StateKVCache, StateRecurrent alias the shared StateKind values.
 const (
-	StateNone      StateKind = iota // stateless mixer
-	StateKVCache                    // softmax attention: a growing per-layer K/V cache (weight quant + compaction operate here)
-	StateRecurrent                  // linear-attention / SSM: a fixed-size recurrent state, no growing KV
+	StateNone      = shared.StateNone
+	StateKVCache   = shared.StateKVCache
+	StateRecurrent = shared.StateRecurrent
 )
 
-// String renders a StateKind for logs and error messages.
-func (s StateKind) String() string {
-	switch s {
-	case StateKVCache:
-		return "kv-cache"
-	case StateRecurrent:
-		return "recurrent"
-	default:
-		return "none"
-	}
-}
-
-// Mixer identifies a sequence-mixing scheme — softmax attention, GLA, RetNet,
-// DeltaNet, Mamba, RWKV, GSA, NSA, MoBA, … — and declares the state it needs.
-// A driver registers a value implementing this together with its own compute
-// interface; the contract here is identity + the mixer-owns-state declaration.
-type Mixer interface {
-	Kind() string     // the config token a model declares (e.g. "softmax-hybrid", "mamba2")
-	State() StateKind // the state shape the mixer requires the cache layer to hold
-}
-
-// CacheScheme is how a mixer's state is stored, compressed, and streamed: full
-// K/V, q8, k-q8-v-q4, paged, TurboQuant, Attention-Matching compaction, or a
-// recurrent-state holder. Serves reports which StateKind it can hold so the
-// engine can reject a cache/mixer pairing whose kinds disagree.
-type CacheScheme interface {
-	Mode() string      // the KVCacheMode token (e.g. "q8", "turboquant", "compaction")
-	Serves() StateKind // the state kind this scheme can hold
-}
-
-// QuantScheme is a weight-quantisation format — affine (mlx group-affine),
-// q4_0, mxfp4, nvfp4, autoround, … It loads packed weights, runs the packed
-// matmul, and (for the quantize verb) packs a dense weight. The contract here
-// is identity + nominal bit-width; the driver attaches the ops.
-type QuantScheme interface {
-	Kind() string // the quantization.kind a model declares ("affine", "q4_0", …)
-	Bits() int    // nominal bit-width; 0 means "the model's config declares it"
-}
-
-// DType is an activation/compute dtype scheme — the storage format of the LIVE
-// tensors the engine moves between ops (the residual stream, the gelu
-// intermediates), as opposed to QuantScheme which is a WEIGHT storage format.
-// Apple GPUs compute in fp32; bf16 is the narrow storage the engine rounds to on
-// every store, so it is a registered dtype scheme exactly as a weight quant is —
-// not a "bfloat16" suffix hardcoded at the op call-sites. Name is the canonical
-// token a model config declares (torch_dtype) and the metallib kernel-name
-// suffix; Bytes is the element size.
-//
-//	dt, _ := scheme.DTypeFor(cfg.TorchDType) // "bfloat16", "float32", …
-//	kernel := "vv_Multiply" + dt.Name()      // the elementwise multiply for that dtype
-type DType interface {
-	Name() string // config token + metallib kernel-name suffix: "bfloat16", "float32"
-	Bytes() int   // element size in bytes (bfloat16=2, float32=4)
-}
-
-// The four registries — each mirrors the model/backend registry (one named
-// collection, insertion-ordered, thread-safe). A new scheme is one Set().
-var (
-	mixers = core.NewRegistry[Mixer]()
-	caches = core.NewRegistry[CacheScheme]()
-	quants = core.NewRegistry[QuantScheme]()
-	dtypes = core.NewRegistry[DType]()
+// Mixer, CacheScheme, QuantScheme, DType alias the shared contracts — see
+// dappco.re/go/inference/scheme for the full documentation of each.
+type (
+	Mixer       = shared.Mixer
+	CacheScheme = shared.CacheScheme
+	QuantScheme = shared.QuantScheme
+	DType       = shared.DType
 )
 
-// RegisterMixer adds (or overwrites) a sequence-mixer scheme by its Kind.
-//
-//	func init() { scheme.RegisterMixer(gla{}) }
-func RegisterMixer(m Mixer) core.Result { return mixers.Set(m.Kind(), m) }
+// RegisterMixer, RegisterCache, RegisterQuant, RegisterDType delegate to the
+// shared registry — ONE store, two import paths: a scheme registered here
+// resolves through dappco.re/go/inference/scheme too, and vice versa.
+func RegisterMixer(m Mixer) core.Result       { return shared.RegisterMixer(m) }
+func RegisterCache(c CacheScheme) core.Result { return shared.RegisterCache(c) }
+func RegisterQuant(q QuantScheme) core.Result { return shared.RegisterQuant(q) }
+func RegisterDType(d DType) core.Result       { return shared.RegisterDType(d) }
 
-// RegisterCache adds (or overwrites) a cache scheme by its Mode.
-func RegisterCache(c CacheScheme) core.Result { return caches.Set(c.Mode(), c) }
-
-// RegisterQuant adds (or overwrites) a weight-quant scheme by its Kind.
-func RegisterQuant(q QuantScheme) core.Result { return quants.Set(q.Kind(), q) }
-
-// RegisterDType adds (or overwrites) an activation/compute dtype scheme by its Name.
-func RegisterDType(d DType) core.Result { return dtypes.Set(d.Name(), d) }
-
-// MixerFor resolves a registered sequence mixer by kind.
-func MixerFor(kind string) (Mixer, bool) {
-	if r := mixers.Get(kind); r.OK {
-		return r.Value.(Mixer), true
-	}
-	return nil, false
-}
-
-// CacheFor resolves a registered cache scheme by mode.
-func CacheFor(mode string) (CacheScheme, bool) {
-	if r := caches.Get(mode); r.OK {
-		return r.Value.(CacheScheme), true
-	}
-	return nil, false
-}
-
-// QuantFor resolves a registered weight-quant scheme by kind.
-func QuantFor(kind string) (QuantScheme, bool) {
-	if r := quants.Get(kind); r.OK {
-		return r.Value.(QuantScheme), true
-	}
-	return nil, false
-}
-
-// DTypeFor resolves a registered activation/compute dtype by name.
-func DTypeFor(name string) (DType, bool) {
-	if r := dtypes.Get(name); r.OK {
-		return r.Value.(DType), true
-	}
-	return nil, false
-}
+// MixerFor, CacheFor, QuantFor, DTypeFor resolve a registered scheme by its
+// config token, delegating to the shared registry.
+func MixerFor(kind string) (Mixer, bool)       { return shared.MixerFor(kind) }
+func CacheFor(mode string) (CacheScheme, bool) { return shared.CacheFor(mode) }
+func QuantFor(kind string) (QuantScheme, bool) { return shared.QuantFor(kind) }
+func DTypeFor(name string) (DType, bool)       { return shared.DTypeFor(name) }
 
 // MixerKinds, CacheModes, QuantKinds, DTypeNames list the registered names in
 // registration order — the engine's "what can I load" catalogue.
-func MixerKinds() []string { return mixers.Names() }
-func CacheModes() []string { return caches.Names() }
-func QuantKinds() []string { return quants.Names() }
-func DTypeNames() []string { return dtypes.Names() }
+func MixerKinds() []string { return shared.MixerKinds() }
+func CacheModes() []string { return shared.CacheModes() }
+func QuantKinds() []string { return shared.QuantKinds() }
+func DTypeNames() []string { return shared.DTypeNames() }
 
-// Compatible enforces the mixer-owns-state contract: a cache scheme may serve a
-// mixer only if it holds the state kind the mixer declares it needs. The engine
-// calls this at load and refuses a mismatched pairing rather than miscomputing.
-func Compatible(m Mixer, c CacheScheme) bool {
-	if m == nil || c == nil {
-		return false
-	}
-	return c.Serves() == m.State()
-}
+// Compatible enforces the mixer-owns-state contract: a cache scheme may serve
+// a mixer only if it holds the state kind the mixer declares it needs.
+func Compatible(m Mixer, c CacheScheme) bool { return shared.Compatible(m, c) }

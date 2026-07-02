@@ -4,6 +4,44 @@ package scheme
 
 import "testing"
 
+// mixerInfo, cacheInfo, quantInfo, dtypeInfo are test-only concrete
+// implementations of the aliased interfaces — production code registers real
+// driver types (or relies on the shared package's own builtin seed); these
+// throwaway values let the tests exercise Register*/*For without depending on
+// a driver. Formerly builtin.go's catalogue-seed types: the catalogue itself
+// is now seeded exactly once, by dappco.re/go/inference/scheme's own init().
+type mixerInfo struct {
+	kind  string
+	state StateKind
+}
+
+func (m mixerInfo) Kind() string     { return m.kind }
+func (m mixerInfo) State() StateKind { return m.state }
+
+type cacheInfo struct {
+	mode   string
+	serves StateKind
+}
+
+func (c cacheInfo) Mode() string      { return c.mode }
+func (c cacheInfo) Serves() StateKind { return c.serves }
+
+type quantInfo struct {
+	kind string
+	bits int
+}
+
+func (q quantInfo) Kind() string { return q.kind }
+func (q quantInfo) Bits() int    { return q.bits }
+
+type dtypeInfo struct {
+	name  string
+	bytes int
+}
+
+func (d dtypeInfo) Name() string { return d.name }
+func (d dtypeInfo) Bytes() int   { return d.bytes }
+
 // The existing engine pieces are present as catalogue entry-one.
 func TestBuiltinsRegistered_Good(t *testing.T) {
 	if _, ok := MixerFor("softmax-hybrid"); !ok {
