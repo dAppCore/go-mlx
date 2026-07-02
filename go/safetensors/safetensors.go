@@ -1,5 +1,30 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
+// Package safetensors is the engine's bounded-memory safetensors reader and
+// writer. It never materialises a whole tensor file in memory: ReadIndex
+// reads only the JSON header (via a hand-rolled zero-allocation parser in
+// header_parse.go), TensorRef records each tensor's absolute byte offsets,
+// and TensorReader/ShardCache/WriteSubset stream individual tensors'
+// payloads through ReadAt/chunked writes sized independently of file size.
+// Float decode (DecodeFloatData) uses unsafe reinterpret-casts for F32/F64
+// and, on darwin/arm64, a NEON FCVTL hardware loop for F16 — see
+// float16_neon_darwin_arm64.go.
+//
+// dappco.re/go/inference/safetensors is the sibling leaf package for the
+// naive whole-file codec (ReadSafetensors/WriteSafetensors/GetTensorData/
+// DecodeFloat32/EncodeFloat32: eager read, reflection-driven JSON, no
+// chunking, no engine dependency). This package deliberately does not wrap
+// or re-export it — every symbol here exists because the whole-file shape
+// doesn't fit, either because the source is a multi-gigabyte model shard or
+// because the decode runs in a per-element hot loop worth hardware
+// acceleration. A caller with a small file and no streaming/perf
+// constraint should reach for the shared package directly rather than
+// route through this one.
+//
+//	idx, err := safetensors.ReadIndex("/models/model-00001.safetensors")
+//	if err != nil { return err }
+//	ref := idx.Tensors["model.embed_tokens.weight"]
+//	values, err := safetensors.ReadRefValues(ref)
 package safetensors
 
 import (
