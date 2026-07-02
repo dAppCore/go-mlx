@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 )
 
 func ggufTensorBits(tensorType uint32) int {
@@ -310,11 +311,12 @@ func ggufFileTypeQuantization(fileType int) (string, int) {
 	return "", 0
 }
 
+// NormalizeQuantType lowercases a GGUF/GGML quantisation type name and
+// folds '-' and ' ' separators to '_' (e.g. "Q4-K M" → "q4_k_m"). Delegates
+// to the shared package — pure string normalisation, byte-identical logic,
+// no reason to keep a private duplicate.
 func NormalizeQuantType(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	value = core.Replace(value, " ", "_")
-	return value
+	return sharedgguf.NormalizeQuantType(value)
 }
 
 func quantBitsFromTypeName(name string) int {

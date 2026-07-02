@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -17,8 +18,6 @@ const maxGGUFCollectionEntries uint64 = 1 << 20
 // churn failure paths don't allocate a fresh core.NewError per hit.
 // Mirrors the pattern from safetensors/header_parse.go after W9-Y.
 var (
-	errGGUFNoFile        = core.NewError("mlx: no .gguf file found")
-	errGGUFMultipleFiles = core.NewError("mlx: multiple .gguf files found")
 	errGGUFInvalidMagic  = core.NewError("mlx: invalid gguf magic")
 	errGGUFStringTooLong = core.NewError("gguf string is unreasonably large")
 )
@@ -28,11 +27,11 @@ const (
 	ggufValueTypeInt8    = 1
 	ggufValueTypeUint16  = 2
 	ggufValueTypeInt16   = 3
-	ValueTypeUint32      = 4
+	ValueTypeUint32      = sharedgguf.ValueTypeUint32
 	ggufValueTypeInt32   = 5
 	ggufValueTypeFloat32 = 6
 	ggufValueTypeBool    = 7
-	ValueTypeString      = 8
+	ValueTypeString      = sharedgguf.ValueTypeString
 	ggufValueTypeArray   = 9
 	ggufValueTypeUint64  = 10
 	ggufValueTypeInt64   = 11
@@ -42,11 +41,11 @@ const (
 const (
 	ggufTensorTypeF32      = 0
 	ggufTensorTypeF16      = 1
-	TensorTypeQ4_0         = 2
+	TensorTypeQ4_0         = sharedgguf.TensorTypeQ4_0
 	ggufTensorTypeQ4_1     = 3
 	ggufTensorTypeQ5_0     = 6
 	ggufTensorTypeQ5_1     = 7
-	TensorTypeQ8_0         = 8
+	TensorTypeQ8_0         = sharedgguf.TensorTypeQ8_0
 	ggufTensorTypeQ8_1     = 9
 	ggufTensorTypeQ2K      = 10
 	ggufTensorTypeQ3K      = 11
@@ -78,88 +77,39 @@ const (
 	ggufTensorTypeNVFP4    = 39
 )
 
-// Info summarises the metadata of a GGUF checkpoint.
-type Info struct {
-	Path             string
-	Architecture     string
-	VocabSize        int
-	HiddenSize       int
-	NumLayers        int
-	ContextLength    int
-	QuantBits        int
-	QuantGroup       int
-	QuantType        string
-	QuantFamily      string
-	Quantization     QuantizationInfo
-	Tensors          []TensorInfo
-	ValidationIssues []ValidationIssue
-	TensorCount      int
-	MetadataCount    int
-}
-
-// Valid reports whether tensor metadata passed basic shape/dtype validation.
-func (info Info) Valid() bool {
-	for _, issue := range info.ValidationIssues {
-		if issue.Severity == GGUFValidationError {
-			return false
-		}
-	}
-	return true
-}
+// Info summarises the metadata of a GGUF checkpoint. Alias onto the
+// engine-agnostic shared type — the wire format is identical, and Valid()
+// comes along for free via the alias (defining it locally would be an
+// orphan-method violation once Info aliases another package's type).
+//
+// ReadInfo below stays a local implementation rather than a delegate to
+// sharedgguf.ReadInfo: it overlays go-mlx's model-zoo architecture-profile
+// table (mlx/profile — see modelConfigProbe.architecture()), which shared
+// cannot import (AX-8, lib never imports consumer) and which threads a
+// differently-normalised architecture string through every downstream
+// metadata-key lookup (vocab/hidden/layer/context inference). Splitting
+// that chain risks silently wrong values for any aliased architecture.
+type Info = sharedgguf.Info
 
 // ValidationSeverity classifies GGUF metadata validation findings.
-type ValidationSeverity string
+type ValidationSeverity = sharedgguf.ValidationSeverity
 
 const (
-	GGUFValidationWarning ValidationSeverity = "warning"
-	GGUFValidationError   ValidationSeverity = "error"
+	GGUFValidationWarning = sharedgguf.GGUFValidationWarning
+	GGUFValidationError   = sharedgguf.GGUFValidationError
 )
 
 // ValidationIssue describes one GGUF tensor metadata validation issue.
-type ValidationIssue struct {
-	Severity ValidationSeverity `json:"severity"`
-	Code     string             `json:"code"`
-	Message  string             `json:"message"`
-	Tensor   string             `json:"tensor,omitempty"`
-}
+type ValidationIssue = sharedgguf.ValidationIssue
 
 // TensorInfo describes one tensor entry from the GGUF directory.
-type TensorInfo struct {
-	Name      string   `json:"name"`
-	Type      uint32   `json:"type"`
-	TypeName  string   `json:"type_name,omitempty"`
-	DType     string   `json:"dtype,omitempty"`
-	Bits      int      `json:"bits,omitempty"`
-	BlockSize int      `json:"block_size,omitempty"`
-	Shape     []uint64 `json:"shape,omitempty"`
-	Elements  uint64   `json:"elements,omitempty"`
-	Offset    uint64   `json:"offset,omitempty"`
-	Quantized bool     `json:"quantized,omitempty"`
-}
+type TensorInfo = sharedgguf.TensorInfo
 
 // TensorTypeSummary counts tensor dtypes found in a GGUF file.
-type TensorTypeSummary struct {
-	Type      uint32 `json:"type"`
-	Name      string `json:"name"`
-	DType     string `json:"dtype,omitempty"`
-	Bits      int    `json:"bits,omitempty"`
-	BlockSize int    `json:"block_size,omitempty"`
-	Count     int    `json:"count"`
-	Quantized bool   `json:"quantized,omitempty"`
-}
+type TensorTypeSummary = sharedgguf.TensorTypeSummary
 
 // QuantizationInfo captures GGML quantization metadata beyond bit width.
-type QuantizationInfo struct {
-	Type         string              `json:"type,omitempty"`
-	Family       string              `json:"family,omitempty"`
-	Bits         int                 `json:"bits,omitempty"`
-	GroupSize    int                 `json:"group_size,omitempty"`
-	FileType     int                 `json:"file_type,omitempty"`
-	FileTypeName string              `json:"file_type_name,omitempty"`
-	Version      int                 `json:"version,omitempty"`
-	Mixed        bool                `json:"mixed,omitempty"`
-	TensorTypes  []TensorTypeSummary `json:"tensor_types,omitempty"`
-}
+type QuantizationInfo = sharedgguf.QuantizationInfo
 
 // DiscoveredModel is a loadable model discovered on disk.
 type DiscoveredModel struct {
@@ -346,23 +296,13 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 	}, true
 }
 
+// resolveGGUFFile delegates to the shared package's exported ResolveFile —
+// pure path resolution (case-insensitive .gguf suffix, or a directory's
+// sole *.gguf), no profile/mlx dependency, so no reason to keep a private
+// duplicate. hasASCIIInsensitiveSuffix stays below: DiscoverModels calls it
+// directly too.
 func resolveGGUFFile(modelPath string) (string, error) {
-	// Case-insensitive .gguf suffix check without allocating a lowered
-	// copy of modelPath. Real callers always pass lowercase paths, but
-	// stay lenient to the historical .GGUF spelling.
-	if hasASCIIInsensitiveSuffix(modelPath, ".gguf") {
-		return modelPath, nil
-	}
-
-	ggufs := core.PathGlob(core.PathJoin(modelPath, "*.gguf"))
-	switch len(ggufs) {
-	case 0:
-		return "", errGGUFNoFile
-	case 1:
-		return ggufs[0], nil
-	default:
-		return "", errGGUFMultipleFiles
-	}
+	return sharedgguf.ResolveFile(modelPath)
 }
 
 // hasASCIIInsensitiveSuffix is a zero-alloc ASCII case-insensitive

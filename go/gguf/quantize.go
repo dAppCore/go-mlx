@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -465,19 +466,12 @@ func quantizeGGUFResultError(result core.Result) error {
 // string. Used by callers that report failures from the gguf validation path.
 //
 //	msg := gguf.ValidationSummary(info.ValidationIssues)
+//
+// Delegates to the shared package — ValidationIssue is a type alias onto
+// sharedgguf.ValidationIssue (see info.go), so the slice passes straight
+// through with no conversion.
 func ValidationSummary(issues []ValidationIssue) string {
-	if len(issues) == 0 {
-		return "unknown validation failure"
-	}
-	parts := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		if issue.Tensor != "" {
-			parts = append(parts, core.Concat(issue.Code, ":", issue.Tensor))
-			continue
-		}
-		parts = append(parts, issue.Code)
-	}
-	return core.Join(", ", parts...)
+	return sharedgguf.ValidationSummary(issues)
 }
 
 func samePath(a, b string) bool {
