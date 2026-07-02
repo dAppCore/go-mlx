@@ -67,10 +67,10 @@ var stripThinkingCases = []string{
 	"head<|channel>mid<channel|>", // block at end, leading text present
 	"<|channel>a<channel|><|channel>b<channel|>tail",
 	"text <channel|> close then <|channel>open<channel|> done",
-	"<|channel>",                                // bare open, no close
-	"head<|channel>unclosed",                    // leading text + unclosed
-	"<|channel>a<|channel>b<channel|>c",         // two opens, one close
-	"<|channel>x<channel|>y<channel|>z",         // stray close inside visible suffix
+	"<|channel>",                                 // bare open, no close
+	"head<|channel>unclosed",                     // leading text + unclosed
+	"<|channel>a<|channel>b<channel|>c",          // two opens, one close
+	"<|channel>x<channel|>y<channel|>z",          // stray close inside visible suffix
 	"<|channel>a<channel|>vis<|channel>unclosed", // block then unclosed → general loop
 }
 

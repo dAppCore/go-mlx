@@ -138,8 +138,12 @@ func TestVisionLoad_BuildVisionModel_MissingLayerWeight_Bad(t *testing.T) {
 func TestVisionLoad_ValidateEncoderLayer_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
-	ones := func() *metal.RMSNormModule { return &metal.RMSNormModule{Weight: gemma4Ones([]int32{gemma4VisionHidden})} }
-	lin := func() *metal.Linear { return metal.NewLinear(seqArray(0.1, gemma4VisionHidden, gemma4VisionHidden), nil) }
+	ones := func() *metal.RMSNormModule {
+		return &metal.RMSNormModule{Weight: gemma4Ones([]int32{gemma4VisionHidden})}
+	}
+	lin := func() *metal.Linear {
+		return metal.NewLinear(seqArray(0.1, gemma4VisionHidden, gemma4VisionHidden), nil)
+	}
 	full := func() *Gemma4VisionEncoderLayer {
 		return &Gemma4VisionEncoderLayer{
 			InputNorm:    ones(),
