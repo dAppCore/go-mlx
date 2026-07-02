@@ -23,7 +23,7 @@ type epochBranchModel struct {
 	gen    string
 }
 
-func (m epochBranchModel) ModelType() string    { return "epoch-branch" }
+func (m epochBranchModel) ModelType() string     { return "epoch-branch" }
 func (m epochBranchModel) Info() spine.ModelInfo { return spine.ModelInfo{} }
 func (m epochBranchModel) Generate(string, ...spine.GenerateOption) (string, error) {
 	return m.gen, m.genErr

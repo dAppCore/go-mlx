@@ -86,7 +86,7 @@ type smokeEpochModel struct {
 }
 
 func (m smokeEpochModel) ModelType() string     { return "smoke-epoch" }
-func (m smokeEpochModel) Info() spine.ModelInfo  { return m.info }
+func (m smokeEpochModel) Info() spine.ModelInfo { return m.info }
 func (m smokeEpochModel) Generate(string, ...spine.GenerateOption) (string, error) {
 	return m.gen, nil
 }
@@ -104,13 +104,13 @@ func (epochSmokeTokenizer) Encode(s string) []int32 {
 	}
 	return []int32{1}
 }
-func (epochSmokeTokenizer) Decode([]int32) string    { return "" }
-func (epochSmokeTokenizer) DecodeOne(int32) string   { return "" }
+func (epochSmokeTokenizer) Decode([]int32) string        { return "" }
+func (epochSmokeTokenizer) DecodeOne(int32) string       { return "" }
 func (epochSmokeTokenizer) TokenID(string) (int32, bool) { return 0, false }
-func (epochSmokeTokenizer) IDToken(int32) string     { return "" }
-func (epochSmokeTokenizer) BOS() int32               { return 0 }
-func (epochSmokeTokenizer) EOS() int32               { return 4 }
-func (epochSmokeTokenizer) HasBOSToken() bool        { return false }
+func (epochSmokeTokenizer) IDToken(int32) string         { return "" }
+func (epochSmokeTokenizer) BOS() int32                   { return 0 }
+func (epochSmokeTokenizer) EOS() int32                   { return 4 }
+func (epochSmokeTokenizer) HasBOSToken() bool            { return false }
 
 func newEpochSmokeTokenizer() *spine.Tokenizer {
 	return spine.NewTokenizer(epochSmokeTokenizer{})
@@ -273,7 +273,7 @@ func TestSftEpochMetal_RunSFTBatchGroup_EvalError(t *testing.T) {
 // eval-error arm.
 type smokeEpochErrModel struct{}
 
-func (smokeEpochErrModel) ModelType() string    { return "smoke-epoch-err" }
+func (smokeEpochErrModel) ModelType() string     { return "smoke-epoch-err" }
 func (smokeEpochErrModel) Info() spine.ModelInfo { return spine.ModelInfo{} }
 func (smokeEpochErrModel) Generate(string, ...spine.GenerateOption) (string, error) {
 	return "", context.DeadlineExceeded

@@ -84,5 +84,9 @@ func benchWriteQuantizedStream(b *testing.B, format QuantizeFormat, blockSize in
 
 func BenchmarkWriteQuantizedStream_Q8_0(b *testing.B) { benchWriteQuantizedStream(b, QuantizeQ8_0, 32) }
 func BenchmarkWriteQuantizedStream_Q4_0(b *testing.B) { benchWriteQuantizedStream(b, QuantizeQ4_0, 32) }
-func BenchmarkWriteQuantizedStream_Q4_K(b *testing.B) { benchWriteQuantizedStream(b, QuantizeQ4_K, 256) }
-func BenchmarkWriteQuantizedStream_Q6_K(b *testing.B) { benchWriteQuantizedStream(b, QuantizeQ6_K, 256) }
+func BenchmarkWriteQuantizedStream_Q4_K(b *testing.B) {
+	benchWriteQuantizedStream(b, QuantizeQ4_K, 256)
+}
+func BenchmarkWriteQuantizedStream_Q6_K(b *testing.B) {
+	benchWriteQuantizedStream(b, QuantizeQ6_K, 256)
+}

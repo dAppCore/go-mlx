@@ -1507,12 +1507,12 @@ func TestSafetensors_Float16ToFloat32_Good(t *testing.T) {
 		half uint16
 		want float32
 	}{
-		{0x0000, 0},       // +0
-		{0x3c00, 1},       // 1.0
-		{0xc000, -2},      // -2.0
-		{0x3800, 0.5},          // 0.5
-		{0x4000, 2},            // 2.0
-		{0x3555, 0.33325195},   // ~1/3 (nearest half)
+		{0x0000, 0},          // +0
+		{0x3c00, 1},          // 1.0
+		{0xc000, -2},         // -2.0
+		{0x3800, 0.5},        // 0.5
+		{0x4000, 2},          // 2.0
+		{0x3555, 0.33325195}, // ~1/3 (nearest half)
 	}
 	for _, tc := range cases {
 		got := Float16ToFloat32(tc.half)

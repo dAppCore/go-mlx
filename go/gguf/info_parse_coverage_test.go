@@ -364,7 +364,7 @@ func TestParseGGUF_TruncatedBody_Bad(t *testing.T) {
 	noDim.Write(header(1, 0))
 	binary.Write(&noDim, binary.LittleEndian, uint64(4))
 	noDim.WriteString("blk0")
-	binary.Write(&noDim, binary.LittleEndian, uint32(2)) // ndim = 2
+	binary.Write(&noDim, binary.LittleEndian, uint32(2))  // ndim = 2
 	binary.Write(&noDim, binary.LittleEndian, uint64(32)) // only 1 dim follows
 	if _, _, err := parseGGUF(write(t, noDim.Bytes())); err == nil {
 		t.Fatal("parseGGUF(missing tensor dimension) error = nil")
@@ -404,7 +404,7 @@ func TestReadStringIntoArena_InArenaShortRead_Bad(t *testing.T) {
 // probe hits — so the singleton is returned without touching the arena.
 func TestReadStringIntoArena_InternedOverflow_Ugly(t *testing.T) {
 	scratch := make([]byte, ggufTestScratchSize) // 64 -> holds the 20-byte key
-	a := make([]byte, 0, 0)                       // zero spare -> overflow branch
+	a := make([]byte, 0, 0)                      // zero spare -> overflow branch
 	payload := stringPayload("general.architecture")
 	got, err := readStringIntoArena(bytes.NewReader(payload), scratch, &a)
 	if err != nil {
