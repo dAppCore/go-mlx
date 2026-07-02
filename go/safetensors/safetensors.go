@@ -19,7 +19,12 @@
 // because the decode runs in a per-element hot loop worth hardware
 // acceleration. A caller with a small file and no streaming/perf
 // constraint should reach for the shared package directly rather than
-// route through this one.
+// route through this one. One narrow exception: Float16ToFloat32 is kept
+// as a thin compatibility wrapper over the shared package's byte-identical
+// scalar conversion, because go/pkg/native's KV snapshot decoder already
+// imports it under this name; this package's own internal callers (the
+// NEON dispatch's scalar fallback) call the shared package directly rather
+// than route through the wrapper.
 //
 //	idx, err := safetensors.ReadIndex("/models/model-00001.safetensors")
 //	if err != nil { return err }
@@ -35,6 +40,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
+	sharedsafetensors "dappco.re/go/inference/safetensors"
 )
 
 // Sentinel errors hoisted to package vars — see W9-Y in header_parse.go
@@ -727,23 +733,12 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 	return values, nil
 }
 
+// Float16ToFloat32 converts one IEEE-754 half-precision (binary16) bit
+// pattern to float32, handling zero, subnormals, infinities, and NaN.
+// Delegates to dappco.re/go/inference/safetensors's byte-identical scalar
+// conversion (see the package doc for why this one symbol wraps rather
+// than requiring callers to migrate). New code within this package calls
+// the shared package directly instead — see float16_scalar.go.
 func Float16ToFloat32(value uint16) float32 {
-	sign := uint32(value>>15) & 0x1
-	exp := int((value >> 10) & 0x1f)
-	frac := uint32(value & 0x03ff)
-	if exp == 0 {
-		if frac == 0 {
-			return math.Float32frombits(sign << 31)
-		}
-		for frac&0x0400 == 0 {
-			frac <<= 1
-			exp--
-		}
-		exp++
-		frac &= 0x03ff
-	} else if exp == 31 {
-		return math.Float32frombits((sign << 31) | 0x7f800000 | (frac << 13))
-	}
-	exp = exp + (127 - 15)
-	return math.Float32frombits((sign << 31) | (uint32(exp) << 23) | (frac << 13))
+	return sharedsafetensors.Float16ToFloat32(value)
 }

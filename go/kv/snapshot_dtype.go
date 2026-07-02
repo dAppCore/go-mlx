@@ -7,7 +7,7 @@ import (
 	"math"
 	"unsafe"
 
-	"dappco.re/go/mlx/safetensors"
+	sharedsafetensors "dappco.re/go/inference/safetensors"
 )
 
 func normalizeKVSnapshotTensorDType(dtype string) (string, int) {
@@ -143,7 +143,7 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 		copy(dst, raw)
 	case "float16":
 		for i := range values {
-			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
+			values[i] = sharedsafetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
 		}
 	case "bfloat16":
 		for i := range values {
