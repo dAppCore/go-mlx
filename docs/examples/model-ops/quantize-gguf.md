@@ -1,6 +1,6 @@
 # Quantising Safetensors → GGUF
 
-`QuantizeModelPackToGGUF` reads a HuggingFace safetensors model pack and writes a GGUF checkpoint with the requested quantisation format. Native Go — no `llama.cpp`, no Python, no external tools.
+`gguf.QuantizeModelPack` (package `dappco.re/go/mlx/gguf`) reads a HuggingFace safetensors model pack and writes a GGUF checkpoint with the requested quantisation format. Native Go — no `llama.cpp`, no Python, no external tools. The per-block quantisation maths (`Quantize`/`AppendQuantize`) live in the shared `dappco.re/go/inference/gguf` package so every engine (mlx, rocm, cpu) produces byte-identical GGUF blocks; this package owns the model-pack orchestration, streaming tensor I/O, and metadata copy around that shared codec.
 
 ## Q4_K_M (Recommended Default)
 
@@ -13,13 +13,21 @@ import (
     "log"
 
     mlx "dappco.re/go/mlx"
+    "dappco.re/go/mlx/gguf"
 )
 
 func main() {
-    result, err := mlx.QuantizeModelPackToGGUF(context.Background(), mlx.QuantizeGGUFOptions{
-        ModelPath:  "/models/qwen3-8b",
-        OutputPath: "/models/qwen3-8b-q4km.gguf",
-        Format:     mlx.GGUFQuantizeQ4_K_M,
+    ctx := context.Background()
+
+    source, err := mlx.ValidateModelPack("/models/qwen3-8b")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := gguf.QuantizeModelPack(ctx, gguf.QuantizeOptions{
+        SourcePack: source,
+        OutputPath: "/models/qwen3-8b-q4km",
+        Format:     gguf.QuantizeQ4_K_M,
         Labels:     map[string]string{"target": "phone-deploy", "source_revision": "v1.2"},
     })
     if err != nil {
@@ -27,29 +35,26 @@ func main() {
     }
 
     fmt.Printf("%d/%d tensors quantised\n", result.QuantizedTensors, result.TensorCount)
-    fmt.Printf("Output: %s (%.2f GB)\n", result.WeightPath, gibibytes(result.WeightPath))
-    if len(result.Notes) > 0 {
-        fmt.Println("Notes:")
-        for _, note := range result.Notes {
-            fmt.Println(" ·", note)
-        }
+    fmt.Printf("Output: %s\n", result.WeightPath)
+    for _, note := range result.Notes {
+        fmt.Println(" ·", note)
     }
 }
 ```
 
-A typical Qwen3-8B → Q4_K_M run takes ~90 s on M3 Ultra and produces a ~4.6 GB file.
+`OutputPath` must be a model-pack directory (not a bare `.gguf` file) — `QuantizeModelPack` writes `model.gguf` plus copied metadata into it. A typical Qwen3-8B → Q4_K_M run takes roughly a minute on M3 Ultra.
 
 ## Comparing Formats
 
 ```go
-for _, format := range []mlx.GGUFQuantizeFormat{
-    mlx.GGUFQuantizeQ8_0,    // 8-bit, ~8 GB, near-lossless
-    mlx.GGUFQuantizeQ4_K_M,  // 4.5-bit, ~4.6 GB, recommended
-    mlx.GGUFQuantizeQ4_0,    // 4-bit, ~4.3 GB, fastest
+for _, format := range []gguf.QuantizeFormat{
+    gguf.QuantizeQ8_0,   // 8-bit, near-lossless
+    gguf.QuantizeQ4_K_M, // ~4.5-bit K-quant, recommended
+    gguf.QuantizeQ4_0,   // 4-bit, fastest
 } {
-    out := fmt.Sprintf("/models/qwen3-8b-%s.gguf", string(format))
-    res, err := mlx.QuantizeModelPackToGGUF(ctx, mlx.QuantizeGGUFOptions{
-        ModelPath:  "/models/qwen3-8b",
+    out := fmt.Sprintf("/models/qwen3-8b-%s", string(format))
+    res, err := gguf.QuantizeModelPack(ctx, gguf.QuantizeOptions{
+        SourcePack: source,
         OutputPath: out,
         Format:     format,
     })
@@ -60,6 +65,8 @@ for _, format := range []mlx.GGUFQuantizeFormat{
 }
 ```
 
+Other supported formats: `QuantizeQ5_0`, `QuantizeQ4_K`, `QuantizeQ5_K`, `QuantizeQ6_K`, `QuantizeQ8_K`, `QuantizeQ3_K`, `QuantizeQ2_K`.
+
 ## What Gets Quantised
 
 The orchestrator quantises matmul weight tensors (attention, MLP). It deliberately leaves these unchanged:
@@ -68,26 +75,26 @@ The orchestrator quantises matmul weight tensors (attention, MLP). It deliberate
 - **Norm scales** — already small, no benefit from quantisation
 - **Per-layer biases** — small, kept at full precision
 
-`result.Notes` records any per-tensor decisions (e.g. "fell back to F16 for embed_tokens — output dim too small for Q4_K block").
+`result.Notes` records any per-tensor decisions (e.g. a fallback to F16 for a tensor too small for the requested K-quant block size).
 
 ## Loading the Output
 
-The produced file is a standard GGUF checkpoint and loads with no extra flags:
+The produced pack is a standard GGUF checkpoint and loads with no extra flags:
 
 ```go
-model, err := mlx.LoadModel("/models/qwen3-8b-q4km.gguf")
+model, err := mlx.LoadModel(result.OutputPath)
 ```
 
 Architecture, tokenizer, and quant format are all read from the GGUF metadata.
 
 ## Inspecting Without Loading
 
-`ReadGGUFInfo` reads just the metadata header — fast, no weight materialisation:
+`gguf.ReadInfo` reads just the metadata header — fast, no weight materialisation:
 
 ```go
-info, _ := mlx.ReadGGUFInfo("/models/qwen3-8b-q4km.gguf")
+info, err := gguf.ReadInfo(result.WeightPath)
 fmt.Printf("arch=%s vocab=%d quant=%s tensors=%d\n",
-    info.Architecture, info.VocabSize, info.QuantFormat, info.TensorCount)
+    info.Architecture, info.VocabSize, info.QuantType, info.TensorCount)
 ```
 
 ## See Also

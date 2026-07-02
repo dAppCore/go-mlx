@@ -33,16 +33,18 @@ Supported GGUF quant formats on read: `Q8_0`, `Q4_0`, `Q4_K_M` (and several othe
 ## Inspecting GGUF Metadata Without Loading
 
 ```go
-info, err := mlx.ReadGGUFInfo("/models/qwen3-8b-q4_k_m.gguf")
+import "dappco.re/go/mlx/gguf"
+
+info, err := gguf.ReadInfo("/models/qwen3-8b-q4_k_m.gguf")
 fmt.Printf("arch=%s vocab_size=%d quant=%s tensors=%d\n",
-    info.Architecture, info.VocabSize, info.QuantFormat, info.TensorCount)
+    info.Architecture, info.VocabSize, info.QuantType, info.TensorCount)
 ```
 
 Useful for build pipelines that need to validate model packs before deploy.
 
 ## Producing GGUF From Safetensors
 
-If you have a finetuned safetensors pack and want a GGUF checkpoint for cross-tool deployment, use `QuantizeModelPackToGGUF` — see [`../model-ops/quantize-gguf.md`](../model-ops/quantize-gguf.md).
+If you have a finetuned safetensors pack and want a GGUF checkpoint for cross-tool deployment, use `gguf.QuantizeModelPack` — see [`../model-ops/quantize-gguf.md`](../model-ops/quantize-gguf.md).
 
 ## Memory Footprint Comparison (Qwen3-8B)
 

@@ -140,8 +140,26 @@ The same file implements `state.Forker.ForkState` — spawns a **new** metal.Mod
 
 Wake and Sleep emit probe events at every stage — bundle decode start/end, block read with hash, KV restore with prefix tokens, sleep block write with parent-reused count. Consumers (core/ide memory panel) render real-time progress without scraping internal logs.
 
+## CLI: `generate -state`
+
+`lthn-mlx generate -state <name>` (`cmd/mlx/generate.go`) is the simplest consumer of this Wake/Sleep path — a no-prompt-replay conversation turn from the command line, backed by the same `WakeAgentMemory`/`SleepAgentMemory` session methods documented above (via `agent.WakeOptions`/`agent.SleepOptions`):
+
+```
+lthn-mlx generate -state chat1 -prompt "Hello, who are you?" <model>
+lthn-mlx generate -state chat1 -prompt "And what did I just ask you?" <model>
+```
+
+Each invocation is one turn: if `chat1` already exists in the store it is woken (KV restored from `.kv` blocks, no re-prefill of prior turns) and only the new turn is appended; otherwise the prompt opens a fresh session. After generation the session sleeps back to the store, so the next invocation picks up where this one left off. The `-native` flag routes the same `-state` turn loop through the no-cgo native engine (`pkg/model` + `pkg/native`) instead of the cgo Metal engine.
+
+**Chat-framed by default.** Each turn is rendered through the model's chat template rather than treated as raw completion: a fresh session gets the full template from empty history (`FormatChatPrompt` — BOS, optional system/thinking preamble, the user turn, the assistant opener); a woken session gets only the new turn (`FormatChatContinuation` — closes the previously open assistant turn, renders the new user turn, reopens the assistant header) with no replay of the retained prefix. This mirrors `serve`'s stateless-request conversation continuity (`conversation_continuity.go`).
+
+**`-raw` opts out of chat-framing.** With `-raw`, the prompt prefills or appends byte-for-byte with no template and no assistant opener — the original low-level completion-loop turn, useful as a token-loop instrument when you want to control the exact bytes going in. `-raw` is ignored when `-state` is not set.
+
+**Named slots.** `-state <name>` resolves to entry URI `mlx://agent/<name>` (index URI `mlx://agent/<name>/index`) in the state store — one name is one durable conversation slot, reusable across process runs. `-state-store <path>` overrides the store file; the default is `~/Lethean/data/state/agent.kv`.
+
 ## Used by
 
+- `lthn-mlx generate -state` — CLI conversation-turn loop, chat-framed by default, named store slots (see above)
 - `cmd/violet/` — sidecar exposes Wake/Sleep/Fork over Unix socket
 - `core/ide` (planned) — agent inspector panel calls Wake when user selects a bundle
 - `go-ai/ai/book_state_demo.go` — BookState wake before teacher call

@@ -46,6 +46,17 @@ mlx-c v0.4.1                                     <-- C API (fetched by CMake)
 Apple MLX / Metal / Accelerate                    <-- GPU compute
 ```
 
+## Engine ↔ Shared Package Split
+
+go-mlx's non-Metal packages (`gguf`, `merge`, `hf`, `ebook`, `distill`, `grpo`, `train`, `lora`, `artifact`, `pkg/scheme`) delegate their format/codec/loss/checkpoint/client primitives to the shared `dappco.re/go/inference` module (`external/go-inference`), the same primitives every LEM Engine consumes — mlx here, and its rocm/cpu siblings alike. Concretely, `dappco.re/go/inference` owns the GGUF quantisation kernels (`inference/gguf.Quantize`/`AppendQuantize`), the model-merge tensor-blend contract (`inference/merge`), HuggingFace client/cache/JANG-classification internals (`inference/hf`), the model-as-book renderer (`inference/modelmgmt`), distillation/GRPO/SFT checkpoint persistence and loss/reward maths (`inference/checkpoint`, `inference/distill`, `inference/grpo`, `inference/train`), the pluggable-component contract layer for weight quant/KV-state/sequence-mixer schemes (`inference/scheme`), LoRA adapter inspection (`inference/lora`), and the versioned session-state export envelope (`inference/state.ExportArtifact`, which `go/artifact.Export` delegates onto). Local packages of the same name are either thin delegates that keep the call signature and package path stable for existing callers, or genuine type aliases onto the shared definitions.
+
+What stays local to go-mlx:
+
+- **The engines** — the Metal CGO engine (`internal/metal/`, wrapped by this root package) and the no-cgo native engine (`pkg/model` + `pkg/native`)
+- **Streaming safetensors I/O** (`go/safetensors`) — the bounded-memory reader/writer used on the hot weight-loading path (chunked reads, NEON F16 decode); the shared `inference/safetensors` package covers the simpler whole-file codec and is deliberately not wrapped here — see that package's doc comment for the split rationale
+- **The model zoo** (`pkg/metal/model/*` and its native-engine counterparts) — Gemma 3/4, Qwen 2/3, Llama 3, MiniMax M2, and the growing set of attention/state variants (GLA, Mamba2, RetNet, DeltaNet, MLA, NSA, MoBA, …)
+- **The loops** — generation, chat, batch inference, and the SFT/distillation/GRPO training loops, which call into the shared checkpoint/loss/reward maths but keep the Metal/native plumbing, CLI surface, and loop control local
+
 ## CGO Binding
 
 ### Build Chain

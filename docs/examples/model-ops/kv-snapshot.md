@@ -1,44 +1,32 @@
 # KV Snapshots — Save & Restore Generation State
 
-A `KVSnapshot` is a portable, self-contained binary capture of a model's K/V cache, the most recent logits, the token offset, and the generated-token history. With a snapshot you can:
+A `kv.Snapshot` (package `dappco.re/go/mlx/kv`) is a portable, self-contained binary capture of a model's K/V cache, the most recent logits, the token offset, and the generated-token history. With a snapshot you can:
 
 - Resume a long generation across processes (interrupt + restart later)
 - Try multiple sampler settings against the same KV state without re-prefilling
 - Inspect post-RoPE K vectors per layer per head for attention analysis
 - Diff KV growth between two model variants
 
-## Saving a Snapshot
+## Capturing And Saving
 
-The `metalAdapter` exposes attention/KV state via the `inference.AttentionInspector` interface (or a `KVStateProvider`-style snapshot). After running prefill or a few decode steps, capture and save:
+`*mlx.Model` (the value `mlx.LoadModel` returns) captures a snapshot directly — no interface assertion needed:
 
 ```go
 package main
 
 import (
-    "context"
     "log"
 
-    "dappco.re/go/inference"
-    _ "dappco.re/go/mlx"
     mlx "dappco.re/go/mlx"
 )
 
 func main() {
-    model, err := inference.LoadModel("/models/qwen3-8b/")
+    model, err := mlx.LoadModel("/models/qwen3-8b/")
     if err != nil { log.Fatal(err) }
     defer model.Close()
 
-    ctx := context.Background()
-    for tok := range model.Generate(ctx, "Once upon a time", inference.WithMaxTokens(64)) {
-        _ = tok
-    }
-    if err := model.Err(); err != nil { log.Fatal(err) }
-
-    inspector, ok := model.(inference.AttentionInspector)
-    if !ok {
-        log.Fatal("model does not expose AttentionInspector")
-    }
-    snap := inspector.SnapshotKV()
+    snap, err := model.CaptureKV("Once upon a time")
+    if err != nil { log.Fatal(err) }
 
     // Default: lossless Float32 encoding
     if err := snap.Save("/runs/story.kv"); err != nil {
@@ -47,20 +35,24 @@ func main() {
 }
 ```
 
+`CaptureKV` runs a single prefill pass over the prompt and returns the resulting cache. `CaptureKVChunks` does the same from a streamed sequence of prompt chunks instead of one large string.
+
 ## Lossy Q8 Encoding
 
-For long contexts the snapshot can be large. `KVSnapshotEncodingQ8` stores symmetric int8 + per-tensor scale, ~4× smaller. Generation is approximate after restore but usually indistinguishable in practice for short continuations:
+For long contexts the snapshot can be large. `kv.EncodingQ8` stores symmetric int8 + per-tensor scale, ~4× smaller. Generation is approximate after restore but usually indistinguishable in practice for short continuations:
 
 ```go
-err := snap.SaveWithOptions("/runs/story.q8.kv", mlx.KVSnapshotSaveOptions{
-    KVEncoding: mlx.KVSnapshotEncodingQ8,
+import "dappco.re/go/mlx/kv"
+
+err := snap.SaveWithOptions("/runs/story.q8.kv", kv.SaveOptions{
+    KVEncoding: kv.EncodingQ8,
 })
 ```
 
 ## Loading & Inspecting
 
 ```go
-snap, err := mlx.LoadKVSnapshot("/runs/story.kv")
+snap, err := kv.Load("/runs/story.kv")
 if err != nil { log.Fatal(err) }
 
 fmt.Printf("architecture: %s\n", snap.Architecture)
@@ -75,38 +67,44 @@ for layer := 0; layer < snap.NumLayers; layer++ {
     for head := 0; head < snap.NumHeads; head++ {
         h, ok := snap.Head(layer, head)
         if !ok { continue }
-        // h.K and h.V are []float32 of length HeadDim * SeqLen
-        analyseAttentionHead(h.K, h.V)
+        // h.Key and h.Value are []float32 of length HeadDim * SeqLen
+        analyseAttentionHead(h.Key, h.Value)
     }
 }
 ```
 
-## Restoring Into a Fresh Model Run
+## Restoring Into A Fresh Model Run
 
-The typical restore path runs through the same model that produced the snapshot. Apply the snapshot's `Tokens` and `Generated` history during model warmup, then continue decode from `TokenOffset`:
+`WarmPromptCacheFromKV` installs a captured K/V prefix directly as a model's prompt cache — an exact-bit restore, not a re-prefill:
 
 ```go
-restoredModel, err := inference.LoadModel(modelPath)
+restoredModel, err := mlx.LoadModel(modelPath)
 if err != nil { log.Fatal(err) }
 
-// Re-prefill from the snapshot's tokens; the model rebuilds KV state matching the snapshot.
-restoredModel.WarmFromTokens(append(snap.Tokens, snap.Generated...))
+if err := restoredModel.WarmPromptCacheFromKV(snap); err != nil {
+    log.Fatal(err)
+}
 
-// Continue generation:
-for tok := range restoredModel.Generate(ctx, "", inference.WithMaxTokens(128)) {
+// Continue generation from the restored prefix:
+reply, err := restoredModel.Generate("", mlx.WithMaxTokens(128))
+if err != nil { log.Fatal(err) }
+fmt.Println(reply)
+
+// Or stream it instead:
+for tok := range restoredModel.GenerateStream(ctx, "", mlx.WithMaxTokens(128)) {
     fmt.Print(tok.Text)
 }
 ```
 
-Exact-bit KV restore is on the roadmap (`docs/model-state-roadmap.md`) — today's flow re-prefills from the captured token history, which is bit-identical for deterministic samplers.
+The durable session Wake/Sleep path (`Session.WakeAgentMemory` / `SleepAgentMemory` — see [`docs/memory/agent_memory.md`](../../docs/memory/agent_memory.md)) builds on the same KV-block machinery for cross-process, named conversation state; reach for `WarmPromptCacheFromKV` directly when you already hold a `*kv.Snapshot` in-process.
 
 ## Format
 
 | | |
 |---|---|
 | Magic | `MLXKV001` |
-| Version | `KVSnapshotVersion = 4` |
-| Encoding | `KVSnapshotEncodingFloat32` (default) or `KVSnapshotEncodingQ8` |
+| Version | `kv.SnapshotVersion = 6` |
+| Encoding | `kv.KVSnapshotEncodingFloat32` (default), `kv.EncodingQ8`, or `kv.EncodingNative` |
 | File | Binary, big-endian length prefixes, `MarshalBinary`/`UnmarshalBinary` round-trip |
 
 The snapshot is fully self-describing — the architecture name, head/layer counts, head dimension, and number of query heads are all stored, so loaders can validate against the model they're being applied to.
@@ -114,5 +112,5 @@ The snapshot is fully self-describing — the architecture name, head/layer coun
 ## See Also
 
 - [Model operations docs](../../docs/model-operations.md#kv-snapshot) — full reference
-- [Attention probe](../eval/attention-probe.md) — same K-vector access via the live `AttentionInspector`
-- [Model state roadmap](../../docs/model-state-roadmap.md) — exact-bit restore, state bundles, longer story
+- [Attention probe](../eval/attention-probe.md) — the lighter, in-memory-only K-vector capture (`InspectAttention`) for ad-hoc analysis instead of session persistence
+- [Agent memory](../../docs/memory/agent_memory.md) — the durable, named-slot Wake/Sleep path built on the same KV-block format

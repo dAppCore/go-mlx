@@ -33,6 +33,12 @@ type AdapterInfo struct {
 
 `lora.InspectAdapter` reads `adapter_config.json`, hashes the config plus sorted
 adapter weight files, and returns this identity without loading the base model.
+The read-and-hash implementation itself now lives in the shared
+`dappco.re/go/inference/lora` package — this package's `InspectAdapter`/`Inspect`
+are thin delegates onto it, so go-mlx, go-rocm, and go-cpu share one
+adapter-identity shape and one inspection implementation instead of each engine
+maintaining a byte-identical copy. The local call signature stays stable for
+existing callers (`fuse.go`, `WithAdapterPath`, `Model.LoadLoRA`).
 Inspection preserves missing rank/alpha/scale fields so validation paths can
 reject incomplete metadata where they must. Native load paths may fill loader
 defaults after the adapter is actually attached; root `ModelInfo`, metrics, and
