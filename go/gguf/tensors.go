@@ -216,6 +216,46 @@ func ggufDequantizeQ4_0ToF16(raw []byte, elements uint64) ([]byte, error) {
 	return out, nil
 }
 
+// float32ToFloat16 encodes value as an IEEE-754 binary16 bit pattern. Used
+// by the dequantise-on-load path above to re-encode a scaled Q4_0/Q8_0
+// element back to f16 (mirroring MLX's native load format). Relocated here
+// from quantize_kernels.go when the nine quantise kernels moved to the
+// shared dappco.re/go/inference/gguf package — this is the one conversion
+// helper the dequantise path still needs locally.
+func float32ToFloat16(value float32) uint16 {
+	bits := math.Float32bits(value)
+	sign := uint16((bits >> 16) & 0x8000)
+	exp := int((bits >> 23) & 0xff)
+	frac := bits & 0x7fffff
+	if exp == 255 {
+		if frac == 0 {
+			return sign | 0x7c00
+		}
+		return sign | 0x7e00
+	}
+	exp = exp - 127 + 15
+	if exp >= 31 {
+		return sign | 0x7c00
+	}
+	if exp <= 0 {
+		if exp < -10 {
+			return sign
+		}
+		frac |= 0x800000
+		shift := uint32(14 - exp)
+		half := uint16(frac >> shift)
+		if (frac>>(shift-1))&1 != 0 {
+			half++
+		}
+		return sign | half
+	}
+	half := sign | uint16(exp<<10) | uint16(frac>>13)
+	if frac&0x00001000 != 0 {
+		half++
+	}
+	return half
+}
+
 func ggufFloat16ToFloat32(value uint16) float32 {
 	sign := uint32(value>>15) & 0x1
 	exp := int((value >> 10) & 0x1f)

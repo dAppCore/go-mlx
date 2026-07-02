@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -351,23 +352,16 @@ func TestQuantizeGGUFTensor_Helpers_Good(t *testing.T) {
 		t.Fatalf("q4 tensor = %+v len=%d", q4, len(q4.Data))
 	}
 
-	if got := maxAbsFloat32([]float32{-1, 0.5, 2}); got != 2 {
-		t.Fatalf("maxAbsFloat32() = %f, want 2", got)
-	}
+	// maxAbsFloat32/clampInt/appendUint16LE direct-unit-test assertions were
+	// removed here: those kernel-internal helpers were deleted with
+	// quantize_kernels.go now that quantizeGGUFTensor dispatches through
+	// sharedgguf.Quantize — the shared dappco.re/go/inference/gguf package
+	// carries its own coverage for its private kernel helpers.
 	if got := alignPadding(33, 32); got != 31 {
 		t.Fatalf("alignPadding(33,32) = %d, want 31", got)
 	}
 	if got := alignPadding(33, 0); got != 0 {
 		t.Fatalf("alignPadding(33,0) = %d, want 0", got)
-	}
-	if got := clampInt(-1, 0, 4); got != 0 {
-		t.Fatalf("clampInt low = %d, want 0", got)
-	}
-	if got := clampInt(9, 0, 4); got != 4 {
-		t.Fatalf("clampInt high = %d, want 4", got)
-	}
-	if got := appendUint16LE(nil, 0x1234); len(got) != 2 || got[0] != 0x34 || got[1] != 0x12 {
-		t.Fatalf("appendUint16LE = %v", got)
 	}
 }
 
@@ -435,9 +429,9 @@ func TestQuantize_QuantizeModelPack_FormatRoundTrip_Good(t *testing.T) {
 	// Round-trip the GGUF quant formats whose encoder block layout matches
 	// the canonical ggml type-size table (lib/gguflib/gguflib.c) through the
 	// public QuantizeModelPack -> ReadInfo path, exercising the previously-
-	// uncovered quantizeQ5_0 and quantizeQ5_K (+ quantizeKBlock / packKScales)
-	// encoders and asserting the produced tensor's ggml type, bit width and
-	// block size survive the write -> parse trip.
+	// uncovered Q5_0 and Q5_K encoders (dispatched via sharedgguf.Quantize)
+	// and asserting the produced tensor's ggml type, bit width and block
+	// size survive the write -> parse trip.
 	//
 	// Q2_K / Q3_K / Q6_K / Q8_K have their own end-to-end round-trip in
 	// TestQuantizeModelPack_AllKQuants_Good (quantize_kquant_test.go),
@@ -636,6 +630,19 @@ func ascendingFloat32s(n int) []float32 {
 		out[i] = float32(i%17-8) / 4
 	}
 	return out
+}
+
+// mustQuantizeQ8_0 produces Q8_0-quantised fixture bytes via the shared
+// kernel dispatch (dappco.re/go/inference/gguf) — used where a test needs
+// valid pre-quantised payload bytes but is not itself exercising the
+// quantiser.
+func mustQuantizeQ8_0(t testing.TB, values []float32) []byte {
+	t.Helper()
+	data, err := sharedgguf.Quantize(sharedgguf.QuantizeQ8_0, values)
+	if err != nil {
+		t.Fatalf("sharedgguf.Quantize(Q8_0): %v", err)
+	}
+	return data
 }
 
 func sourcePackFromDir(dir string) mp.ModelPack {

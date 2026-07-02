@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -205,33 +206,17 @@ type streamScratch struct {
 }
 
 func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int, scratch *streamScratch) (uint64, error) {
-	// Resolve the append-quantiser once outside the chunk loop — saves a
-	// switch per chunk (millions of chunks per multi-GB tensor). The
-	// append form writes into scratch.out[:0] so the quantised buffer is
-	// reused across chunks instead of a fresh make() per chunk.
-	var quantise func(out []byte, values []float32) []byte
-	switch format {
-	case QuantizeQ8_0:
-		quantise = appendQuantizeQ8_0
-	case QuantizeQ4_0:
-		quantise = appendQuantizeQ4_0
-	case QuantizeQ5_0:
-		quantise = appendQuantizeQ5_0
-	case QuantizeQ4_K:
-		quantise = appendQuantizeQ4_K
-	case QuantizeQ5_K:
-		quantise = appendQuantizeQ5_K
-	case QuantizeQ6_K:
-		quantise = appendQuantizeQ6_K
-	case QuantizeQ8_K:
-		quantise = appendQuantizeQ8_K
-	case QuantizeQ3_K:
-		quantise = appendQuantizeQ3_K
-	case QuantizeQ2_K:
-		quantise = appendQuantizeQ2_K
-	default:
-		return 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	// Validate the format once outside the chunk loop — mirrors the old
+	// per-chunk switch's default arm: an unsupported format must fail
+	// before the reader is even opened, not partway through the chunk
+	// loop. The per-chunk quantise call below dispatches through the
+	// shared kernel package (go-mlx no longer carries its own copy of the
+	// nine kernels — see quantize_kernels.go's removal); its own format
+	// check cannot fail once this one has passed.
+	if _, _, _, err := ggufQuantizeLayout(format); err != nil {
+		return 0, err
 	}
+	sharedFormat := sharedgguf.QuantizeFormat(format)
 
 	reader, err := safetensors.OpenReader(ref)
 	if err != nil {
@@ -253,7 +238,10 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 		if err != nil {
 			return written, err
 		}
-		scratch.out = quantise(scratch.out[:0], values)
+		scratch.out, err = sharedgguf.AppendQuantize(sharedFormat, scratch.out[:0], values)
+		if err != nil {
+			return written, core.E("writeQuantizedGGUFTensorStream", "shared kernel dispatch", err)
+		}
 		if _, err := file.Write(scratch.out); err != nil {
 			return written, err
 		}

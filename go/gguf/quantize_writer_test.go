@@ -49,7 +49,7 @@ func TestQuantizeWriter_writeQuantizedGGUFStream_Good(t *testing.T) {
 func TestQuantizeWriter_writeQuantizedGGUF_Good(t *testing.T) {
 	output := core.PathJoin(t.TempDir(), "buffered.gguf")
 	values := ascendingFloat32s(32)
-	data := quantizeQ8_0(values)
+	data := mustQuantizeQ8_0(t, values)
 	tensors := []ggufQuantizedTensor{{
 		Name:  "model.norm.weight",
 		Type:  TensorTypeQ8_0,

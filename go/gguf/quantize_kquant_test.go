@@ -9,11 +9,14 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	sharedgguf "dappco.re/go/inference/gguf"
 	"dappco.re/go/mlx/safetensors"
 )
 
 // This file is the payload-level guard for the K-quant encoders
-// (quantizeQ2_K / quantizeQ3_K / quantizeQ6_K / quantizeQ8_K). The
+// (sharedgguf.QuantizeQ2_K / QuantizeQ3_K / QuantizeQ6_K / QuantizeQ8_K,
+// dispatched via sharedgguf.Quantize — the nine kernels live in
+// dappco.re/go/inference/gguf, not this package). The
 // encoders were rewritten to the canonical ggml block layout
 // (lib/gguflib/gguflib.c + upstream ggml-common.h); these tests assert
 // the produced bytes at the decoder's struct-field offsets and that a
@@ -197,7 +200,10 @@ func noisyKQuantInput(nElems int) []float32 {
 
 func TestQuantizeKquant_dequantQ6KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
-	enc := quantizeQ6_K(in)
+	enc, err := sharedgguf.Quantize(sharedgguf.QuantizeQ6_K, in)
+	if err != nil {
+		t.Fatalf("sharedgguf.Quantize(Q6_K): %v", err)
+	}
 	if len(enc) != 3*210 {
 		t.Fatalf("Q6_K emitted %d bytes, want %d", len(enc), 3*210)
 	}
@@ -207,7 +213,10 @@ func TestQuantizeKquant_dequantQ6KRef_Good(t *testing.T) {
 
 func TestQuantizeKquant_dequantQ2KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
-	enc := quantizeQ2_K(in)
+	enc, err := sharedgguf.Quantize(sharedgguf.QuantizeQ2_K, in)
+	if err != nil {
+		t.Fatalf("sharedgguf.Quantize(Q2_K): %v", err)
+	}
 	if len(enc) != 3*84 {
 		t.Fatalf("Q2_K emitted %d bytes, want %d", len(enc), 3*84)
 	}
@@ -222,7 +231,10 @@ func TestQuantizeKquant_dequantQ2KRef_Good(t *testing.T) {
 
 func TestQuantizeKquant_dequantQ3KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
-	enc := quantizeQ3_K(in)
+	enc, err := sharedgguf.Quantize(sharedgguf.QuantizeQ3_K, in)
+	if err != nil {
+		t.Fatalf("sharedgguf.Quantize(Q3_K): %v", err)
+	}
 	if len(enc) != 3*110 {
 		t.Fatalf("Q3_K emitted %d bytes, want %d", len(enc), 3*110)
 	}
@@ -233,7 +245,10 @@ func TestQuantizeKquant_dequantQ3KRef_Good(t *testing.T) {
 
 func TestQuantizeKquant_dequantQ8KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
-	enc := quantizeQ8_K(in)
+	enc, err := sharedgguf.Quantize(sharedgguf.QuantizeQ8_K, in)
+	if err != nil {
+		t.Fatalf("sharedgguf.Quantize(Q8_K): %v", err)
+	}
 	if len(enc) != 3*292 {
 		t.Fatalf("Q8_K emitted %d bytes, want %d", len(enc), 3*292)
 	}
@@ -300,25 +315,13 @@ func assertQ8KBsums(t *testing.T, enc []byte) {
 	}
 }
 
-// TestQuantizeQ3KScalePack_RoundTrips asserts packQ3KScales is the exact
-// inverse of the decoder's kmask unpack across the full 6-bit range.
-func TestQuantizeQ3KScalePack_RoundTrips(t *testing.T) {
-	for trial := 0; trial < 64; trial++ {
-		var raw [qkSubBlocks]uint8
-		for i := range raw {
-			raw[i] = uint8((trial*7 + i*13) % 64) // 0..63
-		}
-		var packed [12]byte
-		packQ3KScales(raw, &packed)
-		got := unpackQ3KScalesRef(packed[:])
-		for i := range raw {
-			want := int8(raw[i]) - 32
-			if got[i] != want {
-				t.Fatalf("trial %d scale[%d]: packed %d -> unpacked %d, want %d", trial, i, raw[i], got[i], want)
-			}
-		}
-	}
-}
+// TestQuantizeQ3KScalePack_RoundTrips (packQ3KScales direct unit test) was
+// deleted with quantize_kernels.go: packQ3KScales was Q3_K-kernel-internal
+// and moved to the shared dappco.re/go/inference/gguf package with the rest
+// of the kernel. Its packing invariant is still exercised end-to-end by
+// TestQuantizeKquant_dequantQ3KRef_Good above, which encodes via
+// sharedgguf.Quantize and decodes via unpackQ3KScalesRef — the exact inverse
+// this test asserted directly.
 
 // TestQuantizeKquant_QuantizeModelPack_AllKQuants_Good is the end-to-end guard:
 // every K-quant now survives QuantizeModelPack -> ReadInfo with no block-size

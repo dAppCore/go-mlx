@@ -357,26 +357,14 @@ func quantizeGGUFTensor(tensor denseSafetensor, format QuantizeFormat) (ggufQuan
 	if len(tensor.Shape) == 0 || tensor.Shape[0]%uint64(blockSize) != 0 {
 		return ggufQuantizedTensor{}, core.NewError(core.Sprintf("mlx: tensor %s first dimension is not divisible by GGUF block size %d", tensor.Name, blockSize))
 	}
-	var data []byte
-	switch format {
-	case QuantizeQ8_0:
-		data = quantizeQ8_0(tensor.Data)
-	case QuantizeQ4_0:
-		data = quantizeQ4_0(tensor.Data)
-	case QuantizeQ5_0:
-		data = quantizeQ5_0(tensor.Data)
-	case QuantizeQ4_K:
-		data = quantizeQ4_K(tensor.Data)
-	case QuantizeQ5_K:
-		data = quantizeQ5_K(tensor.Data)
-	case QuantizeQ6_K:
-		data = quantizeQ6_K(tensor.Data)
-	case QuantizeQ8_K:
-		data = quantizeQ8_K(tensor.Data)
-	case QuantizeQ3_K:
-		data = quantizeQ3_K(tensor.Data)
-	case QuantizeQ2_K:
-		data = quantizeQ2_K(tensor.Data)
+	// Dispatch through the shared kernel package rather than a private
+	// quantizeQX copy — go-mlx no longer carries its own kernels (see
+	// quantize_kernels.go's removal). format was already validated above
+	// by ggufQuantizeLayout, so the shared dispatch's own format check
+	// cannot fail here.
+	data, err := sharedgguf.Quantize(sharedgguf.QuantizeFormat(format), tensor.Data)
+	if err != nil {
+		return ggufQuantizedTensor{}, core.E("quantizeGGUFTensor", "quantise "+tensor.Name, err)
 	}
 	return ggufQuantizedTensor{
 		Name:  tensor.Name,

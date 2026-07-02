@@ -20,7 +20,7 @@ func TestWriteQuantizedGGUF_CreateFailure_Bad(t *testing.T) {
 		Name:  "model.norm.weight",
 		Type:  TensorTypeQ8_0,
 		Shape: []uint64{32},
-		Data:  quantizeQ8_0(ascendingFloat32s(32)),
+		Data:  mustQuantizeQ8_0(t, ascendingFloat32s(32)),
 	}}
 	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
 	if err := writeQuantizedGGUF(dir, metadata, tensors); err == nil {
@@ -35,9 +35,9 @@ func TestWriteQuantizedGGUF_CreateFailure_Bad(t *testing.T) {
 func TestWriteQuantizedGGUF_MultiTensorPadding_Good(t *testing.T) {
 	output := core.PathJoin(t.TempDir(), "multi.gguf")
 	tensors := []ggufQuantizedTensor{
-		{Name: "model.layers.0.attn.weight", Type: TensorTypeQ8_0, Shape: []uint64{32, 3}, Data: quantizeQ8_0(ascendingFloat32s(96))},
-		{Name: "model.layers.1.attn.weight", Type: TensorTypeQ8_0, Shape: []uint64{32, 2}, Data: quantizeQ8_0(ascendingFloat32s(64))},
-		{Name: "model.norm.weight", Type: TensorTypeQ8_0, Shape: []uint64{32}, Data: quantizeQ8_0(ascendingFloat32s(32))},
+		{Name: "model.layers.0.attn.weight", Type: TensorTypeQ8_0, Shape: []uint64{32, 3}, Data: mustQuantizeQ8_0(t, ascendingFloat32s(96))},
+		{Name: "model.layers.1.attn.weight", Type: TensorTypeQ8_0, Shape: []uint64{32, 2}, Data: mustQuantizeQ8_0(t, ascendingFloat32s(64))},
+		{Name: "model.norm.weight", Type: TensorTypeQ8_0, Shape: []uint64{32}, Data: mustQuantizeQ8_0(t, ascendingFloat32s(32))},
 	}
 	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
 	if err := writeQuantizedGGUF(output, metadata, tensors); err != nil {
@@ -377,7 +377,7 @@ func TestWriteGGUF_WriteFailures_Bad(t *testing.T) {
 		// The header writer's first action is the 24-byte header write.
 		file := readOnlyOSFile(t)
 		defer file.Close()
-		tensors := []ggufQuantizedTensor{{Name: "blk.0.w", Type: TensorTypeQ8_0, Shape: []uint64{32}, Data: quantizeQ8_0(ascendingFloat32s(32))}}
+		tensors := []ggufQuantizedTensor{{Name: "blk.0.w", Type: TensorTypeQ8_0, Shape: []uint64{32}, Data: mustQuantizeQ8_0(t, ascendingFloat32s(32))}}
 		metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
 		if err := writeQuantizedGGUFHeader(file, metadata, tensors); err == nil {
 			t.Fatal("writeQuantizedGGUFHeader(read-only) error = nil")
