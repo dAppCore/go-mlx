@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	sharedhf "dappco.re/go/inference/hf"
 	"dappco.re/go/mlx/memory"
 )
 
@@ -29,7 +30,7 @@ func BenchmarkHF_WeightFormatAndBytes_Safetensors(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		format, bytes := weightFormatAndBytes(files)
+		format, bytes := sharedhf.WeightFormatAndBytes(files)
 		hfSinkString = format
 		hfSinkU64 = bytes
 	}
@@ -44,7 +45,7 @@ func BenchmarkHF_WeightFormatAndBytes_Mixed(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		format, bytes := weightFormatAndBytes(files)
+		format, bytes := sharedhf.WeightFormatAndBytes(files)
 		hfSinkString = format
 		hfSinkU64 = bytes
 	}

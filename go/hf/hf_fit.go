@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
-	"dappco.re/go/inference/quant/jang"
+	sharedhf "dappco.re/go/inference/hf"
 	"dappco.re/go/mlx/memory"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
@@ -98,7 +98,7 @@ func planFitEntries(ctx context.Context, cfg FitConfig) ([]FitPlan, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		meta, root, err := inspectLocalMetadata(path)
+		meta, root, err := sharedhf.InspectLocalMetadata(path)
 		if err != nil {
 			return nil, err
 		}
@@ -130,151 +130,9 @@ func planFitEntries(ctx context.Context, cfg FitConfig) ([]FitPlan, error) {
 	return models, nil
 }
 
-func inspectLocalMetadata(path string) (ModelMetadata, string, error) {
-	root := resolveLocalMetadataRoot(path)
-	read := core.ReadFile(core.PathJoin(root, "config.json"))
-	if !read.OK {
-		return ModelMetadata{}, root, core.E("PlanFits", "read local config.json", fitResultError(read))
-	}
-	var config ModelConfig
-	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
-		return ModelMetadata{}, root, core.E("PlanFits", "parse local config.json", fitResultError(result))
-	}
-	files := localModelFiles(root)
-	jang, _ := jang.ReadConfig(root)
-	return ModelMetadata{
-		ID:     localModelID(path, root),
-		Config: config,
-		Files:  files,
-		JANG:   jang,
-	}, root, nil
-}
-
-func resolveLocalMetadataRoot(path string) string {
-	// Replace filepath.Glob(path/snapshots/*/config.json) with a single
-	// ReadDir of path/snapshots. Glob runs a readdir then per-match stat
-	// *and* allocates the full match path strings plus an outer []string.
-	// ReadDir hands back DirEntry values; we pick the lexically-first
-	// directory name and let the caller's subsequent ReadFile of
-	// config.json surface a missing-file error if the snapshot is
-	// incomplete (same observable shape as the previous Glob miss path).
-	// For the dominant single-snapshot case this collapses the per-
-	// candidate Stat into a single PathJoin.
-	snapshotsDir := core.PathJoin(path, "snapshots")
-	read := core.ReadDir(core.DirFS(snapshotsDir), ".")
-	if read.OK {
-		entries, ok := read.Value.([]core.FsDirEntry)
-		if ok && len(entries) > 0 {
-			// Find the lexically-first directory entry. ReadDir on
-			// Darwin/Linux returns dirents in arbitrary order, so
-			// scan all entries and track the smallest valid name.
-			var winner string
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				if winner == "" || name < winner {
-					winner = name
-				}
-			}
-			if winner != "" {
-				return core.PathJoin(snapshotsDir, winner)
-			}
-		}
-	}
-	// hasSuffixFold avoids allocating a lowered copy of the full path
-	// (paths can be long: ~/.cache/huggingface/hub/...) just to test a
-	// 12-byte suffix.
-	if hasSuffixFold(path, "config.json") {
-		return core.PathDir(path)
-	}
-	return path
-}
-
-// localModelIDSearchPaths is the small array we walk in localModelID —
-// hoisted so the slice literal isn't allocated per call.
-var localModelIDSearchOrder = [2]int{0, 1}
-
-func localModelID(inputPath, root string) string {
-	paths := [2]string{root, inputPath}
-	for _, idx := range localModelIDSearchOrder {
-		path := paths[idx]
-		for current := path; current != "" && current != "."; {
-			base := core.PathBase(current)
-			if core.HasPrefix(base, "models--") {
-				return core.Replace(core.TrimPrefix(base, "models--"), "--", "/")
-			}
-			parent := core.PathDir(current)
-			if parent == current {
-				break
-			}
-			current = parent
-		}
-	}
-	return core.PathBase(root)
-}
-
-func localModelFiles(root string) []ModelFile {
-	// Pre-size: a typical pack has 1-4 safetensors shards + tokenizer.json
-	// + tokenizer_config.json. 8 is a comfortable initial capacity that
-	// avoids growslice for almost every real model.
-	files := make([]ModelFile, 0, 8)
-	// One ReadDir against the snapshot directory beats five filepath.Glob
-	// passes (one per pattern). filepath.Glob does its own readdir per
-	// pattern + per-entry filepath.Match alloc; a single ReadDir + inline
-	// suffix/name match on the entries collapses the 5x readdir + 5x
-	// match slice into a single syscall and a tight per-entry branch.
-	read := core.ReadDir(core.DirFS(root), ".")
-	if !read.OK {
-		return files
-	}
-	entries, ok := read.Value.([]core.FsDirEntry)
-	if !ok {
-		return files
-	}
-	// core.ReadDir (via os.DirFS → os.ReadDir) already returns entries
-	// sorted by name. Filtering preserves order, so the resulting files
-	// slice is sorted by Name without a post-pass slices.SortFunc — the
-	// previous explicit sort was a stale carry-over from the multi-Glob
-	// shape where the per-pattern matches were appended in pattern order
-	// rather than alphabetical.
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !isLocalModelFileName(name) {
-			continue
-		}
-		var size uint64
-		if info, err := entry.Info(); err == nil {
-			size = uint64(info.Size())
-		}
-		files = append(files, ModelFile{Name: name, Size: size})
-	}
-	return files
-}
-
-// isLocalModelFileName reports whether name is one of the weight or
-// tokenizer file shapes localModelFiles surfaces. The previous form ran
-// five filepath.Glob passes; this inlined predicate replaces them with a
-// single suffix/equality check per ReadDir entry.
-func isLocalModelFileName(name string) bool {
-	switch name {
-	case "tokenizer.json", "tokenizer_config.json":
-		return true
-	}
-	// Suffix tests on the weight extensions. The most common shape is
-	// "*.safetensors" so put that first.
-	return hasSuffixFold(name, ".safetensors") ||
-		hasSuffixFold(name, ".gguf") ||
-		hasSuffixFold(name, ".bin")
-}
-
 func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	meta := entry.meta
-	config := meta.Config.normalized()
+	config := normalizeModelConfig(meta.Config)
 	modelID := firstNonEmpty(meta.ID, meta.ModelID)
 	// Inline the architecture / contextLength / quantization /
 	// quantizationType accessors here — each one normalizes config again
@@ -295,7 +153,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		quantType = quant.Type
 	}
 	quantFamily := ""
-	format, weightBytes := weightFormatAndBytes(meta.Files)
+	format, weightBytes := sharedhf.WeightFormatAndBytes(meta.Files)
 	info := meta.JANG
 	if info == nil {
 		info = InferJANG(meta)
@@ -407,72 +265,8 @@ func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile *profil
 	return true
 }
 
-func weightFormatAndBytes(files []ModelFile) (string, uint64) {
-	if len(files) == 0 {
-		return "", 0
-	}
-	// Cache the format strings — pulling string(mp.ModelPackFormat...) out
-	// of the loop avoids the implicit conversion per iteration and lets
-	// the per-format pointer compare instead of a fresh string each time.
-	const (
-		fmtBin = "bin"
-	)
-	safetensors := string(mp.ModelPackFormatSafetensors)
-	gguf := string(mp.ModelPackFormatGGUF)
-	mixed := string(mp.ModelPackFormatMixed)
-
-	var format string
-	var total uint64
-	for _, file := range files {
-		// hasSuffixFold avoids the per-file Lower alloc — model weight
-		// filenames are ASCII so case-folding the suffix is sufficient.
-		name := file.filename()
-		switch {
-		case hasSuffixFold(name, ".safetensors"):
-			if format == "" {
-				format = safetensors
-			} else if format != safetensors {
-				format = mixed
-			}
-			total += file.byteSize()
-		case hasSuffixFold(name, ".gguf"):
-			if format == "" {
-				format = gguf
-			} else if format != gguf {
-				format = mixed
-			}
-			total += file.byteSize()
-		case hasSuffixFold(name, ".bin"):
-			if format == "" {
-				format = fmtBin
-			}
-			total += file.byteSize()
-		}
-	}
-	return format, total
-}
-
-// hasSuffixFold reports whether s ends with suffix using ASCII case-folding.
-// Suffix is required to be lowercase. Pure scan, no allocations.
-func hasSuffixFold(s, suffix string) bool {
-	if len(s) < len(suffix) {
-		return false
-	}
-	off := len(s) - len(suffix)
-	for i := 0; i < len(suffix); i++ {
-		c := s[off+i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if c != suffix[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func estimateModelKVBytes(config ModelConfig, contextLength, batchSize, bytesPerElement int) uint64 {
-	config = config.normalized()
+	config = normalizeModelConfig(config)
 	layers := config.NumHiddenLayers
 	hidden := config.HiddenSize
 	heads := config.NumAttentionHeads
@@ -517,7 +311,7 @@ func estimateRuntimeOverheadBytes(weightBytes uint64) uint64 {
 }
 
 func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, rank int) TrainingFit {
-	config = config.normalized()
+	config = normalizeModelConfig(config)
 	if rank <= 0 {
 		rank = 16
 	}

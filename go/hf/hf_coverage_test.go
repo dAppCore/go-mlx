@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	sharedhf "dappco.re/go/inference/hf"
 	"dappco.re/go/mlx/memory"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
@@ -56,10 +57,10 @@ func TestModelConfigNormalized_TextConfigInheritsModelType_Ugly(t *testing.T) {
 			MaxPositionEmbeddings: 32768,
 		},
 	}
-	if got := cfg.architecture(); got != "qwen3" {
+	if got := modelConfigArchitecture(cfg); got != "qwen3" {
 		t.Fatalf("architecture() = %q, want qwen3 (outer model_type inherited into text_config)", got)
 	}
-	if got := cfg.contextLength(); got != 32768 {
+	if got := modelConfigContextLength(cfg); got != 32768 {
 		t.Fatalf("contextLength() = %d, want 32768 (from promoted text_config)", got)
 	}
 }
@@ -132,85 +133,12 @@ func TestModelConfigProbe_QuantAccessors_NoBlock_Bad(t *testing.T) {
 	}
 }
 
-// TestScanJANGFold_PartialNeedles_Ugly covers scanJANGFold's mid-scan bail-out
-// branches: a 'j' followed by a non-'a', an "ja" followed by a non-'n'
-// (hf.go:151), and a "jan" followed by a non-'g' (hf.go:158) must all reject
-// without matching. A clean "jang" later in the same string still matches, so
-// the scan continues past the false starts.
-func TestScanJANGFold_PartialNeedles_Ugly(t *testing.T) {
-	// "jan" + 'x' (not 'g') and "ja" + 'x' (not 'n') are false starts; the
-	// trailing "jang" is the real hit (jangBasic).
-	if got := scanJANGFold("janx jaxx jang"); got != jangBasic {
-		t.Fatalf("scanJANGFold(false starts + jang) = %d, want jangBasic", got)
-	}
-	// 'j' + non-'a' false start, then a real "jangtq".
-	if got := scanJANGFold("jx jangtq"); got != jangTQ {
-		t.Fatalf("scanJANGFold(jx + jangtq) = %d, want jangTQ", got)
-	}
-	// Only false starts, never a full "jang" → jangNone.
-	if got := scanJANGFold("janx jaxy jzng"); got != jangNone {
-		t.Fatalf("scanJANGFold(only false starts) = %d, want jangNone", got)
-	}
-	// Too short to hold "jang".
-	if got := scanJANGFold("jan"); got != jangNone {
-		t.Fatalf("scanJANGFold(too short) = %d, want jangNone", got)
-	}
-}
-
-// TestInferJANGNeedlePresent_TagAndFileBranches_Ugly drives the per-component
-// branches of inferJANGNeedlePresent that the InferJANG integration tests do
-// not all reach: a "jang" token raising state from a tag (hf.go:98), a "jangtq"
-// short-circuit from a tag (hf.go:95), and "jangtq" short-circuits from a file
-// Name (hf.go:107) and from an RFilename (hf.go:114).
-func TestInferJANGNeedlePresent_TagAndFileBranches_Ugly(t *testing.T) {
-	// jangBasic raised by a tag (id has no needle).
-	if got := inferJANGNeedlePresent("vendor/plain", []string{"mlx", "jang"}, nil); got != jangBasic {
-		t.Fatalf("needlePresent(tag jang) = %d, want jangBasic", got)
-	}
-	// jangtq short-circuit from a tag.
-	if got := inferJANGNeedlePresent("vendor/plain", []string{"jangtq"}, nil); got != jangTQ {
-		t.Fatalf("needlePresent(tag jangtq) = %d, want jangTQ", got)
-	}
-	// jangtq short-circuit from a file Name.
-	nameFiles := []ModelFile{{Name: "weights.jangtq.safetensors"}}
-	if got := inferJANGNeedlePresent("vendor/plain", nil, nameFiles); got != jangTQ {
-		t.Fatalf("needlePresent(file Name jangtq) = %d, want jangTQ", got)
-	}
-	// jangtq short-circuit from an RFilename (Name clean, RFilename carries it).
-	rfilFiles := []ModelFile{{Name: "model.safetensors", RFilename: "runtime.JANGTQ.bin"}}
-	if got := inferJANGNeedlePresent("vendor/plain", nil, rfilFiles); got != jangTQ {
-		t.Fatalf("needlePresent(RFilename jangtq) = %d, want jangTQ", got)
-	}
-	// jangBasic raised by a file Name (id/tags clean) — the s>state file arm.
-	basicFile := []ModelFile{{Name: "model.jang.safetensors"}}
-	if got := inferJANGNeedlePresent("vendor/plain", nil, basicFile); got != jangBasic {
-		t.Fatalf("needlePresent(file Name jang) = %d, want jangBasic", got)
-	}
-	// jangBasic raised by an RFilename only — the second file arm (s>state).
-	basicRfil := []ModelFile{{Name: "model.safetensors", RFilename: "tok.jang.json"}}
-	if got := inferJANGNeedlePresent("vendor/plain", nil, basicRfil); got != jangBasic {
-		t.Fatalf("needlePresent(RFilename jang) = %d, want jangBasic", got)
-	}
-}
-
-// TestInferJANGProfileName_Default_Bad covers inferJANGProfileName's fall-through
-// return: a haystack containing "jang" but none of the specific jang_Nx profile
-// tokens resolves to the generic "JANG" label (hf_jang.go:225).
-func TestInferJANGProfileName_Default_Bad(t *testing.T) {
-	if got := inferJANGProfileName("dealignai/qwen3-jang model.safetensors"); got != "JANG" {
-		t.Fatalf("inferJANGProfileName(no specific profile) = %q, want JANG", got)
-	}
-	// Each specific token still resolves to its UPPER label (positive arm).
-	for _, tc := range []struct{ in, want string }{
-		{"x jang_1l y", "JANG_1L"},
-		{"x jang_2s y", "JANG_2S"},
-		{"x jang_4m y", "JANG_4M"},
-	} {
-		if got := inferJANGProfileName(tc.in); got != tc.want {
-			t.Fatalf("inferJANGProfileName(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
+// scanJANGFold / inferJANGNeedlePresent / inferJANGProfileName white-box
+// coverage moved with the implementation to dappco.re/go/inference/hf
+// (hf_jang.go here is now a thin InferJANG delegate — see
+// TestInferJANG_BasicProfileFromTag_Ugly below for the local black-box
+// coverage of that delegation, and external/go-inference/go/hf/hf_test.go
+// for the upstream branch coverage of the needle scan itself).
 
 // TestInferJANG_BasicProfileFromTag_Ugly drives InferJANG through the jangBasic
 // haystack-build branch where the "jang" signal lives in a tag rather than the
@@ -442,10 +370,13 @@ func TestCollectFitEntries_ModelMetadataIDFallback_Good(t *testing.T) {
 }
 
 // TestResolveLocalMetadataRoot_NonDirSnapshotEntry_Ugly covers the !IsDir
-// continue in resolveLocalMetadataRoot (hf_fit.go:162): a snapshots directory
-// holding a stray file alongside the real snapshot directory must skip the file
-// and pick the directory entry. The config lives under the directory snapshot so
-// inspectLocalMetadata resolves successfully.
+// continue inside dappco.re/go/inference/hf's ResolveLocalMetadataRoot: a
+// snapshots directory holding a stray file alongside the real snapshot
+// directory must skip the file and pick the directory entry. Real HF Hub
+// caches do grow stray entries (.lock/.no_exist markers) alongside
+// snapshots/<rev>/, so this guards go-mlx's consumption of the shared
+// resolver against that real-world shape — the shared package's own test
+// suite doesn't name this exact scenario.
 func TestResolveLocalMetadataRoot_NonDirSnapshotEntry_Ugly(t *testing.T) {
 	cacheRoot := core.PathJoin(t.TempDir(), "models--org--name")
 	snapshots := core.PathJoin(cacheRoot, "snapshots")
@@ -457,9 +388,9 @@ func TestResolveLocalMetadataRoot_NonDirSnapshotEntry_Ugly(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(snapshots, "stray.txt"), "ignore me")
 	writeModelPackFile(t, core.PathJoin(realSnap, "config.json"), `{"model_type":"qwen3"}`)
 
-	got := resolveLocalMetadataRoot(cacheRoot)
+	got := sharedhf.ResolveLocalMetadataRoot(cacheRoot)
 	if got != realSnap {
-		t.Fatalf("resolveLocalMetadataRoot = %q, want %q (stray file skipped)", got, realSnap)
+		t.Fatalf("ResolveLocalMetadataRoot = %q, want %q (stray file skipped)", got, realSnap)
 	}
 }
 

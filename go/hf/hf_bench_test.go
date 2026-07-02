@@ -36,7 +36,7 @@ func BenchmarkHF_ModelConfig_Architecture_Qwen3(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		hfSinkString = config.architecture()
+		hfSinkString = modelConfigArchitecture(config)
 	}
 }
 
@@ -51,7 +51,7 @@ func BenchmarkHF_ModelConfig_Architecture_NestedText(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		hfSinkString = config.architecture()
+		hfSinkString = modelConfigArchitecture(config)
 	}
 }
 
@@ -63,7 +63,7 @@ func BenchmarkHF_ModelConfig_ContextLength(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		hfSinkInt = config.contextLength()
+		hfSinkInt = modelConfigContextLength(config)
 	}
 }
 
@@ -74,7 +74,7 @@ func BenchmarkHF_ModelConfig_Quantization(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		bits, group := config.quantization()
+		bits, group := modelConfigQuantization(config)
 		hfSinkInt = bits + group
 	}
 }

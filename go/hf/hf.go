@@ -7,24 +7,27 @@ import (
 	"strconv"
 
 	core "dappco.re/go"
-	"dappco.re/go/inference/quant/jang"
+	sharedhf "dappco.re/go/inference/hf"
 	"dappco.re/go/mlx/memory"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
 )
 
 const (
-	SourceRemote = "huggingface"
-	SourceLocal  = "local"
+	// SourceRemote and SourceLocal are aliased onto the shared package's
+	// constants so go-mlx and dappco.re/go/inference/hf never drift on the
+	// tag values FitPlan.Source reports.
+	SourceRemote = sharedhf.SourceRemote
+	SourceLocal  = sharedhf.SourceLocal
 
 	defaultBaseURL = "https://huggingface.co"
 )
 
-// ModelSource provides optional Hugging Face metadata lookup/search.
-type ModelSource interface {
-	SearchModels(context.Context, string, int) ([]ModelMetadata, error)
-	ModelMetadata(context.Context, string) (ModelMetadata, error)
-}
+// ModelSource provides optional Hugging Face metadata lookup/search. Aliased
+// onto the shared interface — RemoteSource (below) and any fixture that
+// implements it satisfy both go-mlx's and dappco.re/go/inference/hf's
+// ModelSource identically.
+type ModelSource = sharedhf.ModelSource
 
 // RemoteConfig configures the optional HF Hub metadata source.
 type RemoteConfig struct {
@@ -174,49 +177,23 @@ type FitConfig struct {
 	ContextHint int
 }
 
-// ModelMetadata is the subset of Hugging Face/local metadata needed for fit planning.
-type ModelMetadata struct {
-	ID          string      `json:"id,omitempty"`
-	ModelID     string      `json:"modelId,omitempty"`
-	Tags        []string    `json:"tags,omitempty"`
-	PipelineTag string      `json:"pipeline_tag,omitempty"`
-	Config      ModelConfig `json:"config"`
-	Files       []ModelFile `json:"siblings,omitempty"`
-	JANG        *jang.Info  `json:"jang,omitempty"`
-}
+// ModelMetadata is the subset of Hugging Face/local metadata needed for fit
+// planning — aliased onto the engine-agnostic type in
+// dappco.re/go/inference/hf so every LEM Engine (mlx, rocm, cpu) shares one
+// wire shape for Hub + local-cache metadata.
+type ModelMetadata = sharedhf.ModelMetadata
 
 // ModelFile describes one model repository file.
-type ModelFile struct {
-	Name      string `json:"name,omitempty"`
-	RFilename string `json:"rfilename,omitempty"`
-	Size      uint64 `json:"size,omitempty"`
-	SizeBytes uint64 `json:"sizeBytes,omitempty"`
-}
+type ModelFile = sharedhf.ModelFile
 
-// ModelConfig mirrors common transformer config fields exposed by HF.
-type ModelConfig struct {
-	ModelType             string              `json:"model_type,omitempty"`
-	Architectures         []string            `json:"architectures,omitempty"`
-	VocabSize             int                 `json:"vocab_size,omitempty"`
-	HiddenSize            int                 `json:"hidden_size,omitempty"`
-	IntermediateSize      int                 `json:"intermediate_size,omitempty"`
-	NumHiddenLayers       int                 `json:"num_hidden_layers,omitempty"`
-	NumAttentionHeads     int                 `json:"num_attention_heads,omitempty"`
-	NumKeyValueHeads      int                 `json:"num_key_value_heads,omitempty"`
-	HeadDim               int                 `json:"head_dim,omitempty"`
-	MaxPositionEmbeddings int                 `json:"max_position_embeddings,omitempty"`
-	ContextLength         int                 `json:"context_length,omitempty"`
-	Quantization          *QuantizationConfig `json:"quantization,omitempty"`
-	QuantizationConfig    *QuantizationConfig `json:"quantization_config,omitempty"`
-	TextConfig            *ModelConfig        `json:"text_config,omitempty"`
-}
+// ModelConfig mirrors common transformer config fields exposed by HF. The
+// shared type is deliberately free of architecture-support/quantisation
+// interpretation logic — that stays local to each engine (below), built on
+// top of this data.
+type ModelConfig = sharedhf.ModelConfig
 
 // QuantizationConfig captures quantization metadata when present.
-type QuantizationConfig struct {
-	Bits      int    `json:"bits,omitempty"`
-	GroupSize int    `json:"group_size,omitempty"`
-	Type      string `json:"type,omitempty"`
-}
+type QuantizationConfig = sharedhf.QuantizationConfig
 
 // FitReport is the top-level library output for HF/local model fit planning.
 type FitReport struct {
@@ -265,7 +242,14 @@ type TrainingFit struct {
 	Notes                   []string `json:"notes,omitempty"`
 }
 
-func (config ModelConfig) normalized() ModelConfig {
+// normalizeModelConfig lifts a nested text_config (Gemma-4 unified/assistant
+// wrappers, or any model with a text_config block) so downstream accessors
+// read the real architecture/context rather than the outer wrapper.
+//
+// A plain function rather than a ModelConfig method: ModelConfig is aliased
+// onto dappco.re/go/inference/hf's type (above), and Go forbids attaching new
+// methods to a type defined in another package.
+func normalizeModelConfig(config ModelConfig) ModelConfig {
 	if config.TextConfig == nil {
 		return config
 	}
@@ -288,18 +272,22 @@ func (config ModelConfig) normalized() ModelConfig {
 	return text
 }
 
-func (config ModelConfig) architecture() string {
-	config = config.normalized()
+// modelConfigArchitecture is the normalize-then-read variant of
+// configArchitecture, for callers holding a possibly-unnormalised config.
+func modelConfigArchitecture(config ModelConfig) string {
+	config = normalizeModelConfig(config)
 	return configArchitecture(&config)
 }
 
-func (config ModelConfig) contextLength() int {
-	config = config.normalized()
+// modelConfigContextLength is the normalize-then-read context-length accessor.
+func modelConfigContextLength(config ModelConfig) int {
+	config = normalizeModelConfig(config)
 	return firstPositive(config.ContextLength, config.MaxPositionEmbeddings)
 }
 
-func (config ModelConfig) quantization() (bits, group int) {
-	config = config.normalized()
+// modelConfigQuantization is the normalize-then-read quantisation accessor.
+func modelConfigQuantization(config ModelConfig) (bits, group int) {
+	config = normalizeModelConfig(config)
 	quant := config.QuantizationConfig
 	if quant == nil {
 		quant = config.Quantization
@@ -310,8 +298,9 @@ func (config ModelConfig) quantization() (bits, group int) {
 	return quant.Bits, quant.GroupSize
 }
 
-func (config ModelConfig) quantizationType() string {
-	config = config.normalized()
+// modelConfigQuantizationType is the normalize-then-read quant-type accessor.
+func modelConfigQuantizationType(config ModelConfig) string {
+	config = normalizeModelConfig(config)
 	quant := config.QuantizationConfig
 	if quant == nil {
 		quant = config.Quantization
@@ -320,17 +309,6 @@ func (config ModelConfig) quantizationType() string {
 		return ""
 	}
 	return quant.Type
-}
-
-func (file ModelFile) filename() string {
-	return firstNonEmpty(file.Name, file.RFilename)
-}
-
-func (file ModelFile) byteSize() uint64 {
-	if file.Size > 0 {
-		return file.Size
-	}
-	return file.SizeBytes
 }
 
 type modelConfigProbe struct {

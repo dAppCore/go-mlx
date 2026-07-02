@@ -8,7 +8,6 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/memory"
-	mp "dappco.re/go/mlx/pack"
 )
 
 // TestHfFit_PlanFits_Good is the canonical happy-path triplet entry: a single
@@ -789,15 +788,11 @@ func TestHfFit_PlanFits_UnsupportedArchitecture_Ugly(t *testing.T) {
 }
 
 func TestHFModelFitHelpers_Ugly(t *testing.T) {
-	files := []ModelFile{
-		{Name: "model-q4.gguf", Size: 10},
-		{RFilename: "model.safetensors", SizeBytes: 20},
-		{Name: "pytorch_model.bin", Size: 30},
-	}
-	format, bytes := weightFormatAndBytes(files)
-	if format != string(mp.ModelPackFormatMixed) || bytes != 60 {
-		t.Fatalf("weightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
-	}
+	// weightFormatAndBytes moved to dappco.re/go/inference/hf's
+	// WeightFormatAndBytes — see hf_fit.go's planFit and
+	// TestHfFit_PlanFits_* for the local delegation coverage, and
+	// external/go-inference/go/hf/hf_test.go for the format-branch coverage
+	// itself.
 	config := ModelConfig{HiddenSize: 128, NumHiddenLayers: 2, NumAttentionHeads: 4, NumKeyValueHeads: 2}
 	if got := estimateModelKVBytes(config, 16, 2, 2); got != 16384 {
 		t.Fatalf("estimateModelKVBytes(GQA) = %d, want 16384", got)
@@ -836,42 +831,11 @@ func TestHFModelFitHelpers_Ugly(t *testing.T) {
 	}
 }
 
-// TestWeightFormatAndBytes_Good covers weightFormatAndBytes across its format
-// branches: a pure safetensors set, a pure GGUF set, a mixed set (safetensors
-// + gguf collapses to "mixed"), a .bin set, and the empty-input early return.
-// byteSize sums only recognised weight files; the RFilename fallback in
-// filename() is exercised by a sibling-only entry.
-func TestWeightFormatAndBytes_Good(t *testing.T) {
-	safet := []ModelFile{
-		{Name: "model-00001-of-00002.safetensors", Size: 100},
-		{RFilename: "model-00002-of-00002.safetensors", SizeBytes: 200},
-	}
-	if format, total := weightFormatAndBytes(safet); format != "safetensors" || total != 300 {
-		t.Fatalf("safetensors = %q/%d, want safetensors/300 (RFilename + SizeBytes fallbacks)", format, total)
-	}
-
-	ggufFiles := []ModelFile{{Name: "model.Q4_K_M.gguf", Size: 500}}
-	if format, total := weightFormatAndBytes(ggufFiles); format != "gguf" || total != 500 {
-		t.Fatalf("gguf = %q/%d, want gguf/500", format, total)
-	}
-
-	mixed := []ModelFile{
-		{Name: "model.safetensors", Size: 10},
-		{Name: "model.gguf", Size: 20},
-	}
-	if format, total := weightFormatAndBytes(mixed); format != "mixed" || total != 30 {
-		t.Fatalf("mixed = %q/%d, want mixed/30", format, total)
-	}
-
-	binFiles := []ModelFile{{Name: "pytorch_model.bin", Size: 42}}
-	if format, total := weightFormatAndBytes(binFiles); format != "bin" || total != 42 {
-		t.Fatalf("bin = %q/%d, want bin/42", format, total)
-	}
-
-	if format, total := weightFormatAndBytes(nil); format != "" || total != 0 {
-		t.Fatalf("empty = %q/%d, want empty/0", format, total)
-	}
-}
+// weightFormatAndBytes moved to dappco.re/go/inference/hf's
+// WeightFormatAndBytes — format-branch coverage (safetensors/gguf/mixed/bin/
+// empty) now lives in external/go-inference/go/hf/hf_test.go
+// (TestHf_WeightFormatAndBytes_Good/_Ugly); go-mlx's planFit delegation is
+// exercised end-to-end by the TestHfFit_PlanFits_* family above.
 
 // TestFitNotes_Branches_Ugly covers the fitNotes advisory branches that the
 // PlanFits integration tests do not all reach: the gemma4_assistant and
@@ -933,69 +897,12 @@ func TestFitNotes_Branches_Ugly(t *testing.T) {
 	}
 }
 
-// TestLocalModelFiles_SyntheticDir_Good covers localModelFiles and
-// isLocalModelFileName against a synthetic snapshot directory: it surfaces
-// safetensors/gguf/bin weights and the two tokenizer files, skips
-// sub-directories and unrelated files, and reads each entry's size — no
-// network, fixtures via t.TempDir().
-func TestLocalModelFiles_SyntheticDir_Good(t *testing.T) {
-	root := t.TempDir()
-	writeModelPackFile(t, core.PathJoin(root, "model.safetensors"), "weights")
-	writeModelPackFile(t, core.PathJoin(root, "model.gguf"), "gg")
-	writeModelPackFile(t, core.PathJoin(root, "pytorch_model.bin"), "bin")
-	writeModelPackFile(t, core.PathJoin(root, "tokenizer.json"), "{}")
-	writeModelPackFile(t, core.PathJoin(root, "tokenizer_config.json"), "{}")
-	writeModelPackFile(t, core.PathJoin(root, "README.md"), "ignored")
-	writeModelPackFile(t, core.PathJoin(root, "config.json"), "{}") // not a weight/tokenizer name
-	if result := core.MkdirAll(core.PathJoin(root, "subdir"), 0o755); !result.OK {
-		t.Fatalf("mkdir subdir: %v", result.Value)
-	}
-
-	files := localModelFiles(root)
-	got := make(map[string]uint64, len(files))
-	for _, f := range files {
-		got[f.Name] = f.Size
-	}
-	for _, want := range []string{"model.safetensors", "model.gguf", "pytorch_model.bin", "tokenizer.json", "tokenizer_config.json"} {
-		if _, ok := got[want]; !ok {
-			t.Fatalf("localModelFiles missing %q; got %v", want, got)
-		}
-	}
-	if _, ok := got["README.md"]; ok {
-		t.Fatal("localModelFiles surfaced README.md, want it skipped")
-	}
-	if _, ok := got["config.json"]; ok {
-		t.Fatal("localModelFiles surfaced config.json, want it skipped (not a weight/tokenizer name)")
-	}
-	if got["model.safetensors"] != uint64(len("weights")) {
-		t.Fatalf("model.safetensors size = %d, want %d", got["model.safetensors"], len("weights"))
-	}
-}
-
-// TestLocalModelFiles_MissingDir_Bad covers the ReadDir-failure early return:
-// a non-existent root yields an empty (non-nil) slice rather than an error.
-func TestLocalModelFiles_MissingDir_Bad(t *testing.T) {
-	files := localModelFiles(core.PathJoin(t.TempDir(), "does-not-exist"))
-	if len(files) != 0 {
-		t.Fatalf("localModelFiles(missing) = %v, want empty", files)
-	}
-}
-
-// TestLocalModelID_FromCacheLayout_Good covers localModelID: the
-// HuggingFace `models--org--name` cache-directory convention decodes to
-// `org/name`, walking up from the input path when the root itself is not the
-// models-- directory.
-func TestLocalModelID_FromCacheLayout_Good(t *testing.T) {
-	base := t.TempDir()
-	cacheRoot := core.PathJoin(base, "models--mlx-community--gemma-4-e2b-it-4bit")
-	snapshot := core.PathJoin(cacheRoot, "snapshots", "abc123")
-	if got := localModelID(snapshot, cacheRoot); got != "mlx-community/gemma-4-e2b-it-4bit" {
-		t.Fatalf("localModelID = %q, want mlx-community/gemma-4-e2b-it-4bit", got)
-	}
-
-	// No models-- segment anywhere → fall back to the root's base name.
-	plain := core.PathJoin(base, "my-local-model")
-	if got := localModelID(plain, plain); got != "my-local-model" {
-		t.Fatalf("localModelID(no cache prefix) = %q, want my-local-model", got)
-	}
-}
+// localModelFiles / isLocalModelFileName / localModelID moved to
+// dappco.re/go/inference/hf's LocalModelFiles / LocalModelID. Their branch
+// coverage (weight/tokenizer name matching, missing-dir empty return, the
+// models--org--name cache-prefix decode + no-prefix fallback) now lives in
+// external/go-inference/go/hf/hf_test.go (TestHf_LocalModelFiles_Good/_Bad,
+// TestHf_LocalModelID_Good/_Ugly); go-mlx's planFit delegation is exercised
+// end-to-end by the TestHfFit_PlanFits_* family above (in particular
+// TestHfFit_PlanFits_LocalCache_Good, which resolves a real
+// models--org--name cache layout end-to-end through PlanFits).

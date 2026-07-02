@@ -81,7 +81,7 @@ func TestHf_RemoteSource_SearchModels_Good(t *testing.T) {
 	if len(found) != 1 || found[0].ID != "Qwen/Qwen3-0.6B" {
 		t.Fatalf("SearchModels() = %+v", found)
 	}
-	if found[0].Files[0].byteSize() != 440401920 {
+	if found[0].Files[0].SizeBytes != 440401920 {
 		t.Fatalf("file size = %+v", found[0].Files[0])
 	}
 
@@ -211,7 +211,7 @@ func TestHf_RemoteSource_ModelMetadata_Good(t *testing.T) {
 	if meta.ModelID != "Qwen/Qwen3-0.6B" || meta.Config.NumHiddenLayers != 28 {
 		t.Fatalf("ModelMetadata() = %+v, want the served modelId + config", meta)
 	}
-	if len(meta.Files) != 1 || meta.Files[0].byteSize() != 440401920 {
+	if len(meta.Files) != 1 || meta.Files[0].Size != 440401920 {
 		t.Fatalf("ModelMetadata() files = %+v, want one sibling with the size fallback", meta.Files)
 	}
 }
@@ -327,35 +327,13 @@ func TestHf_RemoteSource_SearchModels_Ugly(t *testing.T) {
 	}
 }
 
-func TestHFLocalMetadataHelpers_Good(t *testing.T) {
-	cacheRoot := core.PathJoin(t.TempDir(), "models--org--name")
-	snapshot := core.PathJoin(cacheRoot, "snapshots", "b")
-	if result := core.MkdirAll(snapshot, 0o755); !result.OK {
-		t.Fatalf("mkdir snapshot: %v", result.Value)
-	}
-	writeModelPackFile(t, core.PathJoin(snapshot, "config.json"), `{"architectures":["Qwen3ForCausalLM"],"context_length":32768}`)
-	writeModelPackFile(t, core.PathJoin(snapshot, "model-q4.gguf"), "gguf")
-	writeModelPackFile(t, core.PathJoin(snapshot, "model.safetensors"), "safe")
-	writeModelPackFile(t, core.PathJoin(snapshot, "pytorch_model.bin"), "bin")
-	writeModelPackFile(t, core.PathJoin(snapshot, "tokenizer.json"), "{}")
-
-	meta, root, err := inspectLocalMetadata(cacheRoot)
-	if err != nil {
-		t.Fatalf("inspectLocalMetadata: %v", err)
-	}
-	if root != snapshot {
-		t.Fatalf("root = %q, want %q", root, snapshot)
-	}
-	if meta.ID != "org/name" {
-		t.Fatalf("ID = %q, want org/name", meta.ID)
-	}
-	if len(meta.Files) != 4 {
-		t.Fatalf("files = %+v", meta.Files)
-	}
-	if got := resolveLocalMetadataRoot(core.PathJoin(snapshot, "config.json")); got != snapshot {
-		t.Fatalf("resolve config root = %q, want %q", got, snapshot)
-	}
-}
+// inspectLocalMetadata / resolveLocalMetadataRoot moved to
+// dappco.re/go/inference/hf's InspectLocalMetadata / ResolveLocalMetadataRoot
+// — this exact scenario (config.json + gguf/safetensors/bin/tokenizer.json
+// siblings, ID decoded from the models--org--name cache prefix) is covered
+// upstream by TestHf_InspectLocalMetadata_Good and
+// TestHf_LocalModelFiles_Good, and go-mlx's own delegation is exercised
+// end-to-end by TestHfFit_PlanFits_LocalCache_Good in hf_fit_test.go.
 
 func hfFitPlanHasNote(plan FitPlan, fragment string) bool {
 	for _, note := range plan.Notes {
@@ -366,11 +344,12 @@ func hfFitPlanHasNote(plan FitPlan, fragment string) bool {
 	return false
 }
 
-// TestModelConfigAccessors_Good exercises the value-receiver ModelConfig
-// accessors (architecture / contextLength / quantization) directly. planFit
-// inlines these for the hot path, so only the benches drive them today; this
+// TestModelConfigAccessors_Good exercises the normalize-then-read ModelConfig
+// accessors (modelConfigArchitecture / modelConfigContextLength /
+// modelConfigQuantization) directly. planFit inlines the pointer-receiver
+// forms for the hot path, so only the benches drive these today; this
 // asserts the normalize-then-read logic with real config shapes — including
-// the nested text_config promotion that normalized() performs.
+// the nested text_config promotion that normalizeModelConfig() performs.
 func TestModelConfigAccessors_Good(t *testing.T) {
 	flat := ModelConfig{
 		ModelType:             "qwen3",
@@ -379,18 +358,19 @@ func TestModelConfigAccessors_Good(t *testing.T) {
 		MaxPositionEmbeddings: 40960,
 		QuantizationConfig:    &QuantizationConfig{Bits: 4, GroupSize: 64},
 	}
-	if got := flat.architecture(); got != "qwen3" {
+	if got := modelConfigArchitecture(flat); got != "qwen3" {
 		t.Fatalf("architecture() = %q, want qwen3", got)
 	}
-	if got := flat.contextLength(); got != 40960 {
+	if got := modelConfigContextLength(flat); got != 40960 {
 		t.Fatalf("contextLength() = %d, want 40960 (falls back to max_position_embeddings)", got)
 	}
-	if bits, group := flat.quantization(); bits != 4 || group != 64 {
+	if bits, group := modelConfigQuantization(flat); bits != 4 || group != 64 {
 		t.Fatalf("quantization() = %d/%d, want 4/64", bits, group)
 	}
 
-	// Nested text_config: normalized() lifts the inner config so the
-	// accessors read the real architecture/context, not the outer wrapper.
+	// Nested text_config: normalizeModelConfig() lifts the inner config so
+	// the accessors read the real architecture/context, not the outer
+	// wrapper.
 	nested := ModelConfig{
 		ModelType: "qwen3_5",
 		TextConfig: &ModelConfig{
@@ -400,13 +380,13 @@ func TestModelConfigAccessors_Good(t *testing.T) {
 			Quantization:  &QuantizationConfig{Bits: 8, GroupSize: 32},
 		},
 	}
-	if got := nested.architecture(); got != "qwen3_next" {
+	if got := modelConfigArchitecture(nested); got != "qwen3_next" {
 		t.Fatalf("nested architecture() = %q, want qwen3_next", got)
 	}
-	if got := nested.contextLength(); got != 98304 {
+	if got := modelConfigContextLength(nested); got != 98304 {
 		t.Fatalf("nested contextLength() = %d, want 98304", got)
 	}
-	if bits, group := nested.quantization(); bits != 8 || group != 32 {
+	if bits, group := modelConfigQuantization(nested); bits != 8 || group != 32 {
 		t.Fatalf("nested quantization() = %d/%d, want 8/32 (read from text_config)", bits, group)
 	}
 }
@@ -415,25 +395,25 @@ func TestModelConfigAccessors_Good(t *testing.T) {
 // quantization accessor — an unquantised (dense) config returns 0/0.
 func TestModelConfigQuantization_Bad(t *testing.T) {
 	dense := ModelConfig{ModelType: "qwen3", HiddenSize: 1024}
-	if bits, group := dense.quantization(); bits != 0 || group != 0 {
+	if bits, group := modelConfigQuantization(dense); bits != 0 || group != 0 {
 		t.Fatalf("quantization() on dense config = %d/%d, want 0/0", bits, group)
 	}
-	if got := dense.architecture(); got != "qwen3" {
+	if got := modelConfigArchitecture(dense); got != "qwen3" {
 		t.Fatalf("architecture() = %q, want qwen3", got)
 	}
 }
 
 // TestModelConfigQuantizationType_Good covers quantizationType — the string
 // label of the active quant block. QuantizationConfig wins over Quantization
-// when both are present (normalized() promotes the nested text_config first,
-// then the accessor prefers quantization_config over the legacy quantization
-// key), and an unquantised config returns "".
+// when both are present (normalizeModelConfig() promotes the nested
+// text_config first, then the accessor prefers quantization_config over the
+// legacy quantization key), and an unquantised config returns "".
 func TestModelConfigQuantizationType_Good(t *testing.T) {
 	cfg := ModelConfig{
 		ModelType:          "qwen3",
 		QuantizationConfig: &QuantizationConfig{Bits: 4, GroupSize: 64, Type: "mxfp4"},
 	}
-	if got := cfg.quantizationType(); got != "mxfp4" {
+	if got := modelConfigQuantizationType(cfg); got != "mxfp4" {
 		t.Fatalf("quantizationType() = %q, want mxfp4 (from quantization_config)", got)
 	}
 
@@ -442,12 +422,12 @@ func TestModelConfigQuantizationType_Good(t *testing.T) {
 		ModelType:    "qwen3",
 		Quantization: &QuantizationConfig{Bits: 8, GroupSize: 32, Type: "affine"},
 	}
-	if got := legacy.quantizationType(); got != "affine" {
+	if got := modelConfigQuantizationType(legacy); got != "affine" {
 		t.Fatalf("quantizationType() = %q, want affine (from legacy quantization)", got)
 	}
 
 	// Dense (no quant block) → empty type.
-	if got := (ModelConfig{ModelType: "qwen3"}).quantizationType(); got != "" {
+	if got := modelConfigQuantizationType(ModelConfig{ModelType: "qwen3"}); got != "" {
 		t.Fatalf("quantizationType() on dense config = %q, want empty", got)
 	}
 }
