@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	sharedmerge "dappco.re/go/inference/merge"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -184,14 +185,42 @@ func TestModelMerge_SameUint64SliceGood(t *testing.T) {
 }
 
 // TestModelMerge_EqualFoldMismatchGood covers equalFold's per-byte mismatch
-// leg (same length, differing folded bytes) — the case-fold match and length
-// short-circuit are already exercised elsewhere.
+// leg (same length, differing folded bytes) and its length short-circuit —
+// the case-fold match leg is also exercised in merge_coverage2_test.go.
 func TestModelMerge_EqualFoldMismatchGood(t *testing.T) {
 	if !equalFold("ABC", "abc") {
 		t.Fatal("equalFold(case fold) = false, want true")
 	}
 	if equalFold("abc", "abd") {
 		t.Fatal("equalFold(byte mismatch) = true, want false")
+	}
+	// Differing lengths never match, regardless of content.
+	if equalFold("abc", "abcd") {
+		t.Fatal("equalFold(differing lengths) = true, want false")
+	}
+}
+
+// TestModelMerge_ContainsFoldGood covers containsFold's case-fold match
+// (including the continue-outer retry on a partial mismatch), empty-substring
+// (trivially contained), over-long-substring and no-match legs. Moved here
+// from the deleted isModelWeightMetadataCopySkip test now that
+// copyModelPackMetadata's skip predicate lives in shared (see the
+// sharedmerge-delegation section below) — equalFold/containsFold themselves
+// stay local (shared keeps its own private copies too; this pair was not
+// part of the merge_copy.go duplication this pass addresses).
+func TestModelMerge_ContainsFoldGood(t *testing.T) {
+	// "model." mismatches at i=0..4 before the case-folded match at i=5.
+	if !containsFold("model.SAFETENSORS", ".safetensors") {
+		t.Fatal("containsFold(case fold match) = false, want true")
+	}
+	if !containsFold("anything", "") {
+		t.Fatal(`containsFold(_, "") = false, want true`)
+	}
+	if containsFold("ab", "abc") {
+		t.Fatal("containsFold(shorter than substr) = true, want false")
+	}
+	if containsFold("tokenizer_config.json", ".gguf") {
+		t.Fatal("containsFold(no match) = true, want false")
 	}
 }
 
@@ -517,22 +546,57 @@ func TestModelMerge_SlerpMergeNearParallelGood(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// merge_copy.go — copy/hash legs.
+// sharedmerge delegation — path/copy/hash legs.
+//
+// samePath, samePathResolved, copyModelPackMetadata and hashFile moved to
+// dappco.re/go/inference/merge (exported as SamePath, SamePathResolved,
+// CopyModelPackMetadata, HashFile) so go-mlx and go-inference share one
+// implementation instead of byte-identical private copies. The streaming
+// copyModelPackLocalFile and the modelPackCopyResultError /
+// hasModelPackMetadataSuffix / isModelWeightMetadataCopySkip helpers it
+// composes stay private to shared (not separately exported) — their
+// behaviour is driven through the exported CopyModelPackMetadata calls
+// below, mirrored by shared's own Good/Bad/Ugly triplets, and (for the
+// source-open-fails leg) by TestMergeModelPacks_UnreadableMetadataFileUgly
+// in merge_test.go, which reaches the identical failure leg through the
+// public Packs() API via a chmod-000 source file.
 // ---------------------------------------------------------------------------
 
-// TestModelMerge_CopyModelPackMetadataMissingDirGood points copyModelPackMetadata
+// TestModelMerge_SamePathGood covers SamePath, which compares two paths after
+// resolving each to absolute form.
+func TestModelMerge_SamePathGood(t *testing.T) {
+	dir := t.TempDir()
+	a := core.PathJoin(dir, "model")
+	if !sharedmerge.SamePath(a, a) {
+		t.Fatalf("SamePath(%q, %q) = false, want true", a, a)
+	}
+	b := core.PathJoin(dir, "other")
+	if sharedmerge.SamePath(a, b) {
+		t.Fatalf("SamePath(%q, %q) = true, want false", a, b)
+	}
+	// A relative path resolves to the same absolute target as its abs form.
+	abs := core.PathAbs(a)
+	if !abs.OK {
+		t.Fatalf("PathAbs(%q): %v", a, abs.Value)
+	}
+	if !sharedmerge.SamePath(a, abs.Value.(string)) {
+		t.Fatal("SamePath(rel, abs) = false, want true for equivalent paths")
+	}
+}
+
+// TestModelMerge_CopyModelPackMetadataMissingDirGood points CopyModelPackMetadata
 // at a non-existent source directory: ReadDir fails and the function returns nil
 // (a missing metadata dir is not fatal to a merge).
 func TestModelMerge_CopyModelPackMetadataMissingDirGood(t *testing.T) {
 	missing := core.PathJoin(t.TempDir(), "no-such-dir")
 	out := t.TempDir()
-	if err := copyModelPackMetadata(missing, out); err != nil {
-		t.Fatalf("copyModelPackMetadata(missing source) error = %v, want nil", err)
+	if err := sharedmerge.CopyModelPackMetadata(missing, out); err != nil {
+		t.Fatalf("CopyModelPackMetadata(missing source) error = %v, want nil", err)
 	}
 }
 
 // TestModelMerge_CopyModelPackMetadataSkipsDirGood places a subdirectory whose
-// name carries a metadata suffix in the source. copyModelPackMetadata must skip
+// name carries a metadata suffix in the source. CopyModelPackMetadata must skip
 // it (entry.IsDir() continue) and copy only the regular metadata file.
 func TestModelMerge_CopyModelPackMetadataSkipsDirGood(t *testing.T) {
 	src := t.TempDir()
@@ -543,8 +607,8 @@ func TestModelMerge_CopyModelPackMetadataSkipsDirGood(t *testing.T) {
 	}
 	// A regular metadata file that should be copied.
 	writeModelPackFile(t, core.PathJoin(src, "config.json"), `{"ok":true}`)
-	if err := copyModelPackMetadata(src, out); err != nil {
-		t.Fatalf("copyModelPackMetadata() error = %v", err)
+	if err := sharedmerge.CopyModelPackMetadata(src, out); err != nil {
+		t.Fatalf("CopyModelPackMetadata() error = %v", err)
 	}
 	if stat := core.Stat(core.PathJoin(out, "config.json")); !stat.OK {
 		t.Fatal("config.json should have been copied")
@@ -554,48 +618,31 @@ func TestModelMerge_CopyModelPackMetadataSkipsDirGood(t *testing.T) {
 	}
 }
 
-// TestModelMerge_CopyModelPackLocalFileDestErrorBad points the destination at a
-// path whose parent is not a directory, so copyModelPackLocalFile's destination
-// open fails after the source opened cleanly.
-func TestModelMerge_CopyModelPackLocalFileDestErrorBad(t *testing.T) {
-	src := core.PathJoin(t.TempDir(), "source.txt")
-	writeModelPackFile(t, src, "payload")
-	// A regular file standing in for a directory: <file>/dest cannot be created.
+// TestModelMerge_CopyModelPackMetadataDestErrorBad points the output root at a
+// path whose parent is a regular file (not a directory), so the streaming copy
+// CopyModelPackMetadata composes internally fails to open the destination and
+// the error propagates out of the exported call. The streaming copy itself
+// (copyModelPackLocalFile) is private to shared and not exported, so this
+// drives the same destination-open failure leg through the public entry point
+// instead of calling the helper directly.
+func TestModelMerge_CopyModelPackMetadataDestErrorBad(t *testing.T) {
+	src := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(src, "config.json"), "payload")
+	// A regular file standing in for a directory: <file>/out/config.json
+	// cannot be created under it.
 	notDir := core.PathJoin(t.TempDir(), "not-a-dir")
 	writeModelPackFile(t, notDir, "x")
-	dest := core.PathJoin(notDir, "dest.txt")
-	if err := copyModelPackLocalFile(src, dest); err == nil {
-		t.Fatal("copyModelPackLocalFile(bad dest) error = nil, want open failure")
+	out := core.PathJoin(notDir, "out")
+	if err := sharedmerge.CopyModelPackMetadata(src, out); err == nil {
+		t.Fatal("CopyModelPackMetadata(bad dest) error = nil, want open failure")
 	}
 }
 
-// TestModelMerge_CopyModelPackLocalFileSourceErrorBad points the source at a
-// missing path so copyModelPackLocalFile's source open fails.
-func TestModelMerge_CopyModelPackLocalFileSourceErrorBad(t *testing.T) {
-	src := core.PathJoin(t.TempDir(), "missing-source.txt")
-	dest := core.PathJoin(t.TempDir(), "dest.txt")
-	if err := copyModelPackLocalFile(src, dest); err == nil {
-		t.Fatal("copyModelPackLocalFile(missing source) error = nil, want open failure")
-	}
-}
-
-// TestModelMerge_ModelPackCopyResultErrorGood covers modelPackCopyResultError's
-// OK-result (nil) and non-error-value (fallback error) legs.
-func TestModelMerge_ModelPackCopyResultErrorGood(t *testing.T) {
-	if err := modelPackCopyResultError(core.Ok("fine")); err != nil {
-		t.Fatalf("modelPackCopyResultError(ok) = %v, want nil", err)
-	}
-	if err := modelPackCopyResultError(core.Result{Value: "not an error", OK: false}); err == nil {
-		t.Fatal("modelPackCopyResultError(non-error value) = nil, want fallback error")
-	}
-}
-
-// TestModelMerge_HashFileMissingBad points hashFile at a missing path so its
-// ReadFile fails — the read-error return leg (the non-byte-data leg is
-// unreachable: a successful ReadFile always yields []byte).
+// TestModelMerge_HashFileMissingBad points HashFile at a missing path so its
+// read fails — the read-error return leg.
 func TestModelMerge_HashFileMissingBad(t *testing.T) {
-	if _, err := hashFile(core.PathJoin(t.TempDir(), "absent.json")); err == nil {
-		t.Fatal("hashFile(missing) error = nil, want read failure")
+	if _, err := sharedmerge.HashFile(core.PathJoin(t.TempDir(), "absent.json")); err == nil {
+		t.Fatal("HashFile(missing) error = nil, want read failure")
 	}
 }
 
@@ -604,13 +651,13 @@ func TestModelMerge_HashFileMissingBad(t *testing.T) {
 func TestModelMerge_HashFileGood(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "data.json")
 	writeModelPackFile(t, path, "abc")
-	got, err := hashFile(path)
+	got, err := sharedmerge.HashFile(path)
 	if err != nil {
-		t.Fatalf("hashFile() error = %v", err)
+		t.Fatalf("HashFile() error = %v", err)
 	}
 	want := core.SHA256Hex([]byte("abc"))
 	if got != want {
-		t.Fatalf("hashFile() = %q, want %q", got, want)
+		t.Fatalf("HashFile() = %q, want %q", got, want)
 	}
 }
 

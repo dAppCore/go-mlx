@@ -46,7 +46,6 @@ var (
 	errLinearLenMismatch       = core.NewError("mlx: tensor length mismatch during linear merge")
 	errNoTensors               = core.NewError("mlx: no tensors to merge")
 	errOutputHasWeights        = core.NewError("mlx: merged output path already contains model weights")
-	errPackMetadataCopy        = core.NewError("model pack metadata copy failed")
 	errWeightsSourceCount      = core.NewError("mlx: tensor merge weights do not match source count")
 	errSLERPNeedTwoReaders     = core.NewError("mlx: SLERP tensor merge requires exactly two readers")
 	errSLERPNeedTwoSources     = core.NewError("mlx: SLERP model merge requires exactly two sources")
@@ -227,7 +226,7 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 		if pack.Format != mp.ModelPackFormatSafetensors {
 			return prepared{}, errMergeNeedsSafetensors
 		}
-		if samePathResolved(pack.Root, output) {
+		if sharedmerge.SamePathResolved(pack.Root, output) {
 			return prepared{}, errOutputSameAsSource
 		}
 		packs = append(packs, pack)
@@ -240,7 +239,7 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 	if result := core.MkdirAll(output, 0o755); !result.OK {
 		return prepared{}, core.E("Packs", "create merged model directory", resultError(result))
 	}
-	if err := copyModelPackMetadata(packs[0].Root, output); err != nil {
+	if err := sharedmerge.CopyModelPackMetadata(packs[0].Root, output); err != nil {
 		return prepared{}, err
 	}
 
@@ -298,13 +297,13 @@ func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 			continue
 		}
 		if !baseHashLoaded {
-			baseHash, baseHashErr = hashFile(base.TokenizerPath)
+			baseHash, baseHashErr = sharedmerge.HashFile(base.TokenizerPath)
 			baseHashLoaded = true
 		}
 		if baseHashErr != nil {
 			return core.E("Packs", "hash base tokenizer", baseHashErr)
 		}
-		hash, err := hashFile(pack.TokenizerPath)
+		hash, err := sharedmerge.HashFile(pack.TokenizerPath)
 		if err != nil {
 			return core.E("Packs", "hash tokenizer", err)
 		}
