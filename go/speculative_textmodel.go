@@ -182,6 +182,10 @@ func (s *speculativeTextModel) MTPMetrics() *metal.MTPMetrics {
 	return s.model.LastMetrics().MTP
 }
 
+func (s *speculativeTextModel) enableConversationContinuity(ConversationContinuityOptions) (*ConversationContinuity, error) {
+	return nil, core.E("mlx.EnableConversationContinuity", "speculative pair serves stateless; prompt cache covers re-prefill until continuity and pair lanes are unified", nil)
+}
+
 // Close releases both the target and the attached assistant drafter.
 func (s *speculativeTextModel) Close() core.Result {
 	return core.ResultOf(nil, s.pair.Close())

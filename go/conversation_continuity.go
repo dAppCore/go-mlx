@@ -48,7 +48,7 @@ type ContinuityStats struct {
 // requests. Create with NewConversationContinuity or wire into a loaded text
 // model with EnableConversationContinuity.
 type ConversationContinuity struct {
-	model  *Model
+	target conversationContinuityTarget
 	store  state.Store
 	writer state.Writer
 	prefix string
@@ -58,6 +58,37 @@ type ConversationContinuity struct {
 	resident map[string]*residentConversation
 	order    []string // oldest first, for eviction
 	stats    ContinuityStats
+}
+
+type conversationContinuityTarget interface {
+	NewContinuitySession() (*ModelSession, error)
+	FormatContinuityChat(messages []inference.Message, thinking *bool, continuation bool) string
+	ContinuityNative() any
+}
+
+type modelContinuityTarget struct {
+	model *Model
+}
+
+func (t modelContinuityTarget) NewContinuitySession() (*ModelSession, error) {
+	if t.model == nil {
+		return nil, errModelNil
+	}
+	return t.model.NewSession()
+}
+
+func (t modelContinuityTarget) FormatContinuityChat(messages []inference.Message, thinking *bool, continuation bool) string {
+	if t.model == nil {
+		return ""
+	}
+	return t.model.formatChatTurns(messages, thinking, continuation)
+}
+
+func (t modelContinuityTarget) ContinuityNative() any {
+	if t.model == nil {
+		return nil
+	}
+	return t.model.Native()
 }
 
 type residentConversation struct {
@@ -75,20 +106,27 @@ func NewConversationContinuity(model *Model, opts ConversationContinuityOptions)
 	if model == nil {
 		return nil, core.E("mlx.NewConversationContinuity", "model is nil", nil)
 	}
+	return newConversationContinuityForTarget("mlx.NewConversationContinuity", modelContinuityTarget{model: model}, opts)
+}
+
+func newConversationContinuityForTarget(scope string, target conversationContinuityTarget, opts ConversationContinuityOptions) (*ConversationContinuity, error) {
+	if target == nil {
+		return nil, core.E(scope, "model is nil", nil)
+	}
 	if opts.Store == nil {
-		return nil, core.E("mlx.NewConversationContinuity", "state store is nil", nil)
+		return nil, core.E(scope, "state store is nil", nil)
 	}
 	// Block-diffusion models decode canvases against a per-request prefill —
 	// the AR session machinery (retained KV, per-turn sleep/wake) does not
 	// apply, and running it on the diffusion trunk is the #77 serve-book OOM.
 	// The serve falls back to stateless chat, which routes through
 	// Model.Generate's block-diffusion lane.
-	if bd, ok := model.Native().(interface{ BlockDiffusionCapable() bool }); ok && bd.BlockDiffusionCapable() {
-		return nil, core.E("mlx.NewConversationContinuity", "block-diffusion model decodes per request — continuity does not apply; the diffusion route serves it directly", nil)
+	if bd, ok := target.ContinuityNative().(interface{ BlockDiffusionCapable() bool }); ok && bd.BlockDiffusionCapable() {
+		return nil, core.E(scope, "block-diffusion model decodes per request — continuity does not apply; the diffusion route serves it directly", nil)
 	}
 	writer, ok := opts.Store.(state.Writer)
 	if !ok {
-		return nil, core.E("mlx.NewConversationContinuity", "state store does not implement state.Writer", nil)
+		return nil, core.E(scope, "state store does not implement state.Writer", nil)
 	}
 	maxResident := opts.MaxResident
 	if maxResident <= 0 {
@@ -99,7 +137,7 @@ func NewConversationContinuity(model *Model, opts ConversationContinuityOptions)
 		prefix = "mlx://conversation/"
 	}
 	return &ConversationContinuity{
-		model:    model,
+		target:   target,
 		store:    opts.Store,
 		writer:   writer,
 		prefix:   prefix,
@@ -172,9 +210,9 @@ func (c *ConversationContinuity) Chat(ctx context.Context, messages []inference.
 	// still fall back to the stateless path.
 	var prefillErr error
 	if tailStart == 0 {
-		prefillErr = conv.session.Prefill(c.model.formatChatTurns(messages, cfg.EnableThinking, false))
+		prefillErr = conv.session.Prefill(c.target.FormatContinuityChat(messages, cfg.EnableThinking, false))
 	} else {
-		prefillErr = conv.session.AppendPrompt(c.model.formatChatTurns(messages[tailStart:], cfg.EnableThinking, true))
+		prefillErr = conv.session.AppendPrompt(c.target.FormatContinuityChat(messages[tailStart:], cfg.EnableThinking, true))
 	}
 	if prefillErr != nil {
 		core.Error("mlx: conversation continuity prefill failed; serving statelessly", "error", prefillErr)
@@ -233,7 +271,7 @@ func (c *ConversationContinuity) acquire(ctx context.Context, messages []inferen
 		entryURI := c.prefix + key
 		indexURI := entryURI + "/index"
 		if _, idxErr := agent.LoadStateIndex(ctx, c.store, indexURI); idxErr == nil {
-			sess, err := c.model.NewSession()
+			sess, err := c.target.NewContinuitySession()
 			if err != nil {
 				return nil, 0, err
 			}
@@ -259,7 +297,7 @@ func (c *ConversationContinuity) acquire(ctx context.Context, messages []inferen
 		}
 	}
 
-	sess, err := c.model.NewSession()
+	sess, err := c.target.NewContinuitySession()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -362,9 +400,20 @@ func rootGenerateOptions(cfg inference.GenerateConfig) []GenerateOption {
 //
 //	cc, err := mlx.EnableConversationContinuity(tm, mlx.ConversationContinuityOptions{Store: store})
 func EnableConversationContinuity(tm inference.TextModel, opts ConversationContinuityOptions) (*ConversationContinuity, error) {
-	adapter, ok := tm.(*metaladapter)
+	attachable, ok := tm.(conversationContinuityAttachable)
 	if !ok {
-		return nil, core.E("mlx.EnableConversationContinuity", "text model is not the metal adapter", nil)
+		return nil, core.E("mlx.EnableConversationContinuity", "text model does not support conversation continuity", nil)
+	}
+	return attachable.enableConversationContinuity(opts)
+}
+
+type conversationContinuityAttachable interface {
+	enableConversationContinuity(ConversationContinuityOptions) (*ConversationContinuity, error)
+}
+
+func (adapter *metaladapter) enableConversationContinuity(opts ConversationContinuityOptions) (*ConversationContinuity, error) {
+	if adapter == nil {
+		return nil, core.E("mlx.EnableConversationContinuity", "model is nil", nil)
 	}
 	continuity, err := NewConversationContinuity(adapter.rootModel(), opts)
 	if err != nil {

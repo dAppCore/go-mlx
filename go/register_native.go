@@ -27,6 +27,7 @@ import (
 	_ "dappco.re/go/mlx/pkg/model/mistral"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
+	"dappco.re/go/mlx/session"
 )
 
 // nativeTextModel exposes the no-cgo native token-loop contract (a model.TokenModel
@@ -43,17 +44,21 @@ import (
 // model sampler loop. Close is a no-op: the resident weights live for the process
 // (a single served model), matching the load-once serve shape.
 type nativeTextModel struct {
-	tm            model.TokenModel
-	tok           *tokenizer.Tokenizer
-	modelType     string
-	modelPath     string
-	info          inference.ModelInfo
-	maxLen        int
-	adapter       inference.AdapterIdentity
-	adapterPack   string
-	imageFeatures *native.VisionImageFeatureConfig
-	audioFeatures *native.AudioFeatureExtractor
-	visionCache   *nativeVisionFeatureCache
+	tm              model.TokenModel
+	tok             *tokenizer.Tokenizer
+	modelType       string
+	modelPath       string
+	info            inference.ModelInfo
+	maxLen          int
+	cacheMode       string
+	kvStorageDType  string
+	pagedKVPageSize int
+	pagedKVPrealloc bool
+	adapter         inference.AdapterIdentity
+	adapterPack     string
+	imageFeatures   *native.VisionImageFeatureConfig
+	audioFeatures   *native.AudioFeatureExtractor
+	visionCache     *nativeVisionFeatureCache
 
 	mu          sync.Mutex
 	lastErr     error
@@ -64,6 +69,7 @@ type nativeTextModel struct {
 	schedulerMu sync.Mutex
 	scheduler   *scheduler.Model
 	probeSink   inference.ProbeSink
+	continuity  *ConversationContinuity
 }
 
 var _ inference.TextModel = (*nativeTextModel)(nil)
@@ -202,6 +208,7 @@ type nativeTextSession struct {
 	logits          []byte
 	err             error
 	prefillDuration time.Duration
+	tokenPhases     []metal.TokenPhaseTrace
 	closed          bool
 }
 
@@ -228,12 +235,18 @@ type nativeTextAudioChatModel interface {
 // cache (default 4096). The metallib loads at runtime (MLX_METALLIB_PATH or the
 // embedded metallib), so the standard lthn-mlx binary serves it — no cgo, no Python.
 func LoadNativeTextModel(modelPath string, opts ...LoadOption) (inference.TextModel, error) {
-	loadCfg := applyLoadOptions(opts)
+	loadCfg, err := normalizeLoadConfig(applyLoadOptions(opts))
+	if err != nil {
+		return nil, err
+	}
 	maxLen := loadCfg.ContextLength
 	if maxLen <= 0 {
 		maxLen = 4096
 	}
-	tm, err := native.LoadTokenModelDir(modelPath, maxLen)
+	tm, err := native.LoadTokenModelDirWithConfig(modelPath, maxLen, native.TokenModelLoadConfig{
+		PagedKVPageSize: loadCfg.PagedKVPageSize,
+		PagedKVPrealloc: loadCfg.PagedKVPrealloc,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +263,15 @@ func LoadNativeTextModel(modelPath string, opts ...LoadOption) (inference.TextMo
 		return nil, core.E("mlx.LoadNativeTextModel", "load audio processor", err)
 	}
 	return &nativeTextModel{
-		tm: tm, tok: tok, maxLen: maxLen, modelType: "gemma4", modelPath: modelPath, imageFeatures: imageFeatures, audioFeatures: audioFeatures,
+		tm: tm, tok: tok, maxLen: maxLen, cacheMode: nativeTextRuntimeCacheMode(loadCfg), kvStorageDType: loadCfg.KVCacheStorageDType,
+		pagedKVPageSize: loadCfg.PagedKVPageSize, pagedKVPrealloc: loadCfg.PagedKVPrealloc,
+		modelType: "gemma4", modelPath: modelPath, imageFeatures: imageFeatures, audioFeatures: audioFeatures,
 		info: inference.ModelInfo{Architecture: "gemma4", VocabSize: tm.Vocab()},
 	}, nil
+}
+
+func nativeTextRuntimeCacheMode(cfg LoadConfig) string {
+	return "paged"
 }
 
 func loadNativeImageFeatureConfig(modelPath string) (*native.VisionImageFeatureConfig, error) {
@@ -286,6 +305,11 @@ func (m *nativeTextModel) Generate(ctx context.Context, prompt string, opts ...i
 // Chat streams tokens from a multi-turn conversation rendered with the gemma turn
 // template (user/model turns, a trailing model turn to complete).
 func (m *nativeTextModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+	if m != nil && m.continuity != nil {
+		if seq, ok := m.continuity.Chat(ctx, messages, opts...); ok {
+			return seq
+		}
+	}
 	cfg := inference.ApplyGenerateOpts(opts)
 	if inferenceMessagesCarryImages(messages) {
 		return m.chatVision(ctx, messages, cfg)
@@ -500,22 +524,56 @@ func (m *nativeTextModel) nativeAudioPromptEmbeddings(ids []int32, placeholderID
 	return m.nativeModalityPromptEmbeddings(ids, placeholderID, features, "audio")
 }
 
-func (m *nativeTextModel) nativeModalityPromptEmbeddings(ids []int32, placeholderID int32, features [][]byte, label string) ([][]byte, error) {
-	embeddings := make([][]byte, len(ids))
-	featureIdx, featureOff, used := 0, 0, 0
+type nativeTextPromptEmbedInto interface {
+	EmbeddingBytes() int
+	EmbedInto([]byte, int32) ([]byte, error)
+}
+
+func nativeTextPromptEmbeddingRows(source any, ids []int32, embed func(int32) ([]byte, error), scope string) ([][]byte, error) {
+	if fast, ok := source.(nativeTextPromptEmbedInto); ok {
+		rowBytes := fast.EmbeddingBytes()
+		if rowBytes > 0 {
+			rows := make([][]byte, len(ids))
+			storage := make([]byte, len(ids)*rowBytes)
+			for i, id := range ids {
+				row := storage[i*rowBytes : (i+1)*rowBytes]
+				emb, err := fast.EmbedInto(row, id)
+				if err != nil {
+					return nil, err
+				}
+				if len(emb) != rowBytes {
+					return nil, core.NewError(scope + ": token embedding is empty")
+				}
+				rows[i] = emb
+			}
+			return rows, nil
+		}
+	}
+	rows := make([][]byte, len(ids))
 	for i, id := range ids {
-		emb, err := m.tm.Embed(id)
+		emb, err := embed(id)
 		if err != nil {
 			return nil, err
 		}
+		if len(emb) == 0 {
+			return nil, core.NewError(scope + ": token embedding is empty")
+		}
+		rows[i] = emb
+	}
+	return rows, nil
+}
+
+func (m *nativeTextModel) nativeModalityPromptEmbeddings(ids []int32, placeholderID int32, features [][]byte, label string) ([][]byte, error) {
+	embeddings, err := nativeTextPromptEmbeddingRows(m.tm, ids, m.tm.Embed, "mlx.nativeTextModel.Chat")
+	if err != nil {
+		return nil, err
+	}
+	featureIdx, featureOff, used := 0, 0, 0
+	for i, id := range ids {
 		if id != placeholderID {
-			embeddings[i] = append([]byte(nil), emb...)
 			continue
 		}
-		rowBytes := len(emb)
-		if rowBytes == 0 {
-			return nil, core.NewError("mlx.nativeTextModel.Chat: token embedding is empty")
-		}
+		rowBytes := len(embeddings[i])
 		for featureIdx < len(features) && featureOff >= len(features[featureIdx]) {
 			featureIdx++
 			featureOff = 0
@@ -523,7 +581,7 @@ func (m *nativeTextModel) nativeModalityPromptEmbeddings(ids []int32, placeholde
 		if featureIdx >= len(features) || featureOff+rowBytes > len(features[featureIdx]) {
 			return nil, core.NewError("mlx.nativeTextModel.Chat: " + label + " feature rows do not match placeholder embeddings")
 		}
-		embeddings[i] = append([]byte(nil), features[featureIdx][featureOff:featureOff+rowBytes]...)
+		embeddings[i] = features[featureIdx][featureOff : featureOff+rowBytes]
 		featureOff += rowBytes
 		used++
 	}
@@ -595,7 +653,13 @@ func (m *nativeTextModel) ChatChunks(ctx context.Context, messages []inference.M
 }
 
 func (m *nativeTextModel) formatChat(messages []inference.Message, cfg inference.GenerateConfig) string {
-	return chat.Format(messages, m.chatConfig(cfg))
+	return m.formatChatTurns(messages, cfg, false)
+}
+
+func (m *nativeTextModel) formatChatTurns(messages []inference.Message, cfg inference.GenerateConfig, continuation bool) string {
+	chatCfg := m.chatConfig(cfg)
+	chatCfg.Continuation = continuation
+	return chat.Format(messages, chatCfg)
 }
 
 func (m *nativeTextModel) chatConfig(cfg inference.GenerateConfig) chat.Config {
@@ -665,6 +729,13 @@ func nativeTextPromptChunks(prompt string, chunkBytes int) iter.Seq[string] {
 func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference.GenerateConfig) iter.Seq[inference.Token] {
 	return func(yield func(inference.Token) bool) {
 		start := time.Now()
+		if m.BlockDiffusionCapable() {
+			if m.streamBlockDiffusion(ctx, ids, cfg, start, yield) {
+				return
+			}
+			m.setErr(core.NewError("mlx.nativeTextModel: block-diffusion native model requires the block-diffusion sampler; refusing autoregressive fallback"))
+			return
+		}
 		maxNew := cfg.MaxTokens
 		if maxNew <= 0 || len(ids)+maxNew > m.maxLen {
 			maxNew = m.maxLen - len(ids)
@@ -823,6 +894,68 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 		}
 		m.setMetricsWithThinkingBudget(len(ids), len(out), time.Since(start), budgetForced())
 	}
+}
+
+func (m *nativeTextModel) streamBlockDiffusion(ctx context.Context, ids []int32, cfg inference.GenerateConfig, start time.Time, yield func(inference.Token) bool) bool {
+	bd, ok := m.tm.(native.BlockDiffusionTokenGenerator)
+	if !ok {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	maxNew := cfg.MaxTokens
+	if maxNew <= 0 || len(ids)+maxNew > m.maxLen {
+		maxNew = m.maxLen - len(ids)
+	}
+	if maxNew <= 0 {
+		m.setErr(core.NewError("mlx.nativeTextModel: prompt fills the context window, no room to generate"))
+		return true
+	}
+	stopTokens := m.stopTokens(cfg)
+	emitted := 0
+	opts := native.BlockDiffusionOptions{
+		MaxTokens:   maxNew,
+		Temperature: cfg.Temperature,
+		Seed:        cfg.Seed,
+		SeedSet:     cfg.SeedSet,
+		StopTokens:  append([]int32(nil), stopTokens...),
+	}
+	metrics, err := bd.GenerateBlockDiffusionTokens(ctx, ids, opts, func(id int32) bool {
+		if ctx.Err() != nil || emitted >= maxNew {
+			return false
+		}
+		emitted++
+		if yield != nil && !yield(inference.Token{ID: id, Text: m.tok.DecodeToken(id)}) {
+			return false
+		}
+		if tokenInSet(id, stopTokens) {
+			return false
+		}
+		return emitted < maxNew
+	})
+	if err != nil {
+		m.setErr(err)
+		return true
+	}
+	if err := ctx.Err(); err != nil {
+		m.setErr(err)
+		return true
+	}
+	promptTokens := metrics.PrefillTokens
+	if promptTokens <= 0 {
+		promptTokens = len(ids)
+	}
+	decodeDur := metrics.DenoiseDur + metrics.CommitDur
+	if decodeDur <= 0 && metrics.TotalDur > metrics.PrefillDur {
+		decodeDur = metrics.TotalDur - metrics.PrefillDur
+	}
+	if metrics.PrefillDur == 0 && decodeDur == 0 {
+		m.setMetrics(promptTokens, emitted, time.Since(start))
+		return true
+	}
+	m.setSessionMetrics(promptTokens, emitted, metrics.PrefillDur, decodeDur)
+	return true
 }
 
 func (m *nativeTextModel) stopTokens(cfg inference.GenerateConfig) []int32 {
@@ -1812,6 +1945,60 @@ func (m *nativeTextModel) NewSession() metal.SessionHandle {
 	return &nativeTextSession{model: m, sess: sess}
 }
 
+func (m *nativeTextModel) enableConversationContinuity(opts ConversationContinuityOptions) (*ConversationContinuity, error) {
+	if m == nil {
+		return nil, core.E("mlx.EnableConversationContinuity", "model is nil", nil)
+	}
+	continuity, err := newConversationContinuityForTarget("mlx.EnableConversationContinuity", nativeTextContinuityTarget{model: m}, opts)
+	if err != nil {
+		return nil, err
+	}
+	m.continuity = continuity
+	return continuity, nil
+}
+
+type nativeTextContinuityTarget struct {
+	model *nativeTextModel
+}
+
+func (t nativeTextContinuityTarget) NewContinuitySession() (*ModelSession, error) {
+	if t.model == nil {
+		return nil, errMLXModelNil
+	}
+	handle := t.model.NewSession()
+	if handle == nil {
+		return nil, errNativeNilSession
+	}
+	return session.New(handle, nativeTextContinuityModelInfo(t.model), NewTokenizer(t.model.tok)), nil
+}
+
+func (t nativeTextContinuityTarget) FormatContinuityChat(messages []inference.Message, thinking *bool, continuation bool) string {
+	if t.model == nil {
+		return ""
+	}
+	return t.model.formatChatTurns(messages, inference.GenerateConfig{EnableThinking: thinking}, continuation)
+}
+
+func (t nativeTextContinuityTarget) ContinuityNative() any {
+	return t.model
+}
+
+func nativeTextContinuityModelInfo(m *nativeTextModel) ModelInfo {
+	if m == nil {
+		return ModelInfo{}
+	}
+	info := m.Info()
+	return ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: m.maxLen,
+	}
+}
+
 func (m *nativeTextModel) openNativeRootSession() (nativeTextRootSession, error) {
 	if m == nil || m.tm == nil {
 		return nil, core.NewError("mlx.nativeTextModel.NewSession: model is not initialised")
@@ -2037,6 +2224,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 			s.err = err
 			return
 		}
+		s.tokenPhases = s.tokenPhases[:0]
 		maxNew := cfg.MaxTokens
 		if maxNew <= 0 || s.sess.Pos()+maxNew > s.model.maxLen {
 			maxNew = s.model.maxLen - s.sess.Pos()
@@ -2048,6 +2236,11 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 		promptLen := len(s.tokens)
 		stopTokens := s.stopTokens(cfg)
 		eos := singleStopToken(stopTokens)
+		tracePhases := cfg.TraceTokenPhases
+		var tokenPhases []metal.TokenPhaseTrace
+		if tracePhases {
+			tokenPhases = make([]metal.TokenPhaseTrace, 0, maxNew)
+		}
 		emit := func(id int32) bool {
 			if err := ctx.Err(); err != nil {
 				s.err = err
@@ -2057,6 +2250,49 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 				return false
 			}
 			return !tokenInSet(id, stopTokens)
+		}
+		if tracePhases {
+			phaseStart := time.Now()
+			emit = func(id int32) bool {
+				if err := ctx.Err(); err != nil {
+					s.err = err
+					return false
+				}
+				ready := time.Now()
+				textStart := time.Now()
+				text := s.decodeToken(id)
+				textDuration := time.Since(textStart)
+				yieldStart := time.Now()
+				yieldOK := true
+				if yield != nil && !yield(metal.Token{ID: id, Text: text}) {
+					yieldOK = false
+				}
+				yieldDuration := time.Since(yieldStart)
+				stop := tokenInSet(id, stopTokens)
+				forwardDuration := ready.Sub(phaseStart)
+				totalDuration := time.Since(phaseStart)
+				if forwardDuration <= 0 {
+					forwardDuration = time.Nanosecond
+				}
+				if totalDuration <= 0 {
+					totalDuration = time.Nanosecond
+				}
+				phase := metal.TokenPhaseTrace{
+					Step:               len(tokenPhases),
+					TokenID:            id,
+					FinalToken:         stop || !yieldOK,
+					TotalDuration:      totalDuration,
+					ForwardDuration:    forwardDuration,
+					DecodeTextDuration: textDuration,
+					YieldDuration:      yieldDuration,
+				}
+				if cfg.TraceTokenText {
+					phase.TokenText = text
+				}
+				tokenPhases = append(tokenPhases, phase)
+				phaseStart = time.Now()
+				return yieldOK && !stop
+			}
 		}
 		var (
 			out []int32
@@ -2109,8 +2345,26 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 		}
 		s.logits = append(s.logits[:0], logits...)
 		s.err = ctx.Err()
+		if tracePhases {
+			if len(tokenPhases) > 0 {
+				tokenPhases[len(tokenPhases)-1].FinalToken = true
+			}
+			s.tokenPhases = append(s.tokenPhases[:0], tokenPhases...)
+		}
 		s.model.setSessionMetrics(promptLen, len(out), s.prefillDuration, time.Since(totalStart))
 	}
+}
+
+func (s *nativeTextSession) LastTokenPhases() []metal.TokenPhaseTrace {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.tokenPhases) == 0 {
+		return nil
+	}
+	return append([]metal.TokenPhaseTrace(nil), s.tokenPhases...)
 }
 
 func (s *nativeTextSession) CaptureKV(ctx context.Context) (*metal.KVSnapshot, error) {
@@ -3299,11 +3553,63 @@ func (m *nativeTextModel) ModelType() string { return m.modelType }
 
 func (m *nativeTextModel) NumLayers() int { return m.Info().NumLayers }
 
+func (m *nativeTextModel) BlockDiffusionCapable() bool {
+	if m == nil || m.tm == nil {
+		return false
+	}
+	bd, ok := m.tm.(interface{ BlockDiffusionCapable() bool })
+	return ok && bd.BlockDiffusionCapable()
+}
+
 func (m *nativeTextModel) Capabilities() inference.CapabilityReport {
-	return inference.TextModelCapabilities(inference.RuntimeIdentity{
+	if m == nil {
+		return inference.TextModelCapabilities(inference.RuntimeIdentity{
+			Backend:       "native",
+			CacheMode:     "paged",
+			NativeRuntime: true,
+		}, nil)
+	}
+	cacheMode := m.cacheMode
+	if cacheMode == "" {
+		cacheMode = "paged"
+	}
+	report := inference.TextModelCapabilities(inference.RuntimeIdentity{
 		Backend:       "native",
+		CacheMode:     cacheMode,
 		NativeRuntime: true,
 	}, m)
+	nativeTextReportSupportedCapability(&report, inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime)
+	nativeTextReportSupportedCapability(&report, inference.CapabilityPromptCache, inference.CapabilityGroupRuntime)
+	report.Model.ContextLength = m.maxLen
+	report.CacheModes = []string{"paged"}
+	if report.Labels == nil {
+		report.Labels = make(map[string]string, 3)
+	}
+	if m.pagedKVPageSize > 0 {
+		report.Labels["paged_kv_page_size"] = core.Sprintf("%d", m.pagedKVPageSize)
+	}
+	if m.pagedKVPrealloc {
+		report.Labels["paged_kv_prealloc"] = "true"
+	}
+	if m.kvStorageDType != "" {
+		report.Labels["kv_storage_dtype"] = m.kvStorageDType
+	}
+	if len(report.Labels) == 0 {
+		report.Labels = nil
+	}
+	return report
+}
+
+func nativeTextReportSupportedCapability(report *inference.CapabilityReport, id inference.CapabilityID, group inference.CapabilityGroup) {
+	if report == nil {
+		return
+	}
+	for _, capability := range report.Capabilities {
+		if capability.ID == id {
+			return
+		}
+	}
+	report.Capabilities = append(report.Capabilities, inference.SupportedCapability(id, group))
 }
 
 func (m *nativeTextModel) Info() inference.ModelInfo {

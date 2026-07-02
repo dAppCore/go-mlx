@@ -286,34 +286,29 @@ func nativeVisionGreedyDecode(ctx context.Context, m nativeVisionCommandModel, t
 func nativeVisionPromptEmbeddings(m nativeVisionCommandModel, ids []int32, imageFeatures, videoFeatures []byte) ([][]byte, error) {
 	imageID := m.ImagePlaceholderTokenID()
 	videoID := m.VideoPlaceholderTokenID()
-	embeddings := make([][]byte, len(ids))
+	embeddings, err := nativePromptEmbeddingRows(m, ids, m.Embed, "native vision prompt embedding is empty")
+	if err != nil {
+		return nil, err
+	}
 	imageOff, videoOff := 0, 0
 	imageUsed, videoUsed := 0, 0
 	for i, id := range ids {
-		emb, err := m.Embed(id)
-		if err != nil {
-			return nil, err
-		}
-		if len(emb) == 0 {
-			return nil, core.NewError("native vision prompt embedding is empty")
-		}
+		emb := embeddings[i]
 		switch {
 		case id == imageID:
 			if imageOff+len(emb) > len(imageFeatures) {
 				return nil, core.NewError("native image feature rows do not match placeholder embeddings")
 			}
-			embeddings[i] = append([]byte(nil), imageFeatures[imageOff:imageOff+len(emb)]...)
+			embeddings[i] = imageFeatures[imageOff : imageOff+len(emb)]
 			imageOff += len(emb)
 			imageUsed++
 		case videoID != 0 && id == videoID:
 			if videoOff+len(emb) > len(videoFeatures) {
 				return nil, core.NewError("native video feature rows do not match placeholder embeddings")
 			}
-			embeddings[i] = append([]byte(nil), videoFeatures[videoOff:videoOff+len(emb)]...)
+			embeddings[i] = videoFeatures[videoOff : videoOff+len(emb)]
 			videoOff += len(emb)
 			videoUsed++
-		default:
-			embeddings[i] = append([]byte(nil), emb...)
 		}
 	}
 	if len(imageFeatures) > 0 && imageUsed == 0 {

@@ -92,8 +92,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		loadOpts = append(loadOpts, mlx.WithKVCacheStorageDType(*kvStorage))
 	}
 	if *nativeBackend && *tracePhases {
-		core.Print(stderr, "%s generate: --native does not support --trace yet (cgo metal engine only)", cliName())
-		return 2
+		return runGenerateNativeTrace(ctx, fs.Arg(0), *prompt, *maxTokens, loadOpts, stdout, stderr)
 	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
@@ -485,6 +484,169 @@ func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens i
 	return 0
 }
 
+type nativeGenerateTraceModel interface {
+	inference.TextModel
+	NewSession() metal.SessionHandle
+}
+
+type nativeGenerateTraceSession interface {
+	LastTokenPhases() []metal.TokenPhaseTrace
+}
+
+func runGenerateNativeTrace(ctx context.Context, modelPath, prompt string, maxTokens int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+	tm, err := mlx.LoadNativeTextModel(modelPath, loadOpts...)
+	if err != nil {
+		core.Print(stderr, "%s generate: native trace load: %v", cliName(), err)
+		return 1
+	}
+	defer tm.Close()
+	nativeModel, ok := tm.(nativeGenerateTraceModel)
+	if !ok {
+		core.Print(stderr, "%s generate: native trace: loaded model does not expose sessions", cliName())
+		return 1
+	}
+	chatPrompt, err := nativeGenerateTracePrompt(tm, prompt)
+	if err != nil {
+		core.Print(stderr, "%s generate: native trace prompt: %v", cliName(), err)
+		return 1
+	}
+
+	run := func(temp float32, limit int, trace bool) ([]metal.TokenPhaseTrace, bool) {
+		handle := nativeModel.NewSession()
+		if handle == nil {
+			core.Print(stderr, "%s generate: native trace session: nil session", cliName())
+			return nil, false
+		}
+		sess := mlxsession.New(handle, nativeGenerateTraceModelInfo(nativeModel.Info()), nil)
+		defer sess.Close()
+		if err := sess.Prefill(chatPrompt); err != nil {
+			core.Print(stderr, "%s generate: native trace prefill: %v", cliName(), err)
+			return nil, false
+		}
+		opts := []mlx.GenerateOption{mlx.WithMaxTokens(limit), mlx.WithTemperature(temp)}
+		if trace {
+			opts = append(opts, mlx.WithTokenPhaseTrace())
+		}
+		for range sess.GenerateStream(ctx, opts...) {
+		}
+		if err := sess.Err(); err != nil {
+			core.Print(stderr, "%s generate: native trace: %v", cliName(), err)
+			return nil, false
+		}
+		if !trace {
+			return nil, true
+		}
+		tracer, ok := handle.(nativeGenerateTraceSession)
+		if !ok {
+			core.Print(stderr, "%s generate: native trace: session did not expose token phases", cliName())
+			return nil, false
+		}
+		return tracer.LastTokenPhases(), true
+	}
+
+	if _, ok := run(0, 8, false); !ok {
+		return 1
+	}
+	lanes := []struct {
+		name string
+		temp float32
+	}{
+		{"native greedy (temp=0)", 0},
+		{"native sampled (temp=1)", 1},
+	}
+	for _, lane := range lanes {
+		phases, ok := run(lane.temp, maxTokens, true)
+		if !ok {
+			return 1
+		}
+		metrics := nativeGenerateTraceMetrics(phases)
+		printTokenPhaseBudget(stdout, lane.name+" · lane=native", metrics)
+	}
+	return 0
+}
+
+func nativeGenerateTracePrompt(tm inference.TextModel, prompt string) (string, error) {
+	templater, ok := tm.(interface {
+		ApplyChatTemplate([]inference.Message) (string, error)
+	})
+	if !ok {
+		return prompt, nil
+	}
+	return templater.ApplyChatTemplate([]inference.Message{{Role: "user", Content: prompt}})
+}
+
+func nativeGenerateTraceModelInfo(info inference.ModelInfo) spine.ModelInfo {
+	return spine.ModelInfo{
+		Architecture: info.Architecture,
+		VocabSize:    info.VocabSize,
+		NumLayers:    info.NumLayers,
+		HiddenSize:   info.HiddenSize,
+		QuantBits:    info.QuantBits,
+		QuantGroup:   info.QuantGroup,
+	}
+}
+
+func nativeGenerateTraceMetrics(phases []metal.TokenPhaseTrace) mlx.Metrics {
+	return mlx.Metrics{
+		GeneratedTokens: len(phases),
+		TokenPhases:     nativeGenerateTraceTokenPhases(phases),
+		DecodeLane:      "native",
+	}
+}
+
+func nativeGenerateTraceTokenPhases(phases []metal.TokenPhaseTrace) []mlx.TokenPhaseTrace {
+	if len(phases) == 0 {
+		return nil
+	}
+	out := make([]mlx.TokenPhaseTrace, len(phases))
+	for i := range phases {
+		phase := &phases[i]
+		out[i] = mlx.TokenPhaseTrace{
+			Step:                   phase.Step,
+			TokenID:                phase.TokenID,
+			TokenText:              phase.TokenText,
+			FinalToken:             phase.FinalToken,
+			TotalDuration:          phase.TotalDuration,
+			LogitsDuration:         phase.LogitsDuration,
+			SampleDuration:         phase.SampleDuration,
+			SampleEvalDuration:     phase.SampleEvalDuration,
+			TokenReadDuration:      phase.TokenReadDuration,
+			DecodeTextDuration:     phase.DecodeTextDuration,
+			ProbeTokenDuration:     phase.ProbeTokenDuration,
+			YieldDuration:          phase.YieldDuration,
+			NextInputDuration:      phase.NextInputDuration,
+			ForwardDuration:        phase.ForwardDuration,
+			PrefetchDuration:       phase.PrefetchDuration,
+			PrefetchLogitsDuration: phase.PrefetchLogitsDuration,
+			PrefetchCacheDuration:  phase.PrefetchCacheDuration,
+			MaterializeDuration:    phase.MaterializeDuration,
+			DetachDuration:         phase.DetachDuration,
+			CacheProbeDuration:     phase.CacheProbeDuration,
+			OtherDuration:          phase.OtherDuration,
+			NativeEvents:           nativeGenerateTraceEvents(phase.NativeEvents),
+		}
+	}
+	return out
+}
+
+func nativeGenerateTraceEvents(events []metal.NativePhaseTrace) []mlx.NativePhaseTrace {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]mlx.NativePhaseTrace, len(events))
+	for i := range events {
+		event := &events[i]
+		out[i] = mlx.NativePhaseTrace{
+			Name:     event.Name,
+			Duration: event.Duration,
+			Error:    event.Error,
+			Pages:    event.Pages,
+			Tokens:   event.Tokens,
+		}
+	}
+	return out
+}
+
 // printTokenPhaseBudget averages the engine's per-token phase trace over the
 // warm tokens (step 0 and the final token are skipped) and reports the
 // GPU-wait vs host-serial split plus each phase's share.
@@ -537,8 +699,12 @@ func printTokenPhaseBudget(stdout io.Writer, lane string, metrics mlx.Metrics) {
 	core.WriteString(stdout, core.Sprintf("\n%s — %d warm tokens · %.3f ms/token · %.1f tok/s\n",
 		lane, n, avgTotal, 1000.0/avgTotal))
 	core.WriteString(stdout, core.Sprintf("  GPU wait   %8.3f ms  %5.1f%%\n", avgGPU, 100*avgGPU/avgTotal))
-	core.WriteString(stdout, core.Sprintf("  host serial%8.3f ms  %5.1f%%   <- GPU idle; tok/s ceiling if zeroed: %.1f\n",
-		avgHost, 100*avgHost/avgTotal, 1000.0/avgGPU))
+	ceiling := "n/a"
+	if avgGPU > 0 {
+		ceiling = core.Sprintf("%.1f", 1000.0/avgGPU)
+	}
+	core.WriteString(stdout, core.Sprintf("  host serial%8.3f ms  %5.1f%%   <- GPU idle; tok/s ceiling if zeroed: %s\n",
+		avgHost, 100*avgHost/avgTotal, ceiling))
 	for i, r := range rows {
 		avg := ms(sums[i])
 		if avg < 0.001 {

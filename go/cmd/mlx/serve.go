@@ -201,7 +201,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if *nativeBackend {
 		hotSwap.setLoader(mlx.LoadNativeTextModel)
 		hotSwap.setSpeculativeLoader(mlx.LoadNativeSpeculativePairAsTextModelBlock)
-		core.Print(stderr, "%s serve: no-cgo native token-loop contract (pkg/model + pkg/native) — continuity off", cliName())
+		core.Print(stderr, "%s serve: no-cgo native token-loop contract (pkg/model + pkg/native)", cliName())
 	}
 	// Reload symmetry (#92): /v1/admin/serve/reload re-runs the same
 	// reactive ladder over the swapped-in target, honouring the boot
@@ -211,7 +211,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// Conversation continuity is on by default — the serve IS the state
 	// product. Any failure here degrades to stateless serving with an honest
 	// notice; it never blocks the serve from coming up.
-	if *stateConversations && !*nativeBackend { // continuity wraps the cgo metal model; not on the contract path yet
+	if *stateConversations {
 		storePath := core.Trim(*stateStorePath)
 		if storePath == "" {
 			if homeR := core.UserHomeDir(); homeR.OK {

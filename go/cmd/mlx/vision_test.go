@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // splitPathList splits a comma list, trimming blanks; empty input → nil.
@@ -89,5 +90,117 @@ func TestRunNativeVisionCommand_BadModelPath_Bad(t *testing.T) {
 	}
 	if !core.Contains(stderr.String(), "vision: load") {
 		t.Fatalf("stderr = %q, want the vision load error", stderr.String())
+	}
+}
+
+type visionPromptEmbeddingCommandModel struct {
+	rows           map[int32][]byte
+	imageID        int32
+	videoID        int32
+	embeddingBytes int
+	embedIntoCalls int
+}
+
+func (m *visionPromptEmbeddingCommandModel) Embed(id int32) ([]byte, error) {
+	if row, ok := m.rows[id]; ok {
+		return row, nil
+	}
+	return []byte{byte(id)}, nil
+}
+
+func (m *visionPromptEmbeddingCommandModel) EmbeddingBytes() int { return m.embeddingBytes }
+
+func (m *visionPromptEmbeddingCommandModel) EmbedInto(dst []byte, id int32) ([]byte, error) {
+	m.embedIntoCalls++
+	row, err := m.Embed(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(dst) != len(row) {
+		return nil, core.NewError("test visionPromptEmbeddingCommandModel: dst size mismatch")
+	}
+	copy(dst, row)
+	return dst, nil
+}
+
+func (*visionPromptEmbeddingCommandModel) DecodeForward([][]byte) ([][]byte, error) { return nil, nil }
+func (*visionPromptEmbeddingCommandModel) Head([]byte) ([]byte, error)              { return nil, nil }
+func (*visionPromptEmbeddingCommandModel) Vocab() int                               { return 0 }
+func (*visionPromptEmbeddingCommandModel) OpenSession() (model.DecodeStepper, error) {
+	return nil, nil
+}
+func (*visionPromptEmbeddingCommandModel) AcceptsImageInput() bool { return true }
+func (m *visionPromptEmbeddingCommandModel) ImagePlaceholderTokenID() int32 {
+	return m.imageID
+}
+func (*visionPromptEmbeddingCommandModel) ImagePlaceholderBlock(int) string { return "" }
+func (m *visionPromptEmbeddingCommandModel) VideoPlaceholderTokenID() int32 {
+	return m.videoID
+}
+func (*visionPromptEmbeddingCommandModel) VideoPlaceholderBlock(int) string { return "" }
+func (*visionPromptEmbeddingCommandModel) ProjectImageFeatures([]byte) ([]byte, error) {
+	return nil, nil
+}
+
+func TestNativeVisionPromptEmbeddingsBorrowsProjectedRows_Good(t *testing.T) {
+	model := visionPromptEmbeddingCommandModel{
+		imageID: 77,
+		videoID: 88,
+		rows: map[int32][]byte{
+			10: {0x10},
+			11: {0x11},
+			12: {0x12},
+			77: {0x00},
+			88: {0x00},
+		},
+	}
+	ids := []int32{10, 77, 11, 88, 12}
+	imageFeatures := []byte{0xa1}
+	videoFeatures := []byte{0xb1}
+
+	got, err := nativeVisionPromptEmbeddings(&model, ids, imageFeatures, videoFeatures)
+	if err != nil {
+		t.Fatalf("nativeVisionPromptEmbeddings: %v", err)
+	}
+	if &got[1][0] != &imageFeatures[0] {
+		t.Fatal("image command feature row was copied; want borrowed projected feature row view")
+	}
+	if &got[3][0] != &videoFeatures[0] {
+		t.Fatal("video command feature row was copied; want borrowed projected feature row view")
+	}
+	if &got[0][0] != &model.rows[10][0] || &got[2][0] != &model.rows[11][0] || &got[4][0] != &model.rows[12][0] {
+		t.Fatal("vision command text rows were copied; want borrowed token embedding row views")
+	}
+}
+
+func TestNativeVisionPromptEmbeddingsUsesEmbedInto_Good(t *testing.T) {
+	model := visionPromptEmbeddingCommandModel{
+		imageID:        77,
+		videoID:        88,
+		embeddingBytes: 1,
+		rows: map[int32][]byte{
+			10: {0x10},
+			11: {0x11},
+			12: {0x12},
+			77: {0x00},
+			88: {0x00},
+		},
+	}
+	ids := []int32{10, 77, 11, 88, 12}
+	imageFeatures := []byte{0xa1}
+	videoFeatures := []byte{0xb1}
+
+	got, err := nativeVisionPromptEmbeddings(&model, ids, imageFeatures, videoFeatures)
+	if err != nil {
+		t.Fatalf("nativeVisionPromptEmbeddings: %v", err)
+	}
+	if model.embedIntoCalls != len(ids) {
+		t.Fatalf("EmbedInto calls = %d, want %d", model.embedIntoCalls, len(ids))
+	}
+	if &got[1][0] != &imageFeatures[0] {
+		t.Fatal("image command feature row was copied; want borrowed projected feature row view")
+	}
+	if &got[3][0] != &videoFeatures[0] {
+		t.Fatal("video command feature row was copied; want borrowed projected feature row view")
 	}
 }

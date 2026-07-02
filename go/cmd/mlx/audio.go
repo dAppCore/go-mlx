@@ -228,24 +228,20 @@ func nativeAudioGreedyDecode(ctx context.Context, m nativeAudioCommandModel, tok
 
 func nativeAudioPromptEmbeddings(m nativeAudioCommandModel, ids []int32, features []byte) ([][]byte, error) {
 	placeholderID := m.AudioPlaceholderTokenID()
-	embeddings := make([][]byte, len(ids))
+	embeddings, err := nativePromptEmbeddingRows(m, ids, m.Embed, "native audio prompt embedding is empty")
+	if err != nil {
+		return nil, err
+	}
 	off, used := 0, 0
 	for i, id := range ids {
-		emb, err := m.Embed(id)
-		if err != nil {
-			return nil, err
-		}
-		if len(emb) == 0 {
-			return nil, core.NewError("native audio prompt embedding is empty")
-		}
 		if id != placeholderID {
-			embeddings[i] = append([]byte(nil), emb...)
 			continue
 		}
+		emb := embeddings[i]
 		if off+len(emb) > len(features) {
 			return nil, core.NewError("native audio feature rows do not match placeholder embeddings")
 		}
-		embeddings[i] = append([]byte(nil), features[off:off+len(emb)]...)
+		embeddings[i] = features[off : off+len(emb)]
 		off += len(emb)
 		used++
 	}

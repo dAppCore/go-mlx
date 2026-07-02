@@ -8,9 +8,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -23,16 +25,16 @@ func TestRunGenerate_BadFlag_Bad(t *testing.T) {
 	}
 }
 
-// generate --native with --trace is an explicit incompatibility (exit 2) — the
-// native contract path has no phase tracer yet.
-func TestRunGenerate_NativeTraceConflict_Bad(t *testing.T) {
+// generate --native with --trace enters the native trace loader; a bad model
+// path should fail as a load error, not as a CLI incompatibility.
+func TestRunGenerate_NativeTraceBadModel_Bad(t *testing.T) {
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
-	code := runCommand(context.Background(), []string{"generate", "-native", "-trace", "/m"}, stdout, stderr)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (native+trace conflict)", code)
+	code := runCommand(context.Background(), []string{"generate", "-native", "-trace", core.JoinPath(t.TempDir(), "nope")}, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (native trace load failure)", code)
 	}
-	if !strings.Contains(stderr.String(), "does not support") {
-		t.Fatalf("stderr = %q, want the native incompatibility notice", stderr.String())
+	if !strings.Contains(stderr.String(), "native trace") || !strings.Contains(stderr.String(), "load:") {
+		t.Fatalf("stderr = %q, want native trace load error", stderr.String())
 	}
 }
 
@@ -138,6 +140,22 @@ func TestPrintGenerateMTPMetrics_WithMetrics_Good(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "mtp:") || !strings.Contains(out, "acceptance") {
 		t.Fatalf("stdout = %q, want the MTP acceptance line", out)
+	}
+}
+
+func TestPrintTokenPhaseBudget_NoGPUWait_Good(t *testing.T) {
+	buf := core.NewBuffer()
+	printTokenPhaseBudget(buf, "native", mlx.Metrics{TokenPhases: []mlx.TokenPhaseTrace{
+		{Step: 0, TotalDuration: time.Millisecond, ForwardDuration: time.Millisecond},
+		{Step: 1, TotalDuration: 2 * time.Millisecond, ForwardDuration: 2 * time.Millisecond},
+		{Step: 2, FinalToken: true, TotalDuration: time.Millisecond, ForwardDuration: time.Millisecond},
+	}})
+	out := buf.String()
+	if strings.Contains(out, "Inf") {
+		t.Fatalf("stdout = %q, want finite/no-GPU ceiling text", out)
+	}
+	if !strings.Contains(out, "tok/s ceiling if zeroed: n/a") {
+		t.Fatalf("stdout = %q, want no-GPU ceiling marker", out)
 	}
 }
 

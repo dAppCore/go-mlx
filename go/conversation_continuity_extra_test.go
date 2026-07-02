@@ -120,5 +120,12 @@ func TestEnableConversationContinuity_NotMetalAdapter_Bad(t *testing.T) {
 	}
 }
 
+func TestEnableConversationContinuitySpeculativeTextModelDeclines_Bad(t *testing.T) {
+	spec := &speculativeTextModel{metaladapter: &metaladapter{}}
+	if _, err := EnableConversationContinuity(spec, ConversationContinuityOptions{Store: memvid.NewInMemoryStore(nil)}); err == nil {
+		t.Fatal("EnableConversationContinuity(speculative metal) err = nil, want stateless-pair decline")
+	}
+}
+
 // notAMetalAdapter is an inference.TextModel that is not *metaladapter.
 type notAMetalAdapter struct{ inference.TextModel }

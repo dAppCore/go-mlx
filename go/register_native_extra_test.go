@@ -16,9 +16,12 @@ import (
 	"testing"
 	"time"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/native"
 	pkgtokenizer "dappco.re/go/mlx/pkg/tokenizer"
+	"dappco.re/go/mlx/profile"
 )
 
 func TestNativeTextModel_FormatGemmaChat_Good(t *testing.T) {
@@ -79,6 +82,43 @@ func (nativeTextInfoTokenModel) QuantBits() int { return 4 }
 
 func (nativeTextInfoTokenModel) QuantGroup() int { return 64 }
 
+type nativeTextBlockDiffusionTokenModel struct {
+	nativeTextInfoTokenModel
+	capable bool
+}
+
+func (m nativeTextBlockDiffusionTokenModel) BlockDiffusionCapable() bool { return m.capable }
+
+type nativeTextGeneratingBlockDiffusionTokenModel struct {
+	nativeTextInfoTokenModel
+	prompt []int32
+	opts   native.BlockDiffusionOptions
+}
+
+func (*nativeTextGeneratingBlockDiffusionTokenModel) BlockDiffusionCapable() bool { return true }
+
+func (m *nativeTextGeneratingBlockDiffusionTokenModel) GenerateBlockDiffusionTokens(_ context.Context, prompt []int32, opts native.BlockDiffusionOptions, yield func(int32) bool) (native.DiffusionMetrics, error) {
+	m.prompt = append([]int32(nil), prompt...)
+	m.opts = opts
+	emitted := 0
+	for _, id := range []int32{10, 11, 10} {
+		if emitted >= opts.MaxTokens {
+			break
+		}
+		emitted++
+		if yield != nil && !yield(id) {
+			break
+		}
+	}
+	return native.DiffusionMetrics{
+		PrefillTokens: len(prompt),
+		EmittedTokens: emitted,
+		PrefillDur:    time.Millisecond,
+		DenoiseDur:    2 * time.Millisecond,
+		CommitDur:     time.Millisecond,
+	}, nil
+}
+
 func TestNativeTextModel_InfoUsesNativeTokenMetadata_Good(t *testing.T) {
 	m := &nativeTextModel{tm: nativeTextInfoTokenModel{}, modelType: "gemma4", info: inference.ModelInfo{Architecture: "gemma4"}}
 	info := m.Info()
@@ -90,6 +130,91 @@ func TestNativeTextModel_InfoUsesNativeTokenMetadata_Good(t *testing.T) {
 	}
 	if layers := m.NumLayers(); layers != 3 {
 		t.Fatalf("NumLayers = %d, want 3 from native metadata", layers)
+	}
+}
+
+func TestNativeTextModelBlockDiffusionCapable_Good(t *testing.T) {
+	m := &nativeTextModel{tm: nativeTextBlockDiffusionTokenModel{capable: true}}
+	bd, ok := any(m).(interface{ BlockDiffusionCapable() bool })
+	if !ok {
+		t.Fatal("nativeTextModel does not expose BlockDiffusionCapable")
+	}
+	if !bd.BlockDiffusionCapable() {
+		t.Fatal("BlockDiffusionCapable = false for a block-diffusion token model, want true")
+	}
+	m.tm = nativeTextBlockDiffusionTokenModel{capable: false}
+	if bd.BlockDiffusionCapable() {
+		t.Fatal("BlockDiffusionCapable = true for a non-diffusion token model, want false")
+	}
+	m.tm = nativeTextInfoTokenModel{}
+	if bd.BlockDiffusionCapable() {
+		t.Fatal("BlockDiffusionCapable = true without the token-model capability, want false")
+	}
+}
+
+func TestNativeTextModelGenerateRefusesBlockDiffusionARFallback_Bad(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	m := &nativeTextModel{
+		tm:     nativeTextBlockDiffusionTokenModel{capable: true},
+		tok:    tok,
+		maxLen: 8,
+	}
+
+	var got []inference.Token
+	for token := range m.Generate(context.Background(), "hello", inference.WithMaxTokens(1)) {
+		got = append(got, token)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Generate emitted AR tokens for a block-diffusion native model: %+v", got)
+	}
+	err = resultError(m.Err())
+	if err == nil {
+		t.Fatal("Generate Err() = nil for native block-diffusion AR fallback, want unsupported error")
+	}
+	if !core.Contains(err.Error(), "block-diffusion") {
+		t.Fatalf("Generate Err() = %v, want block-diffusion routing error", err)
+	}
+}
+
+func TestNativeTextModelGenerateRoutesBlockDiffusion_Good(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	tm := &nativeTextGeneratingBlockDiffusionTokenModel{}
+	m := &nativeTextModel{
+		tm:     tm,
+		tok:    tok,
+		maxLen: 8,
+	}
+
+	var got []inference.Token
+	for token := range m.Generate(context.Background(), "hello", inference.WithMaxTokens(3), inference.WithTemperature(0.5), inference.WithSeed(123), inference.WithStopTokens(11)) {
+		got = append(got, token)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Generate emitted %d tokens, want stop-truncated 2: %+v", len(got), got)
+	}
+	if got[0].ID != 10 || got[1].ID != 11 || got[0].Text == "" {
+		t.Fatalf("Generate tokens = %+v, want ids [10 11] with decoded first token text", got)
+	}
+	if len(tm.prompt) != 2 || tm.prompt[0] != 0 || tm.prompt[1] != 10 {
+		t.Fatalf("block-diffusion prompt = %v, want tokenised hello with BOS [0 10]", tm.prompt)
+	}
+	if tm.opts.MaxTokens != 3 || tm.opts.Temperature != 0.5 || tm.opts.Seed != 123 || !tm.opts.SeedSet {
+		t.Fatalf("block-diffusion opts = %+v, want max/temp/seed copied", tm.opts)
+	}
+	if len(tm.opts.StopTokens) != 1 || tm.opts.StopTokens[0] != 11 {
+		t.Fatalf("block-diffusion stop tokens = %v, want [11]", tm.opts.StopTokens)
+	}
+	if err := resultError(m.Err()); err != nil {
+		t.Fatalf("Generate Err() = %v, want nil", err)
+	}
+	if metrics := m.Metrics(); metrics.PromptTokens != 2 || metrics.GeneratedTokens != 2 || metrics.PrefillDuration != time.Millisecond || metrics.DecodeDuration != 3*time.Millisecond {
+		t.Fatalf("metrics = %+v, want routed diffusion metrics", metrics)
 	}
 }
 
@@ -206,6 +331,8 @@ func TestNativeTextModel_CapabilitiesReportsActualNativeSurface_Good(t *testing.
 		inference.CapabilityReasoningParse,
 		inference.CapabilityToolParse,
 		inference.CapabilityEvaluation,
+		inference.CapabilityKVSnapshot,
+		inference.CapabilityPromptCache,
 		inference.CapabilityCacheWarm,
 		inference.CapabilityAttentionProbe,
 		inference.CapabilityProbeEvents,
@@ -216,6 +343,29 @@ func TestNativeTextModel_CapabilitiesReportsActualNativeSurface_Good(t *testing.
 		if !report.Supports(id) {
 			t.Fatalf("capabilities = %v, want %s", report.CapabilityIDs(), id)
 		}
+	}
+}
+
+func TestNativeSpeculativeTextModel_CapabilitiesReportsSpeculativeDecode_Good(t *testing.T) {
+	var _ inference.CapabilityReporter = (*nativeSpeculativeTextModel)(nil)
+	spec := &nativeSpeculativeTextModel{
+		nativeTextModel: &nativeTextModel{
+			modelType: "gemma4",
+			info:      inference.ModelInfo{Architecture: "gemma4_text", NumLayers: 3},
+		},
+		draftTokens: 2,
+	}
+
+	report := spec.Capabilities()
+	capability, ok := report.Capability(inference.CapabilitySpeculativeDecode)
+	if !ok || !capability.Usable() {
+		t.Fatalf("capabilities = %v, want usable %s", report.CapabilityIDs(), inference.CapabilitySpeculativeDecode)
+	}
+	if capability.Labels["runtime_status"] != string(profile.AlgorithmRuntimeExperimental) {
+		t.Fatalf("speculative capability = %+v, want experimental runtime status", capability)
+	}
+	if capability.Labels["algorithm"] != "speculative-decode" {
+		t.Fatalf("speculative capability = %+v, want algorithm label", capability)
 	}
 }
 

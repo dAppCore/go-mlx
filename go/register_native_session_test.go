@@ -19,6 +19,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/native"
@@ -26,12 +27,35 @@ import (
 )
 
 type nativeSessionTextTokenModel struct {
-	sessions   []*nativeSessionTextSession
-	queryHeads int
-	opens      int
+	sessions       []*nativeSessionTextSession
+	embedRows      map[int32][]byte
+	embeddingBytes int
+	embedIntoCalls int
+	queryHeads     int
+	opens          int
 }
 
-func (m *nativeSessionTextTokenModel) Embed(id int32) ([]byte, error) { return []byte{byte(id)}, nil }
+func (m *nativeSessionTextTokenModel) Embed(id int32) ([]byte, error) {
+	if row, ok := m.embedRows[id]; ok {
+		return row, nil
+	}
+	return []byte{byte(id)}, nil
+}
+
+func (m *nativeSessionTextTokenModel) EmbeddingBytes() int { return m.embeddingBytes }
+
+func (m *nativeSessionTextTokenModel) EmbedInto(dst []byte, id int32) ([]byte, error) {
+	m.embedIntoCalls++
+	row, err := m.Embed(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(dst) != len(row) {
+		return nil, core.NewError("test nativeSessionTextTokenModel: dst size mismatch")
+	}
+	copy(dst, row)
+	return dst, nil
+}
 
 func (m *nativeSessionTextTokenModel) DecodeForward([][]byte) ([][]byte, error) {
 	return [][]byte{{0}}, nil
@@ -539,6 +563,81 @@ func testNativeTextSessionModel(sessions ...*nativeSessionTextSession) *nativeTe
 	}
 }
 
+func TestLoadNativeTextModelValidatesLoadOptionsBeforeDisk_Good(t *testing.T) {
+	_, err := LoadNativeTextModel("missing-model-dir", WithPagedKVPageSize(-1))
+	if err == nil {
+		t.Fatal("LoadNativeTextModel accepted negative paged KV page size")
+	}
+	if !strings.Contains(err.Error(), "paged KV page size") {
+		t.Fatalf("LoadNativeTextModel error = %v, want paged KV validation", err)
+	}
+}
+
+func TestNativeTextModelCapabilitiesReportsPagedRuntime_Good(t *testing.T) {
+	model := testNativeTextSessionModel()
+	model.maxLen = 64
+	model.pagedKVPageSize = 16
+	model.pagedKVPrealloc = true
+
+	report := model.Capabilities()
+	if report.Runtime.Backend != "native" || !report.Runtime.NativeRuntime || report.Runtime.CacheMode != "paged" {
+		t.Fatalf("runtime = %+v, want native paged runtime", report.Runtime)
+	}
+	if report.Model.ContextLength != 64 {
+		t.Fatalf("model context length = %d, want 64", report.Model.ContextLength)
+	}
+	if len(report.CacheModes) != 1 || report.CacheModes[0] != "paged" {
+		t.Fatalf("cache modes = %v, want [paged]", report.CacheModes)
+	}
+	if report.Labels["paged_kv_page_size"] != "16" || report.Labels["paged_kv_prealloc"] != "true" {
+		t.Fatalf("labels = %v, want paged KV page/prealloc metadata", report.Labels)
+	}
+}
+
+func TestEnableConversationContinuityNativeTextModel_Good(t *testing.T) {
+	model := testNativeTextSessionModel(newNativeSessionTextSession())
+	store := memvid.NewInMemoryStore(nil)
+
+	continuity, err := EnableConversationContinuity(model, ConversationContinuityOptions{Store: store})
+	if err != nil {
+		t.Fatalf("EnableConversationContinuity(native): %v", err)
+	}
+	if continuity == nil {
+		t.Fatal("EnableConversationContinuity(native) = nil manager")
+	}
+	if model.continuity != continuity {
+		t.Fatal("native model did not retain the conversation continuity manager")
+	}
+}
+
+func TestNativeTextModelChatUsesConversationContinuity_Good(t *testing.T) {
+	model := testNativeTextSessionModel(newNativeSessionTextSession())
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	model.tok = tok
+	store := memvid.NewInMemoryStore(nil)
+	if _, err := EnableConversationContinuity(model, ConversationContinuityOptions{Store: store}); err != nil {
+		t.Fatalf("EnableConversationContinuity(native): %v", err)
+	}
+
+	var got []inference.Token
+	for token := range model.Chat(context.Background(), []inference.Message{{Role: "user", Content: "hello"}}, inference.WithMaxTokens(1)) {
+		got = append(got, token)
+	}
+	if err := resultError(model.Err()); err != nil {
+		t.Fatalf("Chat Err() = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Chat yielded %d tokens, want 1", len(got))
+	}
+	stats := model.continuity.Stats()
+	if stats.FreshConversations != 1 || stats.StatelessFallbacks != 0 {
+		t.Fatalf("continuity stats = %+v, want one fresh conversation and no fallback", stats)
+	}
+}
+
 func TestNativeTextModelAcceptsImages_Good(t *testing.T) {
 	model := testNativeTextSessionModel()
 	if model.AcceptsImages() {
@@ -616,8 +715,13 @@ func TestNativeTextModelAcceptsAudioInputRequiresExtractor_Good(t *testing.T) {
 
 func TestNativeTextModelAudioPromptEmbeddings_Good(t *testing.T) {
 	model := testNativeTextSessionModel()
+	textRows := map[int32][]byte{
+		10: {0x10},
+		11: {0x11},
+		12: {0x12},
+	}
 	model.tm = &nativeSessionAudioTokenModel{
-		nativeSessionTextTokenModel: &nativeSessionTextTokenModel{},
+		nativeSessionTextTokenModel: &nativeSessionTextTokenModel{embedRows: textRows},
 		accepts:                     true,
 		audioTokenID:                77,
 	}
@@ -630,11 +734,48 @@ func TestNativeTextModelAudioPromptEmbeddings_Good(t *testing.T) {
 	if !reflect.DeepEqual(got[1], []byte{0xa1}) || !reflect.DeepEqual(got[3], []byte{0xa2}) {
 		t.Fatalf("audio rows = %v/%v, want projected rows", got[1], got[3])
 	}
-	if !reflect.DeepEqual(got[0], []byte{10}) || !reflect.DeepEqual(got[2], []byte{11}) || !reflect.DeepEqual(got[4], []byte{12}) {
+	if &got[1][0] != &features[0][0] || &got[3][0] != &features[0][1] {
+		t.Fatal("audio feature rows were copied; want borrowed projected feature row views")
+	}
+	if &got[0][0] != &textRows[10][0] || &got[2][0] != &textRows[11][0] || &got[4][0] != &textRows[12][0] {
+		t.Fatal("text embedding rows were copied; want borrowed token embedding row views")
+	}
+	if !reflect.DeepEqual(got[0], textRows[10]) || !reflect.DeepEqual(got[2], textRows[11]) || !reflect.DeepEqual(got[4], textRows[12]) {
 		t.Fatalf("text rows changed: got %v", got)
 	}
 	if _, err := model.nativeAudioPromptEmbeddings(ids, 77, [][]byte{{0xa1}}); err == nil {
 		t.Fatal("nativeAudioPromptEmbeddings with too few feature rows error = nil")
+	}
+}
+
+func TestNativeTextModelAudioPromptEmbeddingsUsesEmbedInto_Good(t *testing.T) {
+	model := testNativeTextSessionModel()
+	textRows := map[int32][]byte{
+		10: {0x10},
+		11: {0x11},
+		12: {0x12},
+		77: {0x00},
+	}
+	tm := &nativeSessionTextTokenModel{embedRows: textRows, embeddingBytes: 1}
+	model.tm = &nativeSessionAudioTokenModel{
+		nativeSessionTextTokenModel: tm,
+		accepts:                     true,
+		audioTokenID:                77,
+	}
+	ids := []int32{10, 77, 11, 77, 12}
+	features := [][]byte{{0xa1, 0xa2}}
+	got, err := model.nativeAudioPromptEmbeddings(ids, 77, features)
+	if err != nil {
+		t.Fatalf("nativeAudioPromptEmbeddings: %v", err)
+	}
+	if tm.embedIntoCalls != len(ids) {
+		t.Fatalf("EmbedInto calls = %d, want %d", tm.embedIntoCalls, len(ids))
+	}
+	if !reflect.DeepEqual(got[0], textRows[10]) || !reflect.DeepEqual(got[2], textRows[11]) || !reflect.DeepEqual(got[4], textRows[12]) {
+		t.Fatalf("text rows = %v/%v/%v, want embedInto rows", got[0], got[2], got[4])
+	}
+	if &got[1][0] != &features[0][0] || &got[3][0] != &features[0][1] {
+		t.Fatal("audio feature rows were copied; want borrowed projected feature row views")
 	}
 }
 
@@ -874,6 +1015,63 @@ func TestNativeTextSessionGenerateSuppressTokensUsesGreedyCachePath(t *testing.T
 	}
 	if session.generateSampledCacheCalls != 0 || session.generateFromCacheCalls != 0 {
 		t.Fatalf("other generate calls sampled/cache = %d/%d, want 0/0", session.generateSampledCacheCalls, session.generateFromCacheCalls)
+	}
+}
+
+func TestNativeTextSessionGenerateTraceTokenPhases_Good(t *testing.T) {
+	ctx := context.Background()
+	nativeModel := testNativeTextSessionModel(newNativeSessionTextSession())
+	handle := nativeModel.NewSession()
+	if handle == nil {
+		t.Fatal("NewSession() = nil, want native session handle")
+	}
+	prefiller := handle.(interface {
+		PrefillTokens(context.Context, []int32) error
+	})
+	if err := prefiller.PrefillTokens(ctx, []int32{1}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+
+	var generated []int32
+	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 2, TraceTokenPhases: true, TraceTokenText: true}) {
+		generated = append(generated, tok.ID)
+	}
+	if err := handle.Err(); err != nil {
+		t.Fatalf("Generate Err: %v", err)
+	}
+	if !reflect.DeepEqual(generated, []int32{3, 2}) {
+		t.Fatalf("generated = %v, want [3 2]", generated)
+	}
+	tracer := handle.(interface {
+		LastTokenPhases() []metal.TokenPhaseTrace
+	})
+	phases := tracer.LastTokenPhases()
+	if len(phases) != len(generated) {
+		t.Fatalf("TokenPhases len = %d, want %d: %+v", len(phases), len(generated), phases)
+	}
+	for i := range phases {
+		if phases[i].Step != i {
+			t.Fatalf("phase[%d].Step = %d, want %d", i, phases[i].Step, i)
+		}
+		if phases[i].TokenID != generated[i] {
+			t.Fatalf("phase[%d].TokenID = %d, want %d", i, phases[i].TokenID, generated[i])
+		}
+		if phases[i].TotalDuration <= 0 || phases[i].ForwardDuration <= 0 {
+			t.Fatalf("phase[%d] durations = total %s forward %s, want positive native wall timing", i, phases[i].TotalDuration, phases[i].ForwardDuration)
+		}
+	}
+	phases[0].Step = 99
+	if again := tracer.LastTokenPhases(); again[0].Step == 99 {
+		t.Fatal("LastTokenPhases returned aliased storage")
+	}
+
+	for range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+	}
+	if err := handle.Err(); err != nil {
+		t.Fatalf("second Generate Err: %v", err)
+	}
+	if phases := tracer.LastTokenPhases(); len(phases) != 0 {
+		t.Fatalf("untraced Generate left stale phases: %+v", phases)
 	}
 }
 
@@ -2127,6 +2325,59 @@ func TestNativeSpeculativeTextModelGenerateUsesNativeMTP(t *testing.T) {
 	}
 	if targetSession.closeCalls != 1 || draftSession.closeCalls != 1 {
 		t.Fatalf("wrapper close calls target/draft = %d/%d, want 1/1", targetSession.closeCalls, draftSession.closeCalls)
+	}
+}
+
+func TestNativeSpeculativeTextModelChatUsesConversationContinuity_Good(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	targetSession := newNativeSessionTextSession()
+	draftSession := newNativeSessionTextSession()
+	target := &nativeTextModel{
+		tm:     &nativeSessionTextTokenModel{sessions: []*nativeSessionTextSession{targetSession}},
+		tok:    tok,
+		maxLen: 32,
+	}
+	draft := &nativeTextModel{
+		tm:     &nativeSessionTextTokenModel{sessions: []*nativeSessionTextSession{draftSession}},
+		tok:    tok,
+		maxLen: 32,
+	}
+	spec := &nativeSpeculativeTextModel{nativeTextModel: target, draft: draft, draftTokens: 2}
+	if _, err := EnableConversationContinuity(spec, ConversationContinuityOptions{Store: memvid.NewInMemoryStore(nil)}); err != nil {
+		t.Fatalf("EnableConversationContinuity(native speculative): %v", err)
+	}
+	spec.setNativeMTPMetrics(&metal.MTPMetrics{ProposedTokens: 99})
+
+	oldDecode := nativeTextMTPDecode
+	defer func() { nativeTextMTPDecode = oldDecode }()
+	var mtpCalled bool
+	nativeTextMTPDecode = func(model.DecodeStepper, model.DecodeStepper, []int32, int, int, int, func(int32) bool) (*native.MTPResult, bool, error) {
+		mtpCalled = true
+		return &native.MTPResult{}, true, nil
+	}
+
+	var out []inference.Token
+	for token := range spec.Chat(context.Background(), []inference.Message{{Role: "user", Content: "hello"}}, inference.WithMaxTokens(1), inference.WithTemperature(0)) {
+		out = append(out, token)
+	}
+	if err := resultError(spec.Err()); err != nil {
+		t.Fatalf("Chat Err() = %v", err)
+	}
+	if mtpCalled {
+		t.Fatal("native speculative Chat entered MTP despite accepted conversation continuity")
+	}
+	if len(out) != 1 {
+		t.Fatalf("Chat yielded %d tokens, want continuity-generated token", len(out))
+	}
+	if metrics := spec.MTPMetrics(); metrics != nil {
+		t.Fatalf("MTPMetrics = %+v after continuity turn, want nil", metrics)
+	}
+	stats := target.continuity.Stats()
+	if stats.FreshConversations != 1 || stats.StatelessFallbacks != 0 {
+		t.Fatalf("continuity stats = %+v, want one fresh conversation and no fallback", stats)
 	}
 }
 

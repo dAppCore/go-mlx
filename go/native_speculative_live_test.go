@@ -50,7 +50,7 @@ func TestNativeSpeculativeTextModel_LiveE2BAssistantPair(t *testing.T) {
 	for token := range spec.Generate(context.Background(), "The capital of France is", inference.WithMaxTokens(2), inference.WithTemperature(0)) {
 		out = append(out, token)
 	}
-	if err := spec.Err(); err != nil {
+	if err := resultError(spec.Err()); err != nil {
 		t.Fatalf("Generate Err: %v", err)
 	}
 	if len(out) == 0 {

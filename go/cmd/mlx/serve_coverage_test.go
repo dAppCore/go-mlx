@@ -77,11 +77,18 @@ func TestRunServe_ContextAndCacheMode_Good(t *testing.T) {
 }
 
 // serve model-less with -native boots the no-cgo contract path (the loader is
-// swapped, MTP/continuity disabled) and shuts down cleanly.
+// swapped) and shuts down cleanly.
 func TestRunServe_NativeBackend_Good(t *testing.T) {
 	out := runModellessServe(t, "-native", "-state-conversations=false")
 	if !strings.Contains(out, "no-cgo native token-loop contract") {
 		t.Fatalf("stderr = %q, want the native-backend notice", out)
+	}
+}
+
+func TestRunServe_NativeBackendDoesNotDisableContinuity_Good(t *testing.T) {
+	out := runModellessServe(t, "-native")
+	if strings.Contains(out, "continuity off") {
+		t.Fatalf("stderr = %q, native serve must not hard-disable continuity", out)
 	}
 }
 
