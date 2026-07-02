@@ -11,9 +11,14 @@ import (
 )
 
 func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
+	metadata, tensors, _, err := parseGGUFWithDataStart(path)
+	return metadata, tensors, err
+}
+
+func parseGGUFWithDataStart(path string) (map[string]any, []TensorInfo, uint64, error) {
 	open := core.Open(path)
 	if !open.OK {
-		return nil, nil, core.Errorf("mlx: open gguf: %w", open.Value.(error))
+		return nil, nil, 0, core.Errorf("mlx: open gguf: %w", open.Value.(error))
 	}
 	file := open.Value.(*core.OSFile)
 	defer file.Close()
@@ -22,7 +27,7 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 	// width reads (8 / 4 / 12 bytes) per metadata entry + tensor. Without
 	// buffering each becomes its own syscall; with bufio (default 4 KiB)
 	// the read syscalls collapse to a handful for typical GGUF headers.
-	reader := core.NewBufReader(file)
+	reader := &ggufCountingReader{r: core.NewBufReader(file)}
 
 	// Shared scratch buffer used for the file header, every fixed-width
 	// metadata/tensor read, and short string reads (interned-key fast
@@ -37,22 +42,22 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 	// First 24 bytes: magic(4) + version(4) + tensorCount(8) + metadataCount(8).
 	// Reflect-free read — eliminates 4 binary.Read calls (+4 reflect allocs each).
 	if _, err := io.ReadFull(reader, scratch[:24]); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
+		return nil, nil, 0, core.Errorf("mlx: read gguf header: %w", err)
 	}
 	if core.AsString(scratch[:4]) != "GGUF" {
-		return nil, nil, errGGUFInvalidMagic
+		return nil, nil, 0, errGGUFInvalidMagic
 	}
 	version := binary.LittleEndian.Uint32(scratch[4:8])
 	if version < 2 {
-		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
+		return nil, nil, 0, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
 	tensorCount := binary.LittleEndian.Uint64(scratch[8:16])
 	metadataCount := binary.LittleEndian.Uint64(scratch[16:24])
 	if tensorCount > maxGGUFCollectionEntries {
-		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
+		return nil, nil, 0, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
 	if metadataCount > maxGGUFCollectionEntries {
-		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
+		return nil, nil, 0, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
 	metadata := make(map[string]any, int(metadataCount))
@@ -70,15 +75,15 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 	for range metadataCount {
 		key, err := readStringIntoArena(reader, scratch[:], &keyArena)
 		if err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
 		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
 		valueType := binary.LittleEndian.Uint32(scratch[:4])
 		value, err := readGGUFValue(reader, valueType, scratch[:], &valueArena)
 		if err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
 		metadata[key] = value
 	}
@@ -108,10 +113,10 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 	for i := range tensorCount {
 		name, err := readStringIntoArena(reader, scratch[:], &nameArena)
 		if err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
 		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
 		ndim := binary.LittleEndian.Uint32(scratch[:4])
 		var shape []uint64
@@ -128,7 +133,7 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 		}
 		for d := range ndim {
 			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
-				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
+				return nil, nil, 0, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
 			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
@@ -138,7 +143,7 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 		// would force every iteration's local to escape, costing one
 		// heap alloc per tensor (~200 on a qwen3-class model).
 		if _, err := io.ReadFull(reader, scratch[:12]); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
+			return nil, nil, 0, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
 		tensors[i] = TensorInfo{
 			Name:   name,
@@ -148,7 +153,20 @@ func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 		}
 	}
 
-	return metadata, tensors, nil
+	headerEnd := reader.n
+	dataStart := headerEnd + alignPadding(headerEnd, ggufDataAlignment(metadata))
+	return metadata, tensors, dataStart, nil
+}
+
+type ggufCountingReader struct {
+	r io.Reader
+	n uint64
+}
+
+func (r *ggufCountingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.n += uint64(n)
+	return n, err
 }
 
 // ggufInternedStrings — singleton mappings for high-frequency GGUF metadata

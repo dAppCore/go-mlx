@@ -213,6 +213,10 @@ func encEmbedGatherQuant(enc metal.MTLComputeCommandEncoder, pso metal.MTLComput
 	emitEmbedGatherQuant(encSink{enc}, pso, tokenBuf, packed, scales, biases, out, packedOff, scalesOff, biasesOff, dModel, groupSize, bits, embedScale)
 }
 
+func encEmbedGatherQuantObject(enc metal.MTLComputeCommandEncoderObject, pso metal.MTLComputePipelineState, tokenBuf, packed, scales, biases, out metal.MTLBuffer, packedOff, scalesOff, biasesOff uint, dModel, groupSize, bits int, embedScale float32) {
+	emitEmbedGatherQuant(encObjectSink{enc}, pso, tokenBuf, packed, scales, biases, out, packedOff, scalesOff, biasesOff, dModel, groupSize, bits, embedScale)
+}
+
 func elemGroupTG(n int) int {
 	if n < 256 {
 		return n

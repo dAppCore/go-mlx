@@ -161,6 +161,24 @@ func objcMsgSendRaw3(fn, id, sel, a1, a2, a3 uintptr) {
 	objcSyscallArgsPut(args)
 }
 
+func objcMsgSendICBKernelBufferAtIndex(fn, icbID, cmdIdx, bufID, offset, index uintptr) {
+	args := objcSyscallArgsGet()
+	args.fn = fn
+	args.a1 = icbID
+	args.a2 = uintptr(selIndirectComputeCommand)
+	args.a3 = cmdIdx
+	puregoRuntimeCGOCall(puregoSyscall15XABI0, unsafe.Pointer(args))
+	cmdID := args.a1
+	args.fn = fn
+	args.a1 = cmdID
+	args.a2 = uintptr(selSetKernelBufferAtIndex)
+	args.a3 = bufID
+	args.a4 = offset
+	args.a5 = index
+	puregoRuntimeCGOCall(puregoSyscall15XABI0, unsafe.Pointer(args))
+	objcSyscallArgsPut(args)
+}
+
 func objcMsgSendRawSize2(fn, id, sel uintptr, a1, a2 metal.MTLSize) {
 	args := objcSyscallArgsGet()
 	args.fn = fn
@@ -508,6 +526,24 @@ func useResourcesIDsFast(enc metal.MTLComputeCommandEncoder, resources []metal.M
 	runtime.KeepAlive(ids)
 }
 
+func useResourcesIDsFastObject(enc metal.MTLComputeCommandEncoderObject, resources []metal.MTLResource, ids []objc.ID, usage metal.MTLResourceUsage) {
+	if len(ids) == 0 {
+		return
+	}
+	ptr := unsafe.Pointer(unsafe.SliceData(ids))
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw3(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selUseResourcesCountUsage), uintptr(ptr), uintptr(len(ids)), uintptr(usage))
+		runtime.KeepAlive(enc)
+		runtime.KeepAlive(resources)
+		runtime.KeepAlive(ids)
+		return
+	}
+	objc.Send[struct{}](enc.GetID(), selUseResourcesCountUsage, ptr, uint(len(ids)), usage)
+	runtime.KeepAlive(resources)
+	runtime.KeepAlive(ids)
+}
+
 func resourceIDsForFastUse(dst []objc.ID, resources []metal.MTLResource) []objc.ID {
 	if cap(dst) < len(resources) {
 		dst = make([]objc.ID, len(resources))
@@ -525,6 +561,17 @@ func resourceIDsForFastUse(dst []objc.ID, resources []metal.MTLResource) []objc.
 }
 
 func executeCommandsInBufferWithRangeFast(enc metal.MTLComputeCommandEncoder, icb metal.MTLIndirectCommandBuffer, rng foundation.NSRange) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw3(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selExecuteICBWithRange), uintptr(icb.GetID()), uintptr(rng.Location), uintptr(rng.Length))
+		runtime.KeepAlive(enc)
+		runtime.KeepAlive(icb)
+		return
+	}
+	objc.Send[struct{}](enc.GetID(), selExecuteICBWithRange, icb, rng)
+}
+
+func executeCommandsInBufferWithRangeObjectFast(enc metal.MTLComputeCommandEncoderObject, icb metal.MTLIndirectCommandBuffer, rng foundation.NSRange) {
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
 		objcMsgSendRaw3(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selExecuteICBWithRange), uintptr(icb.GetID()), uintptr(rng.Location), uintptr(rng.Length))
@@ -610,6 +657,16 @@ func memoryBarrier(enc metal.MTLComputeCommandEncoder, scope metal.MTLBarrierSco
 	enc.MemoryBarrierWithScope(scope)
 }
 
+func memoryBarrierObject(enc metal.MTLComputeCommandEncoderObject, scope metal.MTLBarrierScope) {
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendRaw1(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selMemoryBarrierWithScope), uintptr(scope))
+		runtime.KeepAlive(enc)
+		return
+	}
+	enc.MemoryBarrierWithScope(scope)
+}
+
 func setICBPSO(cmd metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState) {
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
@@ -634,6 +691,21 @@ func setICBKernelBuffer(cmd metal.MTLIndirectComputeCommand, buf metal.MTLBuffer
 		return
 	}
 	cmd.SetKernelBufferOffsetAtIndex(buf, offset, index)
+}
+
+func setICBKernelBufferAtCommandIndexFast(icb metal.MTLIndirectCommandBuffer, cmdIdx uint, buf metal.MTLBuffer, offset, index uint) {
+	var bufID uintptr
+	if buf != nil {
+		bufID = uintptr(buf.GetID())
+	}
+	objcMsgSendOnce.Do(initObjCMsgSendStubs)
+	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
+		objcMsgSendICBKernelBufferAtIndex(objcMsgSendAddr, uintptr(icb.GetID()), uintptr(cmdIdx), bufID, uintptr(offset), uintptr(index))
+		runtime.KeepAlive(icb)
+		runtime.KeepAlive(buf)
+		return
+	}
+	setICBKernelBuffer(icb.IndirectComputeCommandAtIndex(cmdIdx), buf, offset, index)
 }
 
 func setICBBarrier(cmd metal.MTLIndirectComputeCommand) {

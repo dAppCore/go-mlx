@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
@@ -46,6 +47,7 @@ type Gemma4AssistantModel struct {
 	Tok                      *tokenizer.Tokenizer
 
 	mapping *safetensors.DirMapping
+	gguf    *gguf.TensorMapping
 }
 
 // Gemma4AssistantPair is a native target-architecture plus assistant drafter
@@ -210,7 +212,7 @@ func LoadGemma4AssistantPairDirs(targetDir, assistantDir string) (*Gemma4Assista
 	if err != nil {
 		return nil, core.E("native.gemma4.assistant.Pair", "load target config", err)
 	}
-	assistant, err := LoadGemma4AssistantDir(assistantDir)
+	assistant, err := loadNativeGemma4AssistantForTarget(targetDir, assistantDir)
 	if err != nil {
 		return nil, core.E("native.gemma4.assistant.Pair", "load assistant", err)
 	}
@@ -250,6 +252,17 @@ func loadNativeGemma4TargetArch(dir string) (model.Arch, error) {
 		return model.Arch{}, core.NewError("native.gemma4.assistant target arch is incomplete")
 	}
 	return arch, nil
+}
+
+func loadNativeGemma4AssistantForTarget(targetDir, assistantPath string) (*Gemma4AssistantModel, error) {
+	if file, ok := ResolveGemma4AssistantGGUFDrafterFile(assistantPath); ok {
+		tok, err := tokenizer.LoadTokenizer(core.PathJoin(targetDir, "tokenizer.json"))
+		if err != nil {
+			return nil, core.E("native.gemma4.assistant.gguf", "load target tokenizer", err)
+		}
+		return loadNativeGemma4AssistantFromGGUF(file, tok)
+	}
+	return LoadGemma4AssistantDir(assistantPath)
 }
 
 func parseNativeGemma4AssistantConfig(data []byte) (Gemma4AssistantConfig, error) {
@@ -518,11 +531,18 @@ func validateNativeGemma4AssistantOrderedEmbeddingShape(m *Gemma4AssistantModel)
 }
 
 func (m *Gemma4AssistantModel) Close() error {
-	if m == nil || m.mapping == nil {
+	if m == nil {
 		return nil
 	}
-	err := m.mapping.Close()
-	m.mapping = nil
+	var err error
+	if m.mapping != nil {
+		err = core.ErrorJoin(err, m.mapping.Close())
+		m.mapping = nil
+	}
+	if m.gguf != nil {
+		err = core.ErrorJoin(err, m.gguf.Close())
+		m.gguf = nil
+	}
 	m.Tensors = nil
 	return err
 }
@@ -937,7 +957,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockFromSession(target *ArchSession
 	}
 
 	target.pos = posBefore + accepted
-	if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+	if err := target.truncateSpeculativeKV(target.pos); err != nil {
 		return Gemma4AssistantVerifyResult{}, err
 	}
 	target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
@@ -1039,7 +1059,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 	}
 
 	target.pos = posBefore + accepted
-	if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+	if err := target.truncateSpeculativeKV(target.pos); err != nil {
 		return Gemma4AssistantVerifyResult{}, err
 	}
 	target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
@@ -1107,9 +1127,6 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		if blockSize > remaining {
 			blockSize = remaining
 		}
-		if (yield != nil || eosID >= 0) && blockSize > 1 {
-			blockSize = 1
-		}
 		draft, err := pair.DraftBlockFromSession(target, lastToken, blockSize, suppress)
 		if err != nil {
 			return result, err
@@ -1123,6 +1140,7 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		if carryPresent {
 			block = append([]int32{carryLead}, draft.Tokens...)
 		}
+		posBeforeVerify := target.pos
 		verify, err := pair.VerifyDraftBlockFromSession(target, block, suppress)
 		if err != nil {
 			return result, err
@@ -1135,8 +1153,10 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 			carryLead = -1
 		}
 		newDrafts := 0
+		keptAccepted := emitStart
 		result.RejectedTokens += verify.RejectedCount
 		for _, id := range verify.AcceptedTokens[emitStart:] {
+			keptAccepted++
 			if nativeGemma4AssistantEmitToken(&result, id, eosID, yield) {
 				stopped = true
 				break
@@ -1147,6 +1167,9 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		result.AcceptedTokens += newDrafts
 		result.TargetTokens += newDrafts
 		if stopped {
+			if err := nativeGemma4AssistantRollbackAccepted(target, posBeforeVerify, verify.AcceptedTokens, keptAccepted); err != nil {
+				return result, err
+			}
 			break
 		}
 		if len(result.Tokens) >= maxNew {
@@ -1219,9 +1242,6 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		if blockSize > remaining {
 			blockSize = remaining
 		}
-		if (yield != nil || len(stopTokens) > 0 || params.MinTokensBeforeStop > 0) && blockSize > 1 {
-			blockSize = 1
-		}
 		pickParams := target.mtpSamplePickParams(params, stopTokens, len(result.Tokens))
 		draft, err := pair.DraftBlockFromSession(target, lastToken, blockSize, pickParams.SuppressTokens)
 		if err != nil {
@@ -1236,6 +1256,7 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		if carryPresent {
 			block = append([]int32{carryLead}, draft.Tokens...)
 		}
+		posBeforeVerify := target.pos
 		verify, err := pair.VerifyDraftBlockSampledFromSession(target, block, sampler, pickParams, carryPresent)
 		if err != nil {
 			return result, err
@@ -1248,8 +1269,10 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 			carryLead = -1
 		}
 		newDrafts := 0
+		keptAccepted := emitStart
 		result.RejectedTokens += verify.RejectedCount
 		for _, id := range verify.AcceptedTokens[emitStart:] {
+			keptAccepted++
 			if nativeGemma4AssistantEmitSampledToken(&result, id, stopTokens, yield) {
 				stopped = true
 				break
@@ -1260,6 +1283,9 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		result.AcceptedTokens += newDrafts
 		result.TargetTokens += newDrafts
 		if stopped {
+			if err := nativeGemma4AssistantRollbackAccepted(target, posBeforeVerify, verify.AcceptedTokens, keptAccepted); err != nil {
+				return result, err
+			}
 			break
 		}
 		if len(result.Tokens) >= maxNew {
@@ -1353,6 +1379,20 @@ func nativeGemma4AssistantEmitToken(result *Gemma4AssistantGenerateResult, id in
 func nativeGemma4AssistantEmitSampledToken(result *Gemma4AssistantGenerateResult, id int32, stopTokens []int32, yield Gemma4AssistantTokenSink) bool {
 	result.Tokens = append(result.Tokens, id)
 	return (yield != nil && !yield(id)) || nativeTokenInSet(id, stopTokens)
+}
+
+func nativeGemma4AssistantRollbackAccepted(target *ArchSession, posBefore int, accepted []int32, keep int) error {
+	if target == nil || keep >= len(accepted) {
+		return nil
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	if keep == 0 {
+		target.pos = posBefore
+		return target.truncateSpeculativeKV(target.pos)
+	}
+	return target.retainMTPCommittedBoundary(posBefore, accepted[:keep])
 }
 
 func (s *ArchSession) verifyGemma4AssistantDraftRows(draftTokens, suppress []int32) ([]int32, [][]byte, error) {

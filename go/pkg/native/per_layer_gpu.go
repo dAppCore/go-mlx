@@ -269,6 +269,28 @@ func encPerLayerInputsGPU(enc metal.MTLComputeCommandEncoder, embedGatherPSO met
 	return encScaleBF16(enc, sc.combined, sc.combineScaleBuf, sc.out, 0, sc.combineScaleBytes[:], plDim)
 }
 
+func encPerLayerInputsGPUObject(enc metal.MTLComputeCommandEncoderObject, embedGatherPSO metal.MTLComputePipelineState,
+	tokenBuf, embBuf metal.MTLBuffer,
+	embedPacked, embedScales, embedBiases metal.MTLBuffer, embedPackedOff, embedScalesOff, embedBiasesOff uint,
+	projW metal.MTLBuffer, projWOff uint, projNormW metal.MTLBuffer,
+	sc *plGPUScratch, numLayers, pliDim, dModel, embGS, embBits int, embScale float32, eps float32) error {
+	plDim := numLayers * pliDim
+	encEmbedGatherQuantObject(enc, embedGatherPSO, tokenBuf, embedPacked, embedScales, embedBiases, sc.perLayer, embedPackedOff, embedScalesOff, embedBiasesOff, plDim, embGS, embBits, embScale)
+	if err := encGemvBF16ToObject(enc, projW, embBuf, sc.projected, projWOff, 0, plDim, dModel); err != nil {
+		return err
+	}
+	if err := encScaleBF16Object(enc, sc.projected, sc.projScaleBuf, sc.scaled, 0, sc.projScaleBytes[:], plDim); err != nil {
+		return err
+	}
+	if err := encRMSNormRowsBF16Object(enc, sc.scaled, projNormW, sc.projNormed, 0, 0, 0, numLayers, pliDim, eps); err != nil {
+		return err
+	}
+	if err := encAddBF16Object(enc, sc.projNormed, sc.perLayer, sc.combined, plDim); err != nil {
+		return err
+	}
+	return encScaleBF16Object(enc, sc.combined, sc.combineScaleBuf, sc.out, 0, sc.combineScaleBytes[:], plDim)
+}
+
 // nextInputsGPU computes one token's NEXT-step decode inputs — the main embedding (dModel) and the PLE
 // tensor (numLayers·pliDim) — fully on the GPU via the session's resident weights, reading both back.
 // The host-visible check that encNextInputsGPU matches s.embed + s.perLayerInput. ok=false when the

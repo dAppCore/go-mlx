@@ -51,7 +51,7 @@ type ArchSession struct {
 	// embed-gather (token → embOut, dModel) + the GPU PLE (token, embOut → sc.out, numLayers·pliDim) for
 	// one token read from tokenBuf into a shared encoder — the NEXT decode step's emb+pli produced on-GPU
 	// with no host round-trip (the submit-ahead pipeline seam). nil → the host embed/PLE path stays.
-	encNextInputsGPU func(enc metal.MTLComputeCommandEncoder, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error
+	encNextInputsGPU func(enc metal.MTLComputeCommandEncoderObject, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error
 	plScratchNew     func() *plGPUScratch
 	// recordPeerICB records a SECOND ICB sharing this session's KV caches (its own ping0/pleInput) — the
 	// submit-ahead decode keeps two ICBs in flight over the same KV so the host can submit token t+1
@@ -566,6 +566,10 @@ func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBu
 }
 
 func newArchSessionShardsWithHead(g *BF16Model, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder) (*ArchSession, error) {
+	return newArchSessionShardsWithHeadConfig(g, arch, maxLen, sb, sharedHead, archSessionConfig{})
+}
+
+func newArchSessionShardsWithHeadConfig(g *BF16Model, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder, cfg archSessionConfig) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -587,7 +591,7 @@ func newArchSessionShardsWithHead(g *BF16Model, arch model.Arch, maxLen int, sb 
 		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm, maxLen)
 		state.ropeFreqs = uploadRopePeriods(arch.RopeFreqs) // YaRN long-context spectrum (nil ⇒ base rope)
-		if err := state.initDevicePagedKV(defaultPagedKVPageSize); err != nil {
+		if err := state.initDevicePagedKVWithPrealloc(cfg.pagedKVPageSize, cfg.pagedKVPrealloc); err != nil {
 			buildErr = err
 			return
 		}
@@ -701,6 +705,10 @@ func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *s
 }
 
 func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder) (*ArchSession, error) {
+	return newArchQuantSessionShardsWithHeadConfig(g, arch, maxLen, sb, sharedHead, archSessionConfig{})
+}
+
+func newArchQuantSessionShardsWithHeadConfig(g *QuantModel, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder, cfg archSessionConfig) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -728,6 +736,10 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // bf16 MoE unused on the quant path
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm, maxLen)
 		state.moeQuant = moeQuant
+		if err := state.initDevicePagedKVWithPrealloc(cfg.pagedKVPageSize, cfg.pagedKVPrealloc); err != nil {
+			buildErr = err
+			return
+		}
 		// gemma4 per-layer-input tower (E2B/E4B): the per-layer gates + the per-token tensor.
 		if g.HasPLE() {
 			state.pliDim = arch.PerLayerInputHidden
@@ -817,17 +829,20 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 				projScale := float32(1.0 / math.Sqrt(float64(dModel)))
 				projWBuf, projWOff := pleProjView.buf, pleProjView.off
 				sess.plScratchNew = func() *plGPUScratch { return newPLGPUScratch(plDim, projScale) }
-				sess.encNextInputsGPU = func(enc metal.MTLComputeCommandEncoder, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error {
+				embedPackedBuf, embedScalesBuf, embedBiasesBuf := residentBytes(g.Embed), residentBytes(g.EmbedScales), residentBytes(g.EmbedBiases)
+				plePackedBuf, pleScalesBuf, pleBiasesBuf := residentBytes(g.EmbedPerLayer), residentBytes(g.EmbedPerLayerScales), residentBytes(g.EmbedPerLayerBiases)
+				pleNormBuf := residentBytes(g.PerLayerProjNormW)
+				if projWBuf == nil {
+					projWBuf = residentBytes(g.PerLayerModelProjW)
+					projWOff = 0
+				}
+				sess.encNextInputsGPU = func(enc metal.MTLComputeCommandEncoderObject, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error {
 					gpso, gerr := embedGatherPipeline()
 					if gerr != nil {
 						return gerr
 					}
-					encEmbedGatherQuant(enc, gpso, tokenBuf, residentBytes(g.Embed), residentBytes(g.EmbedScales), residentBytes(g.EmbedBiases), embOut, 0, 0, 0, dModel, gs, bits, embedScale)
-					pw, pwOff := projWBuf, projWOff
-					if pw == nil {
-						pw, pwOff = residentBytes(g.PerLayerModelProjW), 0
-					}
-					return encPerLayerInputsGPU(enc, gpso, tokenBuf, embOut, residentBytes(g.EmbedPerLayer), residentBytes(g.EmbedPerLayerScales), residentBytes(g.EmbedPerLayerBiases), 0, 0, 0, pw, pwOff, residentBytes(g.PerLayerProjNormW), sc, numLayers, pliDim, dModel, gs, bits, embScalePLE, arch.Eps)
+					encEmbedGatherQuantObject(enc, gpso, tokenBuf, embedPackedBuf, embedScalesBuf, embedBiasesBuf, embOut, 0, 0, 0, dModel, gs, bits, embedScale)
+					return encPerLayerInputsGPUObject(enc, gpso, tokenBuf, embOut, plePackedBuf, pleScalesBuf, pleBiasesBuf, 0, 0, 0, projWBuf, projWOff, pleNormBuf, sc, numLayers, pliDim, dModel, gs, bits, embScalePLE, arch.Eps)
 				}
 			}
 		}
@@ -920,6 +935,37 @@ func (s *ArchSession) icbEligible() bool {
 
 // Pos reports the number of tokens currently in the cache (the running sequence length).
 func (s *ArchSession) Pos() int { return s.pos }
+
+func (s *ArchSession) truncateSpeculativeKV(position int) error {
+	if s == nil {
+		return nil
+	}
+	if s.state.icb != nil && !icbDisabledForTest {
+		return nil
+	}
+	return s.state.truncateDevicePagedKV(position)
+}
+
+// TruncateTo rolls the session boundary back so the next step overwrites any
+// speculative cache rows beyond pos. The cache buffers do not carry a separate
+// length; s.pos is the authoritative boundary used by every decode step.
+func (s *ArchSession) TruncateTo(pos int) bool {
+	if s == nil || pos < 0 || pos > s.pos {
+		return false
+	}
+	if pos == s.pos {
+		return true
+	}
+	s.pos = pos
+	if len(s.cachedIDs) >= pos {
+		s.cachedIDs = s.cachedIDs[:pos]
+	} else {
+		s.cachedIDs = nil
+	}
+	s.resetCachedPromptEntry()
+	s.resetRetainedHidden()
+	return true
+}
 
 var _ model.DecodeStepper = (*ArchSession)(nil)
 
@@ -3024,7 +3070,7 @@ func (s *ArchSession) stepSampleTopKCandidatesWithHistoryInPool(id int32, params
 		if !directOut {
 			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
 		}
-		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistory(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, false)
+		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistoryFast(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -3094,7 +3140,7 @@ func (s *ArchSession) stepSampleTopKCandidatesGPUInputsWithHistoryInPool(id int3
 				return
 			}
 		}
-		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistory(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, false)
+		scratch, ok, err = s.headEnc.encodeTopKCandidatesWithHistoryFast(enc, lastOut, params.TopK, params.SuppressTokens, history, params.RepeatPenalty)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -3166,7 +3212,7 @@ func (s *ArchSession) stepSampleTopKTokenInPool(id int32, params model.SamplePar
 		if !directOut {
 			lastOut = icb.encodeStepBody(enc, emb, s.pos, pli)
 		}
-		scratch, ok, err = s.headEnc.encodeTopKSample(enc, lastOut, params, draw, history, false)
+		scratch, ok, err = s.headEnc.encodeTopKSampleFast(enc, lastOut, params, draw, history)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -3198,7 +3244,7 @@ func (s *ArchSession) stepSampleTopKTokenInPool(id int32, params model.SamplePar
 	return hidden, token, true, nil
 }
 
-func (s *ArchSession) encodeStepBodyFromGPUInputsInPool(enc metal.MTLComputeCommandEncoder, id int32) (metal.MTLBuffer, error) {
+func (s *ArchSession) encodeStepBodyFromGPUInputsInPool(enc metal.MTLComputeCommandEncoderObject, id int32) (metal.MTLBuffer, error) {
 	icb := s.state.icb
 	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
 		return nil, core.NewError("native.ArchSession.encodeStepBodyFromGPUInputsInPool: GPU inputs unavailable")
@@ -3209,11 +3255,11 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsInPool(enc metal.MTLComputeComm
 	if err := s.encNextInputsGPU(enc, tokBuf, icb.ping0, sc); err != nil {
 		return nil, err
 	}
-	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+	memoryBarrierObject(enc, metal.MTLBarrierScopeBuffers)
 	return icb.encodeStepBodyNoInput(enc, s.pos), nil
 }
 
-func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLComputeCommandEncoder, id int32, out metal.MTLBuffer) (metal.MTLBuffer, bool, error) {
+func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLComputeCommandEncoderObject, id int32, out metal.MTLBuffer) (metal.MTLBuffer, bool, error) {
 	icb := s.state.icb
 	if icb == nil || s.encNextInputsGPU == nil || s.plScratchNew == nil {
 		return nil, false, core.NewError("native.ArchSession.encodeStepBodyFromGPUInputsIntoBufferInPool: GPU inputs unavailable")
@@ -3224,12 +3270,12 @@ func (s *ArchSession) encodeStepBodyFromGPUInputsIntoBufferInPool(enc metal.MTLC
 	if err := s.encNextInputsGPU(enc, tokBuf, icb.ping0, sc); err != nil {
 		return nil, false, err
 	}
-	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+	memoryBarrierObject(enc, metal.MTLBarrierScopeBuffers)
 	lastOut, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, s.pos, out)
 	return lastOut, ok, nil
 }
 
-func (s *ArchSession) encodeStepBodyNoInputRetained(enc metal.MTLComputeCommandEncoder, icb *archICBReplay, pos int) (metal.MTLBuffer, []byte) {
+func (s *ArchSession) encodeStepBodyNoInputRetained(enc metal.MTLComputeCommandEncoderObject, icb *archICBReplay, pos int) (metal.MTLBuffer, []byte) {
 	if pinned, ok := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); ok && pinned.buf != nil {
 		s.resetRetainedLogits()
 		if out, ok := icb.encodeStepBodyNoInputIntoBuffer(enc, pos, pinned.buf); ok {
@@ -3274,7 +3320,7 @@ func (s *ArchSession) stepSampleTopKTokenGPUInputsInPool(id int32, params model.
 				return
 			}
 		}
-		scratch, ok, err = s.headEnc.encodeTopKSample(enc, lastOut, params, draw, history, false)
+		scratch, ok, err = s.headEnc.encodeTopKSampleFast(enc, lastOut, params, draw, history)
 		if !ok || err != nil {
 			endEncodingFast(enc)
 			if scratch != nil {
@@ -4464,7 +4510,7 @@ func (s *ArchSession) generateSampledChainedGPUTail(gen []int32, maxNew int, sto
 		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		if s.sampleTopKTokenParamsEligible(pickParams) {
 			var scratch *headTopKScratch
-			scratch, ok, stepErr = s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			scratch, ok, stepErr = s.headEnc.encodeTopKSampleFast(enc, lastOut, pickParams, draw, history)
 			if !ok || stepErr != nil {
 				endEncodingFast(enc)
 				if scratch != nil {
@@ -4615,7 +4661,7 @@ func (s *ArchSession) generateSampledPipelinedGPUTail(gen []int32, maxNew int, s
 		enc := computeCommandEncoderFast(cb)
 		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		if s.sampleTopKTokenParamsEligible(pickParams) {
-			scratch, ok, stepErr := s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			scratch, ok, stepErr := s.headEnc.encodeTopKSampleFast(enc, lastOut, pickParams, draw, history)
 			if !ok || stepErr != nil {
 				endEncodingFast(enc)
 				if scratch != nil {
@@ -4784,7 +4830,7 @@ func (s *ArchSession) generateSampledPipelinedGPUOneShotTail(gen []int32, maxNew
 		enc := computeCommandEncoderFast(cb)
 		lastOut, directHidden := s.encodeStepBodyNoInputRetained(enc, icb, s.pos)
 		if s.sampleTopKTokenParamsEligible(pickParams) {
-			scratch, ok, stepErr := s.headEnc.encodeTopKSample(enc, lastOut, pickParams, draw, history, false)
+			scratch, ok, stepErr := s.headEnc.encodeTopKSampleFast(enc, lastOut, pickParams, draw, history)
 			if !ok || stepErr != nil {
 				endEncodingFast(enc)
 				if scratch != nil {

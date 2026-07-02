@@ -394,6 +394,10 @@ func (s *archDecodeState) bufferPtr(buf metal.MTLBuffer) *byte {
 }
 
 func (s *archDecodeState) initDevicePagedKV(pageSize int) error {
+	return s.initDevicePagedKVWithPrealloc(pageSize, false)
+}
+
+func (s *archDecodeState) initDevicePagedKVWithPrealloc(pageSize int, prealloc bool) error {
 	if s == nil {
 		return core.NewError("native.archDecodeState.initDevicePagedKV: nil state")
 	}
@@ -427,6 +431,17 @@ func (s *archDecodeState) initDevicePagedKV(pageSize int) error {
 			return err
 		}
 		cache.ring = ring
+		if prealloc {
+			if err := cache.preallocPages(); err != nil {
+				for _, prior := range pages {
+					if prior != nil {
+						prior.Close()
+					}
+				}
+				cache.Close()
+				return err
+			}
+		}
 		pages[li] = cache
 	}
 	s.pagedKV = pages

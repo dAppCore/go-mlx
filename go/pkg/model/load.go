@@ -38,26 +38,38 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	ac.InferFromWeights(NormalizeWrapperNames(dm.Tensors)) // resolve omitted dims from the shapes (don't-guess)
+	tensors := dm.Tensors
+	if spec.Normalize != nil {
+		tensors = spec.Normalize(tensors)
+		dm.Tensors = tensors
+	}
+	ac.InferFromWeights(NormalizeWrapperNames(tensors)) // resolve omitted dims from the shapes (don't-guess)
 	arch, err := ac.Arch()
 	if err != nil {
 		_ = dm.Close()
 		return nil, nil, err
 	}
-	m, err := Assemble(dm.Tensors, arch, spec.Weights)
+	m, err := Assemble(tensors, arch, spec.Weights)
 	if err != nil {
 		_ = dm.Close()
 		return nil, nil, err
 	}
 	if spec.Vision != nil {
-		m.Vision, err = spec.Vision(dm.Tensors, ac)
+		m.Vision, err = spec.Vision(tensors, ac)
 		if err != nil {
 			_ = dm.Close()
 			return nil, nil, err
 		}
 	}
 	if spec.Audio != nil {
-		m.Audio, err = spec.Audio(dm.Tensors, ac)
+		m.Audio, err = spec.Audio(tensors, ac)
+		if err != nil {
+			_ = dm.Close()
+			return nil, nil, err
+		}
+	}
+	if spec.Diffusion != nil {
+		m.Diffusion, err = spec.Diffusion(tensors, ac)
 		if err != nil {
 			_ = dm.Close()
 			return nil, nil, err

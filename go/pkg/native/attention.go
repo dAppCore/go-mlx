@@ -559,6 +559,16 @@ func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLB
 	return nil
 }
 
+func encRMSNormRowsBF16Object(enc metal.MTLComputeCommandEncoderObject, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, rows, axisSize int, eps float32) error {
+	pso, err := pipelineFor("rmsbfloat16")
+	if err != nil {
+		return err
+	}
+	tg := uint(rmsSimdSize * ((((axisSize + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+	emitRMSNormRows(encObjectSink{enc}, pso, x, w, out, xOff, wOff, outOff, axisSize, eps, rows, tg)
+	return nil
+}
+
 // encGemvBF16 encodes out = mat @ vec (bf16, mat row-major outDim×inDim) into enc.
 func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outDim, inDim int) error {
 	return encGemvBF16To(enc, mat, vec, out, 0, 0, outDim, inDim)
@@ -578,6 +588,16 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 	}
 	// bf16 tiled gemv through the SHARED emitGemv body (with the ICB recorder's setGemv).
 	emitGemv(encSink{enc}, pso, mat, matOff, vec, out, outOff, inDim, outDim, bm, bn, sm, tm)
+	return nil
+}
+
+func encGemvBF16ToObject(enc metal.MTLComputeCommandEncoderObject, mat, vec, out metal.MTLBuffer, matOff, outOff uint, outDim, inDim int) error {
+	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
+	if err != nil {
+		return err
+	}
+	emitGemv(encObjectSink{enc}, pso, mat, matOff, vec, out, outOff, inDim, outDim, bm, bn, sm, tm)
 	return nil
 }
 
@@ -757,6 +777,15 @@ func encBinaryLiteralTo(enc metal.MTLComputeCommandEncoder, name string, a, b, o
 	return nil
 }
 
+func encBinaryLiteralToObject(enc metal.MTLComputeCommandEncoderObject, name string, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
+	pso, err := pipelineFor(name)
+	if err != nil {
+		return err
+	}
+	emitBinary(encObjectSink{enc}, pso, a, aOff, b, bOff, out, outOff, n)
+	return nil
+}
+
 // encAddBF16 / encMulBF16 are the bf16-bound conveniences for gemma's MLP and
 // residual paths. They use literal kernel names to avoid rebuilding the generic
 // "vv_"+op+dtype string in the per-token decode loop.
@@ -765,6 +794,9 @@ func encAddBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n
 }
 func encAddBF16To(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, n int) error {
 	return encBinaryLiteralTo(enc, "vv_Addbfloat16", a, b, out, aOff, bOff, outOff, n)
+}
+func encAddBF16Object(enc metal.MTLComputeCommandEncoderObject, a, b, out metal.MTLBuffer, n int) error {
+	return encBinaryLiteralToObject(enc, "vv_Addbfloat16", a, b, out, 0, 0, 0, n)
 }
 func encMulBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n int) error {
 	return encMulBF16To(enc, a, b, out, 0, 0, 0, n)

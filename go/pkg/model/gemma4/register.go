@@ -13,16 +13,20 @@ import (
 // both registered here. Parse is the faithful config parser; Weights is the HF/gemma weight layout
 // (the superset, which gemma4 is); InferFromWeights + Arch() are Gemma4TextConfig's own methods.
 func init() {
+	parse := func(data []byte) (model.ArchConfig, error) {
+		cfg, err := parseGemma4Config(data)
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
 	model.RegisterArch(model.ArchSpec{
 		ModelTypes: []string{"gemma4", "gemma4_text", "gemma4_unified"},
-		Parse: func(data []byte) (model.ArchConfig, error) {
-			cfg, err := parseGemma4Config(data)
-			if err != nil {
-				return nil, err
-			}
-			return cfg, nil
+		Parse:      parse,
+		Weights:    model.StandardWeightNames(),
+		Normalize: func(tensors map[string]safetensors.Tensor) map[string]safetensors.Tensor {
+			return canonicalTextWeights("gemma4", tensors)
 		},
-		Weights: model.StandardWeightNames(),
 		Vision: func(tensors map[string]safetensors.Tensor, cfg model.ArchConfig) (*model.LoadedVision, error) {
 			textCfg, ok := cfg.(*Gemma4TextConfig)
 			if !ok {
@@ -36,6 +40,21 @@ func init() {
 				return nil, nil
 			}
 			return AssembleAudio(SanitizeAudioWeights(tensors), textCfg)
+		},
+	})
+	model.RegisterArch(model.ArchSpec{
+		ModelTypes: []string{"diffusion_gemma"},
+		Parse:      parse,
+		Weights:    model.StandardWeightNames(),
+		Normalize: func(tensors map[string]safetensors.Tensor) map[string]safetensors.Tensor {
+			return canonicalTextWeights("diffusion_gemma", tensors)
+		},
+		Diffusion: func(tensors map[string]safetensors.Tensor, cfg model.ArchConfig) (*model.LoadedDiffusion, error) {
+			textCfg, ok := cfg.(*Gemma4TextConfig)
+			if !ok {
+				return nil, nil
+			}
+			return AssembleDiffusion(tensors, textCfg)
 		},
 	})
 }

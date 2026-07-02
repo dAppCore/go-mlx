@@ -33,6 +33,40 @@ func idsEqual(a, b []int32) bool {
 	return true
 }
 
+func TestArchSessionTruncateToRollsBackPositionAndResidentIDs_Good(t *testing.T) {
+	sess := &ArchSession{
+		pos:                5,
+		cachedIDs:          []int32{1, 2, 3, 4, 5},
+		cachedPromptIDs:    []int32{1, 2, 3, 4, 5},
+		cachedPromptHidden: []byte{1, 2},
+		cachedPromptLogits: []byte{3, 4},
+		retainedHidden:     []byte{5, 6},
+		retainedLogits:     []byte{7, 8},
+	}
+
+	if !sess.TruncateTo(3) {
+		t.Fatal("TruncateTo(3) = false, want true")
+	}
+	if sess.Pos() != 3 {
+		t.Fatalf("Pos after TruncateTo = %d, want 3", sess.Pos())
+	}
+	if !idsEqual(sess.cachedIDs, []int32{1, 2, 3}) {
+		t.Fatalf("cachedIDs after TruncateTo = %v, want [1 2 3]", sess.cachedIDs)
+	}
+	if len(sess.cachedPromptIDs) != 0 || len(sess.cachedPromptHidden) != 0 || len(sess.cachedPromptLogits) != 0 {
+		t.Fatalf("cached prompt entry survived rollback: ids=%v hidden=%v logits=%v", sess.cachedPromptIDs, sess.cachedPromptHidden, sess.cachedPromptLogits)
+	}
+	if len(sess.retainedHidden) != 0 || len(sess.retainedLogits) != 0 {
+		t.Fatalf("retained boundary survived rollback: hidden=%v logits=%v", sess.retainedHidden, sess.retainedLogits)
+	}
+	if !sess.TruncateTo(3) {
+		t.Fatal("TruncateTo(current pos) = false, want true")
+	}
+	if sess.TruncateTo(4) || sess.TruncateTo(-1) {
+		t.Fatal("TruncateTo allowed growing or negative rollback")
+	}
+}
+
 func repeatPenalizedLogitForTest(id int32, v float32, history []int32, penalty float32) float32 {
 	if penalty <= 1 {
 		return v
@@ -337,7 +371,7 @@ func TestArchSessionCloseClearsModelAndDecodeStateReferences(t *testing.T) {
 		greedy:        func([]byte, []int32) (int32, bool, error) { return 0, false, nil },
 		headEnc:       &headEncoder{},
 		perLayerInput: func(int32, []byte) ([]byte, error) { return nil, nil },
-		encNextInputsGPU: func(metal.MTLComputeCommandEncoder, metal.MTLBuffer, metal.MTLBuffer, *plGPUScratch) error {
+		encNextInputsGPU: func(metal.MTLComputeCommandEncoderObject, metal.MTLBuffer, metal.MTLBuffer, *plGPUScratch) error {
 			return nil
 		},
 		plScratchNew:       func() *plGPUScratch { return &plGPUScratch{} },

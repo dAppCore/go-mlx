@@ -611,6 +611,14 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 		}
 		cacheRows := s.stateCacheRows(spec)
 		rowBytes, err := s.stateCacheRowBytes(cacheBytes, cacheRows)
+		if s.state.icb != nil && li < len(s.state.icb.rowBytes) && li < len(s.state.icb.cacheRows) {
+			if s.state.icb.rowBytes[li] > 0 && s.state.icb.cacheRows[li] > 0 {
+				rowBytes = s.state.icb.rowBytes[li]
+				cacheRows = s.state.icb.cacheRows[li]
+				cacheBytes = rowBytes * cacheRows
+				err = nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}

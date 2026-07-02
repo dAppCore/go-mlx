@@ -922,6 +922,48 @@ func encBF16LMHeadCandidatesBF16(
 	return nil
 }
 
+func encBF16LMHeadCandidatesBF16Object(
+	enc metal.MTLComputeCommandEncoderObject,
+	x, weight, values, indices, suppress, history metal.MTLBuffer,
+	xOff, weightOff uint,
+	dModel, vocab, suppressCount, historyCount int,
+	repeatPenalty, softCap float32,
+) error {
+	if dModel <= 0 || vocab <= 0 {
+		return core.NewError("native.encBF16LMHeadCandidatesBF16: invalid head geometry")
+	}
+	pso, err := bf16LMHeadCandidatesPipeline()
+	if err != nil {
+		return err
+	}
+	tileCount := (vocab + bf16LMHeadArgmaxRowsPerTile - 1) / bf16LMHeadArgmaxRowsPerTile
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(x, xOff, 0)
+	sink.setBuf(weight, weightOff, 1)
+	sink.setBuf(values, 0, 2)
+	sink.setBuf(indices, 0, 3)
+	sink.setI32(int32(dModel), 4)
+	sink.setI32(int32(vocab), 5)
+	if suppress == nil {
+		suppress = x
+	}
+	sink.setBuf(suppress, 0, 6)
+	sink.setI32(int32(suppressCount), 7)
+	if history == nil {
+		history = x
+	}
+	sink.setBuf(history, 0, 8)
+	sink.setI32(int32(historyCount), 9)
+	sink.setF32(repeatPenalty, 10)
+	sink.setF32(softCap, 11)
+	sink.dispatchThreadgroups(
+		metal.MTLSize{Width: uint(tileCount), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: bf16LMHeadArgmaxRowsPerTile, Depth: 1},
+	)
+	return nil
+}
+
 func encBF16LogitsCandidatesBF16(
 	enc metal.MTLComputeCommandEncoder,
 	logits, values, indices, suppress metal.MTLBuffer,
@@ -1178,6 +1220,32 @@ func encTopKMergeF32(enc metal.MTLComputeCommandEncoder, values, indices, outVal
 	setEncInt32(enc, int32(n), 4)
 	setEncInt32(enc, int32(topK), 5)
 	dispatchThreads(enc,
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+func encTopKMergeF32Object(enc metal.MTLComputeCommandEncoderObject, values, indices, outValues, outIndices metal.MTLBuffer, n, topK int) error {
+	if n <= 0 {
+		return core.NewError("native.encTopKMergeF32: n must be > 0")
+	}
+	if topK <= 0 || topK > headSampleTopKMaxK {
+		return core.NewError("native.encTopKMergeF32: topK must be in 1..64")
+	}
+	pso, err := topKMergeF32Pipeline()
+	if err != nil {
+		return err
+	}
+	sink := encObjectSink{enc: enc}
+	sink.setPSO(pso)
+	sink.setBuf(values, 0, 0)
+	sink.setBuf(indices, 0, 1)
+	sink.setBuf(outValues, 0, 2)
+	sink.setBuf(outIndices, 0, 3)
+	sink.setI32(int32(n), 4)
+	sink.setI32(int32(topK), 5)
+	sink.dispatchThreads(
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)

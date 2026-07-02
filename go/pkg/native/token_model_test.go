@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"slices"
 	"testing"
@@ -32,6 +33,21 @@ func TestNativeTokenModelAcceptsAudioInput_Good(t *testing.T) {
 	tm.audio = &model.LoadedAudio{}
 	if !tm.AcceptsAudioInput() {
 		t.Fatal("AcceptsAudioInput = false with an audio payload, want true")
+	}
+}
+
+func TestNativeTokenModelBlockDiffusionCapable_Good(t *testing.T) {
+	tm := &NativeTokenModel{}
+	bd, ok := any(tm).(interface{ BlockDiffusionCapable() bool })
+	if !ok {
+		t.Fatal("NativeTokenModel does not expose BlockDiffusionCapable")
+	}
+	if bd.BlockDiffusionCapable() {
+		t.Fatal("BlockDiffusionCapable = true without a diffusion payload, want false")
+	}
+	tm.diffusion = &model.LoadedDiffusion{}
+	if !bd.BlockDiffusionCapable() {
+		t.Fatal("BlockDiffusionCapable = false with a diffusion payload, want true")
 	}
 }
 
@@ -552,6 +568,66 @@ func TestNativeBF16TokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestNativeBF16TokenModelEmbedIntoNoAllocation(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	layers := []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)}
+	g := &BF16Model{
+		Layers:    layers,
+		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 11)),
+		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 7)),
+	}
+	g.LMHead, g.Tied = g.Embed, true
+	tm, err := NewBF16TokenModel(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewBF16TokenModel: %v", err)
+	}
+	embedInto, ok := any(tm).(interface {
+		EmbedInto([]byte, int32) ([]byte, error)
+	})
+	if !ok {
+		t.Fatal("NativeTokenModel does not expose EmbedInto")
+	}
+	if got, want := tm.EmbeddingBytes(), dModel*bf16Size; got != want {
+		t.Fatalf("EmbeddingBytes = %d, want %d", got, want)
+	}
+	want, err := tm.Embed(3)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	dst := make([]byte, len(want))
+	got, err := embedInto.EmbedInto(dst, 3)
+	if err != nil {
+		t.Fatalf("EmbedInto: %v", err)
+	}
+	if len(got) == 0 || &got[0] != &dst[0] {
+		t.Fatal("EmbedInto did not return caller-owned destination")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("EmbedInto output differs from Embed")
+	}
+	var embedErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, embedErr = embedInto.EmbedInto(dst, 3)
+	})
+	if embedErr != nil {
+		t.Fatalf("EmbedInto allocation run: %v", embedErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("EmbedInto allocations = %.0f, want 0", allocs)
+	}
+}
+
 func TestNativeBF16TokenModelUsesResidentHead(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -604,6 +680,54 @@ func TestNativeBF16TokenModelUsesResidentHead(t *testing.T) {
 	}
 }
 
+func TestNativeTokenModelOpenSessionHonoursPagedKVLoadOptions_Good(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 128
+	const maxLen, pageSize = 16, 2
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	g := &BF16Model{
+		Layers:    []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 101)},
+		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 103)),
+		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 107)),
+	}
+	g.LMHead, g.Tied = g.Embed, true
+
+	tm, err := NewBF16TokenModel(g, arch, maxLen, withPagedKVPageSize(pageSize), withPagedKVPrealloc(true))
+	if err != nil {
+		t.Fatalf("NewBF16TokenModel: %v", err)
+	}
+	stepper, err := tm.OpenSession()
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	sess, ok := stepper.(*ArchSession)
+	if !ok {
+		t.Fatalf("OpenSession returned %T, want *ArchSession", stepper)
+	}
+	if len(sess.state.pagedKV) != 1 || sess.state.pagedKV[0] == nil {
+		t.Fatalf("paged KV caches = %d, want one owner cache", len(sess.state.pagedKV))
+	}
+	cache := sess.state.pagedKV[0]
+	if cache.pageSize != pageSize {
+		t.Fatalf("paged KV page size = %d, want %d", cache.pageSize, pageSize)
+	}
+	if got, want := len(cache.kPages), maxLen/pageSize; got != want {
+		t.Fatalf("preallocated K pages = %d, want %d", got, want)
+	}
+	if cache.length != 0 || cache.pageLens[0] != 0 {
+		t.Fatalf("preallocated cache visible length/page = %d/%d, want 0/0", cache.length, cache.pageLens[0])
+	}
+}
+
 func TestNativeQuantTokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -641,6 +765,69 @@ func TestNativeQuantTokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {
 	}
 	if allocs > 1 {
 		t.Fatalf("quant Embed allocations = %.0f, want <= 1", allocs)
+	}
+}
+
+func TestNativeQuantTokenModelEmbedIntoNoAllocation(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 1, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	tm, err := NewQuantTokenModel(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+	embedInto, ok := any(tm).(interface {
+		EmbedInto([]byte, int32) ([]byte, error)
+	})
+	if !ok {
+		t.Fatal("NativeTokenModel does not expose EmbedInto")
+	}
+	if got, want := tm.EmbeddingBytes(), arch.Hidden*bf16Size; got != want {
+		t.Fatalf("EmbeddingBytes = %d, want %d", got, want)
+	}
+	want, err := tm.Embed(3)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	dst := make([]byte, len(want))
+	got, err := embedInto.EmbedInto(dst, 3)
+	if err != nil {
+		t.Fatalf("EmbedInto: %v", err)
+	}
+	if len(got) == 0 || &got[0] != &dst[0] {
+		t.Fatal("EmbedInto did not return caller-owned destination")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("EmbedInto output differs from Embed")
+	}
+	var embedErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, embedErr = embedInto.EmbedInto(dst, 3)
+	})
+	if embedErr != nil {
+		t.Fatalf("EmbedInto allocation run: %v", embedErr)
+	}
+	if allocs > 0 {
+		t.Fatalf("EmbedInto allocations = %.0f, want 0", allocs)
 	}
 }
 

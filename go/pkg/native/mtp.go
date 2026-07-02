@@ -240,7 +240,7 @@ func MTPDecodeEach(target, draft *ArchSession, promptIDs []int32, maxNew, eosID,
 		// roll the target cache back to just the committed run (t0 + accepted drafts); the rejected
 		// suffix's K/V is overwritten by the bonus step below / the next round.
 		target.pos = posBefore + commitLen
-		if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+		if err := target.truncateSpeculativeKV(target.pos); err != nil {
 			return nil, err
 		}
 
@@ -269,7 +269,7 @@ func MTPDecodeEach(target, draft *ArchSession, promptIDs []int32, maxNew, eosID,
 		}
 		if stop {
 			target.pos = posBefore + emittedCommitLen
-			if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+			if err := target.truncateSpeculativeKV(target.pos); err != nil {
 				return nil, err
 			}
 			if err := draft.retainMTPCommittedBoundary(draftPos0, verifyIDs[:emittedCommitLen]); err != nil {
@@ -289,7 +289,7 @@ func MTPDecodeEach(target, draft *ArchSession, promptIDs []int32, maxNew, eosID,
 			}
 		}
 		draft.pos = draftPos0 + commitLen
-		if err := draft.state.truncateDevicePagedKV(draft.pos); err != nil {
+		if err := draft.truncateSpeculativeKV(draft.pos); err != nil {
 			return nil, err
 		}
 
@@ -570,7 +570,7 @@ func MTPDecodeSampledEach(target, draft *ArchSession, promptIDs []int32, maxNew 
 		}
 		res.Accepted += accepted
 		target.pos = posBefore + commitLen
-		if err := target.state.truncateDevicePagedKV(target.pos); err != nil {
+		if err := target.truncateSpeculativeKV(target.pos); err != nil {
 			return nil, err
 		}
 
@@ -595,7 +595,7 @@ func MTPDecodeSampledEach(target, draft *ArchSession, promptIDs []int32, maxNew 
 			}
 		}
 		draft.pos = draftPos0 + commitLen
-		if err := draft.state.truncateDevicePagedKV(draft.pos); err != nil {
+		if err := draft.truncateSpeculativeKV(draft.pos); err != nil {
 			return nil, err
 		}
 		if !bonusOK {
@@ -669,7 +669,7 @@ func (s *ArchSession) retainMTPCommittedBoundary(start int, ids []int32) error {
 		return core.NewError("native.MTPDecode: committed draft boundary would exceed maxLen cache rows")
 	}
 	s.pos = start
-	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+	if err := s.truncateSpeculativeKV(s.pos); err != nil {
 		return err
 	}
 	for _, id := range ids {

@@ -23,9 +23,10 @@ import (
 // (OpenSession + StepWithID); the whole-sequence DecodeForward does not do PLE.
 type NativeTokenModel struct {
 	*NativeBackend
-	embed func(id int32) ([]byte, error)
-	head  func(hidden []byte) ([]byte, error)
-	vocab int
+	embed     func(id int32) ([]byte, error)
+	embedInto func(dst []byte, id int32) ([]byte, error)
+	head      func(hidden []byte) ([]byte, error)
+	vocab     int
 	// Optional loaded-weight quant metadata surfaced to the no-cgo serve adapter's Info path.
 	// bf16 models leave these at zero, matching inference.ModelInfo's unquantised convention.
 	quantBits  int
@@ -47,9 +48,17 @@ type NativeTokenModel struct {
 	// resolved once — killing the per-token re-upload balloon. nil for an in-memory model (Head then
 	// uses the upload closure). Concurrency-safe (no shared mutable state), so the shared model can
 	// serve many request goroutines. Set by LoadGemma4TokenModelDir.
-	headEnc *headEncoder
-	vision  *model.LoadedVision
-	audio   *model.LoadedAudio
+	headEnc   *headEncoder
+	vision    *model.LoadedVision
+	audio     *model.LoadedAudio
+	diffusion *model.LoadedDiffusion
+	bf16      *BF16Model
+	quant     *QuantModel
+}
+
+type archSessionConfig struct {
+	pagedKVPageSize int
+	pagedKVPrealloc bool
 }
 
 // Close releases a directory-loaded model's memory-mapped checkpoint (no-op when the weights are
@@ -135,6 +144,10 @@ func (m *NativeTokenModel) ProjectImageFeatures(patches []byte) ([]byte, error) 
 
 func (m *NativeTokenModel) AcceptsAudioInput() bool {
 	return m != nil && m.audio != nil
+}
+
+func (m *NativeTokenModel) BlockDiffusionCapable() bool {
+	return m != nil && m.diffusion != nil
 }
 
 func (m *NativeTokenModel) AudioPlaceholderTokenID() int32 {
@@ -492,17 +505,22 @@ func NewBF16TokenModel(g *BF16Model, arch model.Arch, maxLen int, opts ...Backen
 	if err != nil {
 		return nil, err
 	}
+	sessionCfg := archSessionConfig{pagedKVPageSize: b.pagedKVPageSize, pagedKVPrealloc: b.pagedKVPrealloc}
 	scale := float32(math.Sqrt(float64(arch.Hidden)))
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	tm := &NativeTokenModel{
 		NativeBackend: b,
 		vocab:         vocab,
+		bf16:          g,
 		embed:         func(id int32) ([]byte, error) { return embedTokenBF16(g.Embed, id, vocab, dModel, scale) },
+		embedInto: func(dst []byte, id int32) ([]byte, error) {
+			return embedTokenBF16Into(dst, g.Embed, id, vocab, dModel, scale)
+		},
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
 		},
 		openSession: func(sb *shardBuffers, head *headEncoder) (model.DecodeStepper, error) {
-			return newArchSessionShardsWithHead(g, arch, maxLen, sb, head)
+			return newArchSessionShardsWithHeadConfig(g, arch, maxLen, sb, head, sessionCfg)
 		},
 	}
 	he, herr := buildHeadEncoder(nil, g.FinalNorm, g.LMHead, nil, nil, dModel, vocab, 0, 0, eps, softCap, false)
@@ -528,6 +546,7 @@ func NewQuantTokenModel(g *QuantModel, arch model.Arch, maxLen int, opts ...Back
 	if err != nil {
 		return nil, err
 	}
+	sessionCfg := archSessionConfig{pagedKVPageSize: b.pagedKVPageSize, pagedKVPrealloc: b.pagedKVPrealloc}
 	scale := float32(math.Sqrt(float64(arch.Hidden)))
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	gs, bits := g.GroupSize, g.Bits
@@ -536,14 +555,18 @@ func NewQuantTokenModel(g *QuantModel, arch model.Arch, maxLen int, opts ...Back
 		vocab:         vocab,
 		quantBits:     bits,
 		quantGroup:    gs,
+		quant:         g,
 		embed: func(id int32) ([]byte, error) {
 			return embedTokenQuant(g.Embed, g.EmbedScales, g.EmbedBiases, id, vocab, dModel, gs, bits, scale)
+		},
+		embedInto: func(dst []byte, id int32) ([]byte, error) {
+			return embedTokenQuantInto(dst, g.Embed, g.EmbedScales, g.EmbedBiases, id, vocab, dModel, gs, bits, scale)
 		},
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
 		},
 		openSession: func(sb *shardBuffers, head *headEncoder) (model.DecodeStepper, error) {
-			return newArchQuantSessionShardsWithHead(g, arch, maxLen, sb, head)
+			return newArchQuantSessionShardsWithHeadConfig(g, arch, maxLen, sb, head, sessionCfg)
 		},
 	}
 	he, herr := buildHeadEncoder(nil, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap, true)
@@ -559,6 +582,34 @@ func (m *NativeTokenModel) Vocab() int { return m.vocab }
 
 // Embed gathers a token id's scaled input embedding (dModel bf16 bytes).
 func (m *NativeTokenModel) Embed(id int32) ([]byte, error) { return m.embed(id) }
+
+// EmbeddingBytes reports the byte width of one token embedding row.
+func (m *NativeTokenModel) EmbeddingBytes() int {
+	if hidden := m.HiddenSize(); hidden > 0 {
+		return hidden * bf16Size
+	}
+	return 0
+}
+
+// EmbedInto gathers a token id's scaled input embedding into caller-owned
+// storage, avoiding the allocation made by Embed on hot multimodal prefill paths.
+func (m *NativeTokenModel) EmbedInto(dst []byte, id int32) ([]byte, error) {
+	if m == nil {
+		return nil, core.NewError("native.NativeTokenModel.EmbedInto: nil model")
+	}
+	if m.embedInto != nil {
+		return m.embedInto(dst, id)
+	}
+	emb, err := m.Embed(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(dst) != len(emb) {
+		return nil, core.NewError("native.NativeTokenModel.EmbedInto: dst size mismatch")
+	}
+	copy(dst, emb)
+	return dst, nil
+}
 
 // Head maps a final hidden state to vocab logits (final norm + projection +
 // optional soft-cap), bf16 bytes throughout. It prefers the zero-copy head (the head weight bound

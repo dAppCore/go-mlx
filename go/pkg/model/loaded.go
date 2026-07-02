@@ -180,6 +180,15 @@ type LoadedAudio struct {
 	Cfg        LoadedAudioConfig
 }
 
+// LoadedDiffusion is the neutral block-diffusion payload a backend can upload/build.
+type LoadedDiffusion struct {
+	SelfCondPreNorm                        []byte
+	SelfCondGate, SelfCondUp, SelfCondDown *Linear
+	EncoderLayerScalars                    [][]byte
+	CanvasLength                           int32
+	EOSTokens                              []int32
+}
+
 // LoadedModel is the whole backend-agnostic weight set: the Arch + every weight as a Linear or raw
 // norm bytes, viewing the source mmap. The single assembler output every backend consumes.
 type LoadedModel struct {
@@ -194,6 +203,7 @@ type LoadedModel struct {
 	PerLayerProjNorm  []byte
 	Vision            *LoadedVision
 	Audio             *LoadedAudio
+	Diffusion         *LoadedDiffusion
 }
 
 // Tied reports whether the LM head reuses the token embedding (no separate lm_head weight).

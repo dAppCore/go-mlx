@@ -16,12 +16,14 @@ import (
 // All four forwards share runArchDecode / decodeForwardArchICBCore via the projector
 // seam; this backend is the single object the engine drives through model.Backend.
 type NativeBackend struct {
-	arch    model.Arch
-	bf16    []DecodeLayerWeights    // set unless isQuant
-	quant   []QuantizedLayerWeights // set when isQuant
-	isQuant bool
-	useICB  bool
-	maxLen  int
+	arch            model.Arch
+	bf16            []DecodeLayerWeights    // set unless isQuant
+	quant           []QuantizedLayerWeights // set when isQuant
+	isQuant         bool
+	useICB          bool
+	maxLen          int
+	pagedKVPageSize int
+	pagedKVPrealloc bool
 }
 
 var _ model.Backend = (*NativeBackend)(nil)
@@ -32,6 +34,14 @@ type BackendOption func(*NativeBackend)
 // WithICB selects the ICB encode-bypass replay path (record once, replay per token).
 // A MoE arch still uses the re-encode path (the ICB can't host the router readback).
 func WithICB() BackendOption { return func(b *NativeBackend) { b.useICB = true } }
+
+func withPagedKVPageSize(n int) BackendOption {
+	return func(b *NativeBackend) { b.pagedKVPageSize = n }
+}
+
+func withPagedKVPrealloc(enabled bool) BackendOption {
+	return func(b *NativeBackend) { b.pagedKVPrealloc = enabled }
+}
 
 // NewBF16Backend binds a bf16-weight gemma4 model behind model.Backend; len(layers)
 // must equal the arch's layer count.

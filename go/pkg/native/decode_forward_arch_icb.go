@@ -591,7 +591,7 @@ func (r *archICBReplay) stepBodyIntoBuffer(inputEmb []byte, pos int, pli []byte,
 	return true
 }
 
-func (r *archICBReplay) encodeStepBodyIntoBuffer(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
+func (r *archICBReplay) encodeStepBodyIntoBuffer(enc metal.MTLComputeCommandEncoderObject, inputEmb []byte, pos int, pli []byte, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
 	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
 		return nil, false
 	}
@@ -600,8 +600,8 @@ func (r *archICBReplay) encodeStepBodyIntoBuffer(enc metal.MTLComputeCommandEnco
 	}
 	r.prepareStep(inputEmb, pos, pli)
 	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
-	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	useResourcesIDsFastObject(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	executeCommandsInBufferWithRangeObjectFast(enc, r.icb, r.rng)
 	return out, true
 }
 
@@ -654,11 +654,11 @@ func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 // caller can append more GPU work (the LM head + argmax) to the SAME command buffer and sync once per
 // token instead of twice. Returns the device buffer holding this layer-stack's final hidden (r.lastOut),
 // which the caller reads after the command buffer completes. Must run inside an autorelease pool.
-func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte) metal.MTLBuffer {
+func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoderObject, inputEmb []byte, pos int, pli []byte) metal.MTLBuffer {
 	r.bindStepOutput(r.lastOut)
 	r.prepareStep(inputEmb, pos, pli)
-	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	useResourcesIDsFastObject(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	executeCommandsInBufferWithRangeObjectFast(enc, r.icb, r.rng)
 	return r.lastOut
 }
 
@@ -671,20 +671,20 @@ func (r *archICBReplay) stepBodyResultWithResources(inputEmb []byte, pos int, pl
 	r.prepareStep(inputEmb, pos, pli)
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
-	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	useResourcesIDsFastObject(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		// replay barrier-free ICB ranges with an encoder memory barrier at each recorded dep point —
 		// resource-scoped coherency instead of the coarse all-prior drain.
 		start := r.rng.Location
 		for _, b := range r.barrierOps {
 			bb := uint(b)
-			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+			executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			memoryBarrierObject(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
-		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
 	} else {
-		executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+		executeCommandsInBufferWithRangeObjectFast(enc, r.icb, r.rng)
 	}
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)
@@ -706,8 +706,8 @@ func (r *archICBReplay) stepBodyCapture(inputEmb []byte, pos int, pli []byte) (f
 	for li := 0; li < r.nLayers; li++ {
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
-		useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{
+		useResourcesIDsFastObject(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+		executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{
 			Location: uint(li) * r.opsPerLayer,
 			Length:   r.opsPerLayer,
 		})
@@ -764,12 +764,11 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 			if rows := r.cacheRows[li]; rows > 0 {
 				rowOff = uint((pos % rows) * r.rowBytes[li])
 			}
-			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.kRopeIdx[li])), r.kCaches[li], rowOff, r.kRopeBind)
-			setICBKernelBuffer(indirectComputeCommandAtIndexFast(r.icb, uint(r.vIdx[li])), r.vCaches[li], rowOff, r.vOutBind)
+			setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.kRopeIdx[li]), r.kCaches[li], rowOff, r.kRopeBind)
+			setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.vIdx[li]), r.vCaches[li], rowOff, r.vOutBind)
 			if r.hasValueNorm {
-				vn := indirectComputeCommandAtIndexFast(r.icb, uint(r.vNormIdx[li]))
-				setICBKernelBuffer(vn, r.vCaches[li], rowOff, 0)
-				setICBKernelBuffer(vn, r.vCaches[li], rowOff, 2)
+				setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.vNormIdx[li]), r.vCaches[li], rowOff, 0)
+				setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.vNormIdx[li]), r.vCaches[li], rowOff, 2)
 			}
 		}
 		if r.specs[li].Attention == model.SlidingAttention {
@@ -785,9 +784,8 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 				ownStart = 0
 			}
 			slideOff := uint(ownStart * r.rowBytes[own]) // read the owner's cache at its row stride
-			sd := indirectComputeCommandAtIndexFast(r.icb, uint(r.sdpaIdx[li]))
-			setICBKernelBuffer(sd, r.kCaches[own], slideOff, 1)
-			setICBKernelBuffer(sd, r.vCaches[own], slideOff, 2)
+			setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.sdpaIdx[li]), r.kCaches[own], slideOff, 1)
+			setICBKernelBufferAtCommandIndexFast(r.icb, uint(r.sdpaIdx[li]), r.vCaches[own], slideOff, 2)
 		}
 	}
 }
@@ -795,10 +793,10 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 // encodeStepBodyNoInput replays one decode step with the input emb+pli ALREADY in ping0/pleInput (the
 // chained-GPU path: produced on-GPU by the prior step's encNextInputsGPU). It rebinds the caches for
 // `pos` and replays — no host emb/pli write — returning lastOut (the post-stack hidden).
-func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder, pos int) metal.MTLBuffer {
+func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoderObject, pos int) metal.MTLBuffer {
 	r.bindStepOutput(r.lastOut)
 	r.prepareStepRebind(pos)
-	useResourcesIDsFast(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	useResourcesIDsFastObject(enc, r.residentRes, r.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		// Replay barrier-free ICB ranges separated by a RESOURCE-SCOPED encoder memory barrier at each
 		// true dependency — buffer-coherency sync instead of the coarse all-prior SetBarrier full drain,
@@ -806,18 +804,18 @@ func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder
 		start := r.rng.Location
 		for _, b := range r.barrierOps {
 			bb := uint(b)
-			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+			executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			memoryBarrierObject(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
-		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
 		return r.lastOut
 	}
-	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	executeCommandsInBufferWithRangeObjectFast(enc, r.icb, r.rng)
 	return r.lastOut
 }
 
-func (r *archICBReplay) encodeStepBodyNoInputIntoBuffer(enc metal.MTLComputeCommandEncoder, pos int, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
+func (r *archICBReplay) encodeStepBodyNoInputIntoBuffer(enc metal.MTLComputeCommandEncoderObject, pos int, out metal.MTLBuffer) (metal.MTLBuffer, bool) {
 	if r == nil || r.scratch == nil || !r.hasFinalOut || r.icb == nil || out == nil {
 		return nil, false
 	}
@@ -826,19 +824,19 @@ func (r *archICBReplay) encodeStepBodyNoInputIntoBuffer(enc metal.MTLComputeComm
 	}
 	r.prepareStepRebind(pos)
 	residentRes, residentIDs := r.scratch.outputResidentResource(r.residentRes, r.residentResIDs, out)
-	useResourcesIDsFast(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	useResourcesIDsFastObject(enc, residentRes, residentIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 	if fineGrainedReplay && len(r.barrierOps) > 0 {
 		start := r.rng.Location
 		for _, b := range r.barrierOps {
 			bb := uint(b)
-			executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
-			memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+			executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			memoryBarrierObject(enc, metal.MTLBarrierScopeBuffers)
 			start = bb
 		}
-		executeCommandsInBufferWithRangeFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		executeCommandsInBufferWithRangeObjectFast(enc, r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
 		return out, true
 	}
-	executeCommandsInBufferWithRangeFast(enc, r.icb, r.rng)
+	executeCommandsInBufferWithRangeObjectFast(enc, r.icb, r.rng)
 	return out, true
 }
 
@@ -990,11 +988,11 @@ func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byt
 			cb := commandBufferFast(queue)
 			enc := computeCommandEncoderFast(cb)
 			if directOutput {
-				useResourcesIDsFast(enc, directResidentRes[slot], directResidentIDs[slot], metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+				useResourcesIDsFastObject(enc, directResidentRes[slot], directResidentIDs[slot], metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			} else {
-				useResourcesIDsFast(enc, rr.residentRes, rr.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+				useResourcesIDsFastObject(enc, rr.residentRes, rr.residentResIDs, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			}
-			executeCommandsInBufferWithRangeFast(enc, rr.icb, rr.rng)
+			executeCommandsInBufferWithRangeObjectFast(enc, rr.icb, rr.rng)
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb) // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
 			if prevReady {

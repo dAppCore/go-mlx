@@ -6,10 +6,12 @@ package native
 
 import (
 	"encoding/binary"
+	"sort"
 	"testing"
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -125,6 +127,31 @@ func TestLoadGemma4AssistantPairDirsRejectsBackboneMismatch(t *testing.T) {
 	}
 	if !core.Contains(err.Error(), "backbone_hidden_size") {
 		t.Fatalf("LoadGemma4AssistantPairDirs error = %v, want backbone_hidden_size", err)
+	}
+}
+
+func TestLoadGemma4AssistantPairDirsLoadsGGUFDrafter(t *testing.T) {
+	targetDir := writeNativeAssistantTargetDir(t, 8, []string{"sliding_attention", "full_attention"})
+	writeNativeAssistantTokenizer(t, targetDir)
+	ggufPath := writeNativeAssistantGGUF(t, nativeAssistantTinyTensors(false))
+
+	pair, err := LoadGemma4AssistantPairDirs(targetDir, ggufPath)
+	if err != nil {
+		t.Fatalf("LoadGemma4AssistantPairDirs(gguf): %v", err)
+	}
+	defer pair.Close()
+
+	if pair.Assistant.Tokenizer() == nil {
+		t.Fatal("GGUF assistant tokenizer = nil, want borrowed target tokenizer")
+	}
+	if pair.Assistant.Arch.Vocab != 8 || pair.Assistant.Arch.Hidden != 4 {
+		t.Fatalf("GGUF assistant arch = %+v, want vocab/hidden 8/4", pair.Assistant.Arch)
+	}
+	if tensor, ok := pair.Assistant.Tensor("model.embed_tokens.weight"); !ok || tensor.Dtype != "BF16" || len(tensor.Shape) != 2 {
+		t.Fatalf("GGUF mapped embed tensor = %+v ok=%v, want BF16 rank-2", tensor, ok)
+	}
+	if _, ok := pair.Assistant.Tensor("model.layers.0.layer_scalar.weight"); !ok {
+		t.Fatal("GGUF layer_output_scale was not mapped to layer_scalar.weight")
 	}
 }
 
@@ -1337,6 +1364,47 @@ func TestGemma4AssistantPairGenerateSampledFromSessionMatchesTargetGenerateSampl
 	}
 }
 
+func TestGemma4AssistantPairGenerateSampledFromSessionEachKeepsDraftBlockWhileStreaming(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5}
+	prompt, seed, _, _ := nativeAssistantSampledVerifierRejectFixture(t, mk, params)
+	maxNew := 4
+	want, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("reference GenerateSampledEach: %v", err)
+	}
+	target := mk()
+	var yielded []int32
+
+	got, err := pair.GenerateSampledFromSessionEach(target, prompt, maxNew, nil, model.NewSampler(seed), params, 2, func(id int32) bool {
+		yielded = append(yielded, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("GenerateSampledFromSessionEach: %v", err)
+	}
+
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("streaming sampled assistant tokens = %v, want %v", got.Tokens, want)
+	}
+	if !idsEqual(yielded, got.Tokens) {
+		t.Fatalf("streaming sampled assistant yielded %v, want result tokens %v", yielded, got.Tokens)
+	}
+	hasBlock := false
+	for _, n := range got.DraftTokenSchedule {
+		if n > 1 {
+			hasBlock = true
+			break
+		}
+	}
+	if !hasBlock {
+		t.Fatalf("streaming sampled assistant draft schedule = %v, want a multi-token verify block", got.DraftTokenSchedule)
+	}
+}
+
 func TestGemma4AssistantDraftInputProjectionRejectsBadHidden(t *testing.T) {
 	tensors := nativeAssistantTinyTensors(true)
 	dir := writeNativeAssistantDir(t, tensors)
@@ -1831,6 +1899,207 @@ func writeNativeAssistantAttentionTargetDir(t *testing.T) string {
 		t.Fatalf("write target config.json: %v", err)
 	}
 	return dir
+}
+
+const nativeTestGGUFTensorTypeBF16 = 30
+
+type nativeTestGGUFTensor struct {
+	Name string
+	Type uint32
+	Dims []uint64
+	Data []byte
+}
+
+func writeNativeAssistantGGUF(t *testing.T, tensors map[string]safetensors.Tensor) string {
+	t.Helper()
+	path := core.PathJoin(t.TempDir(), "mtp-tiny.gguf")
+	names := make([]string, 0, len(tensors))
+	for name := range tensors {
+		if nativeAssistantGGUFNameForTest(t, name) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	payloads := make([]nativeTestGGUFTensor, 0, len(names))
+	for _, name := range names {
+		tensor := tensors[name]
+		dims := make([]uint64, len(tensor.Shape))
+		for i, dim := range tensor.Shape {
+			dims[i] = uint64(dim)
+		}
+		payloads = append(payloads, nativeTestGGUFTensor{
+			Name: nativeAssistantGGUFNameForTest(t, name),
+			Type: nativeTestGGUFTensorTypeBF16,
+			Dims: dims,
+			Data: tensor.Data,
+		})
+	}
+	writeNativeTestGGUF(t, path, nativeAssistantGGUFMetadata(), payloads)
+	return path
+}
+
+func nativeAssistantGGUFMetadata() []nativeTestGGUFMeta {
+	const p = nativeGemma4AssistantGGUFArch + "."
+	return []nativeTestGGUFMeta{
+		{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: nativeGemma4AssistantGGUFArch},
+		{Key: "general.alignment", ValueType: gguf.ValueTypeUint32, Value: uint32(32)},
+		{Key: p + "block_count", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: p + "embedding_length", ValueType: gguf.ValueTypeUint32, Value: uint32(4)},
+		{Key: p + "embedding_length_out", ValueType: gguf.ValueTypeUint32, Value: uint32(8)},
+		{Key: p + "attention.head_count", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: p + "attention.head_count_kv", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: p + "attention.key_length", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: p + "attention.sliding_window_pattern", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: p + "attention.sliding_window", ValueType: gguf.ValueTypeUint32, Value: uint32(16)},
+		{Key: p + "attention.shared_kv_layers", ValueType: gguf.ValueTypeUint32, Value: uint32(0)},
+		{Key: p + "feed_forward_length", ValueType: gguf.ValueTypeUint32, Value: uint32(8)},
+		{Key: p + "context_length", ValueType: gguf.ValueTypeUint32, Value: uint32(16)},
+	}
+}
+
+func nativeAssistantGGUFNameForTest(t *testing.T, hf string) string {
+	t.Helper()
+	base := []string{
+		"token_embd.weight",
+		"output_norm.weight",
+		"nextn.pre_projection.weight",
+		"nextn.post_projection.weight",
+	}
+	for _, name := range base {
+		if nativeGemma4AssistantGGUFWeightName(name) == hf {
+			return name
+		}
+	}
+	leaves := []string{
+		"attn_norm.weight",
+		"post_attention_norm.weight",
+		"ffn_norm.weight",
+		"post_ffw_norm.weight",
+		"attn_q.weight",
+		"attn_q_norm.weight",
+		"attn_output.weight",
+		"ffn_gate.weight",
+		"ffn_up.weight",
+		"ffn_down.weight",
+		"layer_output_scale.weight",
+	}
+	for layer := 0; layer < 4; layer++ {
+		for _, leaf := range leaves {
+			name := core.Sprintf("blk.%d.%s", layer, leaf)
+			mapped := nativeGemma4AssistantGGUFWeightName(name)
+			if mapped == hf || (leaf == "layer_output_scale.weight" && mapped == hf+".weight") {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+type nativeTestGGUFMeta struct {
+	Key       string
+	ValueType uint32
+	Value     any
+}
+
+func writeNativeTestGGUF(t *testing.T, path string, metadata []nativeTestGGUFMeta, tensors []nativeTestGGUFTensor) {
+	t.Helper()
+	created := core.Create(path)
+	if !created.OK {
+		t.Fatalf("create gguf: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	defer file.Close()
+	writeNativeTestGGUFScalar(t, file, uint32(0x46554747))
+	writeNativeTestGGUFScalar(t, file, uint32(3))
+	writeNativeTestGGUFScalar(t, file, uint64(len(tensors)))
+	writeNativeTestGGUFScalar(t, file, uint64(len(metadata)))
+	for _, entry := range metadata {
+		writeNativeTestGGUFString(t, file, entry.Key)
+		writeNativeTestGGUFScalar(t, file, entry.ValueType)
+		writeNativeTestGGUFValue(t, file, entry)
+	}
+	var offset uint64
+	offsets := make([]uint64, len(tensors))
+	for i, tensor := range tensors {
+		offset += nativeTestGGUFAlignPadding(offset, 32)
+		offsets[i] = offset
+		offset += uint64(len(tensor.Data))
+	}
+	for i, tensor := range tensors {
+		writeNativeTestGGUFString(t, file, tensor.Name)
+		writeNativeTestGGUFScalar(t, file, uint32(len(tensor.Dims)))
+		for _, dim := range tensor.Dims {
+			writeNativeTestGGUFScalar(t, file, dim)
+		}
+		writeNativeTestGGUFScalar(t, file, tensor.Type)
+		writeNativeTestGGUFScalar(t, file, offsets[i])
+	}
+	position, err := file.Seek(0, 1)
+	if err != nil {
+		t.Fatalf("seek gguf: %v", err)
+	}
+	writeNativeTestGGUFPadding(t, file, nativeTestGGUFAlignPadding(uint64(position), 32))
+	var written uint64
+	for i, tensor := range tensors {
+		writeNativeTestGGUFPadding(t, file, offsets[i]-written)
+		if _, err := file.Write(tensor.Data); err != nil {
+			t.Fatalf("write gguf tensor: %v", err)
+		}
+		written = offsets[i] + uint64(len(tensor.Data))
+	}
+}
+
+func writeNativeTestGGUFValue(t *testing.T, file *core.OSFile, entry nativeTestGGUFMeta) {
+	t.Helper()
+	switch entry.ValueType {
+	case gguf.ValueTypeString:
+		value, ok := entry.Value.(string)
+		if !ok {
+			t.Fatalf("metadata %s = %T, want string", entry.Key, entry.Value)
+		}
+		writeNativeTestGGUFString(t, file, value)
+	case gguf.ValueTypeUint32:
+		value, ok := entry.Value.(uint32)
+		if !ok {
+			t.Fatalf("metadata %s = %T, want uint32", entry.Key, entry.Value)
+		}
+		writeNativeTestGGUFScalar(t, file, value)
+	default:
+		t.Fatalf("unsupported native test gguf metadata type %d", entry.ValueType)
+	}
+}
+
+func writeNativeTestGGUFString(t *testing.T, file *core.OSFile, value string) {
+	t.Helper()
+	writeNativeTestGGUFScalar(t, file, uint64(len(value)))
+	if _, err := file.Write([]byte(value)); err != nil {
+		t.Fatalf("write gguf string: %v", err)
+	}
+}
+
+func writeNativeTestGGUFScalar(t *testing.T, file *core.OSFile, value any) {
+	t.Helper()
+	if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+		t.Fatalf("write gguf scalar: %v", err)
+	}
+}
+
+func writeNativeTestGGUFPadding(t *testing.T, file *core.OSFile, n uint64) {
+	t.Helper()
+	if n == 0 {
+		return
+	}
+	padding := make([]byte, int(n))
+	if _, err := file.Write(padding); err != nil {
+		t.Fatalf("write gguf padding: %v", err)
+	}
+}
+
+func nativeTestGGUFAlignPadding(offset, alignment uint64) uint64 {
+	if alignment == 0 {
+		return 0
+	}
+	return (alignment - (offset % alignment)) % alignment
 }
 
 func newNativeAssistantGenerateFixture(t testing.TB) (*Gemma4AssistantPair, func() *ArchSession) {

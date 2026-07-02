@@ -44,6 +44,8 @@ type Gemma4TextConfig struct {
 	TieWordEmbeddings         bool                  `json:"tie_word_embeddings"`
 	RopeParameters            map[string]RopeParams `json:"rope_parameters"`
 	LayerTypesInput           []string              `json:"layer_types"`
+	CanvasLength              int32                 `json:"canvas_length"`
+	EOSTokenID                any                   `json:"eos_token_id"`
 
 	Quantization                *model.QuantConfig  `json:"-"`
 	VisionConfig                *Gemma4VisionConfig `json:"-"`

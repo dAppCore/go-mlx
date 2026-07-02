@@ -15,6 +15,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
+	"dappco.re/go/mlx/profile"
 )
 
 type nativeSpeculativeTextModel struct {
@@ -25,6 +26,27 @@ type nativeSpeculativeTextModel struct {
 
 	mtpMu      sync.Mutex
 	mtpMetrics *metal.MTPMetrics
+}
+
+func (s *nativeSpeculativeTextModel) Capabilities() inference.CapabilityReport {
+	if s == nil || s.nativeTextModel == nil {
+		var base *nativeTextModel
+		return base.Capabilities()
+	}
+	report := s.nativeTextModel.Capabilities()
+	speculative, ok := profile.LookupAlgorithmProfile(inference.CapabilitySpeculativeDecode)
+	if !ok {
+		return report
+	}
+	capability := speculative.Capability()
+	for i := range report.Capabilities {
+		if report.Capabilities[i].ID == capability.ID {
+			report.Capabilities[i] = capability
+			return report
+		}
+	}
+	report.Capabilities = append(report.Capabilities, capability)
+	return report
 }
 
 // errCoreResultFailed is the fallback resultError returns when a failed
@@ -74,9 +96,11 @@ func LoadNativeSpeculativePairAsTextModelBlock(targetPath, draftPath string, dra
 		draftBlock = MTPDefaultDraftBlock
 	}
 	if isGemma4AssistantDraft(draftPath) {
-		if err := validateNativeSpeculativeAssistantTokenizer(target.tok, draftPath); err != nil {
-			closeErr := resultError(target.Close())
-			return nil, core.ErrorJoin(err, closeErr)
+		if _, isGGUF := native.ResolveGemma4AssistantGGUFDrafterFile(draftPath); !isGGUF {
+			if err := validateNativeSpeculativeAssistantTokenizer(target.tok, draftPath); err != nil {
+				closeErr := resultError(target.Close())
+				return nil, core.ErrorJoin(err, closeErr)
+			}
 		}
 		assistant, err := native.LoadGemma4AssistantPairDirs(targetPath, draftPath)
 		if err != nil {
@@ -114,6 +138,12 @@ func (s *nativeSpeculativeTextModel) Generate(ctx context.Context, prompt string
 func (s *nativeSpeculativeTextModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	if s == nil || s.nativeTextModel == nil {
 		return func(func(inference.Token) bool) {}
+	}
+	if s.nativeTextModel.continuity != nil {
+		if seq, ok := s.nativeTextModel.continuity.Chat(ctx, messages, opts...); ok {
+			s.setNativeMTPMetrics(nil)
+			return seq
+		}
 	}
 	if inferenceMessagesCarryImages(messages) {
 		return s.nativeTextModel.Chat(ctx, messages, opts...)

@@ -26,6 +26,23 @@ func BenchmarkNativeTokenModelEmbed(b *testing.B) {
 	}
 }
 
+func BenchmarkNativeTokenModelEmbedInto(b *testing.B) {
+	g, arch := gemma4BF16Fixture(b, 64, 1, 1, 64, 128, 32, 1)
+	tm, err := NewBF16TokenModel(g, arch, 4)
+	if err != nil {
+		b.Fatal(err)
+	}
+	dst := make([]byte, tm.EmbeddingBytes())
+	b.SetBytes(int64(arch.Hidden * bf16Size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := tm.EmbedInto(dst, int32(i%arch.Vocab)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 type nativeTokenModelNoDirectGenerate struct {
 	*NativeTokenModel
 }

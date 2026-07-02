@@ -53,11 +53,23 @@ func LoadDir(dir string, maxLen int) (*ArchSession, error) {
 	return sess, nil
 }
 
+type TokenModelLoadConfig struct {
+	PagedKVPageSize int
+	PagedKVPrealloc bool
+}
+
 // LoadTokenModelDir loads any registered architecture's checkpoint directory as a model.TokenModel —
 // the backend-agnostic token-loop contract the serve adapter drives (model.Generate over the returned
 // SessionModel). The quant/bf16 path is read from the loaded weights; the per-token serve head is
 // built once (buildHeadEncoder) to kill the per-token re-upload.
 func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
+	return LoadTokenModelDirWithConfig(dir, maxLen, TokenModelLoadConfig{})
+}
+
+func LoadTokenModelDirWithConfig(dir string, maxLen int, loadCfg TokenModelLoadConfig) (model.TokenModel, error) {
+	if loadCfg.PagedKVPageSize < 0 {
+		return nil, core.NewError("native.LoadTokenModelDir: paged KV page size must be >= 0")
+	}
 	// SSM / hybrid families don't fit the reactive transformer Assemble — route them to their own loader
 	// before the registered path. mamba2 is a standalone recurrent SSM; qwen3_5/3.6 is a config-composed
 	// hybrid (linear_attention gated-delta + full attention) built by the composed loader.
@@ -79,6 +91,7 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 		return nil, err
 	}
 	arch := lm.Arch
+	backendOpts := nativeTokenModelBackendOptions(loadCfg)
 	if quantised(lm) {
 		gs, bits := lm.Embed.GroupSize, lm.Embed.Bits
 		g, qerr := loadedToQuant(lm, gs, bits)
@@ -86,7 +99,7 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 			_ = sb.Close()
 			return nil, qerr
 		}
-		tm, terr := NewQuantTokenModel(g, arch, maxLen)
+		tm, terr := NewQuantTokenModel(g, arch, maxLen, backendOpts...)
 		if terr != nil {
 			_ = sb.Close()
 			return nil, terr
@@ -100,10 +113,11 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 		tm.headEnc = he
 		tm.vision = lm.Vision
 		tm.audio = lm.Audio
+		tm.diffusion = lm.Diffusion
 		return tm, nil
 	}
 	g := loadedToBF16(lm)
-	tm, terr := NewBF16TokenModel(g, arch, maxLen)
+	tm, terr := NewBF16TokenModel(g, arch, maxLen, backendOpts...)
 	if terr != nil {
 		_ = sb.Close()
 		return nil, terr
@@ -117,7 +131,19 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 	tm.headEnc = he
 	tm.vision = lm.Vision
 	tm.audio = lm.Audio
+	tm.diffusion = lm.Diffusion
 	return tm, nil
+}
+
+func nativeTokenModelBackendOptions(cfg TokenModelLoadConfig) []BackendOption {
+	var opts []BackendOption
+	if cfg.PagedKVPageSize != 0 {
+		opts = append(opts, withPagedKVPageSize(cfg.PagedKVPageSize))
+	}
+	if cfg.PagedKVPrealloc {
+		opts = append(opts, withPagedKVPrealloc(true))
+	}
+	return opts
 }
 
 // loadMamba2TokenModel loads a mamba2 checkpoint into the host-f32 recurrent MambaModel and wraps it as a

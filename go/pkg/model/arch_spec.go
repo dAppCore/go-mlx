@@ -35,8 +35,10 @@ type ArchSpec struct {
 	ModelTypes []string                         // config.json "model_type" ids (incl. multimodal wrapper aliases)
 	Parse      func([]byte) (ArchConfig, error) // the architecture's own parse: wrapper-merge / validation / defaults
 	Weights    WeightNames                      // logical weight role → tensor name; model.Assemble reacts to it
+	Normalize  func(map[string]safetensors.Tensor) map[string]safetensors.Tensor
 	Vision     func(map[string]safetensors.Tensor, ArchConfig) (*LoadedVision, error)
 	Audio      func(map[string]safetensors.Tensor, ArchConfig) (*LoadedAudio, error)
+	Diffusion  func(map[string]safetensors.Tensor, ArchConfig) (*LoadedDiffusion, error)
 }
 
 // archSpecs is the engine's architecture registry — the same core.NewRegistry primitive pkg/scheme

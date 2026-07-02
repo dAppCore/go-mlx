@@ -6,6 +6,7 @@ package native
 
 import (
 	"os"
+	"reflect"
 	"testing"
 
 	core "dappco.re/go"
@@ -120,4 +121,76 @@ func TestLoadGemma4BF16Dir(t *testing.T) {
 	}
 
 	t.Logf("dir-load: single + 2-shard checkpoints both → session ≡ in-memory pipe %v (the path a real sharded gemma4 takes)", want)
+}
+
+func TestLoadDiffusionGemmaDecoderTrunkDir(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const headDim, vocab = 64, 32
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: headDim, GlobalHeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6, SlidingWindow: 4, MaxPositionEmbeddings: maxLen,
+		LayerTypes: []string{"sliding_attention", "full_attention"},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	decoder := make(map[string]safetensors.Tensor)
+	for name, tensor := range gemma4TensorsMust(t, arch) {
+		decoder["model.decoder."+name] = tensor
+	}
+	decoder["self_conditioning.pre_norm.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{128}, Data: make([]byte, 128*2)}
+	decoder["self_conditioning.gate_proj.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{256, 128}, Data: make([]byte, 256*128*2)}
+	decoder["self_conditioning.up_proj.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{256, 128}, Data: make([]byte, 256*128*2)}
+	decoder["self_conditioning.down_proj.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{128, 256}, Data: make([]byte, 128*256*2)}
+	decoder["model.encoder.language_model.layers.0.layer_scalar"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{1}, Data: make([]byte, 2)}
+	decoder["model.encoder.language_model.layers.1.layer_scalar"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{1}, Data: make([]byte, 2)}
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(diffusionGemmaConfigJSON(t, cfg))); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(mustEncode(t, decoder))); err != nil {
+		t.Fatalf("write model.safetensors: %v", err)
+	}
+
+	s, err := LoadDir(dir, maxLen)
+	if err != nil {
+		t.Fatalf("LoadDir(diffusion_gemma trunk): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.Generate([]int32{1, 5, 3}, 1, -1); err != nil {
+		t.Fatalf("Generate from diffusion trunk: %v", err)
+	}
+	tm, err := LoadTokenModelDir(dir, maxLen)
+	if err != nil {
+		t.Fatalf("LoadTokenModelDir(diffusion_gemma trunk): %v", err)
+	}
+	nativeTM, ok := tm.(*NativeTokenModel)
+	if !ok {
+		t.Fatalf("LoadTokenModelDir returned %T, want *NativeTokenModel", tm)
+	}
+	diffusion := reflect.ValueOf(nativeTM).Elem().FieldByName("diffusion")
+	if !diffusion.IsValid() || diffusion.IsNil() {
+		t.Fatal("native token model dropped diffusion extras")
+	}
+}
+
+func diffusionGemmaConfigJSON(t testing.TB, cfg g4.Config) []byte {
+	t.Helper()
+	var m map[string]any
+	if r := core.JSONUnmarshal(configJSONWithModelType(t, cfg, "diffusion_gemma"), &m); !r.OK {
+		t.Fatalf("parse diffusion config fixture: %s", r.Error())
+	}
+	m["canvas_length"] = 4
+	m["eos_token_id"] = []int{1, 2}
+	out := core.JSONMarshal(m)
+	if !out.OK {
+		t.Fatalf("marshal diffusion config fixture: %s", out.Error())
+	}
+	return out.Value.([]byte)
 }

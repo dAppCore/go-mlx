@@ -138,6 +138,28 @@ func (c *devicePagedKVCache) newPage() (metal.MTLBuffer, metal.MTLBuffer, *byte,
 	return k, v, (*byte)(k.Contents()), (*byte)(v.Contents()), nil
 }
 
+func (c *devicePagedKVCache) preallocPages() error {
+	if c == nil {
+		return core.NewError("native.devicePagedKVCache.preallocPages: nil cache")
+	}
+	if c.maxSize <= 0 {
+		return nil
+	}
+	need := (c.maxSize + c.pageSize - 1) / c.pageSize
+	for len(c.kPages) < need {
+		k, v, kPtr, vPtr, err := c.newPage()
+		if err != nil {
+			return err
+		}
+		c.kPages = append(c.kPages, k)
+		c.vPages = append(c.vPages, v)
+		c.kPagePtrs = append(c.kPagePtrs, kPtr)
+		c.vPagePtrs = append(c.vPagePtrs, vPtr)
+		c.pageLens = append(c.pageLens, 0)
+	}
+	return nil
+}
+
 func (c *devicePagedKVCache) linearSnapshot(rows int) (kBuf, vBuf metal.MTLBuffer, kPtr, vPtr *byte, err error) {
 	if c == nil {
 		return nil, nil, nil, nil, core.NewError("native.devicePagedKVCache.linearSnapshot: nil cache")
