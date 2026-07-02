@@ -1,12 +1,15 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Coverage-closing tests for adapter.go + fuse.go — drives the residual
-// branches the primary suites in adapter_test.go / fuse_test.go leave
-// uncovered: nil-context defaulting, the streaming-hash accumulator reuse +
-// fault legs, the write-failure error wraps (chmod-driven, no root needed),
-// the Gemma4 canonical-pair-name fallbacks, and the metal-gated fuse error
-// paths (corrupt adapter/base weights, multi-shard output naming,
-// SaveSafetensors / provenance write failures).
+// Coverage-closing tests for fuse.go — drives the residual branches the
+// primary suites in adapter_test.go / fuse_test.go leave uncovered:
+// nil-context defaulting, the write-failure error wraps (chmod-driven, no
+// root needed), the Gemma4 canonical-pair-name fallbacks, and the
+// metal-gated fuse error paths (corrupt adapter/base weights, multi-shard
+// output naming, SaveSafetensors / provenance write failures).
+//
+// The former adapter.go streaming-hash accumulator coverage lived here
+// until adapter.go's Inspect/InspectAdapter delegated to inference/lora —
+// that internal hashing logic (and its coverage) now lives upstream.
 
 package lora
 
@@ -19,105 +22,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
-// --- adapter.go: streamHashWeightFile accumulator reuse + fault legs ---
-
-func TestStreamHashWeightFile_AccumulatorReuse_Ugly(t *testing.T) {
-	// Ugly: hashAdapterPrecomputed shares a single hashWriter across every
-	// weight shard, so the second large shard must hit the hasher.Reset()
-	// arm (adapter.go L269-271) instead of allocating a fresh accumulator.
-	// Two shards both over streamHashMinBytes force the directory branch to
-	// stream each in turn, exercising both the first-shard lazy-construct
-	// (h == nil) and the second-shard Reset. The digest must stay
-	// deterministic, proving the reset accumulator hashed the second shard's
-	// bytes correctly rather than carrying state across.
-	const shardSize = streamHashMinBytes + 32*1024 // ~160 KiB each, over the 128 KiB gate
-
-	makeAdapter := func(t *testing.T, fill byte) AdapterInfo {
-		t.Helper()
-		dir := t.TempDir()
-		if result := core.WriteFile(core.PathJoin(dir, "adapter_config.json"), []byte(`{"rank":8,"alpha":16,"target_modules":["q_proj"]}`), 0o600); !result.OK {
-			t.Fatalf("WriteFile adapter_config: %s", result.Error())
-		}
-		shard := make([]byte, shardSize)
-		for i := range shard {
-			shard[i] = fill
-		}
-		// Two distinct *.safetensors shards in one adapter dir: the glob
-		// returns both, so the shared hasher is reused on the second.
-		if result := core.WriteFile(core.PathJoin(dir, "adapter-00001.safetensors"), shard, 0o600); !result.OK {
-			t.Fatalf("WriteFile shard 1: %s", result.Error())
-		}
-		if result := core.WriteFile(core.PathJoin(dir, "adapter-00002.safetensors"), shard, 0o600); !result.OK {
-			t.Fatalf("WriteFile shard 2: %s", result.Error())
-		}
-		info, err := InspectAdapter(dir)
-		if err != nil {
-			t.Fatalf("InspectAdapter(two large shards) error = %v", err)
-		}
-		if info.Hash == "" {
-			t.Fatalf("InspectAdapter(two large shards) produced empty hash: %+v", info)
-		}
-		return info
-	}
-
-	first := makeAdapter(t, 0x5A)
-	repeat := makeAdapter(t, 0x5A)
-	if first.Hash != repeat.Hash {
-		t.Fatalf("streaming-hash accumulator reuse not deterministic: %q != %q", first.Hash, repeat.Hash)
-	}
-	different := makeAdapter(t, 0xA5)
-	if first.Hash == different.Hash {
-		t.Fatalf("streaming-hash accumulator reuse collided across distinct shard content: %q", first.Hash)
-	}
-}
-
-func TestStreamHashWeightFile_OpenFailure_Bad(t *testing.T) {
-	// Bad: streamHashWeightFile takes the stream path only when Stat reports
-	// a size over streamHashMinBytes, then Open must succeed. A large shard
-	// chmod'd 0o000 stats large (so the gate routes to streaming) but cannot
-	// be opened — driving the !opened.OK skip (adapter.go L263-265). The
-	// unreadable shard contributes nothing, so the resulting digest equals an
-	// adapter holding only the readable config + small stub (no large shard).
-	const shardSize = streamHashMinBytes + 32*1024
-
-	dir := t.TempDir()
-	if result := core.WriteFile(core.PathJoin(dir, "adapter_config.json"), []byte(`{"rank":8,"alpha":16,"target_modules":["q_proj"]}`), 0o600); !result.OK {
-		t.Fatalf("WriteFile adapter_config: %s", result.Error())
-	}
-	blocked := core.PathJoin(dir, "blocked.safetensors")
-	shard := make([]byte, shardSize)
-	if result := core.WriteFile(blocked, shard, 0o600); !result.OK {
-		t.Fatalf("WriteFile blocked shard: %s", result.Error())
-	}
-	if result := core.Chmod(blocked, 0o000); !result.OK {
-		t.Fatalf("Chmod blocked shard: %s", result.Error())
-	}
-	t.Cleanup(func() { core.Chmod(blocked, 0o600) })
-
-	info, err := InspectAdapter(dir)
-	if err != nil {
-		t.Fatalf("InspectAdapter(blocked large shard) error = %v", err)
-	}
-	if info.Hash == "" {
-		t.Fatalf("InspectAdapter(blocked large shard) produced empty hash: %+v", info)
-	}
-
-	// An adapter with the same config but no large shard at all must hash
-	// identically — the open-failed shard was skipped, not folded in.
-	bare := t.TempDir()
-	if result := core.WriteFile(core.PathJoin(bare, "adapter_config.json"), []byte(`{"rank":8,"alpha":16,"target_modules":["q_proj"]}`), 0o600); !result.OK {
-		t.Fatalf("WriteFile bare adapter_config: %s", result.Error())
-	}
-	bareInfo, err := InspectAdapter(bare)
-	if err != nil {
-		t.Fatalf("InspectAdapter(bare) error = %v", err)
-	}
-	if info.Hash != bareInfo.Hash {
-		t.Fatalf("open-failed large shard altered digest: %q != %q", info.Hash, bareInfo.Hash)
-	}
-}
-
-// --- adapter.go / fuse.go: nil-context defaulting ---
+// --- fuse.go: nil-context defaulting ---
 
 func TestPrepareFuse_NilContextDefaults_Good(t *testing.T) {
 	// Good: prepareFuse accepts a nil context and substitutes

@@ -3,8 +3,10 @@
 // Benchmarks for LoRA adapter inspection + identity helpers.
 // Per AX-11 — InspectAdapter fires per model load when a LoRA is
 // attached (config parse + safetensors hashing), and IsEmpty fires
-// per session state check. hashAdapter is the inner SHA-256 path
-// that scales with adapter weight size + shard count.
+// per session state check. InspectAdapter/Inspect now delegate to
+// inference/lora, so these benchmarks exercise this package's public
+// entry points end-to-end rather than the (now removed) local hashing
+// internals.
 //
 // Run:    go test -bench='BenchmarkAdapter' -benchmem -run='^$' ./go/lora
 
@@ -14,16 +16,13 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/internal/loraadapter"
 )
 
 // Sinks defeat compiler DCE.
 var (
-	loraAdapterBenchSinkInfo   AdapterInfo
-	loraAdapterBenchSinkConfig loraadapter.Config
-	loraAdapterBenchSinkErr    error
-	loraAdapterBenchSinkBool   bool
-	loraAdapterBenchSinkString string
+	loraAdapterBenchSinkInfo AdapterInfo
+	loraAdapterBenchSinkErr  error
+	loraAdapterBenchSinkBool bool
 )
 
 // writeBenchAdapter materialises a synthetic adapter directory with a
@@ -94,8 +93,8 @@ func BenchmarkAdapter_Inspect_StagedIdentity(b *testing.B) {
 }
 
 // --- InspectAdapter (.safetensors file path) — exercises the
-// adapterConfigPath branch where path points at a single safetensors
-// file rather than a directory. ---
+// branch where path points at a single safetensors file rather than a
+// directory. ---
 
 func BenchmarkAdapter_InspectAdapter_SafetensorsPath(b *testing.B) {
 	dir := writeBenchAdapter(b, `{"rank":4,"alpha":8,"lora_layers":["q_proj"]}`, 4096)
@@ -132,81 +131,5 @@ func BenchmarkAdapter_IsEmpty_Populated(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		loraAdapterBenchSinkBool = info.IsEmpty()
-	}
-}
-
-// --- adapterConfigPath — branch on .safetensors suffix ---
-
-func BenchmarkAdapter_AdapterConfigPath_Dir(b *testing.B) {
-	path := "/adapters/q-domain"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkString = adapterConfigPath(path)
-	}
-}
-
-func BenchmarkAdapter_AdapterConfigPath_Safetensors(b *testing.B) {
-	path := "/adapters/q-domain/adapter.safetensors"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkString = adapterConfigPath(path)
-	}
-}
-
-// --- shared adapter_config normalisation — alias/default hot path ---
-
-func BenchmarkAdapter_NormalizeConfig_PEFTAliases(b *testing.B) {
-	cfg := loraadapter.Config{
-		R:             16,
-		LoRAAlpha:     32,
-		TargetModules: []string{"q_proj", "k_proj", "v_proj", "o_proj"},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkConfig = loraadapter.NormalizeConfig(cfg)
-	}
-}
-
-func BenchmarkAdapter_ParseConfig_TargetPrecedence(b *testing.B) {
-	config := []byte(`{"rank":4,"scale":2,"target_keys":["explicit"],"target_modules":["peft"],"lora_layers":["mlx-lm"]}`)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkConfig, loraAdapterBenchSinkErr = loraadapter.ParseConfig(config)
-	}
-}
-
-// --- hashAdapter — SHA-256 over config + sorted weight files.
-// Cost scales with weight blob size; vary the payload to see the
-// constant-factor vs payload-bytes split. ---
-
-func BenchmarkAdapter_HashAdapter_SmallWeights(b *testing.B) {
-	dir := writeBenchAdapter(b, `{"rank":8,"alpha":16}`, 1024)
-	read := core.ReadFile(core.PathJoin(dir, "adapter_config.json"))
-	if !read.OK {
-		b.Fatalf("read config: %v", read.Value)
-	}
-	config := read.Value.([]byte)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkString = hashAdapter(dir, config)
-	}
-}
-
-func BenchmarkAdapter_HashAdapter_TypicalWeights(b *testing.B) {
-	dir := writeBenchAdapter(b, `{"rank":8,"alpha":16}`, 256*1024)
-	read := core.ReadFile(core.PathJoin(dir, "adapter_config.json"))
-	if !read.OK {
-		b.Fatalf("read config: %v", read.Value)
-	}
-	config := read.Value.([]byte)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkString = hashAdapter(dir, config)
 	}
 }

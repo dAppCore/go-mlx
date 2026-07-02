@@ -54,11 +54,11 @@ func TestExport_SaveError(t *testing.T) {
 	}
 }
 
-// TestExport_MarshalError drives the !data.OK marshal-failure return (and,
-// through it, the error-bearing branch of resultError). A NaN in the
-// supplied analysis propagates into the Record's float64 fields, which
-// encoding/json refuses to marshal ("unsupported value: NaN"). A Store is
-// set so the marshal path is reached.
+// TestExport_MarshalError drives the !data.OK marshal-failure return inside
+// the delegated state.ExportArtifact call. A NaN in the supplied analysis
+// propagates into the payload's float64 fields, which encoding/json refuses
+// to marshal ("unsupported value: NaN"). A Store is set so the marshal path
+// is reached.
 func TestExport_MarshalError(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	analysis := &kv.Analysis{MeanKeyCoherence: math.NaN()}
@@ -75,8 +75,8 @@ func TestExport_MarshalError(t *testing.T) {
 	if record != nil {
 		t.Fatalf("Export() record = %+v, want nil on marshal error", record)
 	}
-	if !core.Contains(err.Error(), "marshal record") {
-		t.Fatalf("Export() error = %v, want marshal record wrap", err)
+	if !core.Contains(err.Error(), "marshal artifact") {
+		t.Fatalf("Export() error = %v, want marshal artifact wrap (state.ExportArtifact's context)", err)
 	}
 }
 
@@ -97,27 +97,5 @@ func TestExport_StorePutError(t *testing.T) {
 	}
 	if record != nil {
 		t.Fatalf("Export() record = %+v, want nil on Put error", record)
-	}
-}
-
-// TestResultError exercises resultError directly across all three branches
-// — they are not all reachable through Export (Export only calls it on a
-// marshal failure, whose Result.Value is always an error).
-func TestResultError(t *testing.T) {
-	// OK result → nil.
-	if got := resultError(core.Ok([]byte("payload"))); got != nil {
-		t.Fatalf("resultError(Ok) = %v, want nil", got)
-	}
-
-	// !OK with an error Value → that error returned verbatim.
-	sentinel := core.NewError("artifact-test: boom")
-	if got := resultError(core.Result{Value: sentinel, OK: false}); !core.Is(got, sentinel) {
-		t.Fatalf("resultError(error value) = %v, want %v", got, sentinel)
-	}
-
-	// !OK with a non-error Value → the errResultFailed fallback sentinel.
-	got := resultError(core.Result{Value: "not-an-error", OK: false})
-	if !core.Is(got, errResultFailed) {
-		t.Fatalf("resultError(non-error value) = %v, want errResultFailed", got)
 	}
 }

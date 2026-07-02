@@ -79,14 +79,16 @@ func TestAdapter_IsEmpty_Ugly(t *testing.T) {
 }
 
 func TestInspectLoRAAdapter_LargeShardStreamingHash_Good(t *testing.T) {
-	// Drives InspectAdapter through the large-shard streaming hash path:
-	// streamHashWeightFile only fires for weight files larger than
-	// streamHashMinBytes (128 KiB), so a synthetic shard above that gate
-	// exercises the streaming accumulator that the small stub fixtures
-	// never reach. Asserts the hash is deterministic for identical content
-	// and changes when a single byte changes — proving the streamed bytes
-	// actually feed the digest.
-	const shardSize = streamHashMinBytes + 64*1024 // ~192 KiB, well over the 128 KiB gate
+	// Drives InspectAdapter (delegated to inference/lora) through its
+	// large-shard streaming hash path: inference/lora streams any weight
+	// file above its own internal size gate rather than reading it whole,
+	// so a synthetic shard comfortably above any sane gate exercises the
+	// streaming accumulator that the small stub fixtures never reach.
+	// Asserts the hash is deterministic for identical content and changes
+	// when a single byte changes — proving the streamed bytes actually
+	// feed the digest. The exact gate is now an inference/lora
+	// implementation detail, so size generously rather than referencing it.
+	const shardSize = 512 * 1024 // 512 KiB, well over any sane streaming gate
 
 	makeAdapter := func(t *testing.T, fillByte byte) AdapterInfo {
 		t.Helper()
@@ -226,15 +228,17 @@ func TestInspectLoRAAdapter_MalformedConfig_Bad(t *testing.T) {
 }
 
 func TestInspectLoRAAdapter_EmptyPath_Bad(t *testing.T) {
-	// Bad: an empty adapter path is the guard at the top of Inspect — it
-	// returns the shared errAdapterPathRequired sentinel before touching the
-	// filesystem. InspectAdapter forwards path as both arguments, so the
-	// public entry point exercises the same guard.
-	if _, err := InspectAdapter(""); err != errAdapterPathRequired {
-		t.Fatalf("InspectAdapter(\"\") error = %v, want errAdapterPathRequired", err)
+	// Bad: an empty adapter path is the guard at the top of Inspect — both
+	// entry points delegate to inference/lora, which returns its own
+	// unexported sentinel before touching the filesystem. We can no longer
+	// name that sentinel from this package, so assert on the stable message
+	// content instead. InspectAdapter forwards path as both arguments, so
+	// the public entry point exercises the same guard.
+	if _, err := InspectAdapter(""); err == nil || !core.Contains(err.Error(), "adapter path is required") {
+		t.Fatalf("InspectAdapter(\"\") error = %v, want an adapter-path-required error", err)
 	}
-	if _, err := Inspect("", "/some/identity"); err != errAdapterPathRequired {
-		t.Fatalf("Inspect(\"\", identity) error = %v, want errAdapterPathRequired", err)
+	if _, err := Inspect("", "/some/identity"); err == nil || !core.Contains(err.Error(), "adapter path is required") {
+		t.Fatalf("Inspect(\"\", identity) error = %v, want an adapter-path-required error", err)
 	}
 }
 
@@ -280,59 +284,6 @@ func TestInspectLoRAAdapter_UnreadableShardSkipped_Ugly(t *testing.T) {
 	}
 }
 
-func TestAdapterConfigPath_DelegatesToPrecomputed_Good(t *testing.T) {
-	// Good: adapterConfigPath is the convenience wrapper that computes the
-	// .safetensors suffix check once and delegates to the precomputed
-	// variant. Assert the delegation contract directly (not a bare call):
-	// the wrapper must produce exactly what the precomputed form produces for
-	// the same suffix classification, for both a directory and a weight-file
-	// path.
-	cases := []struct {
-		name string
-		path string
-		want string
-	}{
-		{"dir", "/models/my-lora", "/models/my-lora/adapter_config.json"},
-		{"safetensors", "/models/my-lora/adapter.safetensors", "/models/my-lora/adapter_config.json"},
-		{"trailingSlash", "/models/my-lora/", "/models/my-lora/adapter_config.json"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := adapterConfigPath(tc.path)
-			if got != tc.want {
-				t.Fatalf("adapterConfigPath(%q) = %q, want %q", tc.path, got, tc.want)
-			}
-			precomputed := adapterConfigPathPrecomputed(tc.path, core.HasSuffix(tc.path, ".safetensors"))
-			if got != precomputed {
-				t.Fatalf("adapterConfigPath(%q) = %q, diverged from precomputed %q", tc.path, got, precomputed)
-			}
-		})
-	}
-}
-
-func TestHashAdapter_DelegatesToPrecomputed_Good(t *testing.T) {
-	// Good: hashAdapter is the convenience wrapper over hashAdapterPrecomputed.
-	// Assert the delegation produces a byte-identical digest to the precomputed
-	// form (same suffix classification) for both a directory adapter and a
-	// direct .safetensors path — documents that the wrapper changes nothing but
-	// the suffix-scan bookkeeping.
-	dir := writeTestLoRAAdapter(t, `{"rank":4,"alpha":8,"target_modules":["q_proj"]}`)
-	config := []byte(`{"rank":4,"alpha":8,"target_modules":["q_proj"]}`)
-
-	dirHash := hashAdapter(dir, config)
-	dirPrecomputed := hashAdapterPrecomputed(dir, config, false)
-	if dirHash != dirPrecomputed || dirHash == "" {
-		t.Fatalf("hashAdapter(dir) = %q, want non-empty == precomputed %q", dirHash, dirPrecomputed)
-	}
-
-	weightPath := core.PathJoin(dir, "adapter.safetensors")
-	fileHash := hashAdapter(weightPath, config)
-	filePrecomputed := hashAdapterPrecomputed(weightPath, config, true)
-	if fileHash != filePrecomputed || fileHash == "" {
-		t.Fatalf("hashAdapter(.safetensors) = %q, want non-empty == precomputed %q", fileHash, filePrecomputed)
-	}
-}
-
 func TestJoinDirChildPattern_Branches_Ugly(t *testing.T) {
 	// Ugly: joinDirChildPattern is the filepath.Clean-skipping join shared by
 	// the hash and fuse paths. It has three branches the hot tests never hit
@@ -355,25 +306,6 @@ func TestJoinDirChildPattern_Branches_Ugly(t *testing.T) {
 				t.Fatalf("joinDirChildPattern(%q, %q) = %q, want %q", tc.dir, tc.child, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestAdapterConfigPathPrecomputed_TrailingSlashCollapse_Ugly(t *testing.T) {
-	// Ugly: the trailing-slash collapse branch (L138-140) — when the dir base
-	// already ends in '/', the leading '/' of the suffix is dropped so the
-	// result never contains "//adapter_config.json". Pair it with the
-	// non-slash base to prove both arms produce the canonical single
-	// separator.
-	if got := adapterConfigPathPrecomputed("/models/lora/", false); got != "/models/lora/adapter_config.json" {
-		t.Fatalf("trailing-slash base = %q, want collapsed single separator", got)
-	}
-	if got := adapterConfigPathPrecomputed("/models/lora", false); got != "/models/lora/adapter_config.json" {
-		t.Fatalf("plain base = %q, want single separator", got)
-	}
-	// Safetensors path: PathDir strips the weight file, then the parent dir
-	// gets the suffix — exercises the isSafetensors arm.
-	if got := adapterConfigPathPrecomputed("/models/lora/adapter.safetensors", true); got != "/models/lora/adapter_config.json" {
-		t.Fatalf("safetensors base = %q, want parent-dir config path", got)
 	}
 }
 
