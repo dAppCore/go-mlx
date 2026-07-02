@@ -53,3 +53,23 @@ func (m *Model) formatChatTurns(messages []inference.Message, thinking *bool, co
 func (m *Model) FormatChatContinuation(messages []inference.Message) string {
 	return m.formatChatTurns(messages, nil, true)
 }
+
+// FormatChatPromptThinking is FormatChatPrompt with an explicit thinking
+// override (nil = model default) — the state CLI wires -think through here
+// so a small token budget is not consumed inside the thought channel by a
+// template that defaults thinking on.
+//
+//	off := false
+//	sess.Prefill(m.FormatChatPromptThinking(messages, &off))
+func (m *Model) FormatChatPromptThinking(messages []inference.Message, thinking *bool) string {
+	return m.formatChatTurns(messages, thinking, false)
+}
+
+// FormatChatContinuationThinking is FormatChatContinuation with an explicit
+// thinking override (nil = model default).
+//
+//	off := false
+//	sess.AppendPrompt(m.FormatChatContinuationThinking(newTurns, &off))
+func (m *Model) FormatChatContinuationThinking(messages []inference.Message, thinking *bool) string {
+	return m.formatChatTurns(messages, thinking, true)
+}

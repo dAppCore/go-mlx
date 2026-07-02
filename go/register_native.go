@@ -341,6 +341,20 @@ func (m *nativeTextModel) FormatChatContinuation(messages []inference.Message) s
 	return m.formatChatTurns(messages, inference.GenerateConfig{}, true)
 }
 
+// FormatChatPromptThinking is FormatChatPrompt with an explicit thinking
+// override (nil = model default) — the native counterpart to
+// mlx.Model.FormatChatPromptThinking, so the -state CLI's -think flag
+// reaches the template on this lane too.
+func (m *nativeTextModel) FormatChatPromptThinking(messages []inference.Message, thinking *bool) string {
+	return m.formatChatTurns(messages, inference.GenerateConfig{EnableThinking: thinking}, false)
+}
+
+// FormatChatContinuationThinking is FormatChatContinuation with an explicit
+// thinking override (nil = model default).
+func (m *nativeTextModel) FormatChatContinuationThinking(messages []inference.Message, thinking *bool) string {
+	return m.formatChatTurns(messages, inference.GenerateConfig{EnableThinking: thinking}, true)
+}
+
 func (m *nativeTextModel) Encode(text string) []int32 {
 	if m == nil || m.tok == nil {
 		return nil

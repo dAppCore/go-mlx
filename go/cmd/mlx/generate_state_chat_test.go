@@ -59,7 +59,7 @@ func TestRunGenerateStateSession_FreshTurn_ChatFramed_Good(t *testing.T) {
 	formatter := chatArchFormatter{architecture: "gemma4_text"}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runGenerateStateSession(ctx, "Hello there", "chat-fresh", "mem", 4, 0, store, sess, formatter, stdout, stderr)
+	code := runGenerateStateSession(ctx, "Hello there", "chat-fresh", "mem", 4, 0, store, sess, formatter, nil, stdout, stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, stderr.String())
 	}
@@ -94,7 +94,7 @@ func TestRunGenerateStateSession_WokenTurn_ChatFramed_Good(t *testing.T) {
 	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
 	sess1 := session.New(handle1, info, nil)
 	out1, err1 := core.NewBuffer(), core.NewBuffer()
-	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-woken", "mem", 4, 0, store, sess1, formatter, out1, err1); code != 0 {
+	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-woken", "mem", 4, 0, store, sess1, formatter, nil, out1, err1); code != 0 {
 		t.Fatalf("turn 1 exit = %d, want 0; stderr=%q", code, err1.String())
 	}
 
@@ -104,7 +104,7 @@ func TestRunGenerateStateSession_WokenTurn_ChatFramed_Good(t *testing.T) {
 	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 2, Text: "Marker"}}}
 	sess2 := session.New(handle2, info, nil)
 	out2, err2 := core.NewBuffer(), core.NewBuffer()
-	code := runGenerateStateSession(ctx, "What is my name?", "chat-woken", "mem", 4, 0, store, sess2, formatter, out2, err2)
+	code := runGenerateStateSession(ctx, "What is my name?", "chat-woken", "mem", 4, 0, store, sess2, formatter, nil, out2, err2)
 	if code != 0 {
 		t.Fatalf("turn 2 exit = %d, want 0; stderr=%q", code, err2.String())
 	}
@@ -139,7 +139,7 @@ func TestRunGenerateStateSession_Raw_BypassesChatTemplate_Good(t *testing.T) {
 	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
 	sess1 := session.New(handle1, info, nil)
 	out1, err1 := core.NewBuffer(), core.NewBuffer()
-	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-raw", "mem", 4, 0, store, sess1, nil, out1, err1); code != 0 {
+	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-raw", "mem", 4, 0, store, sess1, nil, nil, out1, err1); code != 0 {
 		t.Fatalf("turn 1 exit = %d, want 0; stderr=%q", code, err1.String())
 	}
 	if handle1.PrefillPrompt != "My name is Marker." {
@@ -150,10 +150,58 @@ func TestRunGenerateStateSession_Raw_BypassesChatTemplate_Good(t *testing.T) {
 	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 2, Text: "?"}}}
 	sess2 := session.New(handle2, info, nil)
 	out2, err2 := core.NewBuffer(), core.NewBuffer()
-	if code := runGenerateStateSession(ctx, "What is my name?", "chat-raw", "mem", 4, 0, store, sess2, nil, out2, err2); code != 0 {
+	if code := runGenerateStateSession(ctx, "What is my name?", "chat-raw", "mem", 4, 0, store, sess2, nil, nil, out2, err2); code != 0 {
 		t.Fatalf("turn 2 exit = %d, want 0; stderr=%q", code, err2.String())
 	}
 	if handle2.AppendPromptSeen != "\nWhat is my name?" {
 		t.Fatalf("raw woken append = %q, want the untemplated \"\\n\"+prompt", handle2.AppendPromptSeen)
+	}
+}
+
+// FormatChatPromptThinking/FormatChatContinuationThinking mirror the real
+// model methods: the explicit override reaches chat.Format's EnableThinking.
+func (f chatArchFormatter) FormatChatPromptThinking(messages []inference.Message, thinking *bool) string {
+	cfg := chat.Config{Architecture: f.architecture}
+	if thinking != nil {
+		cfg.EnableThinking = *thinking
+	}
+	return chat.Format(messages, cfg)
+}
+
+func (f chatArchFormatter) FormatChatContinuationThinking(messages []inference.Message, thinking *bool) string {
+	cfg := chat.Config{Architecture: f.architecture, Continuation: true}
+	if thinking != nil {
+		cfg.EnableThinking = *thinking
+	}
+	return chat.Format(messages, cfg)
+}
+
+// The -think flag reaches the template through the stateThinkingFormatter
+// upgrade: thinking on renders the gemma4 <|think|> system block in the
+// fresh turn's framing, thinking off omits it — the model default never
+// silently decides for a -state turn.
+func TestRunGenerateStateSession_ThinkingOverride_Good(t *testing.T) {
+	ctx := context.Background()
+	formatter := chatArchFormatter{architecture: "gemma4_text"}
+	info := spine.ModelInfo{Architecture: "gemma4_text"}
+
+	on := true
+	handleOn := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	sessOn := session.New(handleOn, info, nil)
+	if code := runGenerateStateSession(ctx, "Hello", "think-on", "mem", 4, 0, state.NewInMemoryStore(nil), sessOn, formatter, &on, core.NewBuffer(), core.NewBuffer()); code != 0 {
+		t.Fatalf("thinking-on exit = %d, want 0", code)
+	}
+	if !core.Contains(handleOn.PrefillPrompt, "<|think|>") {
+		t.Fatalf("thinking-on prefill = %q, want the <|think|> system block", handleOn.PrefillPrompt)
+	}
+
+	off := false
+	handleOff := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	sessOff := session.New(handleOff, info, nil)
+	if code := runGenerateStateSession(ctx, "Hello", "think-off", "mem", 4, 0, state.NewInMemoryStore(nil), sessOff, formatter, &off, core.NewBuffer(), core.NewBuffer()); code != 0 {
+		t.Fatalf("thinking-off exit = %d, want 0", code)
+	}
+	if core.Contains(handleOff.PrefillPrompt, "<|think|>") {
+		t.Fatalf("thinking-off prefill = %q, want no <|think|> block", handleOff.PrefillPrompt)
 	}
 }

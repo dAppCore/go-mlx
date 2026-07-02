@@ -99,10 +99,10 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
 	}
 	if *nativeBackend && *stateName != "" {
-		return runGenerateNativeState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *contextLen, *rawState, loadOpts, stdout, stderr)
+		return runGenerateNativeState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *contextLen, *rawState, *think, loadOpts, stdout, stderr)
 	}
 	if *stateName != "" {
-		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *rawState, loadOpts, stdout, stderr)
+		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *rawState, *think, loadOpts, stdout, stderr)
 	}
 	var tm inference.TextModel
 	var err error
@@ -223,6 +223,16 @@ type stateChatFormatter interface {
 	FormatChatContinuation(messages []inference.Message) string
 }
 
+// stateThinkingFormatter is the optional upgrade a stateChatFormatter may
+// offer: the same two renders with an explicit thinking override, so the
+// -think flag reaches the template instead of the model default (thinking
+// on for gemma4) silently consuming small -state token budgets inside the
+// thought channel. Both lanes' models implement it.
+type stateThinkingFormatter interface {
+	FormatChatPromptThinking(messages []inference.Message, thinking *bool) string
+	FormatChatContinuationThinking(messages []inference.Message, thinking *bool) string
+}
+
 // stateTurnMessages wraps a -state turn's prompt as the single new user
 // message a stateChatFormatter renders. The turn loop carries one message
 // per invocation — the prior conversation lives in the woken KV state, not
@@ -245,7 +255,7 @@ func stateTurnMessages(prompt string) []inference.Message {
 //
 //	lthn-mlx generate -state chat1 -prompt "Hello, who are you?" <model>
 //	lthn-mlx generate -state chat1 -prompt "And what did I just ask you?" <model>
-func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, raw bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, raw, think bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
 	if storePath == "" {
 		homeR := core.UserHomeDir()
 		if !homeR.OK {
@@ -278,7 +288,7 @@ func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath st
 	if !raw {
 		formatter = m
 	}
-	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, stdout, stderr)
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, &think, stdout, stderr)
 }
 
 type nativeGenerateStateModel interface {
@@ -289,7 +299,7 @@ type nativeGenerateStateModel interface {
 	FormatChatContinuation(messages []inference.Message) string
 }
 
-func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, raw bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, raw, think bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
 	if storePath == "" {
 		homeR := core.UserHomeDir()
 		if !homeR.OK {
@@ -333,7 +343,7 @@ func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storeP
 	if !raw {
 		formatter = nativeState
 	}
-	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, stdout, stderr)
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, &think, stdout, stderr)
 }
 
 func nativeGenerateStateModelInfo(info inference.ModelInfo, contextLen int) spine.ModelInfo {
@@ -362,7 +372,7 @@ type generateStateStore interface {
 // conversation continuity (conversation_continuity.go). A nil formatter is
 // the -raw contract: the prompt prefills or appends byte-for-byte with no
 // template, exactly the loop's original completion-style behaviour.
-func runGenerateStateSession(ctx context.Context, prompt, name, storePath string, maxTokens int, temp float32, store generateStateStore, sess *mlx.ModelSession, formatter stateChatFormatter, stdout, stderr io.Writer) int {
+func runGenerateStateSession(ctx context.Context, prompt, name, storePath string, maxTokens int, temp float32, store generateStateStore, sess *mlx.ModelSession, formatter stateChatFormatter, thinking *bool, stdout, stderr io.Writer) int {
 	entryURI := "mlx://agent/" + name
 	indexURI := entryURI + "/index"
 
@@ -386,6 +396,9 @@ func runGenerateStateSession(ctx context.Context, prompt, name, storePath string
 		turn := "\n" + prompt
 		if formatter != nil {
 			turn = formatter.FormatChatContinuation(stateTurnMessages(prompt))
+			if tf, ok := formatter.(stateThinkingFormatter); ok && thinking != nil {
+				turn = tf.FormatChatContinuationThinking(stateTurnMessages(prompt), thinking)
+			}
 		}
 		if err := sess.AppendPrompt(turn); err != nil {
 			core.Print(stderr, "%s generate: append turn: %v", cliName(), err)
@@ -406,6 +419,9 @@ func runGenerateStateSession(ctx context.Context, prompt, name, storePath string
 		turn := prompt
 		if formatter != nil {
 			turn = formatter.FormatChatPrompt(stateTurnMessages(prompt))
+			if tf, ok := formatter.(stateThinkingFormatter); ok && thinking != nil {
+				turn = tf.FormatChatPromptThinking(stateTurnMessages(prompt), thinking)
+			}
 		}
 		if err := sess.Prefill(turn); err != nil {
 			core.Print(stderr, "%s generate: prefill: %v", cliName(), err)
