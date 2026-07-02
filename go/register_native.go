@@ -324,6 +324,23 @@ func (m *nativeTextModel) ApplyChatTemplate(messages []inference.Message) (strin
 	return m.formatChat(messages, inference.GenerateConfig{}), nil
 }
 
+// FormatChatPrompt renders a conversation opening in the model's chat
+// template, including the generation header — the native no-cgo lane's
+// counterpart to mlx.Model.FormatChatPrompt (chat_config.go). The -state CLI
+// turn loop (cmd/mlx generate.go) drives whichever lane loaded the model
+// through this shared method name.
+func (m *nativeTextModel) FormatChatPrompt(messages []inference.Message) string {
+	return m.formatChatTurns(messages, inference.GenerateConfig{}, false)
+}
+
+// FormatChatContinuation renders messages as an append to a session whose
+// retained state ends inside an open model turn: the family template closes
+// that turn, renders only the new turns, and reopens the generation header.
+// The native no-cgo lane's counterpart to mlx.Model.FormatChatContinuation.
+func (m *nativeTextModel) FormatChatContinuation(messages []inference.Message) string {
+	return m.formatChatTurns(messages, inference.GenerateConfig{}, true)
+}
+
 func (m *nativeTextModel) Encode(text string) []int32 {
 	if m == nil || m.tok == nil {
 		return nil

@@ -103,3 +103,47 @@ func TestRunGenerate_E2BStateWakeRoundTrip_Good(t *testing.T) {
 		t.Fatalf("turn 2 stdout = %q, want the no-replay notice", out2.String())
 	}
 }
+
+// generate -state over the real e2b-4bit model proves the chat-framed turn
+// loop's whole point: recall through a genuine no-replay wake. Turn 1 plants
+// a name; turn 2 asks for it back after the session wakes from the store —
+// only the new turn's tokens prefill (the "no replay" report), yet the
+// woken turn is intelligible to the model as a question because it is
+// chat-framed (FormatChatContinuation), not a bare raw-text continuation.
+// Before this change the same two turns (as -raw still reproduces) EOS on
+// an empty answer; this test is the default path's proof that regressed.
+//
+// -state has no -think wiring (a pre-existing gap, unrelated to this turn
+// loop) and Gemma 4's chat template defaults thinking ON, so both turns get
+// a generous token budget — enough for the thought channel to run its
+// course and still leave room for the visible answer the assertions check.
+func TestRunGenerate_E2BStateChatFramedRecall_Good(t *testing.T) {
+	model := e2bModelPath(t)
+	store := core.JoinPath(t.TempDir(), "state.kv")
+
+	// Turn 1 — fresh state, chat-framed by default (no -raw).
+	out1, err1 := core.NewBuffer(), core.NewBuffer()
+	code1 := runCommand(context.Background(), []string{
+		"generate", "-state", "chat-marker", "-state-store", store,
+		"-max-tokens", "300", "-temp", "0", "-prompt", "My name is Marker.", model,
+	}, out1, err1)
+	if code1 != 0 {
+		t.Fatalf("turn 1 exit = %d, want 0; stderr=%q", code1, err1.String())
+	}
+
+	// Turn 2 — wake, ask for the planted fact back.
+	out2, err2 := core.NewBuffer(), core.NewBuffer()
+	code2 := runCommand(context.Background(), []string{
+		"generate", "-state", "chat-marker", "-state-store", store,
+		"-max-tokens", "300", "-temp", "0", "-prompt", "What is my name?", model,
+	}, out2, err2)
+	if code2 != 0 {
+		t.Fatalf("turn 2 exit = %d, want 0 (wake round-trip); stderr=%q", code2, err2.String())
+	}
+	if !strings.Contains(out2.String(), "no replay") {
+		t.Fatalf("turn 2 stdout = %q, want the no-replay wake report", out2.String())
+	}
+	if !strings.Contains(out2.String(), "Marker") {
+		t.Fatalf("turn 2 stdout = %q, want the answer to recall the planted name", out2.String())
+	}
+}

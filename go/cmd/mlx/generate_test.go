@@ -148,6 +148,31 @@ func TestRunGenerate_SyntheticState_Good(t *testing.T) {
 	}
 }
 
+// runGenerateState path (-state -raw): the low-level token-loop instrument —
+// today's original completion-style turn, unchanged, over a real (synthetic)
+// load. Same structural assertions as the chat-framed default above; the
+// byte-exact "-raw skips the template" proof is the hermetic
+// TestRunGenerateStateSession_Raw_BypassesChatTemplate_Good.
+func TestRunGenerate_SyntheticStateRaw_Good(t *testing.T) {
+	requireSyntheticRuntime(t)
+	model := writeSyntheticGemma3Model(t, t.TempDir())
+	store := core.JoinPath(t.TempDir(), "made", "on", "demand", "agent.kv")
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"generate", "-state", "chat1", "-raw", "-state-store", store, "-max-tokens", "5", "-temp", "0", "-prompt", "hello", model,
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("fresh-state raw turn exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !core.Contains(out, "state:") || !core.Contains(out, "fresh state") {
+		t.Fatalf("stdout = %q, want the fresh-state turn + state report lines", out)
+	}
+	if !core.Contains(out, "slept") {
+		t.Fatalf("stdout = %q, want the slept-to-store line", out)
+	}
+}
+
 // openOrCreateStateStore creates the store (and parent dir) on first use, then
 // opens the existing file on the second call.
 func TestOpenOrCreateStateStore_CreatesThenOpens_Good(t *testing.T) {

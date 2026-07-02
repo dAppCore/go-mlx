@@ -45,6 +45,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	nativeBackend := fs.Bool("native", false, "generate via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
+	rawState := fs.Bool("raw", false, "with -state: skip chat-framing and run the original raw completion-loop turn (no template, no assistant opener) — the low-level token-loop instrument; ignored without -state")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s generate [flags] <model-path>\n", name))
@@ -98,10 +99,10 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
 	}
 	if *nativeBackend && *stateName != "" {
-		return runGenerateNativeState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *contextLen, loadOpts, stdout, stderr)
+		return runGenerateNativeState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *contextLen, *rawState, loadOpts, stdout, stderr)
 	}
 	if *stateName != "" {
-		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
+		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), *rawState, loadOpts, stdout, stderr)
 	}
 	var tm inference.TextModel
 	var err error
@@ -209,16 +210,42 @@ func printGenerateMTPMetrics(stdout io.Writer, tm inference.TextModel) {
 	))
 }
 
+// stateChatFormatter chat-frames a -state turn the way serve's conversation
+// continuity frames every stateless request (conversation_continuity.go —
+// the chat-framed prior art this turn loop now follows): FormatChatPrompt
+// opens a fresh conversation (full template + BOS from empty history) and
+// FormatChatContinuation appends onto a woken session (closes the
+// previously open model turn, renders only the new user turn, reopens the
+// assistant header) — no prior-turn replay. mlx.Model (the metal lane) and
+// nativeGenerateStateModel (the native lane) both implement it.
+type stateChatFormatter interface {
+	FormatChatPrompt(messages []inference.Message) string
+	FormatChatContinuation(messages []inference.Message) string
+}
+
+// stateTurnMessages wraps a -state turn's prompt as the single new user
+// message a stateChatFormatter renders. The turn loop carries one message
+// per invocation — the prior conversation lives in the woken KV state, not
+// in a replayed message list.
+func stateTurnMessages(prompt string) []inference.Message {
+	return []inference.Message{{Role: "user", Content: prompt}}
+}
+
 // runGenerateState runs one conversation turn through the durable state
 // system — the no-prompt-replay loop. If the named state exists in the store
 // it is woken (KV restored from .kv blocks, no re-prefill of prior turns) and
-// only the new prompt is appended; otherwise the prompt prefills a fresh
-// session. After generation the session sleeps back to the store, so the next
+// only the new turn is appended; otherwise the prompt opens a fresh session.
+// After generation the session sleeps back to the store, so the next
 // invocation's turn starts where this one ended.
+//
+// By default each turn is chat-framed (see stateChatFormatter); raw
+// preserves the original completion-loop turn — the prompt prefills or
+// appends byte-for-byte with no template, the low-level token-loop
+// instrument.
 //
 //	lthn-mlx generate -state chat1 -prompt "Hello, who are you?" <model>
 //	lthn-mlx generate -state chat1 -prompt "And what did I just ask you?" <model>
-func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, raw bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
 	if storePath == "" {
 		homeR := core.UserHomeDir()
 		if !homeR.OK {
@@ -247,16 +274,22 @@ func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath st
 		return 1
 	}
 	defer sess.Close()
-	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, stdout, stderr)
+	var formatter stateChatFormatter
+	if !raw {
+		formatter = m
+	}
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, stdout, stderr)
 }
 
 type nativeGenerateStateModel interface {
 	inference.TextModel
 	Info() inference.ModelInfo
 	NewSession() metal.SessionHandle
+	FormatChatPrompt(messages []inference.Message) string
+	FormatChatContinuation(messages []inference.Message) string
 }
 
-func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, contextLen int, raw bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
 	if storePath == "" {
 		homeR := core.UserHomeDir()
 		if !homeR.OK {
@@ -296,7 +329,11 @@ func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storeP
 	info := nativeGenerateStateModelInfo(nativeState.Info(), contextLen)
 	sess := mlxsession.New(handle, info, nil)
 	defer sess.Close()
-	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, stdout, stderr)
+	var formatter stateChatFormatter
+	if !raw {
+		formatter = nativeState
+	}
+	return runGenerateStateSession(ctx, prompt, name, storePath, maxTokens, temp, store, sess, formatter, stdout, stderr)
 }
 
 func nativeGenerateStateModelInfo(info inference.ModelInfo, contextLen int) spine.ModelInfo {
@@ -319,7 +356,13 @@ type generateStateStore interface {
 	state.Writer
 }
 
-func runGenerateStateSession(ctx context.Context, prompt, name, storePath string, maxTokens int, temp float32, store generateStateStore, sess *mlx.ModelSession, stdout, stderr io.Writer) int {
+// runGenerateStateSession runs one -state turn against an already-open
+// session. formatter chat-frames the new turn — FormatChatPrompt for a fresh
+// session, FormatChatContinuation for a woken one — matching serve's
+// conversation continuity (conversation_continuity.go). A nil formatter is
+// the -raw contract: the prompt prefills or appends byte-for-byte with no
+// template, exactly the loop's original completion-style behaviour.
+func runGenerateStateSession(ctx context.Context, prompt, name, storePath string, maxTokens int, temp float32, store generateStateStore, sess *mlx.ModelSession, formatter stateChatFormatter, stdout, stderr io.Writer) int {
 	entryURI := "mlx://agent/" + name
 	indexURI := entryURI + "/index"
 
@@ -337,7 +380,14 @@ func runGenerateStateSession(ctx context.Context, prompt, name, storePath string
 		}
 		wakeDur = time.Since(start)
 		start = time.Now()
-		if err := sess.AppendPrompt("\n" + prompt); err != nil {
+		// Continuation form: close the previously open model turn, render
+		// only the new user turn, reopen the assistant header — no replay of
+		// the retained prefix, matching the woke-prefix-tokens report below.
+		turn := "\n" + prompt
+		if formatter != nil {
+			turn = formatter.FormatChatContinuation(stateTurnMessages(prompt))
+		}
+		if err := sess.AppendPrompt(turn); err != nil {
 			core.Print(stderr, "%s generate: append turn: %v", cliName(), err)
 			return 1
 		}
@@ -350,7 +400,14 @@ func runGenerateStateSession(ctx context.Context, prompt, name, storePath string
 			return 1
 		}
 		start := time.Now()
-		if err := sess.Prefill(prompt); err != nil {
+		// Fresh form: the full chat template from empty history (BOS,
+		// optional system/thinking preamble, the user turn, the assistant
+		// opener).
+		turn := prompt
+		if formatter != nil {
+			turn = formatter.FormatChatPrompt(stateTurnMessages(prompt))
+		}
+		if err := sess.Prefill(turn); err != nil {
 			core.Print(stderr, "%s generate: prefill: %v", cliName(), err)
 			return 1
 		}

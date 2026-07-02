@@ -256,6 +256,44 @@ func TestNativeTextModel_ApplyChatTemplateNil_Bad(t *testing.T) {
 	}
 }
 
+// FormatChatPrompt and FormatChatContinuation are the native no-cgo lane's
+// counterparts to Model.FormatChatPrompt/FormatChatContinuation
+// (chat_config_test.go) — the -state CLI turn loop (cmd/mlx generate.go)
+// drives whichever lane loaded the model through these shared method names.
+
+func TestNativeTextModel_FormatChatPromptUsesSharedTemplate_Good(t *testing.T) {
+	m := &nativeTextModel{tm: nativeTextInfoTokenModel{}, modelType: "gemma4", info: inference.ModelInfo{Architecture: "gemma4_text"}}
+	messages := []inference.Message{{Role: "user", Content: "hi"}}
+
+	got := m.FormatChatPrompt(messages)
+	want := m.formatChat(messages, inference.GenerateConfig{})
+	if got != want {
+		t.Fatalf("FormatChatPrompt = %q, want the shared fresh-turn template %q", got, want)
+	}
+	if !core.Contains(got, "<bos>") {
+		t.Fatalf("FormatChatPrompt = %q, want the opening BOS (fresh conversation from empty history)", got)
+	}
+	if !core.Contains(got, "<|turn>model") {
+		t.Fatalf("FormatChatPrompt = %q, want the assistant opener", got)
+	}
+}
+
+func TestNativeTextModel_FormatChatContinuationSkipsOpening_Good(t *testing.T) {
+	m := &nativeTextModel{tm: nativeTextInfoTokenModel{}, modelType: "gemma4", info: inference.ModelInfo{Architecture: "gemma4_text"}}
+
+	got := m.FormatChatContinuation([]inference.Message{{Role: "user", Content: "and then?"}})
+	want := "<turn|>\n<|turn>user\nand then?<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("FormatChatContinuation = %q, want %q", got, want)
+	}
+	if core.Contains(got, "<bos>") {
+		t.Fatalf("FormatChatContinuation = %q, must not re-emit BOS — the woken session's retained state already holds it", got)
+	}
+	if core.Count(got, "<|turn>model") != 1 {
+		t.Fatalf("FormatChatContinuation = %q, want exactly one assistant opener", got)
+	}
+}
+
 func TestNativeTextModel_TokenizerModelParity_Good(t *testing.T) {
 	var _ inference.TokenizerModel = (*nativeTextModel)(nil)
 	tok, err := pkgtokenizer.LoadTokenizer(writeRootTokenizer(t))
