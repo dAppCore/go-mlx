@@ -6,20 +6,31 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	sharedmerge "dappco.re/go/inference/merge"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
 
-// Method names the tensor merge algorithm.
-type Method string
+// Method is aliased onto the shared package's type so go-mlx and
+// dappco.re/go/inference/merge never drift on the method-name values
+// Options.Method accepts.
+type Method = sharedmerge.Method
 
 const (
-	MethodLinear Method = "linear"
-	MethodSLERP  Method = "slerp"
-	MethodTIES   Method = "ties"
-	MethodDARE   Method = "dare"
+	MethodLinear = sharedmerge.MethodLinear
+	MethodSLERP  = sharedmerge.MethodSLERP
 
-	ProvenanceFile                = "model_merge_provenance.json"
+	// MethodTIES and MethodDARE are reserved for a future sparse-merge hook
+	// go-mlx has not implemented yet (see prepare's TIES/DARE branch below).
+	// go-inference only defines the methods it actually implements, so
+	// these two stay go-mlx-local until a real TIES/DARE merge lands (at
+	// which point they port upstream too).
+	MethodTIES Method = "ties"
+	MethodDARE Method = "dare"
+
+	// ProvenanceFile is aliased onto the shared package's constant so both
+	// merge engines agree on the on-disk provenance filename.
+	ProvenanceFile                = sharedmerge.ProvenanceFile
 	modelMergeOutputWeights       = "model.safetensors"
 	modelMergeTensorChunkElements = 1 << 20
 )

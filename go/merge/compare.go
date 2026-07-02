@@ -7,21 +7,23 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	sharedmerge "dappco.re/go/inference/merge"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
 
-// CompareStatus classifies one tensor when comparing a base model pack against
-// a fine-tuned pack.
-type CompareStatus string
+// CompareStatus is aliased onto the shared package's type so go-mlx and
+// dappco.re/go/inference/merge never drift on the status values
+// TensorDelta.Status reports.
+type CompareStatus = sharedmerge.CompareStatus
 
 const (
-	CompareStatusChanged        CompareStatus = "changed"
-	CompareStatusUnchanged      CompareStatus = "unchanged"
-	CompareStatusMissingInTuned CompareStatus = "missing_in_fine_tuned"
-	CompareStatusExtraInTuned   CompareStatus = "extra_in_fine_tuned"
-	CompareStatusShapeMismatch  CompareStatus = "shape_mismatch"
-	CompareStatusDTypeMismatch  CompareStatus = "dtype_mismatch"
+	CompareStatusChanged        = sharedmerge.CompareStatusChanged
+	CompareStatusUnchanged      = sharedmerge.CompareStatusUnchanged
+	CompareStatusMissingInTuned = sharedmerge.CompareStatusMissingInTuned
+	CompareStatusExtraInTuned   = sharedmerge.CompareStatusExtraInTuned
+	CompareStatusShapeMismatch  = sharedmerge.CompareStatusShapeMismatch
+	CompareStatusDTypeMismatch  = sharedmerge.CompareStatusDTypeMismatch
 )
 
 // CompareOptions configures a safetensors weight comparison.

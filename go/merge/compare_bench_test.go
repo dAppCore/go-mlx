@@ -17,7 +17,6 @@ package merge
 
 import (
 	"context"
-	"math"
 	"testing"
 
 	core "dappco.re/go"
@@ -35,8 +34,9 @@ var (
 	benchCompareDelta  TensorDelta
 )
 
-// benchCompareScratchPack writes a small dense safetensors pack to a
-// temp dir and returns a pack pointed at it. Mirrors
+// benchCompareScratchPack writes a small dense safetensors pack to a temp
+// dir and returns a pack pointed at it — a multi-tensor adapter onto the
+// shared-codec-backed writeTestSafetensorsF32 (helpers_test.go). Mirrors
 // writeDenseSafetensorsPack in helpers_test.go but takes *testing.B.
 func benchCompareScratchPack(b *testing.B, modelType string, tensorNames []string, shape []int, perTensorElements int) mp.ModelPack {
 	b.Helper()
@@ -53,47 +53,16 @@ func benchCompareScratchPack(b *testing.B, modelType string, tensorNames []strin
 
 	// Each tensor — fill with deterministic finite values; vary by
 	// index so cosine doesn't degenerate to 0/1.
-	tensorPath := core.PathJoin(dir, "model.safetensors")
 	values := make([]float32, perTensorElements)
 	for i := range values {
 		values[i] = float32(i%128) * 0.01
 	}
-	// Stage all tensors into a synthetic safetensors file in one go.
-	type entry struct {
-		DType       string `json:"dtype"`
-		Shape       []int  `json:"shape"`
-		DataOffsets []int  `json:"data_offsets"`
+	tensors := make([]safetensorTestTensor, len(tensorNames))
+	for i, name := range tensorNames {
+		tensors[i] = safetensorTestTensor{Name: name, Shape: shape, Data: values}
 	}
-	header := map[string]entry{}
-	var body []byte
-	for _, name := range tensorNames {
-		start := len(body)
-		buf := make([]byte, perTensorElements*4)
-		for i, v := range values {
-			bits := uint32FromFloat32Bits(v)
-			buf[i*4+0] = byte(bits)
-			buf[i*4+1] = byte(bits >> 8)
-			buf[i*4+2] = byte(bits >> 16)
-			buf[i*4+3] = byte(bits >> 24)
-		}
-		body = append(body, buf...)
-		header[name] = entry{DType: "F32", Shape: shape, DataOffsets: []int{start, len(body)}}
-	}
-	encoded := core.JSONMarshal(header)
-	if !encoded.OK {
-		b.Fatalf("marshal header: %v", encoded.Value)
-	}
-	headerBytes := encoded.Value.([]byte)
-	out := make([]byte, 8+len(headerBytes)+len(body))
-	hl := uint64(len(headerBytes))
-	for i := range 8 {
-		out[i] = byte(hl >> (8 * i))
-	}
-	copy(out[8:], headerBytes)
-	copy(out[8+len(headerBytes):], body)
-	if result := core.WriteFile(tensorPath, out, 0o644); !result.OK {
-		b.Fatalf("write safetensors: %v", result.Value)
-	}
+	tensorPath := core.PathJoin(dir, "model.safetensors")
+	writeTestSafetensorsF32(b, tensorPath, tensors)
 
 	return mp.ModelPack{
 		Root:          dir,
@@ -103,12 +72,6 @@ func benchCompareScratchPack(b *testing.B, modelType string, tensorNames []strin
 		TokenizerPath: core.PathJoin(dir, "tokenizer.json"),
 		Architecture:  modelType,
 	}
-}
-
-// uint32FromFloat32Bits exposes math.Float32bits under a bench-local
-// name so the staging path stays grep-friendly.
-func uint32FromFloat32Bits(f float32) uint32 {
-	return math.Float32bits(f)
 }
 
 // --- compareTensorRefs — per-tensor inner math + IO ---

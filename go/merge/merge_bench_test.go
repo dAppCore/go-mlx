@@ -15,7 +15,6 @@ package merge
 
 import (
 	"context"
-	"math"
 	"testing"
 
 	core "dappco.re/go"
@@ -130,41 +129,12 @@ type discardFile struct {
 // writers expect *core.OSFile so we run a small temp file to keep the
 // signature satisfied without touching disk for huge slices.
 
-// benchWriteSafetensorsF32 lays down a small safetensors file in temp
-// so the chunk readers have something to seek over. Mirrors
-// writeTestSafetensorsF32 in helpers_test.go but takes *testing.B.
+// benchWriteSafetensorsF32 lays down a small safetensors file in temp so
+// the chunk readers have something to seek over — a single-tensor adapter
+// onto the shared-codec-backed writeTestSafetensorsF32 (helpers_test.go).
 func benchWriteSafetensorsF32(b *testing.B, path string, name string, shape []int, values []float32) {
 	b.Helper()
-	type entry struct {
-		DType       string `json:"dtype"`
-		Shape       []int  `json:"shape"`
-		DataOffsets []int  `json:"data_offsets"`
-	}
-	header := map[string]entry{
-		name: {DType: "F32", Shape: shape, DataOffsets: []int{0, len(values) * 4}},
-	}
-	encoded := core.JSONMarshal(header)
-	if !encoded.OK {
-		b.Fatalf("marshal safetensors header: %v", encoded.Value)
-	}
-	headerBytes := encoded.Value.([]byte)
-	out := make([]byte, 8+len(headerBytes)+len(values)*4)
-	// little-endian uint64 header length
-	for i := range 8 {
-		out[i] = byte(uint64(len(headerBytes)) >> (8 * i))
-	}
-	copy(out[8:], headerBytes)
-	body := out[8+len(headerBytes):]
-	for i, v := range values {
-		bits := math.Float32bits(v)
-		body[i*4+0] = byte(bits)
-		body[i*4+1] = byte(bits >> 8)
-		body[i*4+2] = byte(bits >> 16)
-		body[i*4+3] = byte(bits >> 24)
-	}
-	if result := core.WriteFile(path, out, 0o644); !result.OK {
-		b.Fatalf("write safetensors: %v", result.Value)
-	}
+	writeTestSafetensorsF32(b, path, []safetensorTestTensor{{Name: name, Shape: shape, Data: values}})
 }
 
 func BenchmarkValidateTensorIndexes_AllMatch(b *testing.B) {
@@ -212,42 +182,12 @@ func benchWritePackTensors(b *testing.B, names []string, perTensorElements int) 
 	for i := range values {
 		values[i] = float32(i%128) * 0.01
 	}
-	type entry struct {
-		DType       string `json:"dtype"`
-		Shape       []int  `json:"shape"`
-		DataOffsets []int  `json:"data_offsets"`
+	tensors := make([]safetensorTestTensor, len(names))
+	for i, name := range names {
+		tensors[i] = safetensorTestTensor{Name: name, Shape: []int{perTensorElements}, Data: values}
 	}
-	header := map[string]entry{}
-	var body []byte
-	for _, name := range names {
-		start := len(body)
-		buf := make([]byte, perTensorElements*4)
-		for i, v := range values {
-			bits := math.Float32bits(v)
-			buf[i*4+0] = byte(bits)
-			buf[i*4+1] = byte(bits >> 8)
-			buf[i*4+2] = byte(bits >> 16)
-			buf[i*4+3] = byte(bits >> 24)
-		}
-		body = append(body, buf...)
-		header[name] = entry{DType: "F32", Shape: []int{perTensorElements}, DataOffsets: []int{start, len(body)}}
-	}
-	encoded := core.JSONMarshal(header)
-	if !encoded.OK {
-		b.Fatalf("marshal header: %v", encoded.Value)
-	}
-	headerBytes := encoded.Value.([]byte)
-	out := make([]byte, 8+len(headerBytes)+len(body))
-	hl := uint64(len(headerBytes))
-	for i := range 8 {
-		out[i] = byte(hl >> (8 * i))
-	}
-	copy(out[8:], headerBytes)
-	copy(out[8+len(headerBytes):], body)
 	tensorPath := core.PathJoin(dir, "model.safetensors")
-	if result := core.WriteFile(tensorPath, out, 0o644); !result.OK {
-		b.Fatalf("write safetensors: %v", result.Value)
-	}
+	writeTestSafetensorsF32(b, tensorPath, tensors)
 	return mp.ModelPack{
 		Root:          dir,
 		Path:          dir,

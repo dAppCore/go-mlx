@@ -4,10 +4,9 @@ package merge
 
 import (
 	"context"
-	"encoding/binary"
-	"math"
 
 	core "dappco.re/go"
+	sharedsafetensors "dappco.re/go/inference/safetensors"
 	mp "dappco.re/go/mlx/pack"
 )
 
@@ -76,24 +75,18 @@ func ExamplePacks_slerp() {
 	// Output: slerp [0.70710677 0.70710677]
 }
 
-// exampleWritePack writes a minimal single-tensor F32 safetensors pack and
-// returns its directory.
+// exampleWritePack writes a minimal single-tensor F32 safetensors pack via
+// the shared dappco.re/go/inference/safetensors codec and returns its
+// directory.
 func exampleWritePack(modelType string, data ...float32) string {
 	dir := core.MkdirTemp("", "merge-example-src-*").Value.(string)
 	core.WriteFile(core.PathJoin(dir, "config.json"), []byte(core.Sprintf(`{"model_type":%q,"vocab_size":151936,"hidden_size":2048,"num_hidden_layers":28,"max_position_embeddings":40960}`, modelType)), 0o644)
 	core.WriteFile(core.PathJoin(dir, "tokenizer.json"), []byte(`{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}`), 0o644)
 
 	name := "model.norm.weight"
-	header := core.Sprintf(`{%q:{"dtype":"F32","shape":[%d],"data_offsets":[0,%d]}}`, name, len(data), len(data)*4)
-	body := make([]byte, len(data)*4)
-	for i, v := range data {
-		binary.LittleEndian.PutUint32(body[i*4:], math.Float32bits(v))
-	}
-	out := make([]byte, 8+len(header)+len(body))
-	binary.LittleEndian.PutUint64(out[:8], uint64(len(header)))
-	copy(out[8:], header)
-	copy(out[8+len(header):], body)
-	core.WriteFile(core.PathJoin(dir, "model.safetensors"), out, 0o644)
+	infos := map[string]sharedsafetensors.SafetensorsTensorInfo{name: {Dtype: "F32", Shape: []int{len(data)}}}
+	tensorData := map[string][]byte{name: sharedsafetensors.EncodeFloat32(data)}
+	sharedsafetensors.WriteSafetensors(core.PathJoin(dir, "model.safetensors"), infos, tensorData)
 	return dir
 }
 
@@ -109,12 +102,10 @@ func examplePack(dir string) mp.ModelPack {
 }
 
 func exampleReadTensor(path string) []float32 {
-	data := core.ReadFile(path).Value.([]byte)
-	headerLen := binary.LittleEndian.Uint64(data[:8])
-	payload := data[8+headerLen:]
-	values := make([]float32, len(payload)/4)
-	for i := range values {
-		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(payload[i*4:]))
-	}
+	read := sharedsafetensors.ReadSafetensors(path)
+	data := read.Value.(sharedsafetensors.SafetensorsData)
+	info := data.Tensors["model.norm.weight"]
+	raw := sharedsafetensors.GetTensorData(info, data.Data)
+	values, _ := sharedsafetensors.DecodeFloat32(info.Dtype, raw, len(raw)/4)
 	return values
 }
