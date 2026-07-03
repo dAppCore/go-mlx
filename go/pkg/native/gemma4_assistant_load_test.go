@@ -2354,6 +2354,49 @@ func TestGemma4AssistantPairGenerateSampledFromSessionEachKeepsDraftBlockWhileSt
 	}
 }
 
+func TestGemma4AssistantPairGenerateSampledFromSessionFallsBackAfterLowAcceptFullBlock(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5}
+	prompt, seed, _ := nativeAssistantSampledPromptWithRejectedFirstDraft(t, pair, mk, params)
+	const maxNew = 6
+	const draftTokens = 2
+	want, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("reference GenerateSampledEach: %v", err)
+	}
+	target := mk()
+
+	got, err := pair.GenerateSampledFromSession(target, prompt, maxNew, nil, model.NewSampler(seed), params, draftTokens)
+	if err != nil {
+		t.Fatalf("GenerateSampledFromSession: %v", err)
+	}
+
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("sampled low-accept fallback tokens = %v, want %v", got.Tokens, want)
+	}
+	if got.AcceptedTokens != 0 {
+		t.Fatalf("sampled accepted draft tokens = %d, want 0 for rejected first block", got.AcceptedTokens)
+	}
+	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
+		t.Fatalf("sampled draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+	}
+	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
+		t.Fatalf("sampled draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
+	}
+	if got.TargetTokens != len(want) {
+		t.Fatalf("sampled target tokens = %d, want %d", got.TargetTokens, len(want))
+	}
+	if len(got.DraftTokenSchedule) == 0 || got.DraftTokenSchedule[0] != draftTokens {
+		t.Fatalf("sampled draft schedule = %v, want first verify block to use requested draft size %d", got.DraftTokenSchedule, draftTokens)
+	}
+	if target.Pos() != len(prompt)+len(want) {
+		t.Fatalf("target Pos after sampled low-accept fallback = %d, want %d", target.Pos(), len(prompt)+len(want))
+	}
+}
+
 func TestGemma4AssistantPairGenerateSampledFromSessionCountsAcceptedYieldStop(t *testing.T) {
 	requireNativeRuntime(t)
 

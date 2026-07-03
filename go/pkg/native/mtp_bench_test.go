@@ -91,6 +91,32 @@ func BenchmarkMTPDecodeSampledDirectRows(b *testing.B) {
 	}
 }
 
+func BenchmarkGemma4AssistantPairGenerateSampledLowAcceptFallback(b *testing.B) {
+	requireNativeRuntime(b)
+	pair, mk := newNativeAssistantGenerateFixture(b)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5}
+	prompt, seed, _ := nativeAssistantSampledPromptWithRejectedFirstDraft(b, pair, mk, params)
+	const maxNew = 6
+	const draftTokens = 2
+	target := mk()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, err := pair.GenerateSampledFromSession(target, prompt, maxNew, nil, model.NewSampler(seed), params, draftTokens)
+		if err != nil {
+			b.Fatalf("GenerateSampledFromSession: %v", err)
+		}
+		if len(got.Tokens) != maxNew {
+			b.Fatalf("tokens = %d, want %d", len(got.Tokens), maxNew)
+		}
+		if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
+			b.Fatalf("draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+		}
+	}
+}
+
 func BenchmarkMTPDecodeSequentialFallback(b *testing.B) {
 	requireNativeRuntime(b)
 	const K, maxNew = 4, 12

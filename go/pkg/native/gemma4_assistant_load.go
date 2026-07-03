@@ -1749,6 +1749,15 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 			carryLead = -1
 			continue
 		}
+		if !stopped && len(result.Tokens) < maxNew && nativeGemma4AssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+			var err error
+			history, err = nativeGemma4AssistantFinishLowAcceptSampledFromTargetCache(target, &result, replacement, maxNew, stopTokens, sampler, params, history, yield)
+			if err != nil {
+				return result, err
+			}
+			finalHistory = history
+			break
+		}
 		carryLead = replacement
 	}
 	if carryLead >= 0 && !stopped && yield == nil {
@@ -1846,6 +1855,40 @@ func nativeGemma4AssistantFinishLowAcceptFromTargetCache(target *ArchSession, re
 	result.TargetCalls++
 	result.TargetTokens += len(tail)
 	return nil
+}
+
+func nativeGemma4AssistantFinishLowAcceptSampledFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, replacement int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, history []int32, yield Gemma4AssistantTokenSink) ([]int32, error) {
+	if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
+		return history, err
+	}
+	result.TargetCalls++
+	remaining := maxNew - len(result.Tokens)
+	if remaining <= 0 {
+		return history, nil
+	}
+	if len(target.retainedHidden) != target.arch.Hidden*bf16Size {
+		return history, core.NewError("gemma4.assistant sampled low-accept fallback has no retained target hidden")
+	}
+	if target.pos+remaining > target.maxLen {
+		return history, core.NewError("gemma4.assistant sampled low-accept fallback would exceed maxLen cache rows")
+	}
+	var tail []int32
+	finalHistory := history
+	var err error
+	withAutoreleasePool(func() {
+		tail, finalHistory, err = target.generateSampledFromHiddenInPoolWithHistory(target.retainedHidden, remaining, stopTokens, sampler, params, nil, func(id int32) bool {
+			return !nativeGemma4AssistantEmitSampledToken(result, id, stopTokens, yield)
+		}, true, len(result.Tokens), history)
+	})
+	if err != nil {
+		target.cachedIDs = nil
+		target.resetRetainedHidden()
+		return history, err
+	}
+	target.cachedIDs = append(target.cachedIDs, tail...)
+	result.TargetCalls++
+	result.TargetTokens += len(tail)
+	return finalHistory, nil
 }
 
 func nativeGemma4AssistantEmitSampledToken(result *Gemma4AssistantGenerateResult, id int32, stopTokens []int32, yield Gemma4AssistantTokenSink) bool {
