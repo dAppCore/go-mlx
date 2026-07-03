@@ -424,11 +424,11 @@ func compactAttentionMatchingFull(k, v *Array, budget int) (*Array, *Array, erro
 	Free(colMass, topIdx)
 
 	// 4b. Selected-key logits and their beta=0 mass.
-	selKT := Transpose4(selKeys, 0, 1, 3, 2)             // [B,H,Dk,budget]
-	selLogits := MulScalar(Matmul(k, selKT), invSqrtD)   // [B,H,L,budget]
+	selKT := Transpose4(selKeys, 0, 1, 3, 2)           // [B,H,Dk,budget]
+	selLogits := MulScalar(Matmul(k, selKT), invSqrtD) // [B,H,L,budget]
 	Free(selKT)
-	attn0 := Softmax(selLogits)        // beta=0 selected attention [B,H,L,budget]
-	mass0 := Sum(attn0, 2, false)      // [B,H,budget]
+	attn0 := Softmax(selLogits)   // beta=0 selected attention [B,H,L,budget]
+	mass0 := Sum(attn0, 2, false) // [B,H,budget]
 	Free(attn0)
 
 	// 4c. beta_j = log(mass_j / mass0_j), clamped away from log(0). Shaped
