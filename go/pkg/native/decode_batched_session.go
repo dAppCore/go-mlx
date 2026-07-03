@@ -361,11 +361,16 @@ var batchedMLPFoldDisabledForTest bool
 // dispatches — the A/B lever for the batched-rows rope's parity/engagement tests.
 var batchedRopeDisabledForTest bool
 
+// batchedEpilogueDisabledForTest forces the fold back onto the per-row entry-rms, residual and
+// layer-tail (PLE gate + scalar) dispatches — the A/B lever for the rows-batched epilogue.
+var batchedEpilogueDisabledForTest bool
+
 // encBatchedRowEpilogue encodes row i's gemma4 tail for layer li — the per-layer-input gate (PLE,
 // when the arch has one and the caller supplied the K-token slab) and the per-layer output scalar —
 // reading and writing the row's layer output in place. Shared by the per-row MLP path and the
-// MLP-fold epilogue; the shared gate scratch hazard-orders the rows.
-func (s *archDecodeState) encBatchedRowEpilogue(enc metal.MTLComputeCommandEncoder, pleSlabBuf metal.MTLBuffer, li, i int, outBuf metal.MTLBuffer, outOff uint) error {
+// MLP-fold's last-layer fallback; the shared gate scratch hazard-orders the rows. rows is the batch
+// width K (the layer-major PLE slab strides by it).
+func (s *archDecodeState) encBatchedRowEpilogue(enc metal.MTLComputeCommandEncoder, pleSlabBuf metal.MTLBuffer, li, i, rows int, outBuf metal.MTLBuffer, outOff uint) error {
 	if pleSlabBuf != nil && len(s.ple) > li && len(s.ple[li].postNorm) > 0 {
 		pl := s.ple[li]
 		if len(pl.postNorm) != s.dModel*bf16Size {
@@ -374,13 +379,53 @@ func (s *archDecodeState) encBatchedRowEpilogue(enc metal.MTLComputeCommandEncod
 		if len(pl.gate.Packed) != s.pliDim*s.dModel*bf16Size || len(pl.proj.Packed) != s.dModel*s.pliDim*bf16Size {
 			return core.NewError("native.stepTokensBatchedDense: PLE bf16 weight size mismatch")
 		}
-		pliOff := uint((i*len(s.specs) + li) * s.pliDim * bf16Size)
+		pliOff := uint((li*rows + i) * s.pliDim * bf16Size)
 		if err := encPerLayerInputGateBF16ScratchAt(enc, s.perLayerInputGateScratch(), outBuf, outOff, residentBytes(pl.gate.Packed), pleSlabBuf, residentBytes(pl.proj.Packed), residentBytes(pl.postNorm), outBuf, outOff, pliOff, s.dModel, s.pliDim, s.eps); err != nil {
 			return err
 		}
 	}
 	if s.lb[li].layerScalar != nil { // gemma4 per-layer output scalar (on-device)
 		return encMulBF16To(enc, outBuf, s.lb[li].layerScalar, outBuf, outOff, 0, outOff, s.dModel)
+	}
+	return nil
+}
+
+// encBatchedEpilogueRows encodes the WHOLE layer tail for K contiguous output rows in a handful of
+// dispatches: the PLE gate chain (gate gemv → gelu·pli → proj gemv → post-norm rows → add, each
+// batched across the rows via grid Z / the layer-major slab) and the per-layer output scalar (the
+// broadcast rows-multiply). Byte-identical per row to K encBatchedRowEpilogue calls — same kernels
+// per element, the weight matrices swept once instead of K times, and none of the shared-scratch
+// hazard serialisation. The caller guarantees outBuf rows are contiguous at outBase + r·dModel and
+// supplies the free fold slabs as scratch (gate/mult K×pliDim-capable, proj/norm K×dModel).
+func (s *archDecodeState) encBatchedEpilogueRows(enc metal.MTLComputeCommandEncoder, pleSlabBuf metal.MTLBuffer, li, rows int, outBuf metal.MTLBuffer, outBase uint, gateSlab, multSlab, projSlab, normSlab metal.MTLBuffer) error {
+	if pleSlabBuf != nil && len(s.ple) > li && len(s.ple[li].postNorm) > 0 {
+		pl := s.ple[li]
+		if len(pl.postNorm) != s.dModel*bf16Size {
+			return core.NewError("native.stepTokensBatchedDense: PLE post norm size mismatch")
+		}
+		if len(pl.gate.Packed) != s.pliDim*s.dModel*bf16Size || len(pl.proj.Packed) != s.dModel*s.pliDim*bf16Size {
+			return core.NewError("native.stepTokensBatchedDense: PLE bf16 weight size mismatch")
+		}
+		if err := encGemvBF16BatchedAt(enc, residentBytes(pl.gate.Packed), outBuf, gateSlab, 0, outBase, 0, s.pliDim, s.dModel, rows); err != nil {
+			return err
+		}
+		// the layer's K per-token PLE slices are contiguous in the layer-major slab
+		pliBase := uint(li * rows * s.pliDim * bf16Size)
+		if err := encGeluGateMulFusedTo(enc, gateSlab, pleSlabBuf, multSlab, 0, pliBase, 0, rows*s.pliDim); err != nil {
+			return err
+		}
+		if err := encGemvBF16BatchedAt(enc, residentBytes(pl.proj.Packed), multSlab, projSlab, 0, 0, 0, s.dModel, s.pliDim, rows); err != nil {
+			return err
+		}
+		if err := encRMSNormRowsBF16(enc, projSlab, residentBytes(pl.postNorm), normSlab, 0, 0, 0, rows, s.dModel, s.eps); err != nil {
+			return err
+		}
+		if err := encAddBF16To(enc, outBuf, normSlab, outBuf, outBase, 0, outBase, rows*s.dModel); err != nil {
+			return err
+		}
+	}
+	if s.lb[li].layerScalar != nil { // gemma4 per-layer output scalar, all rows in one dispatch
+		return encMulRowsBF16(enc, outBuf, s.lb[li].layerScalar, outBuf, outBase, 0, outBase, rows, s.dModel)
 	}
 	return nil
 }
@@ -588,13 +633,28 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 				foldAttn = false // staged V lands via the value norm's full-row write
 			}
 		}
+		// rows-batched epilogues: entry rms, residuals and the layer tail run once over the K
+		// contiguous rows instead of once per row — valid whenever the rows live in the shared
+		// ping-pong slabs (layer 0 may read direct input views; the LAST layer may scatter to
+		// direct output rows — those keep the per-row path).
+		batchedRows := foldMLP && !batchedEpilogueDisabledForTest && gpuHasMulRowsKernel() &&
+			(len(s.ple) == 0 || s.pliDim <= foldDFFMax)
+		xContig := !(li == 0 && usingDirectInputRows)
 		if foldAttn {
 			anw := s.lb[li].anw
-			// per-row rms into the norm slab (layer inputs may be non-contiguous direct views)
-			for i := 0; i < K; i++ {
-				if err = encRMSNormRowsBF16(enc, readRows[i], anw.buf, attnNormSlab, readOff[i], anw.off, uint(i*rowBytes), 1, s.dModel, s.eps); err != nil {
+			if batchedRows && xContig {
+				// all K layer-input rows are the contiguous ping-pong slab: one rms-rows dispatch
+				if err = encRMSNormRowsBF16(enc, readRows[0], anw.buf, attnNormSlab, readOff[0], anw.off, 0, K, s.dModel, s.eps); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
+				}
+			} else {
+				// per-row rms into the norm slab (layer inputs may be non-contiguous direct views)
+				for i := 0; i < K; i++ {
+					if err = encRMSNormRowsBF16(enc, readRows[i], anw.buf, attnNormSlab, readOff[i], anw.off, uint(i*rowBytes), 1, s.dModel, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
 				}
 			}
 			if err = encGemvBF16BatchedAt(enc, bproj.wQ.buf, attnNormSlab, qSlab, bproj.wQ.off, 0, 0, qDim, s.dModel, K); err != nil {
@@ -705,11 +765,19 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 				endEncodingFast(enc)
 				return nil, false, err
 			}
-			for i := 0; i < K; i++ {
-				// h row i = x row i + postAttnNorm(Wo·attn row i) — attnNormSlab is free as scratch
-				if err = encResidualMaybeNormAt(enc, readRows[i], readOff[i], attnOutSlab, uint(i*rowBytes), attnNormSlab, hSlab, uint(i*rowBytes), s.lb[li].postAttnNorm, s.dModel, s.eps); err != nil {
+			if batchedRows && xContig {
+				// h = x + postAttnNorm(Wo·attn) for all K rows — attnNormSlab is free as scratch
+				if err = encResidualRowsMaybeNorm(enc, readRows[0], readOff[0], attnOutSlab, 0, attnNormSlab, hSlab, 0, s.lb[li].postAttnNorm, K, s.dModel, s.eps); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
+				}
+			} else {
+				for i := 0; i < K; i++ {
+					// h row i = x row i + postAttnNorm(Wo·attn row i) — attnNormSlab is free as scratch
+					if err = encResidualMaybeNormAt(enc, readRows[i], readOff[i], attnOutSlab, uint(i*rowBytes), attnNormSlab, hSlab, uint(i*rowBytes), s.lb[li].postAttnNorm, s.dModel, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
 				}
 			}
 		}
@@ -753,7 +821,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			}
 			// gemma4 per-layer-input gate (E2B/E4B) + per-layer scalar: same encoded chain the
 			// sequential stepToken runs, reading row i's pliDim slice from the K-token slab.
-			if err = s.encBatchedRowEpilogue(enc, pleSlabBuf, li, i, outBuf, outOff); err != nil {
+			if err = s.encBatchedRowEpilogue(enc, pleSlabBuf, li, i, K, outBuf, outOff); err != nil {
 				endEncodingFast(enc)
 				return nil, false, err
 			}
@@ -782,22 +850,37 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 				endEncodingFast(enc)
 				return nil, false, err
 			}
-			for i := 0; i < K; i++ {
-				outBuf, outOff := outRows[i], rowOff[i]
-				if directLastOut && li == len(s.specs)-1 && i == K-1 {
-					outBuf, outOff = lastOutBuf, 0
-				} else if usingDirectOutputRows && li == len(s.specs)-1 {
-					outBuf, outOff = directOutputRows[i], directOutputOff[i]
-				}
-				// out row i = h row i + rms(down row i) — mlpNormSlab is free as the norm scratch
-				// (the gate/up gemvs already consumed it; the hazard orders the reuse).
-				if err = encResidualMaybeNormAt(enc, hSlab, uint(i*rowBytes), downSlab, uint(i*rowBytes), mlpNormSlab, outBuf, outOff, s.lb[li].postFFNorm, s.dModel, s.eps); err != nil {
+			outContig := li != len(s.specs)-1 || (!directLastOut && !usingDirectOutputRows)
+			if batchedRows && outContig {
+				// out = h + rms(down) for all K rows, then the whole layer tail (PLE gate chain +
+				// scalar) rows-batched — mlpNormSlab/downSlab are free as scratch after this
+				// (the hazards order the reuse).
+				if err = encResidualRowsMaybeNorm(enc, hSlab, 0, downSlab, 0, mlpNormSlab, outRows[0], rowOff[0], s.lb[li].postFFNorm, K, s.dModel, s.eps); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
 				}
-				if err = s.encBatchedRowEpilogue(enc, pleSlabBuf, li, i, outBuf, outOff); err != nil {
+				if err = s.encBatchedEpilogueRows(enc, pleSlabBuf, li, K, outRows[0], rowOff[0], gateSlab, gatedSlab, downSlab, mlpNormSlab); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
+				}
+			} else {
+				for i := 0; i < K; i++ {
+					outBuf, outOff := outRows[i], rowOff[i]
+					if directLastOut && li == len(s.specs)-1 && i == K-1 {
+						outBuf, outOff = lastOutBuf, 0
+					} else if usingDirectOutputRows && li == len(s.specs)-1 {
+						outBuf, outOff = directOutputRows[i], directOutputOff[i]
+					}
+					// out row i = h row i + rms(down row i) — mlpNormSlab is free as the norm scratch
+					// (the gate/up gemvs already consumed it; the hazard orders the reuse).
+					if err = encResidualMaybeNormAt(enc, hSlab, uint(i*rowBytes), downSlab, uint(i*rowBytes), mlpNormSlab, outBuf, outOff, s.lb[li].postFFNorm, s.dModel, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
+					if err = s.encBatchedRowEpilogue(enc, pleSlabBuf, li, i, K, outBuf, outOff); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
 				}
 			}
 		}

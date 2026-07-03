@@ -257,6 +257,21 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 	return encResidualMaybeNormAt(enc, x, 0, v, 0, scratch, out, 0, norm, dModel, eps)
 }
 
+// encResidualRowsMaybeNorm is encResidualMaybeNormAt across `rows` contiguous rows in two
+// dispatches — one norm-rows + one add over rows·dModel — or ONE add when norm is nil. Per-row
+// bytes match the per-row calls: the rows kernel norms each row independently and the add is
+// elementwise (and the fused row-0 variant rounds identically to the composed pair — the parity
+// the batched pass has leaned on since the fold landed).
+func encResidualRowsMaybeNorm(enc metal.MTLComputeCommandEncoder, x metal.MTLBuffer, xOff uint, v metal.MTLBuffer, vOff uint, scratch, out metal.MTLBuffer, outOff uint, norm bufView, rows, dModel int, eps float32) error {
+	if norm.buf == nil {
+		return encAddBF16To(enc, x, v, out, xOff, vOff, outOff, rows*dModel)
+	}
+	if err := encRMSNormRowsBF16(enc, v, norm.buf, scratch, vOff, norm.off, 0, rows, dModel, eps); err != nil {
+		return err
+	}
+	return encAddBF16To(enc, x, scratch, out, xOff, 0, outOff, rows*dModel)
+}
+
 func encResidualMaybeNormAt(enc metal.MTLComputeCommandEncoder, x metal.MTLBuffer, xOff uint, v metal.MTLBuffer, vOff uint, scratch, out metal.MTLBuffer, outOff uint, norm bufView, dModel int, eps float32) error {
 	if norm.buf == nil {
 		return encAddBF16To(enc, x, v, out, xOff, vOff, outOff, dModel)

@@ -72,6 +72,58 @@ func ffnMegaPipeline() (metal.MTLComputePipelineState, error) {
 	return ffnMegaPSO, ffnMegaPSOErr
 }
 
+var (
+	mulRowsPSOOnce sync.Once
+	mulRowsPSO     metal.MTLComputePipelineState
+	mulRowsPSOErr  error
+)
+
+func mulRowsPipeline() (metal.MTLComputePipelineState, error) {
+	mulRowsPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			mulRowsPSOErr = core.NewError("native.mulRowsPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_mul_rows_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			mulRowsPSOErr = core.NewError("native.mulRowsPipeline: kernel lthn_mul_rows_bf16 not found")
+			return
+		}
+		mulRowsPSO, mulRowsPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return mulRowsPSO, mulRowsPSOErr
+}
+
+// gpuHasMulRowsKernel reports whether the broadcast rows-multiply kernel is loadable — the batched
+// epilogue's gate for folding the K per-row layer-scalar dispatches into one.
+func gpuHasMulRowsKernel() bool {
+	pso, err := mulRowsPipeline()
+	return err == nil && pso != nil && pso.GetID() != 0
+}
+
+// encMulRowsBF16 encodes out row r = a row r · b — ONE b row of rowLen broadcast across `rows`
+// contiguous a rows — in one dispatch: the batched pass's per-layer output scalar applied to all
+// K rows at once. Per-element float math identical to `rows` per-row vv_mul dispatches.
+func encMulRowsBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, aOff, bOff, outOff uint, rows, rowLen int) error {
+	pso, err := mulRowsPipeline()
+	if err != nil {
+		return err
+	}
+	n := rows * rowLen
+	sink := encSink{enc}
+	sink.setPSO(pso)
+	sink.setBuf(a, aOff, 0)
+	sink.setBuf(b, bOff, 1)
+	sink.setBuf(out, outOff, 2)
+	sink.setI32(int32(n), 3)
+	sink.setI32(int32(rowLen), 4)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
+		metal.MTLSize{Width: uint(elemGroupTG(n)), Height: 1, Depth: 1},
+	)
+	return nil
+}
+
 // encGeluGateMulFused encodes gelu(gate)·up via the fused kernel — one dispatch, fp32-internal, one
 // bf16 rounding (see the kernel comment for why this differs from the composed production path).
 // gate/up/out are contiguous bf16 buffers of n elements. Guard with gpuHasGeluKernel before calling.

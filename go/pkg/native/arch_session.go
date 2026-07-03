@@ -1792,9 +1792,11 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 }
 
 // pleSlabFor gathers the per-token PLE tensors for a token batch into one
-// token-major slab ([len(ids) × numLayers·pliDim] bf16) — the input the batched
-// dense forward's per-row PLE gate reads at row/layer offsets. nil (no error)
-// for models without the per-layer-input tower.
+// LAYER-major slab ([numLayers × len(ids) × pliDim] bf16) — layer li's K
+// per-token slices are contiguous, so the batched dense forward's PLE gate can
+// run the whole layer's gelu(gate)·pli in one dispatch (and the per-row gate
+// reads its slice at (li·K + i)·pliDim). nil (no error) for models without the
+// per-layer-input tower.
 func (s *ArchSession) pleSlabFor(ids []int32, embs [][]byte) ([]byte, error) {
 	// key on the STATE's tower, not just the session closure — a session can carry
 	// the closure while its decode state has no PLE layers (test fakes; the forward
@@ -1805,7 +1807,8 @@ func (s *ArchSession) pleSlabFor(ids []int32, embs [][]byte) ([]byte, error) {
 	if len(ids) != len(embs) {
 		return nil, core.NewError("native.pleSlabFor: token and embedding counts differ")
 	}
-	tokenPLE := len(s.state.specs) * s.state.pliDim * bf16Size
+	numLayers, pliBytes := len(s.state.specs), s.state.pliDim*bf16Size
+	tokenPLE := numLayers * pliBytes
 	pleSlab := make([]byte, len(ids)*tokenPLE)
 	for i, id := range ids {
 		pli, err := s.perLayerInput(id, embs[i])
@@ -1815,8 +1818,11 @@ func (s *ArchSession) pleSlabFor(ids []int32, embs [][]byte) ([]byte, error) {
 		if len(pli) != tokenPLE {
 			return nil, core.NewError("native.pleSlabFor: PLE tensor size mismatch")
 		}
-		// the closure may reuse its scratch across calls — copy each token's tensor out.
-		copy(pleSlab[i*tokenPLE:(i+1)*tokenPLE], pli)
+		// the closure returns token i's [numLayers × pliDim] tensor (and may reuse its
+		// scratch across calls) — scatter each layer's slice to its layer-major home.
+		for li := 0; li < numLayers; li++ {
+			copy(pleSlab[(li*len(ids)+i)*pliBytes:(li*len(ids)+i+1)*pliBytes], pli[li*pliBytes:(li+1)*pliBytes])
+		}
 	}
 	return pleSlab, nil
 }

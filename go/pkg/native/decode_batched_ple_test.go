@@ -401,6 +401,76 @@ func TestStepTokensBatchedDenseBatchedRopeEngagesAndMatchesPerRow(t *testing.T) 
 	}
 }
 
+// TestStepTokensBatchedDenseBatchedEpilogueEngagesAndMatchesPerRow pins the rows-batched layer
+// tail (#252): the per-row entry-rms, residuals, PLE gate chain (5 dispatches/row) and layer
+// scalar fold into a handful of dispatches per layer over the contiguous row slabs (the PLE slab
+// is layer-major so each layer's K token slices batch through one gelu·pli), byte-identical to
+// the per-row chain — and must actually ENGAGE (strictly fewer dispatches).
+func TestStepTokensBatchedDenseBatchedEpilogueEngagesAndMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasMulRowsKernel() {
+		t.Fatal("rows-multiply kernel missing — rebuild dist/lib/lthn_kernels.metallib (task build:kernels)")
+	}
+	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
+
+	run := func(s *ArchSession, disable bool) ([]byte, int64) {
+		t.Helper()
+		prev, prevTiming := batchedEpilogueDisabledForTest, pieceTimingOn
+		batchedEpilogueDisabledForTest = disable
+		pieceTimingOn = true
+		dispatchCountForTest = 0
+		defer func() {
+			batchedEpilogueDisabledForTest = prev
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "test.batchedEpilogue")
+		if err != nil {
+			t.Fatalf("batched dense prefill (disableBatchedEpilogue=%v): %v", disable, err)
+		}
+		if !ok {
+			t.Fatalf("batched dense prefill DECLINED (disableBatchedEpilogue=%v)", disable)
+		}
+		return append([]byte(nil), hidden...), dispatchCountForTest
+	}
+
+	batched := newBatchedPLEBF16FixtureShared(t, 2)
+	perRow := newBatchedPLEBF16FixtureShared(t, 2)
+	bHidden, bDispatches := run(batched, false)
+	rHidden, rDispatches := run(perRow, true)
+
+	if bDispatches >= rDispatches {
+		t.Fatalf("batched epilogue did not engage: batched pass encoded %d dispatches, per-row %d — the rows epilogue must strictly reduce dispatch count", bDispatches, rDispatches)
+	}
+	if len(bHidden) != len(rHidden) {
+		t.Fatalf("hidden sizes differ: batched=%d perRow=%d", len(bHidden), len(rHidden))
+	}
+	for i := range bHidden {
+		if bHidden[i] != rHidden[i] {
+			t.Fatalf("boundary hidden diverges at byte %d: batched=%02x perRow=%02x (the batched epilogue contract is byte-identity with the per-row chain)", i, bHidden[i], rHidden[i])
+		}
+	}
+	va, err := perRow.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := batched.stateLayerViews()
+	if err != nil {
+		t.Fatalf("batched views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d", i, j)
+			}
+		}
+	}
+}
+
 func batchedPLEParity(t *testing.T, control, candidate *ArchSession) {
 	t.Helper()
 	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
