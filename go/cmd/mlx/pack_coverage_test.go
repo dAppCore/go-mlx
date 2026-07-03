@@ -77,6 +77,12 @@ func TestRunPack_MaxContextExceeded_Bad(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (max-context exceeded)", code)
 	}
+	// Exit 1 alone doesn't distinguish "the cap was exceeded" from "the pack
+	// was invalid for an unrelated reason" — pin the specific issue code so a
+	// broken -max-context wiring can't hide behind some other Issues entry.
+	if !strings.Contains(stderr.String(), "context_too_large") {
+		t.Fatalf("stderr = %q, want the context_too_large issue", stderr.String())
+	}
 }
 
 // pack against a path with no config.json reaches the model.Inspect error path

@@ -4,9 +4,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -293,19 +298,58 @@ func TestFetchAndVerify_RejectsNonHFHost(t *testing.T) {
 	}
 }
 
-// TestFetchAndVerify_HappyPath — round-trip a small payload through
-// a fake HF host (httptest server pretending to be huggingface.co).
-// Tests that the digest is computed + the file lands on disk.
+// TestFetchAndVerify_HappyPath — round-trip a small payload through a
+// fake HF host. fetchAndVerify hard-gates on the hfHostResolve prefix
+// (§4.F-6.1), so the request URL must keep that real prefix; the trick
+// is redirecting the *dial* to a local TLS fixture server via a custom
+// Transport on hfHTTPClient, without touching the URL the gate sees or
+// weakening the allowlist itself. Tests that the digest is computed +
+// the file lands on disk with the exact payload bytes.
 func TestFetchAndVerify_HappyPath(t *testing.T) {
 	payload := []byte("hello-model-weights")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
-	// We can't actually pass srv.URL because fetchAndVerify gates on
-	// hfHostResolve prefix. Instead verify via the gate test above +
-	// trust the io.Copy/sha256 path which is stdlib.
-	// The gate is the load-bearing piece here.
+
+	// Trust the fixture server's actual leaf cert rather than skipping
+	// verification — real certificate validation against a known-good
+	// pool, not a blanket InsecureSkipVerify bypass.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	prevClient := hfHTTPClient
+	hfHTTPClient = &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				dialer := &tls.Dialer{Config: &tls.Config{RootCAs: pool}}
+				return dialer.DialContext(ctx, network, srv.Listener.Addr().String())
+			},
+		},
+	}
+	t.Cleanup(func() { hfHTTPClient = prevClient })
+
+	sum := sha256.Sum256(payload)
+	wantDigest := hex.EncodeToString(sum[:])
+
+	dest := filepath.Join(t.TempDir(), "weights.bin")
+	written, digest, err := fetchAndVerify(context.Background(), hfHostResolve+"model.bin", dest, wantDigest, int64(len(payload)))
+	if err != nil {
+		t.Fatalf("fetchAndVerify() error = %v", err)
+	}
+	if written != int64(len(payload)) {
+		t.Fatalf("written = %d, want %d", written, len(payload))
+	}
+	if digest != wantDigest {
+		t.Fatalf("digest = %q, want %q", digest, wantDigest)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("ReadFile(dest) error = %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("file contents = %q, want %q", got, payload)
+	}
 }
 
 // TestAllowedModelsFile_JSONShape — the on-disk format MUST be

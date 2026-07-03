@@ -230,6 +230,13 @@ func (c *hfTreeClient) ResolveTree(ctx context.Context, repo, revision string) (
 // expectedSize is the size advertised by the HF tree manifest. Used
 // to early-reject downloads where the on-wire Content-Length is far
 // off (corrupt mirror / wrong-revision drift). Empty (0) skips.
+// hfHTTPClient issues the actual GET in fetchAndVerify. A plain
+// *http.Client in production; tests swap it for one whose Transport
+// redirects the dial to a local fixture server while the request URL
+// keeps its real hfHostResolve prefix, so the §4.F-6.1 allowlist gate
+// stays exercised as written rather than bypassed for testability.
+var hfHTTPClient = &http.Client{}
+
 func fetchAndVerify(ctx context.Context, url, destPath, expectedDigest string, expectedSize int64) (int64, string, error) {
 	// URL allowlist gate per §4.F-6.1. The resolve URL was server-
 	// composed in ResolveTree from a repo+revision pair, so this is
@@ -244,7 +251,7 @@ func fetchAndVerify(ctx context.Context, url, destPath, expectedDigest string, e
 		return 0, "", core.E("admin.hf.fetch", "build request", res.Value.(error))
 	}
 	req := res.Value.(*core.Request)
-	client := &http.Client{}
+	client := hfHTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", core.E("admin.hf.fetch", "GET", err)

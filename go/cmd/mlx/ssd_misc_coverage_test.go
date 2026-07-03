@@ -113,8 +113,15 @@ func TestRunSSDEval_BadInputs_Bad(t *testing.T) {
 		t.Fatalf("bad-flag exit = %d, want 2", code)
 	}
 	stdout, stderr = core.NewBuffer(), core.NewBuffer()
-	if code := runCommand(context.Background(), []string{"ssd-eval", "-samples", "/x", "stray"}, stdout, stderr); code != 2 {
+	code := runCommand(context.Background(), []string{"ssd-eval", "-samples", "/x", "stray"}, stdout, stderr)
+	if code != 2 {
 		t.Fatalf("positional exit = %d, want 2", code)
+	}
+	// Both branches above exit 2; without checking content this test can't
+	// tell "stray positional arg rejected" from "the flag parser choked" —
+	// pin the positional-arg-specific message so the two paths stay distinct.
+	if !strings.Contains(stderr.String(), "expected no positional arguments") {
+		t.Fatalf("stderr = %q, want the no-positional-arguments notice", stderr.String())
 	}
 }
 

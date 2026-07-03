@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -70,9 +71,12 @@ func TestDiscoverLocalRuntime_WithDiscoverableModelDir(t *testing.T) {
 }
 
 func TestSafeRuntimeDeviceInfo_ProbeGate(t *testing.T) {
-	// Default (gate off) → host-reported device info.
+	// Default (gate off) → host-reported device info, matching
+	// metal.HostDeviceInfo() exactly (no native MLX device query).
 	host := safeRuntimeDeviceInfo()
-	_ = host
+	if want := metal.HostDeviceInfo(); host != want {
+		t.Fatalf("safeRuntimeDeviceInfo() (gate off) = %+v, want host-reported %+v", host, want)
+	}
 
 	// Flip the in-code diagnostic gate to exercise the native-probe arm,
 	// restoring it afterwards so no global state leaks.
@@ -80,7 +84,9 @@ func TestSafeRuntimeDeviceInfo_ProbeGate(t *testing.T) {
 	reportDeviceInfoGate = true
 	t.Cleanup(func() { reportDeviceInfoGate = prev })
 	probed := safeRuntimeDeviceInfo()
-	_ = probed
+	if want := GetDeviceInfo(); probed != want {
+		t.Fatalf("safeRuntimeDeviceInfo() (gate on) = %+v, want native probe %+v", probed, want)
+	}
 }
 
 // parentDirOf returns the parent directory of dir using the same path helpers
