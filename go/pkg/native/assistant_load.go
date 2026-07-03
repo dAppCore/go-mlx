@@ -19,6 +19,16 @@ import (
 const nativeAssistantLogitsFloor = -3.4028234663852886e38
 const nativeAssistantDefaultDraftTokens = 4
 
+// nativeAssistantLowAcceptPatience is how many CONSECUTIVE sub-50%-accept blocks the
+// speculative loop tolerates before it gives up and finishes the request with plain
+// target decode. A single weak block is expected — greedy decode of a quant target
+// forks from the drafter's proposal at any near-tie (e.g. "The" vs "Here" as the very
+// first token), which zeroes that one block; the drafter re-syncs on the next block once
+// it re-seeds from the target's committed token. Bailing after just one such block (the
+// previous behaviour) collapsed live acceptance to 0% on any prompt whose first token is
+// a near-tie, even though the same drafter goes on to accept 40-80% of the rest.
+const nativeAssistantLowAcceptPatience = 4
+
 var nativeAssistantByteScratchPools sync.Map
 
 // AssistantModel is the native, CGO-free assistant-only checkpoint
@@ -1456,6 +1466,7 @@ func (pair *AssistantPair) GenerateFromSessionEach(target *ArchSession, promptID
 	lastToken := promptIDs[len(promptIDs)-1]
 	carryLead := int32(-1)
 	stopped := false
+	lowAcceptStreak := 0
 	for len(result.Tokens) < maxNew && !stopped {
 		remaining := maxNew - len(result.Tokens)
 		blockSize := draftTokens
@@ -1516,6 +1527,7 @@ func (pair *AssistantPair) GenerateFromSessionEach(target *ArchSession, promptID
 			break
 		}
 		if verify.AllAccepted {
+			lowAcceptStreak = 0
 			carryLead = -1
 			continue
 		}
@@ -1526,7 +1538,14 @@ func (pair *AssistantPair) GenerateFromSessionEach(target *ArchSession, promptID
 		}
 		result.TargetTokens++
 		lastToken = replacement
-		if !stopped && len(result.Tokens) < maxNew && nativeAssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+		if nativeAssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+			lowAcceptStreak++
+		} else {
+			lowAcceptStreak = 0
+		}
+		// Give up on drafting only after the drafter has stayed weak for several
+		// consecutive blocks — one near-tie block is transient, not a mismatched pair.
+		if !stopped && len(result.Tokens) < maxNew && lowAcceptStreak >= nativeAssistantLowAcceptPatience {
 			if err := nativeAssistantFinishLowAcceptFromTargetCache(target, &result, replacement, maxNew, eosID, suppress, yield); err != nil {
 				return result, err
 			}
@@ -1583,6 +1602,7 @@ func (pair *AssistantPair) GenerateSampledFromSessionEach(target *ArchSession, p
 	history := target.sampleHistoryScratchFor(params, maxNew)
 	finalHistory := history
 	draftSampler := model.NewSampler(0)
+	lowAcceptStreak := 0
 	defer func() { target.sampleHistory = finalHistory }()
 	for len(result.Tokens) < maxNew && !stopped {
 		remaining := maxNew - len(result.Tokens)
@@ -1649,6 +1669,7 @@ func (pair *AssistantPair) GenerateSampledFromSessionEach(target *ArchSession, p
 			break
 		}
 		if verify.AllAccepted {
+			lowAcceptStreak = 0
 			carryLead = -1
 			continue
 		}
@@ -1674,7 +1695,14 @@ func (pair *AssistantPair) GenerateSampledFromSessionEach(target *ArchSession, p
 			carryLead = -1
 			continue
 		}
-		if !stopped && len(result.Tokens) < maxNew && nativeAssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+		if nativeAssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+			lowAcceptStreak++
+		} else {
+			lowAcceptStreak = 0
+		}
+		// One weak block is a transient near-tie, not a mismatched pair — only fall
+		// back to plain target decode after several consecutive weak blocks.
+		if !stopped && len(result.Tokens) < maxNew && lowAcceptStreak >= nativeAssistantLowAcceptPatience {
 			var err error
 			history, err = nativeAssistantFinishLowAcceptSampledFromTargetCache(target, &result, replacement, maxNew, stopTokens, sampler, params, history, yield)
 			if err != nil {

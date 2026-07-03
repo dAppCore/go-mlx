@@ -1904,11 +1904,16 @@ func TestAssistantPairGenerateFromSessionFallsBackAfterLowAcceptFullBlock(t *tes
 	if got.AcceptedTokens != 0 {
 		t.Fatalf("accepted draft tokens = %d, want 0 for zero-accept fixture", got.AcceptedTokens)
 	}
-	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
-		t.Fatalf("draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+	// A single weak block is transient (any near-tie zeroes one block); the loop keeps
+	// drafting and only falls back to plain target decode after nativeAssistantLowAcceptPatience
+	// CONSECUTIVE weak blocks. So a persistently-zero-accept fixture drafts exactly that many
+	// full blocks before the fallback, not just one.
+	if got.DraftCalls != nativeAssistantLowAcceptPatience || got.TargetVerifyCalls != nativeAssistantLowAcceptPatience {
+		t.Fatalf("draft/verify calls = %d/%d, want %d weak blocks before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls, nativeAssistantLowAcceptPatience)
 	}
-	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
-		t.Fatalf("draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
+	wantDrafted := draftTokens * nativeAssistantLowAcceptPatience
+	if got.DraftTokens != wantDrafted || got.RejectedTokens != wantDrafted {
+		t.Fatalf("draft/reject tokens = %d/%d, want %d rejected full blocks of %d", got.DraftTokens, got.RejectedTokens, nativeAssistantLowAcceptPatience, draftTokens)
 	}
 	if got.TargetTokens != len(want) {
 		t.Fatalf("target tokens = %d, want %d", got.TargetTokens, len(want))
@@ -1943,14 +1948,17 @@ func TestAssistantPairGenerateFromSessionUsesFullDraftBlockWithoutProbeRamp(t *t
 	if got.AcceptedTokens != 1 {
 		t.Fatalf("accepted draft tokens = %d, want only the first probe accepted", got.AcceptedTokens)
 	}
-	if got.DraftTokens != draftTokens || got.RejectedTokens == 0 {
-		t.Fatalf("draft/reject tokens = %d/%d, want one full initial block before fallback", got.DraftTokens, got.RejectedTokens)
+	if got.RejectedTokens == 0 {
+		t.Fatalf("rejected tokens = %d, want the weak blocks' proposals rejected", got.RejectedTokens)
 	}
+	// The FIRST block must use the full requested draft size straight away (no probe ramp).
 	if len(got.DraftTokenSchedule) == 0 || got.DraftTokenSchedule[0] != draftTokens {
 		t.Fatalf("draft schedule = %v, want first verify block to use requested draft size %d", got.DraftTokenSchedule, draftTokens)
 	}
-	if got.TargetVerifyCalls != 1 {
-		t.Fatalf("target verify calls = %d, want target-cache fallback after first low-accept block", got.TargetVerifyCalls)
+	// One weak block no longer bails — the loop drafts through nativeAssistantLowAcceptPatience
+	// consecutive weak blocks before falling back to plain target decode.
+	if got.TargetVerifyCalls != nativeAssistantLowAcceptPatience {
+		t.Fatalf("target verify calls = %d, want %d before target-cache fallback", got.TargetVerifyCalls, nativeAssistantLowAcceptPatience)
 	}
 	if target.Pos() != len(prompt)+len(want) {
 		t.Fatalf("target Pos after continued speculative generate = %d, want %d", target.Pos(), len(prompt)+len(want))
@@ -2207,11 +2215,13 @@ func TestAssistantPairGenerateFromSessionEachFallsBackAfterLowAcceptFullBlock(t 
 	if !idsEqual(got.Tokens, want) || !idsEqual(yielded, want) {
 		t.Fatalf("stream fallback tokens got=%v yielded=%v, want %v", got.Tokens, yielded, want)
 	}
-	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
-		t.Fatalf("stream draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+	// Fallback only after nativeAssistantLowAcceptPatience consecutive weak blocks, not one.
+	if got.DraftCalls != nativeAssistantLowAcceptPatience || got.TargetVerifyCalls != nativeAssistantLowAcceptPatience {
+		t.Fatalf("stream draft/verify calls = %d/%d, want %d weak blocks before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls, nativeAssistantLowAcceptPatience)
 	}
-	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
-		t.Fatalf("stream draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
+	wantDrafted := draftTokens * nativeAssistantLowAcceptPatience
+	if got.DraftTokens != wantDrafted || got.RejectedTokens != wantDrafted {
+		t.Fatalf("stream draft/reject tokens = %d/%d, want %d rejected full blocks of %d", got.DraftTokens, got.RejectedTokens, nativeAssistantLowAcceptPatience, draftTokens)
 	}
 	if target.Pos() != len(prompt)+len(want) {
 		t.Fatalf("target Pos after stream low-accept fallback = %d, want %d", target.Pos(), len(prompt)+len(want))
@@ -2372,11 +2382,13 @@ func TestAssistantPairGenerateSampledFromSessionFallsBackAfterLowAcceptFullBlock
 	if got.AcceptedTokens != 0 {
 		t.Fatalf("sampled accepted draft tokens = %d, want 0 for rejected first block", got.AcceptedTokens)
 	}
-	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
-		t.Fatalf("sampled draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+	// Fallback only after nativeAssistantLowAcceptPatience consecutive weak blocks, not one.
+	if got.DraftCalls != nativeAssistantLowAcceptPatience || got.TargetVerifyCalls != nativeAssistantLowAcceptPatience {
+		t.Fatalf("sampled draft/verify calls = %d/%d, want %d weak blocks before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls, nativeAssistantLowAcceptPatience)
 	}
-	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
-		t.Fatalf("sampled draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
+	wantDrafted := draftTokens * nativeAssistantLowAcceptPatience
+	if got.DraftTokens != wantDrafted || got.RejectedTokens != wantDrafted {
+		t.Fatalf("sampled draft/reject tokens = %d/%d, want %d rejected full blocks of %d", got.DraftTokens, got.RejectedTokens, nativeAssistantLowAcceptPatience, draftTokens)
 	}
 	if got.TargetTokens != len(want) {
 		t.Fatalf("sampled target tokens = %d, want %d", got.TargetTokens, len(want))

@@ -583,8 +583,19 @@ func (s *ArchSession) stateLayerViews() ([]sessionStateLayerView, error) {
 	ownerCount := s.ownedStateCacheLayers()
 	icb := s.state.icb != nil
 	if len(s.stateBlockViews) == ownerCount && s.stateBlockViewsICB == icb {
-		if err := s.refreshPagedStateLayerViews(s.stateBlockViews); err != nil {
-			return nil, err
+		// Only a paged-KV session needs its materialised snapshot re-copied — that
+		// snapshot goes stale as decode appends tokens to the pages. An ICB session
+		// keeps its live K/V in the ICB's own cache buffers (snapshotCacheViews
+		// returns those, with the ICB geometry override below), while its paged
+		// caches are allocated-but-unused. Refreshing an ICB session's views from
+		// that empty paged snapshot clears them to zeros (linearSnapshot clear()s
+		// then copies only populated pages, of which there are none) — the MTP
+		// drafter then cross-attends a zeroed target Key and drafts garbage, which
+		// on a quant (ICB) target collapsed speculative acceptance to 0%.
+		if !icb {
+			if err := s.refreshPagedStateLayerViews(s.stateBlockViews); err != nil {
+				return nil, err
+			}
 		}
 		return s.stateBlockViews, nil
 	}

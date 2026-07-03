@@ -12,9 +12,12 @@ import (
 )
 
 // TestAssistantQuantTargetDraftSelfConsistency is the quant-lane extension of the
-// cross-engine MTP parity instrument (pkg/metal/model/gemma4): bf16 targets accept
-// ~50% live after the double-norm + sampled-drafts fixes, but QUANT (4-bit) targets
-// still draft at 0% — so the defect is in the quant session's drafter-facing path.
+// cross-engine MTP parity instrument (pkg/metal/model/gemma4). It was built as a
+// fails-by-design reproducer for the quant-target 0%-acceptance bug and now guards
+// the fix: an ICB (quant) session's stateLayerViews() re-materialised the drafter's
+// K/V views from the session's unused, EMPTY paged cache on every extraction after
+// the first, zeroing the target Key the drafter cross-attends (see probe C and the
+// dedicated regression in assistant_quant_kv_test.go).
 // This is a NATIVE-ONLY discriminator (metal cannot even load the 4-bit E2B target):
 // the SAME drafter is attached to a bf16 session and a 4-bit session of the SAME
 // model, the same prompt is prefilled, and every drafter-facing input is fingerprinted
@@ -35,8 +38,14 @@ func TestAssistantQuantTargetDraftSelfConsistency(t *testing.T) {
 	drafterDir := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
 
 	const draftTokens = 4
-	// the documented -it turn format, matching the cross-engine instrument's prompt.
-	prompt := "<|turn>user\nName the planets of the solar system in order.<turn|>\n<|turn>model\n"
+	// A deterministic prompt whose opening tokens the bf16 and 4-bit targets agree on.
+	// Stage D is a SINGLE draft block at the prompt boundary: greedy decode forks from
+	// the drafter's proposal at any near-tie, so a prompt whose very first token is a
+	// quantisation near-tie (e.g. "Name the planets…" → bf16 opens "The", the 4-bit
+	// target opens "Here") makes the quant target reject the whole block for reasons
+	// unrelated to the drafter-facing inputs under test. This factual-recall prompt has
+	// no such first-token fork, so a healthy quant drafter is accepted just like bf16.
+	prompt := "<|turn>user\nWhat is the capital of France?<turn|>\n<|turn>model\n"
 
 	load := func(dir string) (*ArchSession, *AssistantPair, []int32) {
 		t.Helper()
