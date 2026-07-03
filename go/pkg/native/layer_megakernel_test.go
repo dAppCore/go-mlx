@@ -39,7 +39,7 @@ func layerMegaPipeline() (metal.MTLComputePipelineState, error) {
 
 type layerDims struct {
 	dModel, nHeads, nKVHeads, headDim, dFF, pos, numTG, maxSpin uint32
-	scale, eps                                                 float32
+	scale, eps                                                  float32
 }
 
 // TestLayerMegakernel validates a WHOLE gemma decode layer in ONE dispatch — attention half (RMSNorm → QKV

@@ -61,7 +61,7 @@ func TestNoCopyMisalignedWeightReadsCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := loadedToBF16(lm) // the same conversion LoadDir runs — no byte copy, keeps the mmap views
+	g := loadedToBF16(lm)      // the same conversion LoadDir runs — no byte copy, keeps the mmap views
 	w := g.Layers[0].AttnNormW // L0 input_layernorm — a no-copy view into the mmap
 	dModel := arch.Hidden
 
@@ -100,8 +100,8 @@ func TestNoCopyMisalignedWeightReadsCorrectly(t *testing.T) {
 			copy(r, unsafe.Slice((*byte)(outBuf.Contents()), dModel*bf16Size))
 			return r
 		}
-		outFix = run(bv.buf, bv.off)      // what bufFor resolved (no-copy if aligned, owned copy if not)
-		outCopy = run(sharedBytes(w), 0)  // control: the weight copied into a fresh aligned buffer
+		outFix = run(bv.buf, bv.off)     // what bufFor resolved (no-copy if aligned, owned copy if not)
+		outCopy = run(sharedBytes(w), 0) // control: the weight copied into a fresh aligned buffer
 	})
 	nan := 0
 	for i := 0; i+1 < len(outFix); i += 2 {
