@@ -11,8 +11,15 @@ package gemma4
 // layer. Bench both paths at
 // matched head counts so the cost differential is directly visible:
 //
-//   Local layer:  [B=1, H=8, L=512, D=128]     scale = 1/sqrt(128)
-//   Global layer: [B=1, H=4, L=context, D=256] scale = 1/sqrt(256)
+//   Local layer:  [B=1, H=8, L=512, D=256]     scale = 1/sqrt(256)
+//   Global layer: [B=1, H=4, L=context, D=512] scale = 1/sqrt(512)
+//
+// D values corrected 2026-07: every real gemma-4 pack (E2B/E4B/12B/26B/31B)
+// declares head_dim=256 for sliding_attention layers and global_head_dim=512
+// for full_attention layers (load.go: HeadDim defaults from the declared
+// config, then "if !isSliding && cfg.GlobalHeadDim > 0 { headDim =
+// cfg.GlobalHeadDim }" overrides it on full-attention layers only). The prior
+// D=128/D=256 pairing measured exactly half the real width on both branches.
 //
 // Both branches: causal vs masked variants. Masked is the realistic
 // long-context decode path (offset-causal mask via
@@ -55,10 +62,10 @@ func makeAttention4DAsymm(B, H, queryLen, keyLen, D int32) (q, k, v *metal.Array
 	return
 }
 
-// --- Gemma 4 local layer (5/6 of layers — E2B/E4B sliding window 512) ---
+// --- Gemma 4 local layer (5/6 of layers — sliding window, head_dim 256) ---
 
 func BenchmarkAttention_LocalWindow_Prefill_512(b *testing.B) {
-	const B, H, L, D = 1, 8, 512, 128
+	const B, H, L, D = 1, 8, 512, 256
 	q, k, v := makeAttention4D(B, H, L, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -73,7 +80,7 @@ func BenchmarkAttention_LocalWindow_Prefill_512(b *testing.B) {
 
 // Decode shape: Q=1 token against K/V cache of 512 (full local window).
 func BenchmarkAttention_LocalWindow_Decode_Q1_K512(b *testing.B) {
-	const B, H, D = 1, 8, 128
+	const B, H, D = 1, 8, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 512, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -88,7 +95,7 @@ func BenchmarkAttention_LocalWindow_Decode_Q1_K512(b *testing.B) {
 
 // Decode shape: Q=1 with K/V at 256 — half-filled local window.
 func BenchmarkAttention_LocalWindow_Decode_Q1_K256(b *testing.B) {
-	const B, H, D = 1, 8, 128
+	const B, H, D = 1, 8, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 256, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -101,10 +108,10 @@ func BenchmarkAttention_LocalWindow_Decode_Q1_K256(b *testing.B) {
 	}
 }
 
-// --- Gemma 4 global layer (1/6 of layers — full attention, p-RoPE) ---
+// --- Gemma 4 global layer (1/6 of layers — full attention, p-RoPE, global_head_dim 512) ---
 
 func BenchmarkAttention_Global_Prefill_1k(b *testing.B) {
-	const B, H, L, D = 1, 4, 1024, 256
+	const B, H, L, D = 1, 4, 1024, 512
 	q, k, v := makeAttention4D(B, H, L, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -118,7 +125,7 @@ func BenchmarkAttention_Global_Prefill_1k(b *testing.B) {
 }
 
 func BenchmarkAttention_Global_Prefill_4k(b *testing.B) {
-	const B, H, L, D = 1, 4, 4096, 256
+	const B, H, L, D = 1, 4, 4096, 512
 	q, k, v := makeAttention4D(B, H, L, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -132,7 +139,7 @@ func BenchmarkAttention_Global_Prefill_4k(b *testing.B) {
 }
 
 func BenchmarkAttention_Global_Prefill_16k(b *testing.B) {
-	const B, H, L, D = 1, 4, 16384, 256
+	const B, H, L, D = 1, 4, 16384, 512
 	q, k, v := makeAttention4D(B, H, L, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -148,7 +155,7 @@ func BenchmarkAttention_Global_Prefill_16k(b *testing.B) {
 // Note: 32k prefill SDPA may exhaust unified memory on small machines —
 // reserve for sustained runs.
 func BenchmarkAttention_Global_Prefill_32k(b *testing.B) {
-	const B, H, L, D = 1, 4, 32768, 256
+	const B, H, L, D = 1, 4, 32768, 512
 	q, k, v := makeAttention4D(B, H, L, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -165,7 +172,7 @@ func BenchmarkAttention_Global_Prefill_32k(b *testing.B) {
 // hot path during retained-state streaming — Q is small but K is huge,
 // so memory bandwidth on K dominates.
 func BenchmarkAttention_Global_Decode_Q1_K1k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	q, k, v := makeAttention4DAsymm(B, H, 1, 1024, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -186,7 +193,7 @@ func BenchmarkAttention_Global_Decode_Q1_K1k(b *testing.B) {
 // kernel cost below the floor. This is the instrument for "is the native decode
 // kernel optimisable, or already at its bandwidth/compute floor?".
 func BenchmarkAttention_Global_Decode_Q1_K1k_Batched256(b *testing.B) {
-	const B, H, D, N = 1, 4, 256, 256
+	const B, H, D, N = 1, 4, 512, 256
 	q0, k, v := makeAttention4DAsymm(B, H, 1, 1024, D)
 	defer metal.Free(q0, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -207,7 +214,7 @@ func BenchmarkAttention_Global_Decode_Q1_K1k_Batched256(b *testing.B) {
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K4k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	q, k, v := makeAttention4DAsymm(B, H, 1, 4096, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -221,7 +228,7 @@ func BenchmarkAttention_Global_Decode_Q1_K4k(b *testing.B) {
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K16k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	q, k, v := makeAttention4DAsymm(B, H, 1, 16384, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -235,7 +242,7 @@ func BenchmarkAttention_Global_Decode_Q1_K16k(b *testing.B) {
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K32k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	q, k, v := makeAttention4DAsymm(B, H, 1, 32768, D)
 	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
@@ -254,7 +261,7 @@ func BenchmarkAttention_Global_Decode_Q1_K32k(b *testing.B) {
 // cache in Gemma 4 dispatches when sliding-window or partial-context
 // constraints can't be inferred from causal=true alone.
 func BenchmarkAttention_WithMask_Decode_Q1_K4k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	const keyLen = 4096
 	q, k, v := makeAttention4DAsymm(B, H, 1, keyLen, D)
 	defer metal.Free(q, k, v)
@@ -274,7 +281,7 @@ func BenchmarkAttention_WithMask_Decode_Q1_K4k(b *testing.B) {
 }
 
 func BenchmarkAttention_WithMask_Decode_Q1_K16k(b *testing.B) {
-	const B, H, D = 1, 4, 256
+	const B, H, D = 1, 4, 512
 	const keyLen = 16384
 	q, k, v := makeAttention4DAsymm(B, H, 1, keyLen, D)
 	defer metal.Free(q, k, v)

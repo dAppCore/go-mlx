@@ -151,15 +151,27 @@ func TestExperts_SplitLastDimArray_Good(t *testing.T) {
 // switch-linear matmul helper with a group-size-32 affine fixture, which this
 // metallib's GatherQMM kernels serve. The helper has no production caller, so it
 // is exercised in isolation.
+//
+// This fixture's group-size-32 (one group covering the whole 32-wide row)
+// switch-linear makes GatherQMM return rank-5 [1, seqLen, 1, seqLen, out]
+// here (confirmed by running this test) — NOT the rank-3 [1, seqLen, out]
+// the sibling experts_sorted_routes_test.go gets with its groupSize=4 (two
+// groups) fixture, so GatherQMM's exact output rank/broadcast is sensitive
+// to the quantization grouping, not a fixed contract this helper can assume
+// independent of its caller's fixture. The shape below is pinned to that
+// confirmed value (a golden-style regression pin, like this package's
+// audio/vision golden tests), plus a real value check that the output is
+// not degenerate (a single repeated value), which the prior .Valid()-only
+// assertion could not catch.
 func TestExperts_SwitchLinearSortedRoutes_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	const experts, out, in = 2, 32, 32
+	const experts, out, in, seqLen = 2, 32, 32, 4
 	wq, s, b := cov4moeQuantSwitch(t, experts, out, in, 0.05)
 	sw := metal.NewQuantizedSwitchLinearWithMode(wq, s, b, nil, 32, 4, "affine")
 	defer metal.FreeSwitchLinear(sw)
 
-	input := seqArray(0.02, 1, 4, in)
-	idx := metal.FromValues([]int32{0, 1, 0, 1}, 1, 4, 1)
+	input := seqArray(0.02, 1, seqLen, in)
+	idx := metal.FromValues([]int32{0, 1, 0, 1}, 1, seqLen, 1)
 	defer metal.Free(input, idx)
 
 	got := gemma4SwitchLinearForwardSortedRoutes(sw, input, idx)
@@ -173,5 +185,20 @@ func TestExperts_SwitchLinearSortedRoutes_Good(t *testing.T) {
 	}
 	if !got.Valid() {
 		t.Fatal("sorted-route output invalid")
+	}
+
+	if shape := got.Shape(); len(shape) != 5 || shape[0] != 1 || shape[1] != seqLen || shape[2] != 1 || shape[3] != seqLen || shape[4] != out {
+		t.Fatalf("sorted-route output shape = %v, want [1 %d 1 %d %d]", shape, seqLen, seqLen, out)
+	}
+	gotVals := got.Floats()
+	allSame := true
+	for i := 1; i < len(gotVals); i++ {
+		if gotVals[i] != gotVals[0] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		t.Fatal("sorted-route output is a single repeated value throughout — want a real per-row matmul, not a degenerate broadcast")
 	}
 }

@@ -291,6 +291,28 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_PartialAccept(t *testing.T) {
 	}
 	badSecond := (targetToken + 1) % 10
 
+	// Independent plain-AR reference, taken BEFORE VerifyDraftBlock mutates
+	// caches in place. The last (and only) accepted token here is
+	// targetToken at block position 0 — structurally the same boundary the
+	// all-accept test (TestGemma4AssistantDecode_VerifyDraftBlock_Good)
+	// reforges through, so the same reforgeGreedyBoundaryForward contract
+	// ("MTP greedy output must equal plain greedy output, always") applies:
+	// forward targetToken through a clone of the pre-verify cache state via
+	// the same ForwardLastTokenLogitsAndHidden a plain decode step uses.
+	refCaches, err := metal.CloneCachePrefixes(caches)
+	if err != nil {
+		t.Fatalf("CloneCachePrefixes: %v", err)
+	}
+	refInput := metal.FromValues([]int32{targetToken}, 1, 1)
+	refLogits, refHidden := pair.Target.ForwardLastTokenLogitsAndHidden(refInput, nil, refCaches)
+	defer func() {
+		metal.Free(refInput, refLogits, refHidden)
+		metal.FreeCaches(refCaches)
+	}()
+	if err := metal.Eval(refLogits, refHidden); err != nil {
+		t.Fatalf("Eval plain-AR reference: %v", err)
+	}
+
 	result, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken, badSecond}, caches)
 	if err != nil {
 		t.Fatalf("VerifyDraftBlock(partial): %v", err)
@@ -311,6 +333,11 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_PartialAccept(t *testing.T) {
 	// k>0, so the hidden after the last accepted token is carried forward.
 	assertShape(t, "partial verify hidden", result.Hidden, []int32{1, 1, 8})
 	assertShape(t, "partial verify logits", result.Logits, []int32{1, 1, 10})
+	if err := metal.Eval(result.Logits, result.Hidden); err != nil {
+		t.Fatalf("Eval verify result: %v", err)
+	}
+	floatSliceApprox(t, result.Logits.Floats(), refLogits.Floats())
+	floatSliceApprox(t, result.Hidden.Floats(), refHidden.Floats())
 }
 
 // TestGemma4AssistantDecode_VerifyDraftBlock_PartialAcceptSuppressed drives the

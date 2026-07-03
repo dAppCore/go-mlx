@@ -738,7 +738,7 @@ func TestGemma4_ParseConfig_FamilyVariants_Good(t *testing.T) {
 			layerPattern:            6,
 			fullLayers:              7,
 			slidingLayers:           35,
-			useDoubleWideMLP:        true,
+			useDoubleWideMLP:        false,
 		},
 		{
 			name:                  "12B Unified",

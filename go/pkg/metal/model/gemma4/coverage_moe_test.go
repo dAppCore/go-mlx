@@ -5,6 +5,7 @@
 package gemma4
 
 import (
+	"math"
 	"testing"
 
 	core "dappco.re/go"
@@ -169,8 +170,13 @@ func TestMoE_FusedGateUpForward_Good(t *testing.T) {
 	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval fused MoE logits: %v", err)
 	}
-	metal.Free(tokens, logits)
-	metal.FreeCaches(caches)
+	defer func() {
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
+	}()
+	if shape := logits.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != 10 {
+		t.Fatalf("fused MoE logits shape = %v, want [1 1 10]", shape)
+	}
 }
 
 // TestMoE_CompiledLayerDecode_Good drives the MoE arm of the compiled layer
@@ -198,10 +204,15 @@ func TestMoE_CompiledLayerDecode_Good(t *testing.T) {
 
 // TestMoE_RouterForwardFallback_Good drives Gemma4Router.forward directly with a
 // shape NativeMoERouterTopK cannot fuse, exercising the generic argpartition +
-// softmax + per-expert-scale fallback arm.
+// softmax + per-expert-scale fallback arm (router.go: Argpartition +
+// TakeAlongAxis + Softmax + PerExpertScale multiply). Asserts the real
+// contract, not just handle validity: indices are valid expert ids and, since
+// PerExpertScale is all-ones here, each token's top-k weights sum to 1 (the
+// fallback's softmax normalisation) — a routing bug that picked
+// out-of-range experts or skipped the softmax would fail this.
 func TestMoE_RouterForwardFallback_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	const experts = 4
+	const experts, numTokens, topK = 4, 3, 2
 	// router proj [E, H]; scores come out [..., E].
 	dense := seqArray(0.05, experts, 32)
 	wq, s, b, err := metal.Quantize(dense, 32, 4, "affine")
@@ -218,17 +229,40 @@ func TestMoE_RouterForwardFallback_Good(t *testing.T) {
 		Scale:          gemma4Ones([]int32{32}),
 		PerExpertScale: gemma4Ones([]int32{experts}),
 		RootSize:       0.5,
-		TopK:           2,
+		TopK:           topK,
 		Eps:            1e-6,
 	}
 	defer metal.Free(r.Scale, r.PerExpertScale)
 
-	x := seqArray(0.01, 1, 3, 32) // multi-token so the native fused top-k declines
+	x := seqArray(0.01, 1, numTokens, 32) // multi-token so the native fused top-k declines
 	defer metal.Free(x)
 	idx, w := r.forward(x)
 	defer metal.Free(idx, w)
-	metal.Materialize(idx, w)
-	if !idx.Valid() || !w.Valid() {
-		t.Fatal("router forward produced invalid top-k outputs")
+	if err := metal.Eval(idx, w); err != nil {
+		t.Fatalf("Eval router fallback outputs: %v", err)
+	}
+
+	if shape := idx.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != numTokens || shape[2] != topK {
+		t.Fatalf("idx shape = %v, want [1 %d %d]", shape, numTokens, topK)
+	}
+	if shape := w.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != numTokens || shape[2] != topK {
+		t.Fatalf("w shape = %v, want [1 %d %d]", shape, numTokens, topK)
+	}
+
+	idxVals := idx.DataInt32()
+	for i, v := range idxVals {
+		if v < 0 || v >= experts {
+			t.Fatalf("idx[%d] = %d, want an expert index in [0, %d)", i, v, experts)
+		}
+	}
+	wVals := w.Floats()
+	for tok := 0; tok < numTokens; tok++ {
+		sum := float32(0)
+		for k := 0; k < topK; k++ {
+			sum += wVals[tok*topK+k]
+		}
+		if math.Abs(float64(sum)-1.0) > 1e-4 {
+			t.Fatalf("token %d top-%d weights sum = %v, want ~1.0 (softmax-normalised, PerExpertScale=1)", tok, topK, sum)
+		}
 	}
 }

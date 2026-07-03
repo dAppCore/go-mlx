@@ -36,9 +36,15 @@ func benchMakeQ4Switch(experts, outDim, inDim int) *metal.SwitchLinear {
 
 // benchmarkGemma4ExpertsDecode measures the REAL MoE expert decode path
 // (Gemma4Experts.forward: gate+up+down GatherQMM over top-k experts + GELU +
-// weighted sum) — the bulk of e4b's per-token cost. Single token, chained, one
-// Eval, so ns/op / N = real per-token expert cost below the sync floor. Run at
-// topK 1/2/4: if per-call scales ~linearly with topK the cost is the per-expert
+// weighted sum) — the bulk of 26B-A4B's per-token expert cost (the ONLY
+// gemma-4 size with MoE; E2B/E4B/12B/31B are all dense and never run this
+// path — a prior version of this comment mislabelled it "e4b"). Single token,
+// chained, one Eval, so ns/op / N = real per-token expert cost below the sync
+// floor. Run at topK 1/2/4 as a scaling diagnostic (the real 26B-A4B config
+// declares top_k_experts=8 out of num_experts=128 — see the experts/hidden/
+// moeDim constants below, which now match that real config's
+// hidden_size=2816 / moe_intermediate_size=704 rather than arbitrary toy
+// values): if per-call scales ~linearly with topK the cost is the per-expert
 // gather (inherent); if it's ~flat there's large FIXED overhead (the combine /
 // 5D reshape / gather setup) that's the fixable target.
 func benchmarkGemma4ExpertsDecode(b *testing.B, experts, hidden, moeDim, topK, n int) {
@@ -87,14 +93,21 @@ func benchmarkGemma4ExpertsDecode(b *testing.B, experts, hidden, moeDim, topK, n
 	}
 }
 
+// experts=128, hidden=2816, moeDim=704 match the real 26B-A4B MoE config
+// (num_experts / hidden_size / moe_intermediate_size); topK is swept below
+// 1/2/4 as the scaling diagnostic, plus 8 for the real deployment's
+// top_k_experts.
 func BenchmarkGemma4Experts_Decode_Q4_TopK1_Batched32(b *testing.B) {
-	benchmarkGemma4ExpertsDecode(b, 8, 2048, 8192, 1, 32)
+	benchmarkGemma4ExpertsDecode(b, 128, 2816, 704, 1, 32)
 }
 func BenchmarkGemma4Experts_Decode_Q4_TopK2_Batched32(b *testing.B) {
-	benchmarkGemma4ExpertsDecode(b, 8, 2048, 8192, 2, 32)
+	benchmarkGemma4ExpertsDecode(b, 128, 2816, 704, 2, 32)
 }
 func BenchmarkGemma4Experts_Decode_Q4_TopK4_Batched32(b *testing.B) {
-	benchmarkGemma4ExpertsDecode(b, 8, 2048, 8192, 4, 32)
+	benchmarkGemma4ExpertsDecode(b, 128, 2816, 704, 4, 32)
+}
+func BenchmarkGemma4Experts_Decode_Q4_TopK8_Batched32(b *testing.B) {
+	benchmarkGemma4ExpertsDecode(b, 128, 2816, 704, 8, 32)
 }
 
 // Direct GatherQMM shape probe: is the 5D input experts.go feeds the gather
@@ -104,7 +117,8 @@ func BenchmarkGemma4Experts_Decode_Q4_TopK4_Batched32(b *testing.B) {
 // AND produces the same logits (checked in a separate test), the 5D expand is the
 // fixable overhead; if it errors, the rank is required by gather_qmm.
 func benchmarkExpertGatherQMMShape(b *testing.B, rank, n int) {
-	const experts, hidden, moeDim, topK = 8, 2048, 8192, 2
+	// Real 26B-A4B MoE config shape (num_experts/hidden_size/moe_intermediate_size).
+	const experts, hidden, moeDim, topK = 128, 2816, 704, 2
 	gate := benchMakeQ4Switch(experts, moeDim, hidden)
 	defer metal.FreeSwitchLinear(gate)
 	idx := make([]int32, topK)

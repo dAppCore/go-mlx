@@ -11,12 +11,10 @@ import (
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
-// TestGemma4Capabilities_Good proves the cache + prompt capabilities the engine
-// dispatches on instead of a Gemma-4 family-name check: a build that declares a
-// sliding window uses the fixed sliding-window cache (derived from config, not
-// assumed), and only the large variants (num_attention_heads >= 16) need the
-// thought-channel suppressor.
-func TestGemma4Capabilities_Good(t *testing.T) {
+// TestGemma4Capabilities_UsesFixedSlidingCache_Good proves the fixed-sliding
+// cache decision is derived from config (a declared sliding window), not a
+// Gemma-4 family-name check.
+func TestGemma4Capabilities_UsesFixedSlidingCache_Good(t *testing.T) {
 	hybrid := &gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{SlidingWindow: 1024}}
 	if !hybrid.UsesFixedSlidingCache() {
 		t.Fatal("UsesFixedSlidingCache() = false, want true for a sliding-window Gemma-4 build")
@@ -24,7 +22,13 @@ func TestGemma4Capabilities_Good(t *testing.T) {
 	if (&gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{}}).UsesFixedSlidingCache() {
 		t.Fatal("UsesFixedSlidingCache() = true, want false for a build with no sliding window")
 	}
+}
 
+// TestGemma4Capabilities_NeedsThoughtChannelSuppressor_Good proves only the
+// large variants (num_attention_heads >= 16) need the thought-channel
+// suppressor, derived from config, and that a nil Cfg answers false rather
+// than panicking.
+func TestGemma4Capabilities_NeedsThoughtChannelSuppressor_Good(t *testing.T) {
 	large := &gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{NumAttentionHeads: 16}}}
 	if !large.NeedsThoughtChannelSuppressor() {
 		t.Fatal("NeedsThoughtChannelSuppressor(heads=16) = false, want true for the large variant")

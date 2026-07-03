@@ -80,6 +80,9 @@ func TestDiffusionServe_GenerateBlockDiffusion_Good(t *testing.T) {
 			break // consumer stop exercises the yield=false cancel path
 		}
 	}
+	if count == 0 {
+		t.Fatal("GenerateBlockDiffusion yielded no tokens, want at least one canvas token")
+	}
 	// after the run the readbacks reflect it (no terminal error path here).
 	if err := m.BlockDiffusionErr(); err != nil {
 		t.Fatalf("BlockDiffusionErr after run = %v, want nil", err)
@@ -94,9 +97,14 @@ func TestDiffusionServe_GenerateBlockDiffusion_NilCtx_Good(t *testing.T) {
 	opts := metal.BlockDiffusionOptions{MaxTokens: 64, Temperature: 0.5, Seed: 3, SeedSet: true}
 	//nolint:staticcheck // exercising the nil-ctx fallback deliberately
 	seq := m.GenerateBlockDiffusion(nil, "hello world", opts)
+	count := 0
 	for tok := range seq {
 		_ = tok
+		count++
 		break // first canvas is enough to cover the body
+	}
+	if count == 0 {
+		t.Fatal("GenerateBlockDiffusion(nil ctx) yielded no tokens, want the nil-ctx fallback to still produce a canvas")
 	}
 	if err := m.BlockDiffusionErr(); err != nil {
 		t.Fatalf("BlockDiffusionErr = %v, want nil", err)

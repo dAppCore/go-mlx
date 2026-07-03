@@ -86,6 +86,31 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
 		t.Fatalf("metal.Greedy target token: %v", err)
 	}
 
+	// Independent plain-AR reference, taken BEFORE VerifyDraftBlock mutates
+	// caches in place: clone the post-prefill cache state and forward
+	// targetToken through it directly via the same
+	// ForwardLastTokenLogitsAndHidden a plain decode step uses. This is the
+	// exact contract the reforge fix (reforgeGreedyBoundaryForward,
+	// assistant_verify.go) exists to guarantee — "MTP greedy output must
+	// equal plain greedy output, always" — a single-token all-accept verify
+	// always takes that reforge branch (acceptedCount>0, Sampler==nil), so
+	// this proves the reforged Logits/Hidden are numerically right, not just
+	// correctly shaped (a reforge that used the wrong cache offset or the
+	// wrong single-token path would still pass a shape-only check).
+	refCaches, err := metal.CloneCachePrefixes(caches)
+	if err != nil {
+		t.Fatalf("CloneCachePrefixes: %v", err)
+	}
+	refInput := metal.FromValues([]int32{targetToken}, 1, 1)
+	refLogits, refHidden := pair.Target.ForwardLastTokenLogitsAndHidden(refInput, nil, refCaches)
+	defer func() {
+		metal.Free(refInput, refLogits, refHidden)
+		metal.FreeCaches(refCaches)
+	}()
+	if err := metal.Eval(refLogits, refHidden); err != nil {
+		t.Fatalf("Eval plain-AR reference: %v", err)
+	}
+
 	result, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken}, caches)
 	if err != nil {
 		t.Fatalf("VerifyDraftBlock: %v", err)
@@ -102,6 +127,11 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
 	}
 	assertShape(t, "verify logits", result.Logits, []int32{1, 1, 10})
 	assertShape(t, "verify hidden", result.Hidden, []int32{1, 1, 8})
+	if err := metal.Eval(result.Logits, result.Hidden); err != nil {
+		t.Fatalf("Eval verify result: %v", err)
+	}
+	floatSliceApprox(t, result.Logits.Floats(), refLogits.Floats())
+	floatSliceApprox(t, result.Hidden.Floats(), refHidden.Floats())
 	if got := gemma4AssistantCacheOffsets(caches); !gemma4AssistantIntSlicesEqual(got, offsets) {
 		t.Fatalf("source cache offsets = %v, want unchanged %v", got, offsets)
 	}

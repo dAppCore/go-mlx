@@ -30,10 +30,11 @@ func TestVisionForward_RoPEAndTranspose_FallbackSmallDim_Good(t *testing.T) {
 
 	const B, L, N, D = int32(1), int32(4), int32(2), int32(2) // D<4 forces fallback
 	const gridH, gridW = int32(2), int32(2)                   // gridH*gridW == L
+	const base = 10000.0
 	x := seqArray(0.05, int(B), int(L), int(N), int(D))
 	defer metal.Free(x)
 
-	out := gemma4VisionRoPEAndTranspose(x, gridH, gridW, 10000.0, D)
+	out := gemma4VisionRoPEAndTranspose(x, gridH, gridW, base, D)
 	if out == nil || !out.Valid() {
 		t.Fatal("gemma4VisionRoPEAndTranspose(D<4) returned nil, want the transpose+RoPE fallback")
 	}
@@ -44,6 +45,45 @@ func TestVisionForward_RoPEAndTranspose_FallbackSmallDim_Good(t *testing.T) {
 
 	// Transpose4(0,2,1,3) swaps L and N: [B, L, N, D] -> [B, N, L, D].
 	assertShape(t, "rope fallback", out, []int32{B, N, L, D})
+
+	// Independent value reference: the fallback arm is documented (and its
+	// source confirms) as "a plain rank-4 transpose followed by metal.RoPE
+	// over the head dim" — reproduce exactly that via the SAME public
+	// primitives, authored here rather than read back from the function
+	// under test, so a regression that changes the transpose axes, the
+	// traditional flag, or the base would fail this (a shape-only check
+	// cannot catch that; an identity/no-op "RoPE" would still pass shape).
+	wantTransposed := metal.Transpose4(x, 0, 2, 1, 3)
+	want := metal.RoPE(wantTransposed, int(D), false, base, 1.0, 0)
+	defer metal.Free(wantTransposed, want)
+	if err := metal.Eval(want); err != nil {
+		t.Fatalf("Eval reference rope: %v", err)
+	}
+	floatSliceApprox(t, out.Floats(), want.Floats())
+
+	// And prove the rotation is not a no-op relative to a plain transpose
+	// (L=4 means 3 of the 4 positions get a non-trivial rotation at base
+	// 10000 with this non-zero input).
+	plainTransposed := metal.Transpose4(x, 0, 2, 1, 3)
+	defer metal.Free(plainTransposed)
+	if err := metal.Eval(plainTransposed); err != nil {
+		t.Fatalf("Eval plain transpose: %v", err)
+	}
+	sameAsPlain := true
+	outVals, plainVals := out.Floats(), plainTransposed.Floats()
+	for i := range outVals {
+		diff := outVals[i] - plainVals[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff >= floatApproxTol {
+			sameAsPlain = false
+			break
+		}
+	}
+	if sameAsPlain {
+		t.Fatal("fallback rope output matches a plain (unrotated) transpose — the RoPE arm made no observable difference")
+	}
 }
 
 // TestVisionForward_RoPEAndTranspose_TwoDimPath_Good pins the IF arm for
@@ -57,10 +97,11 @@ func TestVisionForward_RoPEAndTranspose_TwoDimPath_Good(t *testing.T) {
 
 	const B, L, N, D = int32(1), int32(4), int32(2), int32(4) // D>=4 keeps the 2-D arm
 	const gridH, gridW = int32(2), int32(2)
+	const base = 10000.0
 	x := seqArray(0.03, int(B), int(L), int(N), int(D))
 	defer metal.Free(x)
 
-	out := gemma4VisionRoPEAndTranspose(x, gridH, gridW, 10000.0, D)
+	out := gemma4VisionRoPEAndTranspose(x, gridH, gridW, base, D)
 	if out == nil || !out.Valid() {
 		t.Fatal("gemma4VisionRoPEAndTranspose(D>=4) returned nil, want the 2-D rotary arm")
 	}
@@ -70,6 +111,35 @@ func TestVisionForward_RoPEAndTranspose_TwoDimPath_Good(t *testing.T) {
 	}
 
 	assertShape(t, "rope 2-D", out, []int32{B, N, L, D})
+
+	// Prove the 2-D rotary arm is not a silent no-op: a plain transpose
+	// WITHOUT any rotation must differ from the actual output (any patch
+	// position off the grid origin gets a non-trivial 2-D rotation at base
+	// 10000 with this non-zero input). This does not re-derive the full 2-D
+	// rotation formula (gemma4VisionApply2DRoPE's x/y split + sin/cos mix is
+	// substantial machinery of its own, unverified independently anywhere in
+	// this cluster) — it catches the coarser but still real regression class
+	// "the 2-D arm silently stopped rotating".
+	plainTransposed := metal.Transpose4(x, 0, 2, 1, 3)
+	defer metal.Free(plainTransposed)
+	if err := metal.Eval(plainTransposed); err != nil {
+		t.Fatalf("Eval plain transpose: %v", err)
+	}
+	sameAsPlain := true
+	outVals, plainVals := out.Floats(), plainTransposed.Floats()
+	for i := range outVals {
+		diff := outVals[i] - plainVals[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff >= floatApproxTol {
+			sameAsPlain = false
+			break
+		}
+	}
+	if sameAsPlain {
+		t.Fatal("2-D rope output matches a plain (unrotated) transpose — the 2-D rotary arm made no observable difference")
+	}
 }
 
 // TestVisionForward_Apply2DRoPE_RankTooLow_Ugly pins the rank guard of

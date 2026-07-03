@@ -16,10 +16,6 @@ import (
 )
 
 func TestDecode_nativeFixedSingleTokenAttentionMasked_Good(t *testing.T) {
-	target := "NativeFixedSingleTokenAttention masked"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	query := FromValues([]float32{1, 0}, 1, 1, 1, 2)
@@ -66,10 +62,6 @@ func TestDecode_nativeFixedSingleTokenAttentionMasked_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
-	target := "NativeFixedSingleTokenAttention row update"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
 	t.Cleanup(SetFixedAttentionDiagnostics(false, false, true))
 	requireMetalRuntime(t)
 

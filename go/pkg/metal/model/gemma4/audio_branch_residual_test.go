@@ -74,6 +74,13 @@ func audioExampleWeights() map[string]*metal.Array {
 // output bounds clamps its input before the matmul and its output after. The
 // uncovered arm is exactly use_clipped_linears=true, which the synthetic tower
 // (no recorded bounds) never sets.
+//
+// The output-clamp check alone cannot fail even if the input-clamp arm were
+// silently dropped (out.Forward's OutputMin/Max clip runs unconditionally
+// last, so every result lands in [-1,1] regardless), so this also builds two
+// independent references through the SAME linear weight — one honouring the
+// input clamp, one not — and asserts Forward's real output matches the
+// clamped reference and genuinely differs from the unclamped one.
 func TestAudio_ClippableLinear_Forward_InputAndOutputClip_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
@@ -106,6 +113,40 @@ func TestAudio_ClippableLinear_Forward_InputAndOutputClip_Good(t *testing.T) {
 		if v < -1.0001 || v > 1.0001 {
 			t.Fatalf("clipped-linear output[%d] = %v, want within [-1, 1] (output clamp arm not applied)", i, v)
 		}
+	}
+
+	// Reference A: input clamped then matmul then output clamped — what
+	// Forward should compute.
+	preclipped := metal.Clip(x, clip.InputMin, clip.InputMax)
+	withClampOut := lin.Forward(preclipped)
+	withClampClipped := metal.Clip(withClampOut, clip.OutputMin, clip.OutputMax)
+	defer metal.Free(preclipped, withClampOut, withClampClipped)
+
+	// Reference B: matmul on the RAW (unclamped) input, then output clamped —
+	// what a regression that dropped the input-clamp arm would compute.
+	noClampOut := lin.Forward(x)
+	noClampClipped := metal.Clip(noClampOut, clip.OutputMin, clip.OutputMax)
+	defer metal.Free(noClampOut, noClampClipped)
+
+	if err := metal.Eval(withClampClipped, noClampClipped); err != nil {
+		t.Fatalf("Eval reference clamps: %v", err)
+	}
+	floatSliceApprox(t, out.Floats(), withClampClipped.Floats())
+
+	gotVals, noClampVals := out.Floats(), noClampClipped.Floats()
+	differs := false
+	for i := range gotVals {
+		diff := gotVals[i] - noClampVals[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff >= floatApproxTol {
+			differs = true
+			break
+		}
+	}
+	if !differs {
+		t.Fatal("clippable-linear output matches the no-input-clamp reference — the input clamp arm made no observable difference")
 	}
 }
 
@@ -166,14 +207,24 @@ func TestAudio_buildGemma4AudioProjector_NoProjection_Bad(t *testing.T) {
 
 // TestAudio_sanitizeGemma4AudioWeights_DuplicateCanonical_Ugly drives the
 // duplicate-canonical-name arm: two raw keys that strip to the same canonical
-// audio name (a wrapper-prefixed twin and the bare name) collide, so the earlier
-// array is freed and the later wins — the sanitizer must not leak the loser.
+// audio name (a wrapper-prefixed twin and the bare name) collide, so one array
+// is freed and the other wins — the sanitizer must not leak the loser, and
+// must not retain both or neither under the shared canonical key.
+//
+// Go map iteration order is randomised per run, and sanitizeGemma4AudioWeights
+// dedups by iterating `raw`, so which of the two ORIGINAL arrays ends up the
+// survivor is not deterministic across runs (that would make "the later one"
+// an unenforceable, flaky claim). This asserts the invariant that IS
+// guaranteed regardless of iteration order: exactly one of the two original
+// handles survives valid under the canonical key, and the other was freed.
 func TestAudio_sanitizeGemma4AudioWeights_DuplicateCanonical_Ugly(t *testing.T) {
 	requireMetalRuntime(t)
 
+	arrA := seqArray(0.1, 2, 2) // "audio_tower.output_proj.weight"
+	arrB := seqArray(0.2, 2, 2) // "model.audio_tower.output_proj.weight" (same canonical name)
 	raw := map[string]*metal.Array{
-		"audio_tower.output_proj.weight":             seqArray(0.1, 2, 2),
-		"model.audio_tower.output_proj.weight":       seqArray(0.2, 2, 2),
+		"audio_tower.output_proj.weight":             arrA,
+		"model.audio_tower.output_proj.weight":       arrB,
 		"language_model.embed_audio.projection.bias": seqArray(0.3, 2),
 		"unrelated.text_tower.weight":                seqArray(0.4, 2, 2), // dropped: not audio
 	}
@@ -185,7 +236,8 @@ func TestAudio_sanitizeGemma4AudioWeights_DuplicateCanonical_Ugly(t *testing.T) 
 
 	// Both audio_tower.output_proj.weight spellings collapse to one canonical
 	// entry; the embed_audio key canonicalises to its own.
-	if _, ok := audio["audio_tower.output_proj.weight"]; !ok {
+	winner, ok := audio["audio_tower.output_proj.weight"]
+	if !ok {
 		t.Fatal("canonical audio_tower.output_proj.weight missing after sanitize")
 	}
 	if _, ok := audio["embed_audio.projection.bias"]; !ok {
@@ -193,5 +245,20 @@ func TestAudio_sanitizeGemma4AudioWeights_DuplicateCanonical_Ugly(t *testing.T) 
 	}
 	if _, ok := raw["unrelated.text_tower.weight"]; !ok {
 		t.Fatal("non-audio weight should remain in the raw map, not be claimed by the audio sanitizer")
+	}
+
+	aWins := winner == arrA
+	bWins := winner == arrB
+	if aWins == bWins {
+		t.Fatalf("winner is neither/both of the two original arrays (aWins=%v bWins=%v) — dedup lost or duplicated the handle", aWins, bWins)
+	}
+	if aWins && arrB.Valid() {
+		t.Fatal("duplicate-canonical collision: A survived but B (the loser) was not freed")
+	}
+	if bWins && arrA.Valid() {
+		t.Fatal("duplicate-canonical collision: B survived but A (the loser) was not freed")
+	}
+	if !winner.Valid() {
+		t.Fatal("surviving audio_tower.output_proj.weight handle is not valid")
 	}
 }

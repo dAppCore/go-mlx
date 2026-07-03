@@ -56,18 +56,20 @@ func TestKVFromCache_PagedVisible(t *testing.T) {
 	kv.free()
 }
 
-// TestKVFromCache_PagedNoVisible drives the errTargetPagedNoVisible guard: a
-// paged cache whose Len() reports filled but whose page state has no visible
-// pages. A maxSize-1 / pageSize-1 paged cache that has only been *reserved* (not
-// committed) exhibits this; if the construction cannot reach the zero-length
-// page state on this build, the test skips rather than asserting the wrong path.
-func TestKVFromCache_PagedNoVisible(t *testing.T) {
+// TestKVFromCache_FreshPagedEmptyGuard_Good drives gemma4AssistantKVFromCache's
+// empty-cache guard on the PAGED cache variant (TestKVFromCache_EmptySentinel
+// below covers the fixed-cache variant): a brand-new paged cache has Len()==0,
+// so the first (empty) guard fires with errTargetCacheEmpty for paged caches
+// exactly as it does for fixed ones.
+//
+// NOTE: this does NOT reach errTargetPagedNoVisible (a paged cache whose Len()
+// reports filled but whose page state has no visible pages — internal-state
+// defence, not a guard a public API can fabricate without cache surgery). That
+// sentinel is currently unreached by any test in this package; renamed from
+// the prior TestKVFromCache_PagedNoVisible, whose name claimed the no-visible
+// branch while its own body asserted this empty-guard branch instead.
+func TestKVFromCache_FreshPagedEmptyGuard_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	// A brand-new paged cache has Len()==0 → the first (empty) guard fires with
-	// errTargetCacheEmpty, NOT the paged-no-visible one. Assert that specific
-	// sentinel here; the no-visible guard is an internal-state defence reached
-	// only when Len()>0 disagrees with the committed pages, which a public API
-	// cannot fabricate without cache surgery.
 	cache := metal.NewPagedKVCache(16, 0)
 	defer metal.FreeCaches([]metal.Cache{cache})
 	_, err := gemma4AssistantKVFromCache(cache)

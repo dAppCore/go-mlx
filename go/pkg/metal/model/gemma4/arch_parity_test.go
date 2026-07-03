@@ -33,7 +33,13 @@ func TestDeriveLayersParity(t *testing.T) {
 		types  []string
 		shared int
 	}{
-		{"e2b-like 35L global-every-6 shared-20", slide(35, func(i int) bool { return (i+1)%6 != 0 }), 20},
+		// Real E2B geometry (verified against the google/gemma-4-e2b-it config):
+		// 35 layers, full_attention every 5th layer, first full at index 4
+		// (0-indexed) — period 5, NOT 6. The parity check this proves holds
+		// for the actual production layer schedule, not just an arbitrary
+		// synthetic pattern.
+		{"real E2B 35L global-every-5-first-at-4 shared-20", slide(35, func(i int) bool { return (i+1)%5 != 0 }), 20},
+		{"35L global-every-6 shared-20 (synthetic, not E2B's real period-5 schedule)", slide(35, func(i int) bool { return (i+1)%6 != 0 }), 20},
 		{"all sliding shared-3", slide(8, func(int) bool { return true }), 3},
 		{"all global shared-2", slide(6, func(int) bool { return false }), 2},
 		{"mixed shared-0 (all own)", slide(10, func(i int) bool { return (i+1)%3 != 0 }), 0},
