@@ -332,6 +332,75 @@ func TestStepTokensBatchedDenseMultiQSDPAEngagesAndMatchesPerRow(t *testing.T) {
 	}
 }
 
+// TestStepTokensBatchedDenseBatchedRopeEngagesAndMatchesPerRow pins the batched-rows rope (#252):
+// the K per-row fused QK-norm+rope dispatches (Q slab + direct K landing + value norm) fold into
+// one dispatch each per layer, byte-identical to the per-row dispatches — and must actually
+// ENGAGE (strictly fewer dispatches than the per-row rope path).
+func TestStepTokensBatchedDenseBatchedRopeEngagesAndMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasQKNormRopeRows() {
+		t.Fatal("batched-rows qknorm-rope kernel missing — rebuild dist/lib/lthn_kernels.metallib (task build:kernels)")
+	}
+	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
+
+	run := func(s *ArchSession, disable bool) ([]byte, int64) {
+		t.Helper()
+		prev, prevTiming := batchedRopeDisabledForTest, pieceTimingOn
+		batchedRopeDisabledForTest = disable
+		pieceTimingOn = true
+		dispatchCountForTest = 0
+		defer func() {
+			batchedRopeDisabledForTest = prev
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "test.batchedRope")
+		if err != nil {
+			t.Fatalf("batched dense prefill (disableBatchedRope=%v): %v", disable, err)
+		}
+		if !ok {
+			t.Fatalf("batched dense prefill DECLINED (disableBatchedRope=%v)", disable)
+		}
+		return append([]byte(nil), hidden...), dispatchCountForTest
+	}
+
+	batched := newBatchedPLEBF16FixtureShared(t, 2)
+	perRow := newBatchedPLEBF16FixtureShared(t, 2)
+	bHidden, bDispatches := run(batched, false)
+	rHidden, rDispatches := run(perRow, true)
+
+	if bDispatches >= rDispatches {
+		t.Fatalf("batched rope did not engage: batched pass encoded %d dispatches, per-row %d — the rows kernel must strictly reduce dispatch count", bDispatches, rDispatches)
+	}
+	if len(bHidden) != len(rHidden) {
+		t.Fatalf("hidden sizes differ: batched=%d perRow=%d", len(bHidden), len(rHidden))
+	}
+	for i := range bHidden {
+		if bHidden[i] != rHidden[i] {
+			t.Fatalf("boundary hidden diverges at byte %d: batched=%02x perRow=%02x (the batched rope contract is byte-identity with the per-row dispatches)", i, bHidden[i], rHidden[i])
+		}
+	}
+	va, err := perRow.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := batched.stateLayerViews()
+	if err != nil {
+		t.Fatalf("batched views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d", i, j)
+			}
+		}
+	}
+}
+
 func batchedPLEParity(t *testing.T, control, candidate *ArchSession) {
 	t.Helper()
 	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}

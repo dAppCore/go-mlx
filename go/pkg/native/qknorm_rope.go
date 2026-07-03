@@ -89,6 +89,78 @@ func qkNormRopePipeline() (metal.MTLComputePipelineState, error) {
 	return qkRopePSO, qkRopePSOErr
 }
 
+var (
+	qkRopeRowsPSOOnce sync.Once
+	qkRopeRowsPSO     metal.MTLComputePipelineState
+	qkRopeRowsPSOErr  error
+)
+
+// qkNormRopeRowsPipeline builds (once) the batched-rows twin of the fused QK-norm + RoPE kernel —
+// grid Y carries the row, positions come from the packed per-row offsets buffer.
+func qkNormRopeRowsPipeline() (metal.MTLComputePipelineState, error) {
+	qkRopeRowsPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			qkRopeRowsPSOErr = core.NewError("native.qkNormRopeRowsPipeline: custom library unavailable")
+			return
+		}
+		fn := customLibrary.NewFunctionWithName("lthn_qknorm_rope_rows_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			qkRopeRowsPSOErr = core.NewError("native.qkNormRopeRowsPipeline: kernel lthn_qknorm_rope_rows_bf16 not found")
+			return
+		}
+		qkRopeRowsPSO, qkRopeRowsPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+	})
+	return qkRopeRowsPSO, qkRopeRowsPSOErr
+}
+
+// gpuHasQKNormRopeRows reports whether the batched-rows QK-norm+RoPE kernel is loadable — the
+// batched pass's gate for folding the K per-row rope dispatches into one.
+func gpuHasQKNormRopeRows() bool {
+	pso, err := qkNormRopeRowsPipeline()
+	return err == nil && pso != nil && pso.GetID() != 0
+}
+
+// encQKNormRopeRows encodes the fused per-head QK-norm + RoPE for `rows` rows in ONE dispatch:
+// row r reads x at xOff + r·xRowStride elements, writes out at outOff + r·outRowStride elements,
+// and ropes at position offBuf[r] (the batched pass's packed per-row positions). periods non-nil
+// selects the freqs/YaRN form, exactly as encQKNormRopeAt. Per-(row, head) math is the single-row
+// kernel verbatim — byte-identical to `rows` encQKNormRopeAt dispatches at the same offsets.
+func encQKNormRopeRows(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, xRowStride, outRowStride int, offBuf, periods metal.MTLBuffer, rows, nHeads, headDim, rotaryDim int, base, scale, eps float32) error {
+	pso, err := qkNormRopeRowsPipeline()
+	if err != nil {
+		return err
+	}
+	rd := headDim
+	if rotaryDim > 0 && rotaryDim < headDim {
+		rd = rotaryDim
+	}
+	sink := encSink{enc}
+	sink.setPSO(pso)
+	sink.setBuf(x, xOff, 0)
+	sink.setBuf(w, wOff, 1)
+	sink.setBuf(out, outOff, 2)
+	sink.setF32(eps, 3)
+	sink.setI32(int32(headDim), 4)
+	sink.setI32(int32(rd), 5)
+	sink.setF32(scale, 6)
+	sink.setBuf(offBuf, 0, 7)
+	sink.setF32(float32(math.Log2(float64(base))), 8)
+	if periods != nil {
+		sink.setBuf(periods, 0, 9)
+		sink.setI32(1, 10)
+	} else {
+		sink.setBuf(qkRopeDummyBuf(), 0, 9)
+		sink.setI32(0, 10)
+	}
+	sink.setI32(int32(xRowStride), 11)
+	sink.setI32(int32(outRowStride), 12)
+	sink.dispatchThreads(
+		metal.MTLSize{Width: uint(nHeads * headDim), Height: uint(rows), Depth: 1},
+		metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
+	)
+	return nil
+}
+
 // QKNormRopeBF16 fuses, in ONE dispatch, gemma4's per-head QK-norm + RoPE:
 //
 //	out[head] = RoPE(RMSNorm(x[head], weight), offset)   — rotate the first rotaryDim dims, tail passes through

@@ -357,6 +357,10 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]by
 // the per-row path produce byte-identical rows either way.
 var batchedMLPFoldDisabledForTest bool
 
+// batchedRopeDisabledForTest forces the attention fold back onto per-row fused norm+rope
+// dispatches — the A/B lever for the batched-rows rope's parity/engagement tests.
+var batchedRopeDisabledForTest bool
+
 // encBatchedRowEpilogue encodes row i's gemma4 tail for layer li — the per-layer-input gate (PLE,
 // when the arch has one and the caller supplied the K-token slab) and the per-layer output scalar —
 // reading and writing the row's layer output in place. Shared by the per-row MLP path and the
@@ -625,6 +629,29 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			// single-query kernel exactly (the same routing the sequential oracle takes).
 			useMultiQ := !sdpaMultiQDisabledForTest && (slideW == 0 || basePos+K <= slideW) &&
 				basePos+K < sdpa2PassMinKV && gpuHasSDPAMultiQ(lhd)
+			// batched rope: the K per-row fused norm+rope dispatches fold into one (grid Y carries
+			// the row, positions from the packed offsets buffer). Q always; the K landing + value
+			// norm only on the direct/no-evict path (a staged ring lands slot-wrapped, per row).
+			batchedRope := !batchedRopeDisabledForTest && gpuHasQKNormRopeRows()
+			if batchedRope {
+				if err = encQKNormRopeRows(enc, qSlab, s.lb[li].qNorm.buf, qSlab, 0, s.lb[li].qNorm.off, 0, qDim, qDim, offBuf[0], layerRopeFreqs, K, s.nHeads, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+				if ownsCache && !staged {
+					kvBase := uint(basePos * kvDim * bf16Size)
+					if err = encQKNormRopeRows(enc, s.lb[li].kCache, s.lb[li].kNorm.buf, s.lb[li].kCache, kvBase, s.lb[li].kNorm.off, kvBase, kvDim, kvDim, offBuf[0], layerRopeFreqs, K, lkv, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
+					if s.valueNormOnes != nil {
+						if err = encRMSNormRowsBF16(enc, s.lb[li].vCache, s.valueNormOnes, s.lb[li].vCache, kvBase, 0, kvBase, K*lkv, lhd, s.eps); err != nil {
+							endEncodingFast(enc)
+							return nil, false, err
+						}
+					}
+				}
+			}
 			for i := 0; i < K; i++ {
 				pos := basePos + i
 				slot, n := pos, pos+1
@@ -635,11 +662,13 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					}
 				}
 				qRow := uint(i * qDim * bf16Size)
-				if err = encQKNormRopeAt(enc, qSlab, s.lb[li].qNorm.buf, qSlab, qRow, s.lb[li].qNorm.off, qRow, offBuf[i], offOff[i], layerRopeFreqs, s.nHeads, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
-					endEncodingFast(enc)
-					return nil, false, err
+				if !batchedRope {
+					if err = encQKNormRopeAt(enc, qSlab, s.lb[li].qNorm.buf, qSlab, qRow, s.lb[li].qNorm.off, qRow, offBuf[i], offOff[i], layerRopeFreqs, s.nHeads, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
 				}
-				if ownsCache {
+				if ownsCache && (staged || !batchedRope) {
 					kvRow := uint(slot * kvDim * bf16Size)
 					kSrc, vSrc, srcOff := s.lb[li].kCache, s.lb[li].vCache, kvRow
 					if staged {
