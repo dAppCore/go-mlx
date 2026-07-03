@@ -63,9 +63,9 @@ func (h *baseHandle) RangeKVBlocks(context.Context, int, metal.KVSnapshotCapture
 func (h *baseHandle) Fork(context.Context) (metal.SessionHandle, error) {
 	return h.forkResult, h.forkErr
 }
-func (h *baseHandle) Reset()      {}
+func (h *baseHandle) Reset()       {}
 func (h *baseHandle) Close() error { return nil }
-func (h *baseHandle) Err() error  { return h.errValue }
+func (h *baseHandle) Err() error   { return h.errValue }
 
 // optionSnapshotHandle implements CaptureKVWithOptions
 // (nativeSessionKVSnapshotterWithOptions), the arm the all-capable

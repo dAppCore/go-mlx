@@ -770,9 +770,9 @@ func (h *snapshotRestoreHandle) RangeKVBlocks(context.Context, int, metal.KVSnap
 func (h *snapshotRestoreHandle) Fork(context.Context) (metal.SessionHandle, error) {
 	return nil, nil
 }
-func (h *snapshotRestoreHandle) Reset()      {}
+func (h *snapshotRestoreHandle) Reset()       {}
 func (h *snapshotRestoreHandle) Close() error { return nil }
-func (h *snapshotRestoreHandle) Err() error  { return nil }
+func (h *snapshotRestoreHandle) Err() error   { return nil }
 func (h *snapshotRestoreHandle) RestoreKV(_ context.Context, snapshot *metal.KVSnapshot) error {
 	h.restored = snapshot
 	return nil
