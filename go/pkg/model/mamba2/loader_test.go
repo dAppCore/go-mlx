@@ -25,8 +25,8 @@ func bf16Tensor(vals []float32, shape ...int) safetensors.Tensor {
 // runs an end-to-end recurrent decode.
 func TestLoadMambaModel(t *testing.T) {
 	const H, headDim, N, K = 2, 8, 8, 4
-	const dInner = H * headDim     // 16
-	const convDim = dInner + 2*N   // 32
+	const dInner = H * headDim         // 16
+	const convDim = dInner + 2*N       // 32
 	const projOut = 2*dInner + 2*N + H // 50
 	const D, vocab, nLayers = 8, 32, 2
 

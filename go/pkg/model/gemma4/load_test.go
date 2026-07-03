@@ -164,6 +164,138 @@ func gemma4Snapshot(repo string) string {
 	return ""
 }
 
+// TestParseConfigRealFamily round-trips the REAL per-size config.json files (the HF-cache
+// snapshots, config only — no weights, no GPU) through parseGemma4Config → Arch and asserts
+// the model-card truth for the WHOLE family. The gemma-4 sizes are NOT scaled twins — E2B is
+// 35 layers / MQA / full-every-5th / 20 shared-KV; E4B 42 / 2 KV heads / full-every-6th / 18
+// shared; 12B is the gemma4_unified encoder arch (48 layers, 16/8 heads, window 1024, dense
+// 15360, no experts); 26B-A4B is the MoE (128 experts top-8 at per-expert FF 704 — NOT the
+// dense 2112); 31B is the deepest dense (60 layers, 32/16). Any parser change that assumes a
+// universal window, a universal full-attention period, uniform KV heads, or treats 12B as "a
+// bigger E2B" fails here against the actual checkpoints. Skips per size when not cached.
+func TestParseConfigRealFamily(t *testing.T) {
+	type sizeTruth struct {
+		repo                    string
+		modelType               string // the TOP-LEVEL model_type (the registry dispatch id)
+		layers, hidden, heads   int
+		kvHeads, globalKVHeads  int
+		window, kvShared        int
+		ff                      int // dense intermediate_size
+		experts, topK, expertFF int // 0/0/0 = dense
+		firstFull, fullCount    int // sliding/full schedule: index of the first full_attention layer + total fulls
+		kEqV                    bool
+		quantGS, quantBits      int  // 0/0 = bf16 pack (no quantization block)
+		quantOverrides          bool // per-module mixed-precision overrides present (26B QAT)
+		perLayerInputHidden     int  // the E2B/E4B PLE tower width; 0 = absent
+	}
+	cases := []sizeTruth{
+		{repo: "models--google--gemma-4-e2b-it", modelType: "gemma4",
+			layers: 35, hidden: 1536, heads: 8, kvHeads: 1, globalKVHeads: 1,
+			window: 512, kvShared: 20, ff: 6144, firstFull: 4, fullCount: 7, perLayerInputHidden: 256},
+		{repo: "models--google--gemma-4-e4b-it", modelType: "gemma4",
+			layers: 42, hidden: 2560, heads: 8, kvHeads: 2, globalKVHeads: 2,
+			window: 512, kvShared: 18, ff: 10240, firstFull: 5, fullCount: 7, perLayerInputHidden: 256},
+		{repo: "models--google--gemma-4-12B-it", modelType: "gemma4_unified",
+			layers: 48, hidden: 3840, heads: 16, kvHeads: 8, globalKVHeads: 1,
+			window: 1024, kvShared: 0, ff: 15360, firstFull: 5, fullCount: 8, kEqV: true},
+		{repo: "models--mlx-community--gemma-4-26B-A4B-it-qat-4bit", modelType: "gemma4",
+			layers: 30, hidden: 2816, heads: 16, kvHeads: 8, globalKVHeads: 2,
+			window: 1024, kvShared: 0, ff: 2112, experts: 128, topK: 8, expertFF: 704,
+			firstFull: 5, fullCount: 5, kEqV: true, quantGS: 64, quantBits: 4, quantOverrides: true},
+		{repo: "models--mlx-community--gemma-4-31B-it-4bit", modelType: "gemma4",
+			layers: 60, hidden: 5376, heads: 32, kvHeads: 16, globalKVHeads: 4,
+			window: 1024, kvShared: 0, ff: 21504, firstFull: 5, fullCount: 10,
+			kEqV: true, quantGS: 64, quantBits: 4},
+	}
+	for _, c := range cases {
+		t.Run(c.repo, func(t *testing.T) {
+			dir := gemma4Snapshot(c.repo)
+			if dir == "" {
+				t.Skipf("%s not cached", c.repo)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+			if err != nil {
+				t.Fatalf("read real config: %v", err)
+			}
+			cfg, err := ParseConfig(raw)
+			if err != nil {
+				t.Fatalf("parseGemma4Config on the real checkpoint: %v", err)
+			}
+			if cfg.ModelType != c.modelType {
+				t.Fatalf("ModelType = %q, want %q (the top-level dispatch id)", cfg.ModelType, c.modelType)
+			}
+			if _, ok := model.LookupArch(cfg.ModelType); !ok {
+				t.Fatalf("model_type %q not resolvable in the arch registry — the real pack would not dispatch", cfg.ModelType)
+			}
+			a, err := cfg.Arch()
+			if err != nil {
+				t.Fatalf("Arch from the real config: %v", err)
+			}
+			if len(a.Layer) != c.layers || a.Hidden != c.hidden || a.Heads != c.heads {
+				t.Fatalf("core dims = %d layers/%d hidden/%d heads, want %d/%d/%d", len(a.Layer), a.Hidden, a.Heads, c.layers, c.hidden, c.heads)
+			}
+			if a.KVHeads != c.kvHeads || a.GlobalKVHeads != c.globalKVHeads {
+				t.Fatalf("KV heads = %d sliding/%d global, want %d/%d", a.KVHeads, a.GlobalKVHeads, c.kvHeads, c.globalKVHeads)
+			}
+			if a.HeadDim != 256 || a.GlobalHeadDim != 512 {
+				t.Fatalf("head dims = %d/%d, want 256 sliding / 512 global (every gemma-4 size)", a.HeadDim, a.GlobalHeadDim)
+			}
+			if a.SlidingWindow != c.window {
+				t.Fatalf("SlidingWindow = %d, want %d — the window is per-size, never universal", a.SlidingWindow, c.window)
+			}
+			if a.FF != c.ff || a.Experts != c.experts || a.TopK != c.topK || a.ExpertFF != c.expertFF {
+				t.Fatalf("FFN = dense %d / experts %d top-%d @ %d, want %d / %d top-%d @ %d",
+					a.FF, a.Experts, a.TopK, a.ExpertFF, c.ff, c.experts, c.topK, c.expertFF)
+			}
+			if a.SoftCap != 30 {
+				t.Fatalf("SoftCap = %v, want 30 (final_logit_softcapping, every size)", a.SoftCap)
+			}
+			if a.AttentionKEqV != c.kEqV {
+				t.Fatalf("AttentionKEqV = %v, want %v", a.AttentionKEqV, c.kEqV)
+			}
+			if a.PerLayerInputHidden != c.perLayerInputHidden {
+				t.Fatalf("PerLayerInputHidden = %d, want %d (the PLE tower is E2B/E4B-only)", a.PerLayerInputHidden, c.perLayerInputHidden)
+			}
+			firstFull, fulls := -1, 0
+			for i, l := range a.Layer {
+				if l.Attention == model.GlobalAttention {
+					if firstFull < 0 {
+						firstFull = i
+					}
+					fulls++
+				}
+			}
+			if firstFull != c.firstFull || fulls != c.fullCount {
+				t.Fatalf("full-attention schedule: first at %d, %d total; want first %d, %d total — the period is per-size", firstFull, fulls, c.firstFull, c.fullCount)
+			}
+			owners := 0
+			for _, l := range a.Layer {
+				if l.OwnsCache() {
+					owners++
+				}
+			}
+			if wantOwners := c.layers - c.kvShared; owners != wantOwners {
+				t.Fatalf("cache owners = %d, want %d (%d layers − %d kv-shared)", owners, wantOwners, c.layers, c.kvShared)
+			}
+			q := cfg.Quantization
+			if c.quantGS == 0 {
+				if q != nil {
+					t.Fatalf("bf16 pack carries a quant block: %+v", q)
+				}
+			} else {
+				if q == nil || q.GroupSize != c.quantGS || q.Bits != c.quantBits {
+					t.Fatalf("quant = %+v, want gs %d / bits %d", q, c.quantGS, c.quantBits)
+				}
+				if c.quantOverrides != (len(q.Overrides) > 0) {
+					t.Fatalf("quant overrides present = %v (%d), want %v (26B QAT mixes 8-bit mlp/router)", len(q.Overrides) > 0, len(q.Overrides), c.quantOverrides)
+				}
+			}
+			t.Logf("%s: %d layers · %d/%d/%d heads · window %d · full@%d×%d · owners %d · experts %d — real config round-trips",
+				c.repo, len(a.Layer), a.Heads, a.KVHeads, a.GlobalKVHeads, a.SlidingWindow, c.firstFull, fulls, owners, a.Experts)
+		})
+	}
+}
+
 // TestLoad_EFamily_QuantAgnostic loads e2b (4-bit) and e4b (qat-4-bit) through the SINGLE shared
 // assembler and asserts the things native used to re-bug per model: KV-shared layers carry no own
 // K, the MatFormer per-layer FFN width is read from the gate shape, and — the headline — e4b's

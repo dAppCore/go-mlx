@@ -21,7 +21,7 @@ func TestGatedDeltaVsHFReference(t *testing.T) {
 		t.Skip("no /tmp/gd_ref.json — run the HF dump first")
 	}
 	var ref struct {
-		H, D, L                 int
+		H, D, L               int
 		Q, K, V, Beta, G, Out []float32
 	}
 	if err := json.Unmarshal(data, &ref); err != nil {

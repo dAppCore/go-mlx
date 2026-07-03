@@ -77,6 +77,67 @@ func mkHybridCheckpoint() (map[string]safetensors.Tensor, []byte) {
 	return ts, config
 }
 
+// TestLoadComposedWrapperConfig covers the config branches the flat checkpoint never touches:
+// the multimodal text_config nesting (effective()), rope_theta + partial_rotary_factor sourced
+// from the nested rope_parameters object (the flat keys absent), the odd-rotary-dim rounding
+// (0.5·headDim 6 = 3 → rounded down to 2), layer_types-driven full_attention dispatch, and the
+// tied head (no lm_head → Output nil).
+func TestLoadComposedWrapperConfig(t *testing.T) {
+	const D, vocab, FF = 8, 32, 16
+	const AH, AKVH, AHD = 4, 2, 6 // head_dim 6: 0.5·6 = 3, odd → the rd-- branch fires
+	ts := map[string]safetensors.Tensor{
+		"model.embed_tokens.weight": bf16T(syn(vocab*D, 1), vocab, D),
+		"model.norm.weight":         bf16T(syn(D, 2), D),
+		// no lm_head → tied
+	}
+	lp := "model.layers.0."
+	ts[lp+"input_layernorm.weight"] = bf16T(syn(D, 11), D)
+	ts[lp+"post_attention_layernorm.weight"] = bf16T(syn(D, 12), D)
+	ts[lp+"mlp.gate_proj.weight"] = bf16T(syn(FF*D, 13), FF, D)
+	ts[lp+"mlp.up_proj.weight"] = bf16T(syn(FF*D, 14), FF, D)
+	ts[lp+"mlp.down_proj.weight"] = bf16T(syn(D*FF, 15), D, FF)
+	ap := lp + "self_attn."
+	ts[ap+"q_proj.weight"] = bf16T(syn(AH*AHD*D, 16), AH*AHD, D)
+	ts[ap+"k_proj.weight"] = bf16T(syn(AKVH*AHD*D, 17), AKVH*AHD, D)
+	ts[ap+"v_proj.weight"] = bf16T(syn(AKVH*AHD*D, 18), AKVH*AHD, D)
+	ts[ap+"o_proj.weight"] = bf16T(syn(D*AH*AHD, 19), D, AH*AHD)
+	ts[ap+"q_norm.weight"] = bf16T(syn(AHD, 20), AHD)
+	ts[ap+"k_norm.weight"] = bf16T(syn(AHD, 21), AHD)
+
+	config := []byte(`{"text_config":{"hidden_size":8,"num_hidden_layers":1,"intermediate_size":16,
+		"num_attention_heads":4,"num_key_value_heads":2,"head_dim":6,"vocab_size":32,"rms_norm_eps":1e-5,
+		"rope_parameters":{"rope_theta":500000,"partial_rotary_factor":0.5},
+		"layer_types":["full_attention"]}}`)
+
+	m, err := LoadComposed(ts, config)
+	if err != nil {
+		t.Fatalf("LoadComposed(wrapped config): %v", err)
+	}
+	if len(m.Layers) != 1 {
+		t.Fatalf("layers = %d, want 1 (num_hidden_layers must come from text_config)", len(m.Layers))
+	}
+	if m.Output != nil {
+		t.Fatal("no lm_head in the checkpoint → Output must be nil (tied)")
+	}
+	am, ok := m.Layers[0].Mixer.(*attnMixer)
+	if !ok {
+		t.Fatalf("layer 0 mixer is %T, want *attnMixer (layer_types full_attention dispatch)", m.Layers[0].Mixer)
+	}
+	if am.cfg.RopeTheta != 500000 {
+		t.Fatalf("RopeTheta = %v, want 500000 (from the nested rope_parameters, no flat key)", am.cfg.RopeTheta)
+	}
+	if am.cfg.HeadDim != AHD || am.cfg.Heads != AH || am.cfg.KVHeads != AKVH {
+		t.Fatalf("attention geometry = heads %d/kv %d/hd %d, want %d/%d/%d", am.cfg.Heads, am.cfg.KVHeads, am.cfg.HeadDim, AH, AKVH, AHD)
+	}
+	if am.cfg.RotaryDim != 2 {
+		t.Fatalf("RotaryDim = %d, want 2 (0.5·head_dim 6 = 3, odd → rounded down)", am.cfg.RotaryDim)
+	}
+	if _, err := NewSession(m).Forward([]int32{1, 5}); err != nil {
+		t.Fatalf("wrapped-config model forward: %v", err)
+	}
+	t.Log("wrapped config loaded: text_config + rope_parameters resolved, odd rotary dim rounded, tied head")
+}
+
 // TestLoadComposed loads the synthetic hybrid checkpoint, checks the per-layer dispatch is correct, the
 // untied head is read, and the loaded model decodes end-to-end with decode==prefill.
 func TestLoadComposed(t *testing.T) {

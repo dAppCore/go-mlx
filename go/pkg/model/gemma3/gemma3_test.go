@@ -62,9 +62,13 @@ func TestGemma3Arch(t *testing.T) {
 // TestGemma3Registered confirms gemma3 is in the reactive arch registry with the gemma (1+w) RMSNorm
 // convention enabled (NormBiasOne) — so model.Load assembles a gemma3 checkpoint with folded norms.
 func TestGemma3Registered(t *testing.T) {
-	spec, ok := model.LookupArch("gemma3")
-	if !ok {
-		t.Fatal("gemma3 not registered in the arch registry")
+	var spec model.ArchSpec
+	for _, mt := range []string{"gemma3", "gemma3_text"} { // both declared aliases must resolve
+		s, ok := model.LookupArch(mt)
+		if !ok {
+			t.Fatalf("gemma3 not registered in the arch registry under %q", mt)
+		}
+		spec = s
 	}
 	if !spec.Weights.NormBiasOne {
 		t.Error("gemma3 ArchSpec must set Weights.NormBiasOne for the (1+w) RMSNorm convention")

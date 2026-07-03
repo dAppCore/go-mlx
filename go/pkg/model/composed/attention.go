@@ -91,9 +91,9 @@ func (m *attnMixer) Forward(h []float32, L, D int, prior any) ([]float32, any, e
 	scale := 1.0 / math.Sqrt(float64(HD))
 	rep := H / KVH
 
-	q := matNT(h, m.w.QProj, L, D, H*HD)    // [L, H*HD]
-	k := matNT(h, m.w.KProj, L, D, KVH*HD)  // [L, KVH*HD]
-	v := matNT(h, m.w.VProj, L, D, KVH*HD)  // [L, KVH*HD]
+	q := matNT(h, m.w.QProj, L, D, H*HD)   // [L, H*HD]
+	k := matNT(h, m.w.KProj, L, D, KVH*HD) // [L, KVH*HD]
+	v := matNT(h, m.w.VProj, L, D, KVH*HD) // [L, KVH*HD]
 
 	// QK-norm (per head) + partial rotary at absolute positions pos0+t.
 	for t := 0; t < L; t++ {

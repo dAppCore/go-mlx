@@ -154,7 +154,7 @@ func (c *Config) Arch() (model.Arch, error) {
 		RotaryDim:      headDim, // gemma3 full rotary
 		RotaryDimLocal: headDim,
 		RopeScale:      1,
-		SoftCap:        0,     // gemma3 has no logit softcapping
+		SoftCap:        0, // gemma3 has no logit softcapping
 		SlidingWindow:  c.SlidingWindow,
 		ValueNorm:      false, // gemma3 does not value-norm V (gemma4 does)
 		Layer:          layers,

@@ -339,3 +339,102 @@ func TestConfigRope(t *testing.T) {
 	}
 	t.Logf("rope: defaults 1e6/1e4 + full rotary; rope_theta sets global; partial_rotary_factor sets rotaryDim; proportional folds base→base^(rotaryDim/headDim) (%v), default leaves it", wantBase)
 }
+
+// TestConfigArchRealGemma4_26B_A4B_MoEGeometry pins Config.Arch() against the ACTUAL
+// mlx-community/gemma-4-26B-A4B-it-qat-4bit config.json text_config: 30 layers, 2816
+// hidden, 16 attention heads / 8 sliding KV heads / 2 global KV heads, head_dim 256 /
+// global_head_dim 512, 128 experts routing top-8 at moe_intermediate_size 704 — the
+// PER-EXPERT FFN width, which is NOT intermediate_size (2112, the dense/shared FFN size
+// this MoE checkpoint's enable_moe_block=true means every layer never actually runs).
+// A parser that swapped the two intermediate sizes would size the expert FFN 3x too wide
+// and pass every synthetic test in this file (they use small, easily-confused round
+// numbers) while silently corrupting a real 26B-A4B load.
+func TestConfigArchRealGemma4_26B_A4B_MoEGeometry(t *testing.T) {
+	lt := make([]string, 30)
+	for i := range lt {
+		if (i+1)%6 == 0 { // gemma4's real pattern: full_attention every 6th layer, first at index 5
+			lt[i] = "full_attention"
+		} else {
+			lt[i] = "sliding_attention"
+		}
+	}
+	c := Config{
+		HiddenSize: 2816, NumHiddenLayers: 30, IntermediateSize: 2112,
+		NumAttentionHeads: 16, NumKeyValueHeads: 8, HeadDim: 256, GlobalHeadDim: 512,
+		NumGlobalKeyValueHeads: 2, VocabSize: 262144, SlidingWindow: 1024,
+		LayerTypes: lt, AttentionKEqV: true,
+		EnableMoEBlock: true, NumExperts: 128, TopKExperts: 8, MoEIntermediateSize: 704,
+	}
+	a, err := c.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if a.Experts != 128 || a.TopK != 8 {
+		t.Fatalf("MoE routing = experts %d top-%d, want 128/8 (the real 26B-A4B config)", a.Experts, a.TopK)
+	}
+	if a.ExpertFF != 704 {
+		t.Fatalf("ExpertFF = %d, want 704 (moe_intermediate_size — NOT intermediate_size 2112, the dense FFN size this MoE checkpoint doesn't use)", a.ExpertFF)
+	}
+	if a.FF != 2112 {
+		t.Fatalf("FF (dense intermediate_size, carried for completeness) = %d, want 2112", a.FF)
+	}
+	if a.HeadDim != 256 || a.GlobalHeadDim != 512 {
+		t.Fatalf("HeadDim/GlobalHeadDim = %d/%d, want 256/512", a.HeadDim, a.GlobalHeadDim)
+	}
+	if a.KVHeads != 8 || a.GlobalKVHeads != 2 {
+		t.Fatalf("KVHeads/GlobalKVHeads = %d/%d, want 8/2 (sliding vs full KV-head split)", a.KVHeads, a.GlobalKVHeads)
+	}
+	for i, l := range a.Layer {
+		if !l.MoE {
+			t.Fatalf("layer %d not marked MoE — gemma4 applies MoE uniformly", i)
+		}
+	}
+	if len(a.Layer) != 30 {
+		t.Fatalf("layer count = %d, want 30", len(a.Layer))
+	}
+	t.Logf("real 26B-A4B geometry: 30 layers, hidden 2816, 16/8(sliding)/2(global) heads, 128 experts top-8 @ FF 704 (dense FF 2112 unused)")
+}
+
+// TestConfigArchRealGemma4_31B_DenseGeometry pins Config.Arch() against the ACTUAL
+// mlx-community/gemma-4-31B-it-4bit config.json text_config: 60 layers (the deepest
+// gemma4 release), 5376 hidden, 32 attention heads / 16 sliding KV heads / 4 global KV
+// heads, head_dim 256 / global_head_dim 512, dense FFN 21504, no experts — the largest
+// dense (non-MoE, non-unified) family member.
+func TestConfigArchRealGemma4_31B_DenseGeometry(t *testing.T) {
+	lt := make([]string, 60)
+	for i := range lt {
+		if (i+1)%6 == 0 {
+			lt[i] = "full_attention"
+		} else {
+			lt[i] = "sliding_attention"
+		}
+	}
+	c := Config{
+		HiddenSize: 5376, NumHiddenLayers: 60, IntermediateSize: 21504,
+		NumAttentionHeads: 32, NumKeyValueHeads: 16, HeadDim: 256, GlobalHeadDim: 512,
+		NumGlobalKeyValueHeads: 4, VocabSize: 262144, SlidingWindow: 1024,
+		LayerTypes: lt, AttentionKEqV: true,
+	}
+	a, err := c.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if a.Experts != 0 || a.TopK != 0 || a.ExpertFF != 0 {
+		t.Fatalf("31B is dense: Experts=%d TopK=%d ExpertFF=%d, want all 0", a.Experts, a.TopK, a.ExpertFF)
+	}
+	if a.FF != 21504 {
+		t.Fatalf("FF = %d, want 21504 (the real 31B dense intermediate_size)", a.FF)
+	}
+	if a.KVHeads != 16 || a.GlobalKVHeads != 4 {
+		t.Fatalf("KVHeads/GlobalKVHeads = %d/%d, want 16/4", a.KVHeads, a.GlobalKVHeads)
+	}
+	if len(a.Layer) != 60 {
+		t.Fatalf("layer count = %d, want 60 (the deepest gemma4 release)", len(a.Layer))
+	}
+	for i, l := range a.Layer {
+		if l.MoE {
+			t.Fatalf("layer %d marked MoE on a dense 31B config", i)
+		}
+	}
+	t.Logf("real 31B geometry: 60 layers, hidden 5376, 32/16(sliding)/4(global) heads, dense FF 21504, no experts")
+}

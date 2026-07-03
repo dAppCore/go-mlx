@@ -19,10 +19,10 @@ type Linear struct {
 	Weight         []byte // packed quant codes, or dense bf16 — raw little-endian, viewing the mmap
 	Scales, Biases []byte // affine group scales / biases (nil ⇒ dense bf16)
 	Bias           []byte // optional additive bias (nil ⇒ none)
-	OutDim, InDim  int     // logical shape of the dequantised weight (rows × cols)
-	GroupSize      int     // affine group size (0 ⇒ dense bf16)
-	Bits           int     // affine bit-width (0 ⇒ dense bf16)
-	Kind           string  // quant kind for the (backend,kind) registry ("affine"…); "" ⇒ dense bf16
+	OutDim, InDim  int    // logical shape of the dequantised weight (rows × cols)
+	GroupSize      int    // affine group size (0 ⇒ dense bf16)
+	Bits           int    // affine bit-width (0 ⇒ dense bf16)
+	Kind           string // quant kind for the (backend,kind) registry ("affine"…); "" ⇒ dense bf16
 }
 
 // Quantised reports whether this weight carries affine quant metadata (a ".scales" tensor)
