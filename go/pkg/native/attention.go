@@ -605,6 +605,14 @@ func encGemvBF16VecAt(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MT
 // is byte-identical to `batch` single-row dispatches — the weight matrix is just swept once. This
 // is the batched dense pass's MLP fold: K rows' gate/up/down share each layer's weight read.
 func encGemvBF16BatchedAt(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, vecOff, outOff uint, outDim, inDim, batch int) error {
+	// large row counts take the true tiled GEMM — the weight read once for ALL rows, trading the
+	// per-row gemv's byte-identity for token-identity (pkg/metal's GEMM prefill trade). Small
+	// batches (the MTP verify, every parity fixture) stay on the grid-Z gemv and its strict
+	// byte-identity with the sequential lane.
+	if batch >= steelGEMMMinRows && !steelGEMMDisabledForTest &&
+		encGemmBF16NT(enc, mat, vec, out, matOff, vecOff, outOff, outDim, inDim, batch) {
+		return nil
+	}
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
 	if err != nil {
