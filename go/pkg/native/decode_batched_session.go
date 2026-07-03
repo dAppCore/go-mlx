@@ -227,6 +227,23 @@ func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (ou
 	return s.stepTokensBatchedDenseResult(embs, basePos, true, false, nil, nil)
 }
 
+// stepTokensBatchedDensePLE / ...NoResultPLE / ...IntoPLE are the PLE-arch twins
+// (gemma4 E2B/E4B): pleSlab carries the K tokens' per-layer-input tensors and each
+// row's gate encodes in the same command buffer — the MTP verify's batched fast
+// path for the E-family.
+func (s *archDecodeState) stepTokensBatchedDensePLE(embs [][]byte, pleSlab []byte, basePos int) (out [][]byte, ok bool, err error) {
+	return s.stepTokensBatchedDenseResultWithInputViewsPLE(embs, pleSlab, basePos, true, false, nil, nil, true)
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseNoResultPLE(embs [][]byte, pleSlab []byte, basePos int) (ok bool, err error) {
+	_, ok, err = s.stepTokensBatchedDenseResultWithInputViewsPLE(embs, pleSlab, basePos, false, false, nil, nil, true)
+	return ok, err
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseIntoPLE(embs [][]byte, pleSlab []byte, basePos int, dstRows [][]byte) (out [][]byte, ok bool, err error) {
+	return s.stepTokensBatchedDenseResultWithInputViewsPLE(embs, pleSlab, basePos, true, false, nil, dstRows, true)
+}
+
 func (s *archDecodeState) stepTokensBatchedDenseNoResult(embs [][]byte, basePos int) (ok bool, err error) {
 	_, ok, err = s.stepTokensBatchedDenseResult(embs, basePos, false, false, nil, nil)
 	return ok, err
@@ -551,10 +568,15 @@ func (s *ArchSession) verifyBatched(ids []int32) (greedys []int32, ok bool, err 
 }
 
 func (s *ArchSession) verifyBatchedHiddens(ids []int32) ([][]byte, bool, error) {
+	if s.verifyBatchedDisabledForTest { // test-only: force the sequential verify lane
+		return nil, false, nil
+	}
 	if len(ids) == 0 {
 		return nil, false, core.NewError("native.verifyBatchedHiddens: empty batch")
 	}
-	if s.perLayerInput != nil || s.pos+len(ids) > s.maxLen {
+	// PLE archs batch via the per-token slab (the batched pass ring-writes each
+	// row at its own slot, so wrap-crossing blocks are handled).
+	if s.pos+len(ids) > s.maxLen {
 		return nil, false, nil
 	}
 	var embStack [16][]byte
@@ -592,15 +614,25 @@ func (s *ArchSession) verifyBatchedHiddens(ids []int32) ([][]byte, bool, error) 
 			embs[i] = emb
 		}
 	}
+	pleSlab, slabErr := s.pleSlabFor(ids, embs)
+	if slabErr != nil {
+		return nil, false, slabErr
+	}
 	var (
 		hiddens [][]byte
 		ok      bool
 		err     error
 	)
 	withAutoreleasePool(func() {
-		if rows, rowsOK := s.mtpVerifyHiddenRowsScratch(len(ids), s.arch.Hidden*bf16Size); rowsOK {
+		rows, rowsOK := s.mtpVerifyHiddenRowsScratch(len(ids), s.arch.Hidden*bf16Size)
+		switch {
+		case pleSlab != nil && rowsOK:
+			hiddens, ok, err = s.state.stepTokensBatchedDenseIntoPLE(embs, pleSlab, s.pos, rows)
+		case pleSlab != nil:
+			hiddens, ok, err = s.state.stepTokensBatchedDensePLE(embs, pleSlab, s.pos)
+		case rowsOK:
 			hiddens, ok, err = s.state.stepTokensBatchedDenseInto(embs, s.pos, rows)
-		} else {
+		default:
 			hiddens, ok, err = s.state.stepTokensBatchedDense(embs, s.pos)
 		}
 	})
@@ -611,11 +643,16 @@ func (s *ArchSession) verifyBatchedHiddens(ids []int32) ([][]byte, bool, error) 
 }
 
 func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, bool, error) {
+	if s.verifyBatchedDisabledForTest { // test-only: force the sequential verify lane
+		return nil, false, nil
+	}
 	if len(ids) == 0 {
 		return nil, false, core.NewError("native.verifyBatched: empty batch")
 	}
-	if s.perLayerInput != nil || s.pos+len(ids) > s.maxLen {
-		return nil, false, nil // PLE models / no cache headroom → sequential fallback
+	// PLE archs batch via the per-token slab (ring wraps are handled per row); no
+	// cache headroom → sequential fallback.
+	if s.pos+len(ids) > s.maxLen {
+		return nil, false, nil
 	}
 	var embStack [16][]byte
 	var embs [][]byte
@@ -652,6 +689,10 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 			embs[i] = e
 		}
 	}
+	pleSlab, slabErr := s.pleSlabFor(ids, embs)
+	if slabErr != nil {
+		return nil, false, slabErr
+	}
 	if s.canUseDirectHeadGreedy() {
 		if len(greedys) < len(ids) {
 			greedys = make([]int32, len(ids))
@@ -663,7 +704,11 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 			err error
 		)
 		withAutoreleasePool(func() {
-			ok, err = s.state.stepTokensBatchedDenseNoResult(embs, s.pos)
+			if pleSlab != nil {
+				ok, err = s.state.stepTokensBatchedDenseNoResultPLE(embs, pleSlab, s.pos)
+			} else {
+				ok, err = s.state.stepTokensBatchedDenseNoResult(embs, s.pos)
+			}
 			if err != nil || !ok {
 				return
 			}
@@ -680,9 +725,15 @@ func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, 
 		err     error
 	)
 	withAutoreleasePool(func() {
-		if rows, rowsOK := s.mtpVerifyHiddenRowsScratch(len(ids), s.arch.Hidden*bf16Size); rowsOK {
+		rows, rowsOK := s.mtpVerifyHiddenRowsScratch(len(ids), s.arch.Hidden*bf16Size)
+		switch {
+		case pleSlab != nil && rowsOK:
+			hiddens, ok, err = s.state.stepTokensBatchedDenseIntoPLE(embs, pleSlab, s.pos, rows)
+		case pleSlab != nil:
+			hiddens, ok, err = s.state.stepTokensBatchedDensePLE(embs, pleSlab, s.pos)
+		case rowsOK:
 			hiddens, ok, err = s.state.stepTokensBatchedDenseInto(embs, s.pos, rows)
-		} else {
+		default:
 			hiddens, ok, err = s.state.stepTokensBatchedDense(embs, s.pos)
 		}
 	})

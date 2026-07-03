@@ -95,6 +95,13 @@ type ArchSession struct {
 	// paged→linear sync assumptions do not hold for restored state (the
 	// decode-parity carve-out): restored sessions append on the token path.
 	restoredKV bool
+	// verifyBatchedDisabledForTest forces the MTP batched verify to decline
+	// (verifyBatchedHiddens / verifyBatchedInto return ok=false) so the caller
+	// takes the byte-identical sequential verify lane. Test-only — the honest
+	// way to exercise the sequential fallback now that every resident arch
+	// (dense + PLE) batches; production never sets it and the guard is a single
+	// bool test at the top of each verify entry point (zero decode cost).
+	verifyBatchedDisabledForTest bool
 	// shards holds the memory-mapped checkpoint + its per-shard no-copy Metal buffers when the
 	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
 	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
@@ -1748,21 +1755,9 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 			embs[i] = emb
 		}
 	}
-	var pleSlab []byte
-	if s.perLayerInput != nil {
-		tokenPLE := len(s.state.specs) * s.state.pliDim * bf16Size
-		pleSlab = make([]byte, len(ids)*tokenPLE)
-		for i, id := range ids {
-			pli, err := s.perLayerInput(id, embs[i])
-			if err != nil {
-				return nil, false, err
-			}
-			if len(pli) != tokenPLE {
-				return nil, false, core.NewError("native.prefillRetainedTokensBatchedDense: PLE tensor size mismatch")
-			}
-			// the closure may reuse its scratch across calls — copy each token's tensor out.
-			copy(pleSlab[i*tokenPLE:(i+1)*tokenPLE], pli)
-		}
+	pleSlab, slabErr := s.pleSlabFor(ids, embs)
+	if slabErr != nil {
+		return nil, false, slabErr
 	}
 	var (
 		hidden []byte
@@ -1794,6 +1789,36 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 	}
 	s.pos += len(ids)
 	return hidden, true, nil
+}
+
+// pleSlabFor gathers the per-token PLE tensors for a token batch into one
+// token-major slab ([len(ids) × numLayers·pliDim] bf16) — the input the batched
+// dense forward's per-row PLE gate reads at row/layer offsets. nil (no error)
+// for models without the per-layer-input tower.
+func (s *ArchSession) pleSlabFor(ids []int32, embs [][]byte) ([]byte, error) {
+	// key on the STATE's tower, not just the session closure — a session can carry
+	// the closure while its decode state has no PLE layers (test fakes; the forward
+	// applies the gate from state.ple, so that is the authority).
+	if s.perLayerInput == nil || len(s.state.ple) == 0 {
+		return nil, nil
+	}
+	if len(ids) != len(embs) {
+		return nil, core.NewError("native.pleSlabFor: token and embedding counts differ")
+	}
+	tokenPLE := len(s.state.specs) * s.state.pliDim * bf16Size
+	pleSlab := make([]byte, len(ids)*tokenPLE)
+	for i, id := range ids {
+		pli, err := s.perLayerInput(id, embs[i])
+		if err != nil {
+			return nil, err
+		}
+		if len(pli) != tokenPLE {
+			return nil, core.NewError("native.pleSlabFor: PLE tensor size mismatch")
+		}
+		// the closure may reuse its scratch across calls — copy each token's tensor out.
+		copy(pleSlab[i*tokenPLE:(i+1)*tokenPLE], pli)
+	}
+	return pleSlab, nil
 }
 
 func (s *ArchSession) rememberRetainedHidden(hidden []byte) {

@@ -495,10 +495,14 @@ func TestMTPGreedyOfUsesDirectGreedyWhenAvailable(t *testing.T) {
 	}
 }
 
+// mtpSequentialFallbackSession forces s onto the byte-identical sequential verify
+// lane by flipping the test-only verifyBatchedDisabledForTest guard, so
+// verifyBatchedHiddens / verifyBatchedInto decline (ok=false) and MTPDecode /
+// the assistant pair step token-by-token. This is the honest hook: it does not
+// rely on any arch property (every resident arch — dense and PLE — now batches),
+// so the sequential lane is exercised on the same fixture the batched lane uses.
 func mtpSequentialFallbackSession(s *ArchSession) *ArchSession {
-	s.perLayerInput = func(_ int32, _ []byte) ([]byte, error) {
-		return nil, nil
-	}
+	s.verifyBatchedDisabledForTest = true
 	return s
 }
 
