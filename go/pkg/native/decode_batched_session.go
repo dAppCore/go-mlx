@@ -631,6 +631,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
+	trace := newBatchedGPUTrace(cb, "prologue") // LTHN_GPU_TRACE: per-stage GPU attribution
 	for li := 0; li < len(s.specs); li++ {
 		lhd, lkv := headDimOf(s.specs[li], s.headDim), kvHeadsOf(s.specs[li], s.nKVHeads)
 		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
@@ -673,6 +674,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			(len(s.ple) == 0 || s.pliDim <= foldDFFMax)
 		xContig := !(li == 0 && usingDirectInputRows)
 		if foldAttn {
+			enc = trace.checkpoint(enc, "attn.norm+qkv")
 			anw := s.lb[li].anw
 			if batchedRows && xContig {
 				// all K layer-input rows are the contiguous ping-pong slab: one rms-rows dispatch
@@ -738,6 +740,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					return nil, false, err
 				}
 			}
+			enc = trace.checkpoint(enc, "attn.rope+vnorm")
 			// multi-query SDPA: all K rows' attention in ONE dispatch (grid Y carries the rows,
 			// the per-query causal cap computed in-kernel) — needs the direct/no-evict landing
 			// AND every row below the 2-pass knee, so each row's bytes match the per-row
@@ -778,6 +781,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					}
 				}
 			}
+			enc = trace.checkpoint(enc, "attn.sdpa")
 			for i := 0; !deferredRing && i < K; i++ { // skipped whole on the deferred-ring lane
 				pos := basePos + i
 				slot, n := pos, pos+1
@@ -839,6 +843,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					return nil, false, err
 				}
 			}
+			enc = trace.checkpoint(enc, "attn.o+resid")
 			if err = encGemvBF16BatchedAt(enc, bproj.wO.buf, attnSlab, attnOutSlab, bproj.wO.off, 0, 0, s.dModel, qDim, K); err != nil {
 				endEncodingFast(enc)
 				return nil, false, err
@@ -905,6 +910,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			}
 		}
 		if foldMLP {
+			enc = trace.checkpoint(enc, "mlp")
 			// the folded MLP: one rms across the K rows, gate/up/down as batched gemvs (grid Z=K,
 			// the layer's weight matrix shared across rows), gelu(gate)·up fused over K·lff.
 			mnw := s.lb[li].mnw
@@ -928,6 +934,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 				endEncodingFast(enc)
 				return nil, false, err
 			}
+			enc = trace.checkpoint(enc, "resid+epilogue")
 			outContig := li != len(s.specs)-1 || (!directLastOut && !usingDirectOutputRows)
 			if batchedRows && outContig {
 				// out = h + rms(down) for all K rows, then the whole layer tail (PLE gate chain +
@@ -968,6 +975,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 	// deferred ring landings: every layer (owners AND their sharers) has read the pre-batch ring
 	// state, so the staged rows now land in their slots — at most two contiguous runs per owner
 	// (the wrap split). The landed bytes are exactly the staged roped/normed rows.
+	enc = trace.checkpoint(enc, "landings")
 	for _, p := range pendingLandings {
 		kSt, vSt := s.denseBatch.layerKStage[p.li], s.denseBatch.layerVStage[p.li]
 		slotBase := basePos % p.slideW
@@ -994,9 +1002,11 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			}
 		}
 	}
+	cb = trace.commandBuffer(cb) // checkpoints rotate the CB — commit the live one
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)
 	waitUntilCompletedFast(cb)
+	trace.finish(K, basePos)
 	if K > 0 {
 		if usingDirectOutputRows {
 			s.denseBatch.setLastRows(directOutputRows, directOutputOff, K)

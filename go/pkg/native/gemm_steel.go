@@ -24,7 +24,7 @@ import (
 // steelGEMMMinRows is the row count at which the batched projections switch from the grid-Z gemv
 // to the steel GEMM. 64 = one full BM tile; MTP verify blocks (K ≤ 16) stay on the gemv and keep
 // strict byte-identity with the sequential lane.
-const steelGEMMMinRows = 64
+const steelGEMMMinRows = 32
 
 // steelGEMMDisabledForTest forces the batched projections back onto the grid-Z gemv at any row
 // count — the A/B lever for the GEMM closeness/engagement tests. Production never sets it.
