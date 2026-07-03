@@ -1004,6 +1004,15 @@ func (pair *AssistantPair) DraftBlockFromSession(target *ArchSession, lastToken 
 	return pair.draftBlockFromSessionWithSuppress(target, lastToken, maxDraftTokens, true, nativeAssistantSuppressArg(suppressTokens))
 }
 
+// PrepareAssistantPrompt prefills promptIDs into the session and retains the boundary
+// hidden the draft path seeds from — the exported seam the cross-engine MTP parity
+// instrument drives (pkg/metal/model/gemma4's parity test); GenerateFromSessionEach
+// runs the same preparation internally. BoundaryNormedHidden (arch_session.go) reads
+// the retained seed back.
+func (s *ArchSession) PrepareAssistantPrompt(promptIDs []int32) error {
+	return s.prepareAssistantPrompt(promptIDs)
+}
+
 func (pair *AssistantPair) draftBlockFromSession(target *ArchSession, lastToken int32, maxDraftTokens int, copyTokens bool, suppressTokens ...[]int32) (AssistantDraftBlockResult, error) {
 	return pair.draftBlockFromSessionWithSuppress(target, lastToken, maxDraftTokens, copyTokens, nativeAssistantSuppressArg(suppressTokens))
 }
@@ -1129,10 +1138,14 @@ func (pair *AssistantPair) draftBlockSampledFromSessionWithSuppress(target *Arch
 		if err != nil {
 			return AssistantDraftBlockResult{}, err
 		}
-		currentToken, err = sampler.Sample(step.Logits, pair.Assistant.Arch.Vocab, params)
-		if err != nil {
-			return AssistantDraftBlockResult{}, core.E("native.assistant sampled draft block", "sample assistant logits", err)
-		}
+		// drafts are ALWAYS the drafter's argmax — the reference
+		// (SinglePositionMultiTokenCandidateGenerator) drafts greedily at every
+		// temperature and leaves sampling entirely to the TARGET's verify side.
+		// Sampling the drafter at the request temperature (the previous behaviour)
+		// makes proposals random draws the sampled target almost never matches —
+		// acceptance collapsed to 0% live. step.Token is that argmax (suppression
+		// already applied).
+		currentToken = step.Token
 		tokens = append(tokens, currentToken)
 		currentHidden = step.Hidden
 	}

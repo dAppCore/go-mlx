@@ -1390,7 +1390,13 @@ func TestAssistantPairDraftBlockFromSessionCanUseTokenScratch(t *testing.T) {
 	}
 }
 
-func TestAssistantPairDraftBlockSampledFromSessionUsesSamplerOnWordedPrompt(t *testing.T) {
+// TestAssistantPairDraftBlockSampledFromSessionDraftsGreedily pins the corrected
+// sampled-lane draft contract: DRAFTS ARE ALWAYS THE DRAFTER'S ARGMAX, at every
+// request temperature — the reference (HF SinglePositionMultiTokenCandidateGenerator)
+// drafts greedily and leaves ALL sampling to the target's verify side. The previous
+// behaviour (sampling drafts with the request sampler) made proposals random draws
+// the sampled target almost never matched; live acceptance collapsed to 0%.
+func TestAssistantPairDraftBlockSampledFromSessionDraftsGreedily(t *testing.T) {
 	requireNativeRuntime(t)
 
 	pair, mk := newNativeAssistantGenerateFixture(t)
@@ -1414,33 +1420,16 @@ func TestAssistantPairDraftBlockSampledFromSessionUsesSamplerOnWordedPrompt(t *t
 		t.Fatalf("draftBlockFromSessionWithSuppress(%q): %v", nativeAssistantWordedPromptText, err)
 	}
 
-	var seed uint64
-	var want []int32
-	for candidateSeed := uint64(1); candidateSeed <= 256; candidateSeed++ {
-		candidate := nativeAssistantReferenceSampledDraftBlock(t, pair, mk(), prompt, draftTokens, pickParams, model.NewSampler(candidateSeed))
-		if !idsEqual(candidate, greedy.Tokens) {
-			seed = candidateSeed
-			want = candidate
-			break
-		}
-	}
-	if seed == 0 {
-		t.Fatalf("no private sampler seed changed sampled assistant draft for %q from greedy %v", nativeAssistantWordedPromptText, greedy.Tokens)
-	}
-
 	target := mk()
 	if err := target.prepareAssistantPrompt(prompt); err != nil {
 		t.Fatalf("prepareAssistantPrompt(sampled %q): %v", nativeAssistantWordedPromptText, err)
 	}
-	got, err := pair.draftBlockSampledFromSessionWithSuppress(target, prompt[len(prompt)-1], draftTokens, true, pickParams, model.NewSampler(seed))
+	got, err := pair.draftBlockSampledFromSessionWithSuppress(target, prompt[len(prompt)-1], draftTokens, true, pickParams, model.NewSampler(7))
 	if err != nil {
 		t.Fatalf("draftBlockSampledFromSessionWithSuppress(%q): %v", nativeAssistantWordedPromptText, err)
 	}
-	if !idsEqual(got.Tokens, want) {
-		t.Fatalf("sampled assistant draft tokens = %v, want %v for private seed %d", got.Tokens, want, seed)
-	}
-	if idsEqual(got.Tokens, greedy.Tokens) {
-		t.Fatalf("sampled assistant draft tokens = greedy tokens %v; want sampler-controlled proposals", got.Tokens)
+	if !idsEqual(got.Tokens, greedy.Tokens) {
+		t.Fatalf("sampled-lane draft tokens = %v, want the drafter's greedy argmax %v (drafts never sample; the target's verify side owns sampling)", got.Tokens, greedy.Tokens)
 	}
 }
 

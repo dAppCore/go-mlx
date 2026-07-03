@@ -1255,10 +1255,20 @@ func (s *ArchSession) boundaryNormedHiddenInto(out []byte) ([]byte, error) {
 	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
 		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: no retained prefill state")
 	}
-	if len(s.finalNorm) != s.arch.Hidden*bf16Size {
-		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: final norm is unavailable")
+	// retainedHidden is ALREADY the post-final-norm boundary hidden — the decode step
+	// norms before the head, and the head (BoundaryLogits) consumes it with no further
+	// norm. Re-norming here double-applied the final norm (outlier dims with trained
+	// gains ~30 blew up ~30×), which poisoned the hidden half of every MTP draft input
+	// and collapsed draft acceptance to ~0 — the cross-engine parity instrument
+	// (pkg/metal/model/gemma4 TestAssistantDraftParityNativeVsMetal) caught it: the
+	// probe equalled RMSNorm(metal's healthy seed)·w exactly. Copy, never re-norm.
+	n := s.arch.Hidden * bf16Size
+	if cap(out) < n {
+		out = make([]byte, n)
 	}
-	return RMSNormBF16Into(out, s.retainedHidden, s.finalNorm, 1, s.arch.Hidden, s.arch.Eps)
+	out = out[:n]
+	copy(out, s.retainedHidden)
+	return out, nil
 }
 
 // BoundaryLogits returns the bf16 logits at the retained session boundary.
