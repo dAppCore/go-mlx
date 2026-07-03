@@ -332,7 +332,7 @@ func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
 	return cachedRopePeriodsBuffer(invFreqs)
 }
 
-// gemma4ProportionalPeriods builds the rope periods for a gemma4 proportional + partial-rotary
+// proportionalRopePeriods builds the rope periods for a gemma4 proportional + partial-rotary
 // layer (the global / full_attention layers), MATCHING metal's gemma4ProportionalFreqs: the first
 // rotaryDim/2 entries are base^(2i/headDim) — the rope_type "proportional" scaling divides the
 // exponent by the FULL head dim, NOT the rotated subset; the rest are +Inf (period → inv_freq 0 →
@@ -341,7 +341,7 @@ func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
 // pre-folded by rotaryDim/headDim — but the call site passes the raw base, so the global layers
 // over-rotated ~4× at 0.25 partial-rotary. That error is tiny at prompt positions (the cross-engine
 // passes) but grows linearly with position, collapsing 12B's generation into a channel-token loop.
-func gemma4ProportionalPeriods(headDim, rotaryDim int, base float32) []float32 {
+func proportionalRopePeriods(headDim, rotaryDim int, base float32) []float32 {
 	half, rot := headDim/2, rotaryDim/2
 	p := make([]float32, half)
 	for i := 0; i < half; i++ {

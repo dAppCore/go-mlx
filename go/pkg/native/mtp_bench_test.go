@@ -91,7 +91,7 @@ func BenchmarkMTPDecodeSampledDirectRows(b *testing.B) {
 	}
 }
 
-func BenchmarkGemma4AssistantPairGenerateSampledLowAcceptFallback(b *testing.B) {
+func BenchmarkAssistantPairGenerateSampledLowAcceptFallback(b *testing.B) {
 	requireNativeRuntime(b)
 	pair, mk := newNativeAssistantGenerateFixture(b)
 	defer pair.Close()

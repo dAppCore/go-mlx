@@ -8,6 +8,7 @@ Rules:
 
 - Copy proven engine behaviour from `pkg/metal`; do not reinvent working contracts.
 - Keep `go/pkg/native` CGO-free.
+- Keep `go/pkg/native` ARCH-FREE: no model-named files, identifiers, or hardcoded model ids in the engine. Nothing is gemma4 — attention/rope/norms/embed-scale are DECLARED config (`model.Arch`), checkpoint formats go through the `pkg/model` registries (`model.RegisterArch`, `model.RegisterAssistant`), and model knowledge lives in `pkg/model/<family>/`. If a new capability seems to need a model name in the engine, it needs a declared field or a registry hook instead.
 - Do not add gates or new settings.
 - Prefer no-copy streaming, resident buffers, fused/mega kernels, and command-buffer chaining.
 

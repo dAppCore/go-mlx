@@ -281,7 +281,7 @@ func TestNativeEnsureInitErrorPropagationCoverage(t *testing.T) {
 			_, err := DecodeForwardArchICBQuant(nil, nil, nil, 1, 1, 1, 2, 1, 1, 0, 10000, 1, 0, false)
 			return err
 		}},
-		{"GenerateGemma4BF16", func() error { _, err := GenerateGemma4BF16(nil, model.Arch{}, nil, 1, 1, -1); return err }},
+		{"GenerateBF16", func() error { _, err := GenerateBF16(nil, model.Arch{}, nil, 1, 1, -1); return err }},
 		{"NewArchSession", func() error { _, err := NewArchSession(nil, model.Arch{}, 1); return err }},
 		{"NewArchQuantSession", func() error { _, err := NewArchQuantSession(nil, model.Arch{}, 1); return err }},
 		{"PerLayerInputs", func() error {
@@ -494,12 +494,12 @@ func TestNativeColdHelperCoverage(t *testing.T) {
 		t.Fatalf("copyOrNilView(non-empty) = %+v, want buffer at offset zero", got)
 	}
 
-	periods := gemma4ProportionalPeriods(64, 32, 10000)
+	periods := proportionalRopePeriods(64, 32, 10000)
 	if len(periods) != 32 {
-		t.Fatalf("gemma4ProportionalPeriods len = %d, want 32", len(periods))
+		t.Fatalf("proportionalRopePeriods len = %d, want 32", len(periods))
 	}
 	if periods[0] != 1 || !math.IsInf(float64(periods[len(periods)-1]), 1) {
-		t.Fatalf("gemma4ProportionalPeriods endpoints = (%v, %v)", periods[0], periods[len(periods)-1])
+		t.Fatalf("proportionalRopePeriods endpoints = (%v, %v)", periods[0], periods[len(periods)-1])
 	}
 
 	const dModel = 8
@@ -858,22 +858,22 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 
 	const dModel, nHeads, nKV, headDim, dFF, vocab, maxLen = 64, 1, 1, 64, 128, 32, 8
 	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
-	_, err := GenerateGemma4BF16(nil, arch, []int32{1}, 1, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 nil weights", err)
-	_, err = GenerateGemma4BF16(g, arch, nil, 1, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 empty prompt", err)
-	_, err = GenerateGemma4BF16(g, arch, []int32{1}, 0, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 bad maxNew", err)
-	_, err = GenerateGemma4BF16(g, arch, []int32{1, 2}, maxLen, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 maxLen", err)
+	_, err := GenerateBF16(nil, arch, []int32{1}, 1, maxLen, -1)
+	expectErr(t, "GenerateBF16 nil weights", err)
+	_, err = GenerateBF16(g, arch, nil, 1, maxLen, -1)
+	expectErr(t, "GenerateBF16 empty prompt", err)
+	_, err = GenerateBF16(g, arch, []int32{1}, 0, maxLen, -1)
+	expectErr(t, "GenerateBF16 bad maxNew", err)
+	_, err = GenerateBF16(g, arch, []int32{1, 2}, maxLen, maxLen, -1)
+	expectErr(t, "GenerateBF16 maxLen", err)
 	bad := *g
 	bad.Embed = []byte{1}
-	_, err = GenerateGemma4BF16(&bad, arch, []int32{1}, 1, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 bad embed", err)
+	_, err = GenerateBF16(&bad, arch, []int32{1}, 1, maxLen, -1)
+	expectErr(t, "GenerateBF16 bad embed", err)
 	bad = *g
 	bad.FinalNorm = []byte{1}
-	_, err = GenerateGemma4BF16(&bad, arch, []int32{1}, 1, maxLen, -1)
-	expectErr(t, "GenerateGemma4BF16 bad head", err)
+	_, err = GenerateBF16(&bad, arch, []int32{1}, 1, maxLen, -1)
+	expectErr(t, "GenerateBF16 bad head", err)
 
 	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
@@ -1905,10 +1905,10 @@ func TestNativeMiscGuardCoverage(t *testing.T) {
 	expectErr(t, "DecodeLayer bad cache", err)
 
 	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
-	if gen, err := GenerateGemma4BF16(g, arch, []int32{1}, 2, maxLen, -1); err != nil {
-		t.Fatalf("GenerateGemma4BF16 two tokens: %v", err)
+	if gen, err := GenerateBF16(g, arch, []int32{1}, 2, maxLen, -1); err != nil {
+		t.Fatalf("GenerateBF16 two tokens: %v", err)
 	} else if len(gen) != 2 {
-		t.Fatalf("GenerateGemma4BF16 two tokens len = %d", len(gen))
+		t.Fatalf("GenerateBF16 two tokens len = %d", len(gen))
 	}
 
 	dir := t.TempDir()

@@ -117,9 +117,9 @@ type nativeTextMTPDecodeFunc func(target, draft model.DecodeStepper, prompt []in
 
 type nativeTextMTPSampledDecodeFunc func(target, draft model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, targetSampler, draftSampler *model.Sampler, params model.SampleParams, k int, yield func(int32) bool) (*native.MTPResult, bool, error)
 
-type nativeTextGemma4AssistantDecodeFunc func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error)
+type nativeTextAssistantDecodeFunc func(pair *native.AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error)
 
-type nativeTextGemma4AssistantSampledDecodeFunc func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error)
+type nativeTextAssistantSampledDecodeFunc func(pair *native.AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.AssistantGenerateResult, bool, error)
 
 var (
 	nativeTextMTPDecode nativeTextMTPDecodeFunc = func(target, draft model.DecodeStepper, prompt []int32, maxNew, eos, k int, yield func(int32) bool) (*native.MTPResult, bool, error) {
@@ -146,18 +146,18 @@ var (
 		res, err := native.MTPDecodeSampledEach(targetArch, draftArch, prompt, maxNew, stopTokens, targetSampler, draftSampler, params, k, yield)
 		return res, true, err
 	}
-	nativeTextGemma4AssistantDecode nativeTextGemma4AssistantDecodeFunc = func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	nativeTextAssistantDecode nativeTextAssistantDecodeFunc = func(pair *native.AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		targetArch, ok := target.(*native.ArchSession)
 		if !ok {
-			return native.Gemma4AssistantGenerateResult{}, false, nil
+			return native.AssistantGenerateResult{}, false, nil
 		}
 		res, err := pair.GenerateFromSessionEach(targetArch, prompt, maxNew, eos, draftTokens, suppress, yield)
 		return res, true, err
 	}
-	nativeTextGemma4AssistantSampledDecode nativeTextGemma4AssistantSampledDecodeFunc = func(pair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	nativeTextAssistantSampledDecode nativeTextAssistantSampledDecodeFunc = func(pair *native.AssistantPair, target model.DecodeStepper, prompt []int32, maxNew int, stopTokens []int32, sampler *model.Sampler, params model.SampleParams, draftTokens int, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		targetArch, ok := target.(*native.ArchSession)
 		if !ok {
-			return native.Gemma4AssistantGenerateResult{}, false, nil
+			return native.AssistantGenerateResult{}, false, nil
 		}
 		res, err := pair.GenerateSampledFromSessionEach(targetArch, prompt, maxNew, stopTokens, sampler, params, draftTokens, yield)
 		return res, true, err
@@ -1176,16 +1176,16 @@ func (m *nativeTextModel) GenerateNativeSpeculative(ctx context.Context, draftMo
 	return m.GenerateNativeSpeculativeEach(ctx, draftModel, prompt, cfg, nil)
 }
 
-func (m *nativeTextModel) GenerateNativeGemma4Assistant(ctx context.Context, pair *native.Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int) (SpeculativeDecodeResult, bool, error) {
-	return m.GenerateNativeGemma4AssistantEach(ctx, pair, prompt, cfg, draftTokens, nil)
+func (m *nativeTextModel) GenerateNativeAssistant(ctx context.Context, pair *native.AssistantPair, prompt string, cfg GenerateConfig, draftTokens int) (SpeculativeDecodeResult, bool, error) {
+	return m.GenerateNativeAssistantEach(ctx, pair, prompt, cfg, draftTokens, nil)
 }
 
-func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context, pair *native.Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int, yield func(decode.Token) bool) (SpeculativeDecodeResult, bool, error) {
+func (m *nativeTextModel) GenerateNativeAssistantEach(ctx context.Context, pair *native.AssistantPair, prompt string, cfg GenerateConfig, draftTokens int, yield func(decode.Token) bool) (SpeculativeDecodeResult, bool, error) {
 	if m == nil || m.tm == nil || m.tok == nil {
 		return SpeculativeDecodeResult{}, false, nil
 	}
 	if pair == nil {
-		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeGemma4Assistant: assistant pair is nil")
+		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeAssistant: assistant pair is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1206,9 +1206,9 @@ func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context,
 	}
 	promptIDs := m.tok.Encode(prompt)
 	if len(promptIDs) == 0 {
-		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeGemma4Assistant: empty prompt after tokenisation")
+		return SpeculativeDecodeResult{}, true, core.NewError("mlx.nativeTextModel.GenerateNativeAssistant: empty prompt after tokenisation")
 	}
-	targetSess, closeTarget, promptCacheTarget, err := m.nativeTextGemma4AssistantTargetSession(promptIDs)
+	targetSess, closeTarget, promptCacheTarget, err := m.nativeTextAssistantTargetSession(promptIDs)
 	if err != nil {
 		return SpeculativeDecodeResult{}, true, err
 	}
@@ -1231,11 +1231,11 @@ func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context,
 		}
 	}
 	var (
-		res     native.Gemma4AssistantGenerateResult
+		res     native.AssistantGenerateResult
 		handled bool
 	)
 	if nativeTextMTPPlainGreedy(generateCfg, stopTokens) {
-		res, handled, err = nativeTextGemma4AssistantDecode(pair, targetSess, promptIDs, maxNew, singleStopToken(stopTokens), draftTokens, generateCfg.SuppressTokens, yieldID)
+		res, handled, err = nativeTextAssistantDecode(pair, targetSess, promptIDs, maxNew, singleStopToken(stopTokens), draftTokens, generateCfg.SuppressTokens, yieldID)
 	} else {
 		params := model.SampleParams{
 			Temperature:         generateCfg.Temperature,
@@ -1246,7 +1246,7 @@ func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context,
 			MinTokensBeforeStop: generateCfg.MinTokensBeforeStop,
 			RepeatPenalty:       generateCfg.RepeatPenalty,
 		}
-		res, handled, err = nativeTextGemma4AssistantSampledDecode(pair, targetSess, promptIDs, maxNew, stopTokens, model.NewSampler(nativeTextSpeculativeSamplerSeed(generateCfg)), params, draftTokens, yieldID)
+		res, handled, err = nativeTextAssistantSampledDecode(pair, targetSess, promptIDs, maxNew, stopTokens, model.NewSampler(nativeTextSpeculativeSamplerSeed(generateCfg)), params, draftTokens, yieldID)
 	}
 	if err != nil || !handled {
 		return SpeculativeDecodeResult{}, handled, err
@@ -1254,10 +1254,10 @@ func (m *nativeTextModel) GenerateNativeGemma4AssistantEach(ctx context.Context,
 	if promptCacheTarget {
 		m.rememberNativePromptCacheBlock(promptIDs)
 	}
-	return m.nativeTextGemma4AssistantResult(prompt, res, time.Since(start)), true, nil
+	return m.nativeTextAssistantResult(prompt, res, time.Since(start)), true, nil
 }
 
-func (m *nativeTextModel) nativeTextGemma4AssistantTargetSession(promptIDs []int32) (model.DecodeStepper, func(), bool, error) {
+func (m *nativeTextModel) nativeTextAssistantTargetSession(promptIDs []int32) (model.DecodeStepper, func(), bool, error) {
 	m.mu.Lock()
 	if m.cacheSess != nil {
 		if sizer, ok := m.cacheSess.(nativeTextPromptCacheExactSizer); ok && sizer.CachedPrefixLen(promptIDs) > 0 {
@@ -1444,7 +1444,7 @@ func (m *nativeTextModel) nativeTextMTPResult(prompt string, res *native.MTPResu
 	}
 }
 
-func (m *nativeTextModel) nativeTextGemma4AssistantResult(prompt string, res native.Gemma4AssistantGenerateResult, duration time.Duration) SpeculativeDecodeResult {
+func (m *nativeTextModel) nativeTextAssistantResult(prompt string, res native.AssistantGenerateResult, duration time.Duration) SpeculativeDecodeResult {
 	tokens := make([]decode.Token, len(res.Tokens))
 	var text core.Builder
 	for i, id := range res.Tokens {

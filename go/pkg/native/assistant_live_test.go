@@ -13,9 +13,9 @@ import (
 func TestRealE2BAssistantLoadMetadata(t *testing.T) {
 	targetDir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
 	assistantDir := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
-	pair, err := LoadGemma4AssistantPairDirs(targetDir, assistantDir)
+	pair, err := LoadAssistantPairDirs(targetDir, assistantDir)
 	if err != nil {
-		t.Fatalf("LoadGemma4AssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
+		t.Fatalf("LoadAssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
 	}
 	defer pair.Close()
 

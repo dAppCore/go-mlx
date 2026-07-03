@@ -93,13 +93,13 @@ func BenchmarkRealE2BAssistantPair(b *testing.B) {
 			b.Fatalf("LoadDir(%s): %v", targetDir, err)
 		}
 		defer func() { _ = sess.Close() }()
-		pair, err := LoadGemma4AssistantPairDirs(targetDir, assistantDir)
+		pair, err := LoadAssistantPairDirs(targetDir, assistantDir)
 		if err != nil {
-			b.Fatalf("LoadGemma4AssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
+			b.Fatalf("LoadAssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
 		}
 		defer pair.Close()
 
-		var totals Gemma4AssistantGenerateResult
+		var totals AssistantGenerateResult
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -139,13 +139,13 @@ func BenchmarkRealE2BAssistantPair(b *testing.B) {
 			b.Fatalf("LoadDir(%s): %v", targetDir, err)
 		}
 		defer func() { _ = sess.Close() }()
-		pair, err := LoadGemma4AssistantPairDirs(targetDir, assistantDir)
+		pair, err := LoadAssistantPairDirs(targetDir, assistantDir)
 		if err != nil {
-			b.Fatalf("LoadGemma4AssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
+			b.Fatalf("LoadAssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
 		}
 		defer pair.Close()
 
-		var totals Gemma4AssistantGenerateResult
+		var totals AssistantGenerateResult
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {

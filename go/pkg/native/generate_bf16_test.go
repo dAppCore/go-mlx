@@ -13,11 +13,11 @@ import (
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
-// TestGenerateGemma4BF16 gates the token loop end to end: on a small (but SDPA-real,
+// TestGenerateBF16 gates the token loop end to end: on a small (but SDPA-real,
 // headDim 64) bf16 gemma4 it generates maxNew in-range tokens, is deterministic (greedy),
 // stops at EOS, and its first token equals the manual embed → DecodeForward → LM head →
 // greedy chain (the loop wires the components correctly).
-func TestGenerateGemma4BF16(t *testing.T) {
+func TestGenerateBF16(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -51,9 +51,9 @@ func TestGenerateGemma4BF16(t *testing.T) {
 	prompt := []int32{1, 5, 3, 9}
 	const maxNew, maxLen = 5, 16
 
-	out, err := GenerateGemma4BF16(g, arch, prompt, maxNew, maxLen, -1)
+	out, err := GenerateBF16(g, arch, prompt, maxNew, maxLen, -1)
 	if err != nil {
-		t.Fatalf("GenerateGemma4BF16: %v", err)
+		t.Fatalf("GenerateBF16: %v", err)
 	}
 	if len(out) != maxNew {
 		t.Fatalf("generated %d tokens, want %d", len(out), maxNew)
@@ -65,9 +65,9 @@ func TestGenerateGemma4BF16(t *testing.T) {
 	}
 
 	// deterministic: greedy re-run is identical.
-	out2, err := GenerateGemma4BF16(g, arch, prompt, maxNew, maxLen, -1)
+	out2, err := GenerateBF16(g, arch, prompt, maxNew, maxLen, -1)
 	if err != nil {
-		t.Fatalf("GenerateGemma4BF16 re-run: %v", err)
+		t.Fatalf("GenerateBF16 re-run: %v", err)
 	}
 	for i := range out {
 		if out[i] != out2[i] {
@@ -101,9 +101,9 @@ func TestGenerateGemma4BF16(t *testing.T) {
 	}
 
 	// EOS stops the loop: setting eosID to the first generated token yields exactly it.
-	outEos, err := GenerateGemma4BF16(g, arch, prompt, maxNew, maxLen, int(out[0]))
+	outEos, err := GenerateBF16(g, arch, prompt, maxNew, maxLen, int(out[0]))
 	if err != nil {
-		t.Fatalf("GenerateGemma4BF16 eos: %v", err)
+		t.Fatalf("GenerateBF16 eos: %v", err)
 	}
 	if len(outEos) != 1 || outEos[0] != out[0] {
 		t.Fatalf("EOS stop: got %v, want exactly [%d]", outEos, out[0])
@@ -112,21 +112,21 @@ func TestGenerateGemma4BF16(t *testing.T) {
 	t.Logf("token loop: %d-token prompt → %d greedy tokens %v (deterministic, in-range, first ≡ manual chain, EOS stops) — embed→decode→lm_head→sample end to end on a real-SDPA gemma4", len(prompt), len(out), out)
 }
 
-func TestGenerateGemma4BF16OneTokenAllocationBudget(t *testing.T) {
+func TestGenerateBF16OneTokenAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 
 	g, arch := gemma4BF16Fixture(t, 64, 1, 1, 64, 128, 32, 1)
 	prompt := []int32{1, 5}
-	if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
-		t.Fatalf("GenerateGemma4BF16 warmup: %v", err)
+	if _, err := GenerateBF16(g, arch, prompt, 1, 4, -1); err != nil {
+		t.Fatalf("GenerateBF16 warmup: %v", err)
 	}
 
 	allocs := testing.AllocsPerRun(3, func() {
-		if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
-			t.Fatalf("GenerateGemma4BF16: %v", err)
+		if _, err := GenerateBF16(g, arch, prompt, 1, 4, -1); err != nil {
+			t.Fatalf("GenerateBF16: %v", err)
 		}
 	})
 	if allocs > 125 {
-		t.Fatalf("GenerateGemma4BF16 allocations = %.0f, want <= 125", allocs)
+		t.Fatalf("GenerateBF16 allocations = %.0f, want <= 125", allocs)
 	}
 }

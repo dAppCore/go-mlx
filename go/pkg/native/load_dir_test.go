@@ -25,13 +25,13 @@ func mustEncode(t *testing.T, tensors map[string]safetensors.Tensor) []byte {
 	return blob
 }
 
-// TestLoadGemma4BF16Dir gates the on-disk directory path: a config.json + safetensors written
+// TestLoadDirBF16 gates the on-disk directory path: a config.json + safetensors written
 // to a temp dir — as BOTH a single model.safetensors AND a 2-shard index.json + shards —
 // loads via LoadDir into a session generating IDENTICALLY to the in-memory assemble pipe. Proves
 // the thin dir/sharded I/O layer (safetensors.LoadDir) + the registry dispatch feed the assembler
 // unchanged: real gemma4 checkpoints are always sharded, so this is the load path a real model
 // actually takes.
-func TestLoadGemma4BF16Dir(t *testing.T) {
+func TestLoadDirBF16(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -123,7 +123,7 @@ func TestLoadGemma4BF16Dir(t *testing.T) {
 	t.Logf("dir-load: single + 2-shard checkpoints both → session ≡ in-memory pipe %v (the path a real sharded gemma4 takes)", want)
 }
 
-func TestLoadDiffusionGemmaDecoderTrunkDir(t *testing.T) {
+func TestLoadDirDiffusionDecoderTrunk(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}

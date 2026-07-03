@@ -121,9 +121,9 @@ type ArchSession struct {
 	mtpDraftVerifyBlock   []int32
 	mtpDraftLogitScores   []float32
 	mtpDraftLogitSelected []int
-	mtpDraftLayerScratch  gemma4AssistantDraftLayerScratch
-	mtpTargetKVScratch    []Gemma4AssistantTargetKV
-	mtpTargetKVByType     []Gemma4AssistantKVEntry
+	mtpDraftLayerScratch  assistantDraftLayerScratch
+	mtpTargetKVScratch    []AssistantTargetKV
+	mtpTargetKVByType     []AssistantKVEntry
 	mtpTargetKVKeySlabs   [][]byte
 	mtpTargetKVValueSlabs [][]byte
 	mtpVerifyHiddenPinned *pinnedNoCopyBytes
@@ -186,7 +186,7 @@ func (s *ArchSession) closeSessionOwnedScratch() {
 	s.mtpDraftLogitScores = nil
 	s.mtpDraftLogitSelected = nil
 	s.mtpDraftLayerScratch.close()
-	s.mtpDraftLayerScratch = gemma4AssistantDraftLayerScratch{}
+	s.mtpDraftLayerScratch = assistantDraftLayerScratch{}
 	s.mtpTargetKVScratch = nil
 	s.mtpTargetKVByType = nil
 	s.mtpTargetKVKeySlabs = nil
@@ -611,7 +611,7 @@ func newArchSessionShardsWithHeadConfig(g *BF16Model, arch model.Arch, maxLen in
 		return nil, core.NewError("native.NewArchSession: maxLen must be > 0")
 	}
 	attnScale := attnScaleOf(arch)
-	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
+	embedScale := embedScaleOf(arch)
 	var sess *ArchSession
 	var buildErr error
 	withAutoreleasePool(func() {
@@ -750,7 +750,7 @@ func newArchQuantSessionShardsWithHeadConfig(g *QuantModel, arch model.Arch, max
 		return nil, core.NewError("native.NewArchQuantSession: maxLen must be > 0")
 	}
 	attnScale := attnScaleOf(arch)
-	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
+	embedScale := embedScaleOf(arch)
 	gs, bits := g.GroupSize, g.Bits
 	var sess *ArchSession
 	var buildErr error
@@ -1202,25 +1202,25 @@ func (s *ArchSession) mtpDraftLogitSelectedScratch(n int) []int {
 	return s.mtpDraftLogitSelected
 }
 
-func (s *ArchSession) mtpTargetKVScratchEntries(n int) []Gemma4AssistantTargetKV {
+func (s *ArchSession) mtpTargetKVScratchEntries(n int) []AssistantTargetKV {
 	if cap(s.mtpTargetKVScratch) < n {
-		s.mtpTargetKVScratch = make([]Gemma4AssistantTargetKV, n)
+		s.mtpTargetKVScratch = make([]AssistantTargetKV, n)
 	} else {
 		s.mtpTargetKVScratch = s.mtpTargetKVScratch[:n]
 		for i := range s.mtpTargetKVScratch {
-			s.mtpTargetKVScratch[i] = Gemma4AssistantTargetKV{}
+			s.mtpTargetKVScratch[i] = AssistantTargetKV{}
 		}
 	}
 	return s.mtpTargetKVScratch
 }
 
-func (s *ArchSession) mtpTargetKVByTypeEntries(capacity int) []Gemma4AssistantKVEntry {
+func (s *ArchSession) mtpTargetKVByTypeEntries(capacity int) []AssistantKVEntry {
 	if cap(s.mtpTargetKVByType) < capacity {
-		s.mtpTargetKVByType = make([]Gemma4AssistantKVEntry, 0, capacity)
+		s.mtpTargetKVByType = make([]AssistantKVEntry, 0, capacity)
 	} else {
 		s.mtpTargetKVByType = s.mtpTargetKVByType[:cap(s.mtpTargetKVByType)]
 		for i := range s.mtpTargetKVByType {
-			s.mtpTargetKVByType[i] = Gemma4AssistantKVEntry{}
+			s.mtpTargetKVByType[i] = AssistantKVEntry{}
 		}
 		s.mtpTargetKVByType = s.mtpTargetKVByType[:0]
 	}

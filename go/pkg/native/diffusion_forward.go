@@ -35,7 +35,7 @@ func DiffusionDenoiseForwardBF16(g *BF16Model, diffusion *model.LoadedDiffusion,
 	if dModel <= 0 || vocab <= 0 || arch.Heads <= 0 || arch.KVHeads <= 0 {
 		return nil, core.NewError(op + ": invalid arch dimensions")
 	}
-	embRows, err := EmbedTokensBF16(g.Embed, canvas, vocab, dModel, nativeGemma4EmbeddingScale(arch))
+	embRows, err := EmbedTokensBF16(g.Embed, canvas, vocab, dModel, embedScaleOf(arch))
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func DiffusionDenoiseForwardQuant(g *QuantModel, diffusion *model.LoadedDiffusio
 	if dModel <= 0 || vocab <= 0 || arch.Heads <= 0 || arch.KVHeads <= 0 {
 		return nil, core.NewError(op + ": invalid arch dimensions")
 	}
-	embRows, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, canvas, vocab, dModel, g.GroupSize, g.Bits, nativeGemma4EmbeddingScale(arch))
+	embRows, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, canvas, vocab, dModel, g.GroupSize, g.Bits, embedScaleOf(arch))
 	if err != nil {
 		return nil, err
 	}

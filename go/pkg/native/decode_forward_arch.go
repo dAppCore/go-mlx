@@ -26,6 +26,20 @@ func attnScaleOf(arch model.Arch) float32 {
 	return float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
 }
 
+// embedScaleOf is the token-embedding multiplier the model DECLARES (the engine applies
+// it, never assumes): gemma-family = √hidden, llama-family = 1.0. Falls back to √hidden
+// for a hand-built Arch that predates the declared field (EmbedScale == 0), so existing
+// paths are byte-identical.
+func embedScaleOf(arch model.Arch) float32 {
+	if arch.EmbedScale != 0 {
+		return arch.EmbedScale
+	}
+	if arch.Hidden <= 0 {
+		return 0
+	}
+	return float32(math.Sqrt(float64(arch.Hidden)))
+}
+
 // headDimOf / kvHeadsOf are a layer's RESOLVED attention geometry: gemma4 full_attention
 // layers use a larger head_dim (global_head_dim) and may differ in KV heads, declared per
 // layer on the spec (pkg/model/gemma4). They fall back to the uniform arch value for a spec
@@ -947,7 +961,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 	if valueNorm {
 		valueNormOnes = bf16ConstBuffer(maxHeadDim, 1.0)
 	}
-	// gemma4 global proportional+partial rope spectrum (see gemma4ProportionalPeriods): built once
+	// gemma4 global proportional+partial rope spectrum (see proportionalRopePeriods): built once
 	// for GlobalAttention layers so their rope pairs over the FULL head dim. Sliding (full rotary)
 	// keeps the base-derived path.
 	var globalRopeFreqs metal.MTLBuffer
@@ -959,7 +973,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 		}
 	}
 	if globalHeadDim > 0 && rotaryDim > 0 && rotaryDim < globalHeadDim {
-		periods := gemma4ProportionalPeriods(globalHeadDim, rotaryDim, base)
+		periods := proportionalRopePeriods(globalHeadDim, rotaryDim, base)
 		globalRopeFreqs = cachedRawRopePeriodsBuffer(periods)
 	}
 	coreScratch := getArchDecodeCoreScratch(dModel, maxQDim, maxKvDim, nHeads, maxLen, maxDFF)

@@ -13,6 +13,7 @@ import (
 	_ "dappco.re/go/mlx/pkg/metal/model/bert"     // registers bert/bert_rerank loaders
 	_ "dappco.re/go/mlx/pkg/metal/model/composed" // registers the config-composed (composed/hybrid) loader
 	_ "dappco.re/go/mlx/pkg/metal/model/deepseek" // registers deepseek loader
+	"dappco.re/go/mlx/pkg/model"
 	// FLA sequence-mixer families — register their mixer loaders so the
 	// config-composed model can resolve a Mamba/RWKV/linear-attn/sparse layer by
 	// the kind a config declares. Math is numerically oracle-validated; matching a
@@ -200,7 +201,7 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	if err != nil {
 		return nil, err
 	}
-	if isGemma4AssistantDraft(draftPath) {
+	if isAssistantDraft(draftPath) {
 		assistant, err := attachGemma4AssistantDraft(target.model, draftPath)
 		if err != nil {
 			if closeErr := target.Close(); closeErr != nil {
@@ -327,12 +328,21 @@ func (pair *SpeculativePair) Close() error {
 	return err
 }
 
-func isGemma4AssistantDraft(draftPath string) bool {
+// isAssistantDraft reports whether draftPath is an ATTACHED-drafter checkpoint (an MTP
+// assistant) rather than a standalone draft model — decided by the assistant registry
+// (model.RegisterAssistant), never by a hardcoded model list. The empty architecture is
+// excluded: a pack that declares nothing routes down the standalone path, even though
+// the registry lets a spec claim "" for config.json files that predate model_type.
+func isAssistantDraft(draftPath string) bool {
 	pack, err := inspectSpeculativeDraftModelPack(draftPath)
 	if err != nil {
 		return false
 	}
-	return pack.Architecture == "gemma4_assistant" || pack.Architecture == "gemma4_unified_assistant"
+	if pack.Architecture == "" {
+		return false
+	}
+	_, ok := model.LookupAssistant(pack.Architecture)
+	return ok
 }
 
 func attachGemma4AssistantDraftToTarget(target NativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {

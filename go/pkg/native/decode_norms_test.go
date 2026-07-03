@@ -76,11 +76,11 @@ func archDenseNormRef(t *testing.T, layers []DecodeLayerWeights, inputs [][]byte
 	return out
 }
 
-// TestGemma4PostNorms gates the gemma4 post-attention + post-feed-forward norm wiring:
+// TestDecodePostNorms gates the gemma4 post-attention + post-feed-forward norm wiring:
 // a re-encode arch forward with the two norms set is byte-for-byte the reference that
 // applies them under the production fused/composed residual-norm semantics, AND differs
 // from the same forward with the norms dropped (the norms are genuinely live, not ignored).
-func TestGemma4PostNorms(t *testing.T) {
+func TestDecodePostNorms(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -139,10 +139,10 @@ func TestGemma4PostNorms(t *testing.T) {
 	t.Logf("gemma4 post-norms: re-encode forward with post-attn + post-FF ≡ composed reference, and differs from without (norms live)")
 }
 
-// TestGemma4QKNorm gates the per-head QK-norm: a re-encode forward with q_norm/k_norm set
+// TestDecodeQKNorm gates the per-head QK-norm: a re-encode forward with q_norm/k_norm set
 // (applied per attention head, headDim-wide, before RoPE) is byte-for-byte the reference
 // that does the same, and differs from the same forward with QK-norm dropped.
-func TestGemma4QKNorm(t *testing.T) {
+func TestDecodeQKNorm(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}

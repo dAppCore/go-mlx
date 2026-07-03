@@ -13,7 +13,7 @@ import (
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
-// TestGemma4RopePerType gates per-attention-type RoPE: on an all-sliding model the decode
+// TestDecodeRopePerType gates per-attention-type RoPE: on an all-sliding model the decode
 // hidden state depends on the LOCAL theta (RopeLocalBase), never the global (RopeBase). So
 // (global=G, local=L) ≡ (L, L) byte-for-byte — the global base never reaches a sliding layer
 // — while (·, L) ≠ (·, G) when L ≠ G — the local base genuinely drives the sliding rotation.
@@ -22,11 +22,11 @@ import (
 // stuck regardless of the rotation, but the hidden state shifts with any rope change, so the
 // byte comparison is exact in both directions — a leak shows as hGL≠hLL, a no-op as hGL==hLG —
 // and works at the real gemma4 thetas (1e6 / 1e4) without needing an exaggerated gap.
-func TestGemma4RopePerType(t *testing.T) {
+func TestDecodeRopePerType(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
-	if err := ensureInit(); err != nil { // direct state-build bypasses GenerateGemma4BF16's init
+	if err := ensureInit(); err != nil { // direct state-build bypasses GenerateBF16's init
 		t.Fatalf("ensureInit: %v", err)
 	}
 	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32

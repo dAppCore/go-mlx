@@ -5,8 +5,6 @@
 package native
 
 import (
-	"math"
-
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 )
@@ -627,7 +625,7 @@ func NewBF16TokenModel(g *BF16Model, arch model.Arch, maxLen int, opts ...Backen
 		return nil, err
 	}
 	sessionCfg := archSessionConfig{pagedKVPageSize: b.pagedKVPageSize, pagedKVPrealloc: b.pagedKVPrealloc}
-	scale := float32(math.Sqrt(float64(arch.Hidden)))
+	scale := embedScaleOf(arch)
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	tm := &NativeTokenModel{
 		NativeBackend: b,
@@ -668,7 +666,7 @@ func NewQuantTokenModel(g *QuantModel, arch model.Arch, maxLen int, opts ...Back
 		return nil, err
 	}
 	sessionCfg := archSessionConfig{pagedKVPageSize: b.pagedKVPageSize, pagedKVPrealloc: b.pagedKVPrealloc}
-	scale := float32(math.Sqrt(float64(arch.Hidden)))
+	scale := embedScaleOf(arch)
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	gs, bits := g.GroupSize, g.Bits
 	tm := &NativeTokenModel{

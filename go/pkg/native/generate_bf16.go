@@ -5,13 +5,11 @@
 package native
 
 import (
-	"math"
-
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 )
 
-// GenerateGemma4BF16 is the autoregressive token loop on an assembled bf16 gemma4 — the
+// GenerateBF16 is the autoregressive token loop on an assembled bf16 model — the
 // whole chain end to end: embed the ids → DecodeForward (the norm-faithful arch decode,
 // behind model.Backend) → LM head on the last hidden state → greedy argmax → append,
 // until maxNew tokens or eosID (eosID < 0 disables early stop). Returns the generated ids
@@ -20,26 +18,27 @@ import (
 // Whole-sequence today: each step re-decodes the full running sequence over a fresh cache
 // (correct, but O(N²) — incremental single-token decode with a persistent cache is the
 // efficiency follow-up the model.Backend doc flags). Greedy/deterministic — the right shape
-// for a tok/s bench; a sampled variant can layer model.Sampler on the same logits. The
-// embedding scale is √hidden, eps/softCap come from the arch.
-func GenerateGemma4BF16(g *BF16Model, arch model.Arch, promptIDs []int32, maxNew, maxLen, eosID int) ([]int32, error) {
+// for a tok/s bench; a sampled variant can layer model.Sampler on the same logits. Every
+// model-specific number arrives DECLARED on the arch (embed scale, SDPA scale, eps,
+// soft-cap) — the loop assumes nothing about which model it is running.
+func GenerateBF16(g *BF16Model, arch model.Arch, promptIDs []int32, maxNew, maxLen, eosID int) ([]int32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if g == nil || len(g.Layers) != len(arch.Layer) {
-		return nil, core.NewError("native.GenerateGemma4BF16: weights/arch layer count mismatch")
+		return nil, core.NewError("native.GenerateBF16: weights/arch layer count mismatch")
 	}
 	if len(promptIDs) == 0 {
-		return nil, core.NewError("native.GenerateGemma4BF16: empty prompt")
+		return nil, core.NewError("native.GenerateBF16: empty prompt")
 	}
 	if maxNew <= 0 {
-		return nil, core.NewError("native.GenerateGemma4BF16: maxNew must be > 0")
+		return nil, core.NewError("native.GenerateBF16: maxNew must be > 0")
 	}
 	if len(promptIDs)+maxNew > maxLen {
-		return nil, core.NewError("native.GenerateGemma4BF16: prompt + maxNew exceeds maxLen cache rows")
+		return nil, core.NewError("native.GenerateBF16: prompt + maxNew exceeds maxLen cache rows")
 	}
-	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
-	attnScale := attnScaleOf(arch) // the model-declared SDPA scale (gemma4 1.0, not 1/√headDim)
+	embedScale := embedScaleOf(arch) // the model-declared embedding multiplier (gemma-family √hidden)
+	attnScale := attnScaleOf(arch)   // the model-declared SDPA scale (gemma4 1.0, not 1/√headDim)
 
 	gen := make([]int32, 0, maxNew)
 	var genErr error

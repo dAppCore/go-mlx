@@ -2440,16 +2440,16 @@ func TestNativeSpeculativeTextModelGenerateUsesNativeGemma4Assistant(t *testing.
 		tok:    tok,
 		maxLen: 32,
 	}
-	pair := &native.Gemma4AssistantPair{}
+	pair := &native.AssistantPair{}
 	spec := &nativeSpeculativeTextModel{nativeTextModel: target, nativeAssistant: pair, draftTokens: 3}
 	if !IsSpeculativeTextModel(spec) {
 		t.Fatal("IsSpeculativeTextModel(native assistant wrapper) = false, want true")
 	}
-	oldDecode := nativeTextGemma4AssistantDecode
-	defer func() { nativeTextGemma4AssistantDecode = oldDecode }()
+	oldDecode := nativeTextAssistantDecode
+	defer func() { nativeTextAssistantDecode = oldDecode }()
 	var called bool
 	var order []string
-	nativeTextGemma4AssistantDecode = func(gotPair *native.Gemma4AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	nativeTextAssistantDecode = func(gotPair *native.AssistantPair, target model.DecodeStepper, prompt []int32, maxNew, eos, draftTokens int, suppress []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		called = true
 		if gotPair != pair {
 			t.Fatal("native assistant hook did not receive wrapper pair")
@@ -2471,7 +2471,7 @@ func TestNativeSpeculativeTextModelGenerateUsesNativeGemma4Assistant(t *testing.
 			t.Fatal("native assistant yield returned false")
 		}
 		order = append(order, "hook-after")
-		return native.Gemma4AssistantGenerateResult{
+		return native.AssistantGenerateResult{
 			Tokens:             []int32{10, 10, 10},
 			PromptTokens:       2,
 			TargetTokens:       3,
@@ -2529,15 +2529,15 @@ func TestNativeSpeculativeTextModelGemma4AssistantRepeatPenaltyFallsBack(t *test
 	}
 	spec := &nativeSpeculativeTextModel{
 		nativeTextModel: target,
-		nativeAssistant: &native.Gemma4AssistantPair{},
+		nativeAssistant: &native.AssistantPair{},
 		draftTokens:     3,
 	}
-	oldSampled := nativeTextGemma4AssistantSampledDecode
-	defer func() { nativeTextGemma4AssistantSampledDecode = oldSampled }()
+	oldSampled := nativeTextAssistantSampledDecode
+	defer func() { nativeTextAssistantSampledDecode = oldSampled }()
 	var assistantCalled bool
-	nativeTextGemma4AssistantSampledDecode = func(*native.Gemma4AssistantPair, model.DecodeStepper, []int32, int, []int32, *model.Sampler, model.SampleParams, int, func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	nativeTextAssistantSampledDecode = func(*native.AssistantPair, model.DecodeStepper, []int32, int, []int32, *model.Sampler, model.SampleParams, int, func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		assistantCalled = true
-		return native.Gemma4AssistantGenerateResult{}, true, core.NewError("assistant sampled path should not run for repeat penalty")
+		return native.AssistantGenerateResult{}, true, core.NewError("assistant sampled path should not run for repeat penalty")
 	}
 
 	var out []inference.Token
@@ -2573,15 +2573,15 @@ func TestNativeSpeculativeTextModelGemma4AssistantProbeSinkFallsBack(t *testing.
 	}
 	spec := &nativeSpeculativeTextModel{
 		nativeTextModel: target,
-		nativeAssistant: &native.Gemma4AssistantPair{},
+		nativeAssistant: &native.AssistantPair{},
 		draftTokens:     3,
 	}
-	oldDecode := nativeTextGemma4AssistantDecode
-	defer func() { nativeTextGemma4AssistantDecode = oldDecode }()
+	oldDecode := nativeTextAssistantDecode
+	defer func() { nativeTextAssistantDecode = oldDecode }()
 	var assistantCalled bool
-	nativeTextGemma4AssistantDecode = func(*native.Gemma4AssistantPair, model.DecodeStepper, []int32, int, int, int, []int32, func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	nativeTextAssistantDecode = func(*native.AssistantPair, model.DecodeStepper, []int32, int, int, int, []int32, func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		assistantCalled = true
-		return native.Gemma4AssistantGenerateResult{}, true, core.NewError("assistant greedy path should not run for probe sink")
+		return native.AssistantGenerateResult{}, true, core.NewError("assistant greedy path should not run for probe sink")
 	}
 	spec.SetProbeSink(inference.ProbeSinkFunc(func(inference.ProbeEvent) {}))
 
@@ -2620,7 +2620,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptCache(t *testing
 	}
 	spec := &nativeSpeculativeTextModel{
 		nativeTextModel: target,
-		nativeAssistant: &native.Gemma4AssistantPair{},
+		nativeAssistant: &native.AssistantPair{},
 		draftTokens:     3,
 	}
 	if err := spec.WarmPromptCache(context.Background(), "hello"); err != nil {
@@ -2630,9 +2630,9 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptCache(t *testing
 		t.Fatalf("OpenSession calls after WarmPromptCache = %d, want 1", targetTM.opens)
 	}
 
-	oldDecode := nativeTextGemma4AssistantDecode
-	defer func() { nativeTextGemma4AssistantDecode = oldDecode }()
-	nativeTextGemma4AssistantDecode = func(_ *native.Gemma4AssistantPair, gotTarget model.DecodeStepper, prompt []int32, maxNew, _ int, draftTokens int, _ []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	oldDecode := nativeTextAssistantDecode
+	defer func() { nativeTextAssistantDecode = oldDecode }()
+	nativeTextAssistantDecode = func(_ *native.AssistantPair, gotTarget model.DecodeStepper, prompt []int32, maxNew, _ int, draftTokens int, _ []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		if gotTarget != targetSession {
 			t.Fatalf("native assistant target session = %p, want warmed prompt-cache session %p", gotTarget, targetSession)
 		}
@@ -2642,7 +2642,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptCache(t *testing
 		if yield != nil && !yield(10) {
 			t.Fatal("native assistant warm-cache yield returned false")
 		}
-		return native.Gemma4AssistantGenerateResult{
+		return native.AssistantGenerateResult{
 			Tokens:            []int32{10},
 			PromptTokens:      len(prompt),
 			TargetTokens:      1,
@@ -2686,7 +2686,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptPrefix(t *testin
 	}
 	spec := &nativeSpeculativeTextModel{
 		nativeTextModel: target,
-		nativeAssistant: &native.Gemma4AssistantPair{},
+		nativeAssistant: &native.AssistantPair{},
 		draftTokens:     3,
 	}
 	if err := spec.WarmPromptCache(context.Background(), "hello"); err != nil {
@@ -2697,9 +2697,9 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptPrefix(t *testin
 	}
 
 	promptIDs := tok.Encode("hello hello")
-	oldDecode := nativeTextGemma4AssistantDecode
-	defer func() { nativeTextGemma4AssistantDecode = oldDecode }()
-	nativeTextGemma4AssistantDecode = func(_ *native.Gemma4AssistantPair, gotTarget model.DecodeStepper, prompt []int32, maxNew, _ int, draftTokens int, _ []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	oldDecode := nativeTextAssistantDecode
+	defer func() { nativeTextAssistantDecode = oldDecode }()
+	nativeTextAssistantDecode = func(_ *native.AssistantPair, gotTarget model.DecodeStepper, prompt []int32, maxNew, _ int, draftTokens int, _ []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		if gotTarget != targetSession {
 			t.Fatalf("native assistant target session = %p, want shared-prefix prompt-cache session %p", gotTarget, targetSession)
 		}
@@ -2709,7 +2709,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUsesWarmPromptPrefix(t *testin
 		if yield != nil && !yield(10) {
 			t.Fatal("native assistant prefix-cache yield returned false")
 		}
-		return native.Gemma4AssistantGenerateResult{
+		return native.AssistantGenerateResult{
 			Tokens:            []int32{10},
 			PromptTokens:      len(prompt),
 			TargetTokens:      1,
@@ -2744,7 +2744,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUpdatesWarmPromptPrefixCacheEn
 	}
 	spec := &nativeSpeculativeTextModel{
 		nativeTextModel: target,
-		nativeAssistant: &native.Gemma4AssistantPair{},
+		nativeAssistant: &native.AssistantPair{},
 		draftTokens:     3,
 	}
 	if err := spec.WarmPromptCache(context.Background(), "hello"); err != nil {
@@ -2752,9 +2752,9 @@ func TestNativeSpeculativeTextModelGemma4AssistantUpdatesWarmPromptPrefixCacheEn
 	}
 	promptIDs := tok.Encode("hello hello")
 
-	oldDecode := nativeTextGemma4AssistantDecode
-	defer func() { nativeTextGemma4AssistantDecode = oldDecode }()
-	nativeTextGemma4AssistantDecode = func(_ *native.Gemma4AssistantPair, gotTarget model.DecodeStepper, prompt []int32, _, _ int, _ int, _ []int32, yield func(int32) bool) (native.Gemma4AssistantGenerateResult, bool, error) {
+	oldDecode := nativeTextAssistantDecode
+	defer func() { nativeTextAssistantDecode = oldDecode }()
+	nativeTextAssistantDecode = func(_ *native.AssistantPair, gotTarget model.DecodeStepper, prompt []int32, _, _ int, _ int, _ []int32, yield func(int32) bool) (native.AssistantGenerateResult, bool, error) {
 		if gotTarget != targetSession {
 			t.Fatalf("native assistant target session = %p, want warmed prompt-cache session %p", gotTarget, targetSession)
 		}
@@ -2764,7 +2764,7 @@ func TestNativeSpeculativeTextModelGemma4AssistantUpdatesWarmPromptPrefixCacheEn
 		if yield != nil && !yield(10) {
 			t.Fatal("native assistant cache-entry yield returned false")
 		}
-		return native.Gemma4AssistantGenerateResult{
+		return native.AssistantGenerateResult{
 			Tokens:            []int32{10},
 			PromptTokens:      len(prompt),
 			TargetTokens:      1,

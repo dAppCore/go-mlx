@@ -229,7 +229,8 @@ func (c Config) Arch() (model.Arch, error) {
 		TopK:                topK,
 		ExpertFF:            expertFF,
 		Eps:                 eps,
-		AttnScale:           1, // gemma4: the per-head QK-norm does the scaling, so SDPA scale is 1.0 (metal's gemma4AttentionScale), NOT 1/√headDim
+		AttnScale:           1,                                         // gemma4: the per-head QK-norm does the scaling, so SDPA scale is 1.0 (metal's gemma4AttentionScale), NOT 1/√headDim
+		EmbedScale:          float32(math.Sqrt(float64(c.HiddenSize))), // gemma-family √hidden token-embedding multiplier, declared so backends never assume it
 		RopeBase:            ropeBase,
 		RopeLocalBase:       ropeLocalBase,
 		RotaryDim:           rotaryDim,

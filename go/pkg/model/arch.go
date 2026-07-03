@@ -39,6 +39,16 @@ type LayerSpec struct {
 // OwnsCache reports whether this layer holds its own KV cache (vs sharing).
 func (l LayerSpec) OwnsCache() bool { return l.CacheIndex >= 0 }
 
+// TypeName is the layer's attention type as configs spell it — the inverse of the
+// DeriveLayers mapping, so KV-stream matching (e.g. drafter layer → target stream)
+// speaks the config vocabulary.
+func (l LayerSpec) TypeName() string {
+	if l.Attention == SlidingAttention {
+		return "sliding_attention"
+	}
+	return "full_attention"
+}
+
 // HasMoE reports whether any layer is a MoE (sparse-expert) layer — an arch may apply MoE
 // uniformly, but the check is per-layer so a backend can route MoE archs off fast paths
 // that can't host the router (the ICB replay).
@@ -56,11 +66,12 @@ func (a Arch) HasMoE() bool {
 // consumed by a backend executor. (Dims are plain fields the loader fills from config;
 // the per-layer derivation is DeriveLayers.)
 type Arch struct {
-	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int       // HeadDim / KVHeads are the sliding/default geometry; full_attention layers use GlobalHeadDim / GlobalKVHeads
-	GlobalHeadDim, GlobalKVHeads               int       // full_attention head_dim / kv-head count (== HeadDim / KVHeads when the config draws no distinction)
-	Experts, TopK, ExpertFF                    int       // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
+	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int // HeadDim / KVHeads are the sliding/default geometry; full_attention layers use GlobalHeadDim / GlobalKVHeads
+	GlobalHeadDim, GlobalKVHeads               int // full_attention head_dim / kv-head count (== HeadDim / KVHeads when the config draws no distinction)
+	Experts, TopK, ExpertFF                    int // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
 	AttnScale                                  float32   // attention SDPA scale the model DECLARES (the engine applies it, never assumes): e.g. 1.0 when a QK-norm IS the scaling, else 1/√headDim
+	EmbedScale                                 float32   // token-embedding multiplier the model DECLARES (gemma-family √hidden; llama-family 1.0); 0 = undeclared → backends fall back to √hidden
 	RopeBase, RopeScale                        float32   // RopeBase = global-attention RoPE theta
 	RopeLocalBase                              float32   // sliding-attention RoPE theta (an arch may use a smaller local theta)
 	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, e.g. full_attention=0.25·GlobalHeadDim); global / sliding

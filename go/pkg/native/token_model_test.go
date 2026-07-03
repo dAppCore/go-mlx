@@ -494,7 +494,7 @@ func TestNativeTokenModelProjectImagePixelsNHWC_Good(t *testing.T) {
 // TestNativeTokenModel_ContractParity gates the token-loop CONTRACT against the
 // proven native generation loop: model.Generate over a NativeTokenModel
 // (whole-sequence decode through model.Backend + the embed/head bookends) must
-// produce the EXACT greedy tokens GenerateGemma4BF16 produces (native's
+// produce the EXACT greedy tokens GenerateBF16 produces (native's
 // incremental persistent-cache loop) on the same bf16 gemma4. The two loops
 // share no code — one is the contract loop in pkg/model, the other native's
 // bespoke loop — so full-sequence equality proves the contract path yields real
@@ -535,9 +535,9 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 	const maxNew, maxLen = 6, 16
 
 	// reference: native's proven incremental (persistent-cache) generation loop.
-	want, err := GenerateGemma4BF16(g, arch, prompt, maxNew, maxLen, -1)
+	want, err := GenerateBF16(g, arch, prompt, maxNew, maxLen, -1)
 	if err != nil {
-		t.Fatalf("GenerateGemma4BF16: %v", err)
+		t.Fatalf("GenerateBF16: %v", err)
 	}
 
 	// the contract path: model.Generate over the NativeTokenModel (whole-seq).
@@ -616,7 +616,7 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 		}
 	}
 
-	t.Logf("token-loop contract (incremental session) ≡ native generation ≡ whole-seq: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
+	t.Logf("token-loop contract (incremental session) ≡ native generation ≡ whole-seq: model.Generate(NativeTokenModel) = GenerateBF16 = %v", got)
 }
 
 func TestNativeTokenModelTopologyCapabilities(t *testing.T) {

@@ -21,7 +21,7 @@ import (
 type nativeSpeculativeTextModel struct {
 	*nativeTextModel
 	draft           *nativeTextModel
-	nativeAssistant *native.Gemma4AssistantPair
+	nativeAssistant *native.AssistantPair
 	draftTokens     int
 
 	mtpMu      sync.Mutex
@@ -95,14 +95,14 @@ func LoadNativeSpeculativePairAsTextModelBlock(targetPath, draftPath string, dra
 	if draftBlock <= 0 {
 		draftBlock = MTPDefaultDraftBlock
 	}
-	if isGemma4AssistantDraft(draftPath) {
-		if _, isGGUF := native.ResolveGemma4AssistantGGUFDrafterFile(draftPath); !isGGUF {
+	if isAssistantDraft(draftPath) {
+		if _, isGGUF := native.ResolveAssistantGGUFDrafterFile(draftPath); !isGGUF {
 			if err := validateNativeSpeculativeAssistantTokenizer(target.tok, draftPath); err != nil {
 				closeErr := resultError(target.Close())
 				return nil, core.ErrorJoin(err, closeErr)
 			}
 		}
-		assistant, err := native.LoadGemma4AssistantPairDirs(targetPath, draftPath)
+		assistant, err := native.LoadAssistantPairDirs(targetPath, draftPath)
 		if err != nil {
 			closeErr := resultError(target.Close())
 			return nil, core.ErrorJoin(err, closeErr)
@@ -168,7 +168,7 @@ func (s *nativeSpeculativeTextModel) nativeSpeculativeStream(ctx context.Context
 			err     error
 		)
 		if s.nativeAssistant != nil {
-			if !nativeGemma4AssistantEligible(rootCfg, s.nativeTextModel) {
+			if !nativeAssistantEligible(rootCfg, s.nativeTextModel) {
 				for token := range s.nativeTextModel.stream(ctx, s.tok.Encode(prompt), cfg) {
 					if yield != nil && !yield(token) {
 						return
@@ -177,7 +177,7 @@ func (s *nativeSpeculativeTextModel) nativeSpeculativeStream(ctx context.Context
 				s.setNativeMTPMetrics(nil)
 				return
 			}
-			result, handled, err = s.nativeTextModel.GenerateNativeGemma4AssistantEach(ctx, s.nativeAssistant, prompt, rootCfg, s.draftTokens, emit)
+			result, handled, err = s.nativeTextModel.GenerateNativeAssistantEach(ctx, s.nativeAssistant, prompt, rootCfg, s.draftTokens, emit)
 		} else {
 			result, handled, err = s.nativeTextModel.GenerateNativeSpeculativeEach(ctx, s.draft, prompt, SpeculativeDecodeConfig{
 				MaxTokens:      cfg.MaxTokens,
@@ -218,7 +218,7 @@ func nativeSpeculativeRootGenerateConfig(cfg inference.GenerateConfig) GenerateC
 	}
 }
 
-func nativeGemma4AssistantEligible(cfg GenerateConfig, target *nativeTextModel) bool {
+func nativeAssistantEligible(cfg GenerateConfig, target *nativeTextModel) bool {
 	return cfg.RepeatPenalty <= 1 && nativeTextModelProbeSink(target) == nil
 }
 

@@ -6,7 +6,7 @@ package native
 
 import "dappco.re/go/mlx/pkg/model/qwen3"
 
-// qwen3_gated_delta_backend.go wires native's device GEMM into the engine-neutral Qwen 3.6 gated-delta
+// gated_delta_backend.go wires native's device GEMM into the engine-neutral Qwen 3.6 gated-delta
 // block's projections (in_proj_qkv/a/b/z + out_proj — its compute hot spot; the delta recurrence + conv
 // are cheap), the same seam as mamba2/rwkv7. qwen3 declares the ProjMatMul hook and runs the pure-Go host
 // matNT by default (AX-8); importing native binds it to the steel GEMM (x[M,K]@w[N,K]ᵀ, byte-identical to

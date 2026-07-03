@@ -96,10 +96,10 @@ func valueNormInputs(dModel, T int) [][]byte {
 	return inputs
 }
 
-// TestGemma4ValueNorm gates the value normalisation: a re-encode forward with valueNorm set
+// TestValueNorm gates the value normalisation: a re-encode forward with valueNorm set
 // is byte-for-byte the reference that applies a no-scale per-head RMSNorm to V, AND differs
 // from the same forward without it (value-norm is genuinely live, not ignored).
-func TestGemma4ValueNorm(t *testing.T) {
+func TestValueNorm(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -135,12 +135,12 @@ func TestGemma4ValueNorm(t *testing.T) {
 	t.Logf("gemma4 value-norm: re-encode forward with the no-scale per-head V RMSNorm ≡ composed reference, and differs from without (live)")
 }
 
-// TestGemma4KEqV gates the K==V path (gemma4 12B/31B: attention_k_eq_v, no v_proj): a forward
+// TestAttentionKEqV gates the K==V path (gemma4 12B/31B: attention_k_eq_v, no v_proj): a forward
 // whose layers carry NO v_proj weight (V taken from the k-proj via the projector's hasV()==false)
 // is byte-for-byte a forward whose v_proj IS the k-proj weight, and byte-for-byte the oracle that
 // takes V from the k-proj — both value-normed. Proves V rides the k-proj output, not a separate
 // projection, with no model load.
-func TestGemma4KEqV(t *testing.T) {
+func TestAttentionKEqV(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}

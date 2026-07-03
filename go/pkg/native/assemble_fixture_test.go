@@ -59,3 +59,10 @@ func gemma4Tensors(arch model.Arch, withLMHead bool) (map[string]safetensors.Ten
 	}
 	return ts, fills
 }
+
+// g4Assemble runs the engine's generic assembler with gemma4's weight layout — gemma4 no longer owns an
+// Assemble (model.Assemble does), so the native tests that build a gemma4 LoadedModel from a synthetic
+// tensor set go through this.
+func g4Assemble(ts map[string]safetensors.Tensor, arch model.Arch) (*model.LoadedModel, error) {
+	return model.Assemble(ts, arch, model.StandardWeightNames())
+}

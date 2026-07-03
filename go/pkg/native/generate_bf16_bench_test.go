@@ -6,7 +6,7 @@ package native
 
 import "testing"
 
-func BenchmarkGenerateGemma4BF16OneToken(b *testing.B) {
+func BenchmarkGenerateBF16OneToken(b *testing.B) {
 	requireNativeRuntime(b)
 
 	g, arch := gemma4BF16Fixture(b, 64, 1, 1, 64, 128, 32, 1)
@@ -14,7 +14,7 @@ func BenchmarkGenerateGemma4BF16OneToken(b *testing.B) {
 	b.SetBytes(int64(len(prompt) * arch.Hidden * bf16Size))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
+		if _, err := GenerateBF16(g, arch, prompt, 1, 4, -1); err != nil {
 			b.Fatal(err)
 		}
 	}

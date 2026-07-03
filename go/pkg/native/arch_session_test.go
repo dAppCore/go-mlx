@@ -1538,9 +1538,9 @@ func TestArchSession(t *testing.T) {
 
 	// the continuation must equal a fresh whole-sequence generate on the full history.
 	concat := append(append(append([]int32{}, promptA...), gA...), promptB...)
-	ref, err := GenerateGemma4BF16(g, arch, concat, 4, maxLen, -1)
+	ref, err := GenerateBF16(g, arch, concat, 4, maxLen, -1)
 	if err != nil {
-		t.Fatalf("reference GenerateGemma4BF16: %v", err)
+		t.Fatalf("reference GenerateBF16: %v", err)
 	}
 	if !idsEqual(gB, ref) {
 		t.Fatalf("session continuation %v != fresh whole-sequence %v (cache did not carry over correctly)", gB, ref)
