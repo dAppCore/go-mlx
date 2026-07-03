@@ -351,12 +351,19 @@ func TestAdapter_Adapter_GenerateStream_Good(t *testing.T) {
 }
 
 func TestAdapter_Adapter_GenerateStream_Bad(t *testing.T) {
-	// A callback that returns an error must short-circuit the stream and that
-	// error must propagate out unchanged.
+	// A callback that returns an error must short-circuit the stream (no
+	// further callback invocations for later tokens) and that error must
+	// propagate out unchanged. A prior version of this test only checked the
+	// returned error, which would still pass even if the "continue" guard in
+	// GenerateStream were deleted and every remaining token kept reaching the
+	// callback (since neither later token here returns a distinct error to
+	// overwrite it) — recording every call closes that gap.
 	wantErr := core.NewError("stop")
-	model := &stubTextModel{tokens: []inference.Token{{Text: "one"}, {Text: "two"}}}
+	model := &stubTextModel{tokens: []inference.Token{{Text: "one"}, {Text: "two"}, {Text: "three"}}}
 	a := adapter.New(model, "mlx")
+	var calls []string
 	err := a.GenerateStream(context.Background(), "ignored", adapter.GenOpts{}, func(token string) error {
+		calls = append(calls, token)
 		if token == "one" {
 			return wantErr
 		}
@@ -364,6 +371,9 @@ func TestAdapter_Adapter_GenerateStream_Bad(t *testing.T) {
 	})
 	if !core.Is(err, wantErr) {
 		t.Fatalf("GenerateStream() error = %v, want %v", err, wantErr)
+	}
+	if len(calls) != 1 || calls[0] != "one" {
+		t.Fatalf("GenerateStream() callback calls = %v, want [one] only (must not call back after the error)", calls)
 	}
 }
 
@@ -446,11 +456,16 @@ func TestAdapter_Adapter_ChatStream_Good(t *testing.T) {
 }
 
 func TestAdapter_Adapter_ChatStream_Bad(t *testing.T) {
-	// A callback error short-circuits the chat stream and propagates unchanged.
+	// A callback error short-circuits the chat stream (no further callback
+	// invocations for later tokens) and propagates unchanged. Recording every
+	// call proves the short-circuit rather than just the surfaced error — see
+	// the matching comment on TestAdapter_Adapter_GenerateStream_Bad.
 	wantErr := core.NewError("stop chat")
-	model := &stubTextModel{chatTokens: []inference.Token{{Text: "one"}, {Text: "two"}}}
+	model := &stubTextModel{chatTokens: []inference.Token{{Text: "one"}, {Text: "two"}, {Text: "three"}}}
 	a := adapter.New(model, "mlx")
+	var calls []string
 	err := a.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, adapter.GenOpts{}, func(token string) error {
+		calls = append(calls, token)
 		if token == "one" {
 			return wantErr
 		}
@@ -458,6 +473,9 @@ func TestAdapter_Adapter_ChatStream_Bad(t *testing.T) {
 	})
 	if !core.Is(err, wantErr) {
 		t.Fatalf("ChatStream() error = %v, want %v", err, wantErr)
+	}
+	if len(calls) != 1 || calls[0] != "one" {
+		t.Fatalf("ChatStream() callback calls = %v, want [one] only (must not call back after the error)", calls)
 	}
 }
 
