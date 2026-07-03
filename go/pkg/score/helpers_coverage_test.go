@@ -34,8 +34,8 @@ func TestSycophancy_tierSeverity_AllArms(t *testing.T) {
 		{TierSoftAgreement, "low"},
 		{TierHollowFlattery, "medium"},
 		{TierSubmission, "high"},
-		{-1, "info"},   // default arm
-		{999, "info"},  // default arm
+		{-1, "info"},  // default arm
+		{999, "info"}, // default arm
 	}
 	for _, c := range cases {
 		if got := tierSeverity(c.tier); got != c.want {

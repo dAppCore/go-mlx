@@ -23,10 +23,10 @@ func TestLongestTokenPrefix_Edges_Good(t *testing.T) {
 	}{
 		{nil, nil, 0},
 		{[]int32{1, 2, 3}, nil, 0},
-		{[]int32{1, 2, 3}, []int32{1, 2, 3}, 3},       // identical → full
-		{[]int32{1, 2, 3}, []int32{1, 2, 9}, 2},       // diverge at 2
-		{[]int32{1, 2}, []int32{1, 2, 3, 4}, 2},       // a is a prefix of b
-		{[]int32{9, 1}, []int32{1, 2}, 0},             // diverge at 0
+		{[]int32{1, 2, 3}, []int32{1, 2, 3}, 3}, // identical → full
+		{[]int32{1, 2, 3}, []int32{1, 2, 9}, 2}, // diverge at 2
+		{[]int32{1, 2}, []int32{1, 2, 3, 4}, 2}, // a is a prefix of b
+		{[]int32{9, 1}, []int32{1, 2}, 0},       // diverge at 0
 	}
 	for _, tc := range cases {
 		if got := longestTokenPrefix(tc.a, tc.b); got != tc.want {

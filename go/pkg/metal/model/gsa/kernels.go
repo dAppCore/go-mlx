@@ -69,11 +69,11 @@ func recurrence(q, k, v, g, s, sk0, sv0 *metal.Array) (out, skN, svN *metal.Arra
 
 	steps := make([]*metal.Array, 0, L)
 	for i := int32(0); i < L; i++ {
-		qi := stepSlice(q, i, headK)  // [B,H,1,HeadK]
-		ki := stepSlice(k, i, headK)  // [B,H,1,HeadK]
-		vi := stepSlice(v, i, headV)  // [B,H,1,HeadV]
-		gi := stepSlice(g, i, slots)  // [B,H,1,Slots]
-		si := stepSlice(s, i, slots)  // [B,H,1,Slots]
+		qi := stepSlice(q, i, headK) // [B,H,1,HeadK]
+		ki := stepSlice(k, i, headK) // [B,H,1,HeadK]
+		vi := stepSlice(v, i, headV) // [B,H,1,HeadV]
+		gi := stepSlice(g, i, slots) // [B,H,1,Slots]
+		si := stepSlice(s, i, slots) // [B,H,1,Slots]
 
 		egi := metal.Exp(gi) // decay ∈ (0,1], [B,H,1,Slots]
 		metal.Free(gi)

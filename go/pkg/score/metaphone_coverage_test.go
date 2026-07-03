@@ -22,7 +22,7 @@ func TestMetaphone_DoubledConsonantSkips(t *testing.T) {
 		word         string
 		wantP, wantS string
 	}{
-		{"rubber", "RPR", "RPR"},   // BB → P, skip second B
+		{"rubber", "RPR", "RPR"},    // BB → P, skip second B
 		{"trekker", "TRKR", "TRKR"}, // KK → K, skip second K
 		{"summer", "SMR", "SMR"},    // MM → M, skip second M
 		{"dinner", "TNR", "TNR"},    // NN → N, skip second N
@@ -75,9 +75,9 @@ func TestMetaphone_XC_ZH_ZZ(t *testing.T) {
 		wantP, wantS string
 	}{
 		{"exceed", "AKST", "AKST"}, // XC → consume both (KS then C handled)
-		{"zhao", "J", "J"},          // ZH → J
-		{"buzz", "PS", "PTS"},       // ZZ → S primary, TS secondary
-		{"jazz", "JS", "ATS"},       // ZZ end-of-word with initial-J alt
+		{"zhao", "J", "J"},         // ZH → J
+		{"buzz", "PS", "PTS"},      // ZZ → S primary, TS secondary
+		{"jazz", "JS", "ATS"},      // ZZ end-of-word with initial-J alt
 	}
 	for _, c := range cases {
 		p, s, ok := DoubleMetaphone(c.word)

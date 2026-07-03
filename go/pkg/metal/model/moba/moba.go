@@ -38,15 +38,15 @@ var negInf = float32(math.Inf(-1))
 // its config; the kernels (blockScores, blockSelectMask, expandToTokens,
 // attend) are what the unit test pins with hand-built fixtures.
 type Mixer struct {
-	QProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	KProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	VProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	OProj    *metal.Linear // [NumHeads*HeadDim → hidden]
-	NumHeads int32         // attention heads
-	HeadDim  int32         // per-head dimension
-	BlockSize int32        // tokens per block
-	TopK     int32         // number of blocks each query keeps (excluding the always-on self-block)
-	Scale    float32       // attention score scale (1/sqrt(HeadDim))
+	QProj     *metal.Linear // [hidden → NumHeads*HeadDim]
+	KProj     *metal.Linear // [hidden → NumHeads*HeadDim]
+	VProj     *metal.Linear // [hidden → NumHeads*HeadDim]
+	OProj     *metal.Linear // [NumHeads*HeadDim → hidden]
+	NumHeads  int32         // attention heads
+	HeadDim   int32         // per-head dimension
+	BlockSize int32         // tokens per block
+	TopK      int32         // number of blocks each query keeps (excluding the always-on self-block)
+	Scale     float32       // attention score scale (1/sqrt(HeadDim))
 }
 
 // Kind reports the config token this mixer answers to.

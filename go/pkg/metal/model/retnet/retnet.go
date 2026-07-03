@@ -171,8 +171,8 @@ func (in *kernelInput) advanceState(decay *metal.Array) *metal.Array {
 	// Pooled bounds avoid the two []int32{…} cgo-escape allocs per chunk.
 	boundsPtr := sliceBoundsScratch.Get().(*[]int32)
 	bounds := *boundsPtr
-	bounds[0], bounds[1], bounds[2] = 0, l-1, 0  // starts
-	bounds[3], bounds[4], bounds[5] = in.h, l, l // ends
+	bounds[0], bounds[1], bounds[2] = 0, l-1, 0             // starts
+	bounds[3], bounds[4], bounds[5] = in.h, l, l            // ends
 	lastRow := metal.Slice(decay, bounds[0:3], bounds[3:6]) // [H,1,L]
 	sliceBoundsScratch.Put(boundsPtr)
 	wRow := metal.Reshape(lastRow, in.h, l) // [H,L]

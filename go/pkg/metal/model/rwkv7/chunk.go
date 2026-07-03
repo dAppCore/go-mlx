@@ -90,12 +90,12 @@ func wkv7ChunkedWindowed(in StepInput, prior *metal.Array, width int32) (*metal.
 	}
 	ci := chunkInput{
 		width: width,
-		bsz: int32(in.R.Dim(0)),
-		l:   int32(in.R.Dim(1)),
-		h:   int32(in.R.Dim(2)),
-		dk:  int32(in.R.Dim(3)),
-		dv:  int32(in.V.Dim(3)),
-		prev: prior,
+		bsz:   int32(in.R.Dim(0)),
+		l:     int32(in.R.Dim(1)),
+		h:     int32(in.R.Dim(2)),
+		dk:    int32(in.R.Dim(3)),
+		dv:    int32(in.V.Dim(3)),
+		prev:  prior,
 	}
 	// Head-major views: [B,L,H,·] → [B,H,L,·] so the attention matmuls batch
 	// over (B,H) the way metal.Matmul contracts the trailing two axes.
@@ -329,7 +329,7 @@ func (s window) combine(prev, aQK, aQB, qTilde, u, wMat, c, expC *metal.Array) (
 	if prev != nil && prev.Valid() {
 		// exp(c_C) decays each K-row of the carried state. c_C is [B,H,1,K];
 		// reshape to [B,H,K,1] to scale the rows of S [B,H,K,V].
-		expCLast := metal.Exp(cLast)                            // [B,H,1,K]
+		expCLast := metal.Exp(cLast)                             // [B,H,1,K]
 		rowScale := metal.Reshape(expCLast, s.bsz, s.h, s.dk, 1) // [B,H,K,1]
 		metal.Free(expCLast)
 		decayedPrev := metal.Mul(prev, rowScale) // [B,H,K,V] broadcast over V

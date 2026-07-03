@@ -148,10 +148,10 @@ func TestRecurrence_SingleSlot_TwoStep_Good(t *testing.T) {
 func TestRecurrence_TwoSlot_SingleStep_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
-	q := metal.FromValues([]float32{1}, 1, 1, 1, 1)       // [B,H,L=1,HeadK=1]
+	q := metal.FromValues([]float32{1}, 1, 1, 1, 1) // [B,H,L=1,HeadK=1]
 	k := metal.FromValues([]float32{2}, 1, 1, 1, 1)
-	v := metal.FromValues([]float32{3}, 1, 1, 1, 1)       // HeadV=1
-	g := metal.FromValues([]float32{0, 0}, 1, 1, 1, 2)    // decay irrelevant at step0 (zero init)
+	v := metal.FromValues([]float32{3}, 1, 1, 1, 1)    // HeadV=1
+	g := metal.FromValues([]float32{0, 0}, 1, 1, 1, 2) // decay irrelevant at step0 (zero init)
 	s := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 1, 2)
 	sk0 := metal.Zeros([]int32{1, 1, 1, 2}, metal.DTypeFloat32) // [B,H,HeadK=1,Slots=2]
 	sv0 := metal.Zeros([]int32{1, 1, 2, 1}, metal.DTypeFloat32) // [B,H,Slots=2,HeadV=1]
@@ -176,7 +176,7 @@ func TestRecurrence_InitialStateCarries_Good(t *testing.T) {
 	k := metal.FromValues([]float32{9}, 1, 1, 1, 1) // irrelevant: s=0 writes nothing
 	v := metal.FromValues([]float32{9}, 1, 1, 1, 1)
 	g := metal.FromValues([]float32{float32(math.Log(0.5))}, 1, 1, 1, 1) // decay 0.5
-	s := metal.FromValues([]float32{0}, 1, 1, 1, 1)                       // no write
+	s := metal.FromValues([]float32{0}, 1, 1, 1, 1)                      // no write
 	sk0 := metal.FromValues([]float32{4}, 1, 1, 1, 1)
 	sv0 := metal.FromValues([]float32{10}, 1, 1, 1, 1)
 	defer metal.Free(q, k, v, g, s, sk0, sv0)

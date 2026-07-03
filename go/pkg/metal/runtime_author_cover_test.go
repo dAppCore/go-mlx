@@ -16,12 +16,12 @@ import (
 
 func newRuntimeAuthorModel() *Model {
 	return &Model{
-		model:              &fakeModel{numLayers: 2},
-		modelType:          "fake",
-		promptCacheEnabled: true,
+		model:                &fakeModel{numLayers: 2},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
 		promptCacheMinTokens: 4,
-		prefillChunkSize:   16,
-		parallelSlots:      make(chan struct{}, 1),
+		prefillChunkSize:     16,
+		parallelSlots:        make(chan struct{}, 1),
 	}
 }
 
@@ -199,7 +199,7 @@ func TestRuntimeAuthor_PromptCacheEntrySurface_Good(t *testing.T) {
 func TestRuntimeAuthor_SetLastErrAndMetrics_Good(t *testing.T) {
 	m := newRuntimeAuthorModel()
 
-	(*Model)(nil).SetLastErr(nil)         // nil-safe
+	(*Model)(nil).SetLastErr(nil)           // nil-safe
 	(*Model)(nil).SetLastMetrics(Metrics{}) // nil-safe
 
 	sentinel := context.Canceled

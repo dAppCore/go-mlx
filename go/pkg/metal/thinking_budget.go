@@ -30,12 +30,12 @@ type ThinkingChannelModel interface {
 // thinkingBudgetTracker enforces the cap. Zero budget or unresolved channel
 // tokens make it inert (observe returns its input unchanged).
 type thinkingBudgetTracker struct {
-	budget    int
-	openID    int32
-	closeID   int32
-	inThought bool
-	count     int
-	forced    bool // close already forced for the CURRENT channel
+	budget     int
+	openID     int32
+	closeID    int32
+	inThought  bool
+	count      int
+	forced     bool // close already forced for the CURRENT channel
 	everForced bool // forced at least once this generation (for metrics)
 }
 

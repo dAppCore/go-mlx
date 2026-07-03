@@ -89,12 +89,12 @@ func TestForward_LatentExpansionPerHead_Good(t *testing.T) {
 
 	const heads, headDim, hidden, L = 2, 2, 8, 3
 	m := &Mixer{
-		WDQ:  identityLinear(hidden),
-		WUQ:  selectorLinear(hidden, []int32{0, 1, 4, 5}), // q = [x0,x1,x4,x5]
-		WDKV: identityLinear(hidden),
-		WUK:  identityLinear(hidden), // kv == cKV == x, width 8 = heads*2*headDim
-		WUV:  nil,                    // single-WUK per-head-interleaved path
-		OProj: identityLinear(heads * headDim),
+		WDQ:      identityLinear(hidden),
+		WUQ:      selectorLinear(hidden, []int32{0, 1, 4, 5}), // q = [x0,x1,x4,x5]
+		WDKV:     identityLinear(hidden),
+		WUK:      identityLinear(hidden), // kv == cKV == x, width 8 = heads*2*headDim
+		WUV:      nil,                    // single-WUK per-head-interleaved path
+		OProj:    identityLinear(heads * headDim),
 		NumHeads: heads, HeadDim: headDim, Scale: 1.0,
 	}
 	defer freeMLAMixer(m)

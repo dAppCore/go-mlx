@@ -44,8 +44,8 @@ type kvCacheScheme struct {
 	make func(CacheParams) Cache
 }
 
-func (s kvCacheScheme) Mode() string                { return s.mode }
-func (s kvCacheScheme) Serves() scheme.StateKind    { return scheme.StateKVCache }
+func (s kvCacheScheme) Mode() string                 { return s.mode }
+func (s kvCacheScheme) Serves() scheme.StateKind     { return scheme.StateKVCache }
 func (s kvCacheScheme) NewCache(p CacheParams) Cache { return s.make(p) }
 
 func init() {

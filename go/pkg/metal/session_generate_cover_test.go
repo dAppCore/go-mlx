@@ -35,13 +35,13 @@ func (m *logitsFakeModel) logits() *Array {
 	return FromValues(vals, 1, 1, logitsFakeVocab)
 }
 
-func (m *logitsFakeModel) Forward(_ *Array, _ []Cache) *Array               { return m.logits() }
+func (m *logitsFakeModel) Forward(_ *Array, _ []Cache) *Array                 { return m.logits() }
 func (m *logitsFakeModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return m.logits() }
-func (m *logitsFakeModel) NewCache() []Cache                                { return []Cache{NewKVCache()} }
-func (m *logitsFakeModel) NumLayers() int                                   { return 1 }
-func (m *logitsFakeModel) Tokenizer() *Tokenizer                            { return m.tok }
-func (m *logitsFakeModel) ModelType() string                               { return "logits-fake" }
-func (m *logitsFakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter              { return nil }
+func (m *logitsFakeModel) NewCache() []Cache                                  { return []Cache{NewKVCache()} }
+func (m *logitsFakeModel) NumLayers() int                                     { return 1 }
+func (m *logitsFakeModel) Tokenizer() *Tokenizer                              { return m.tok }
+func (m *logitsFakeModel) ModelType() string                                  { return "logits-fake" }
+func (m *logitsFakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
 
 func newLogitsFakeSessionModel() *Model {
 	return &Model{

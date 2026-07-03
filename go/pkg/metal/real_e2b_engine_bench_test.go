@@ -179,9 +179,9 @@ func BenchmarkRealE2BSampleToken(b *testing.B) {
 	defer Free(logits)
 
 	configs := []struct {
-		name              string
-		temp, topP, minP  float32
-		topK              int
+		name             string
+		temp, topP, minP float32
+		topK             int
 	}{
 		{"greedy", 0, 0, 0, 0},
 		{"temperature", 0.7, 0, 0, 0},

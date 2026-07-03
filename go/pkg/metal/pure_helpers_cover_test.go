@@ -13,11 +13,11 @@ import "testing"
 
 func TestCompactArchitectureName_Good(t *testing.T) {
 	cases := map[string]string{
-		"Gemma-4_Text":      "gemma4text",
-		"qwen3.5-moe":       "qwen35moe",
-		"ALL-CAPS_NAME":     "allcapsname",
-		"already":           "already",
-		"":                  "",
+		"Gemma-4_Text":  "gemma4text",
+		"qwen3.5-moe":   "qwen35moe",
+		"ALL-CAPS_NAME": "allcapsname",
+		"already":       "already",
+		"":              "",
 	}
 	for in, want := range cases {
 		if got := CompactArchitectureName(in); got != want {
@@ -77,10 +77,10 @@ func TestContiguousStrides_Good(t *testing.T) {
 func TestDType_UnmarshalJSON_Good(t *testing.T) {
 	// Known type names decode to their DType.
 	cases := map[string]DType{
-		`"F32"`:      DTypeFloat32,
-		`"BF16"`:     DTypeBFloat16,
-		`"int8"`:     DTypeInt8,
-		`"bool"`:     DTypeBool,
+		`"F32"`:       DTypeFloat32,
+		`"BF16"`:      DTypeBFloat16,
+		`"int8"`:      DTypeInt8,
+		`"bool"`:      DTypeBool,
 		`"complex64"`: DTypeComplex64,
 	}
 	for raw, want := range cases {

@@ -36,15 +36,15 @@ const MixerKind = "mla"
 // the kernel (attendLatent) is what the unit test exercises directly with
 // hand-built fixtures so the math is checked without loading weights.
 type Mixer struct {
-	WDKV    *metal.Linear // down-projection x → compressed KV latent [hidden → kvLatentDim]
-	WUK     *metal.Linear // up-projection latent → keys [kvLatentDim → NumHeads*HeadDim]
-	WUV     *metal.Linear // up-projection latent → values [kvLatentDim → NumHeads*HeadDim]
-	WDQ     *metal.Linear // down-projection x → compressed query latent [hidden → qLatentDim]
-	WUQ     *metal.Linear // up-projection query latent → queries [qLatentDim → NumHeads*HeadDim]
-	OProj   *metal.Linear // output projection [NumHeads*HeadDim → hidden]
-	NumHeads int32        // number of attention heads
-	HeadDim  int32        // per-head dimension
-	Scale    float32      // attention score scale (typically 1/sqrt(HeadDim))
+	WDKV     *metal.Linear // down-projection x → compressed KV latent [hidden → kvLatentDim]
+	WUK      *metal.Linear // up-projection latent → keys [kvLatentDim → NumHeads*HeadDim]
+	WUV      *metal.Linear // up-projection latent → values [kvLatentDim → NumHeads*HeadDim]
+	WDQ      *metal.Linear // down-projection x → compressed query latent [hidden → qLatentDim]
+	WUQ      *metal.Linear // up-projection query latent → queries [qLatentDim → NumHeads*HeadDim]
+	OProj    *metal.Linear // output projection [NumHeads*HeadDim → hidden]
+	NumHeads int32         // number of attention heads
+	HeadDim  int32         // per-head dimension
+	Scale    float32       // attention score scale (typically 1/sqrt(HeadDim))
 }
 
 // Kind reports the config token this mixer answers to (the scheme registry key).
@@ -183,7 +183,7 @@ func (m *Mixer) upProjectKV(cKV *metal.Array, B, L int32) (kFlat, vFlat *metal.A
 //	out := attendLatent(q, k, v, mask, 1.0/float32(math.Sqrt(float64(headDim))))
 func attendLatent(q, k, v, mask *metal.Array, scale float32) *metal.Array {
 	kT := metal.Transpose4(k, 0, 1, 3, 2) // [B,H,D,L]
-	scores := metal.Matmul(q, kT)          // [B,H,L,L]
+	scores := metal.Matmul(q, kT)         // [B,H,L,L]
 	metal.Free(kT)
 
 	if scale != 1 {

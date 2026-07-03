@@ -32,14 +32,14 @@ func TestInt32ShapeToInts_Good(t *testing.T) {
 
 func TestInferSnapshotTensorElementCacheShape_Branches_Good(t *testing.T) {
 	cases := []struct {
-		name                            string
-		elems, seqLen, fallback         int
-		wantLen, wantDim                int
+		name                    string
+		elems, seqLen, fallback int
+		wantLen, wantDim        int
 	}{
 		{"zero elements", 0, 4, 8, 0, 0},
-		{"divides by seqLen", 32, 4, 8, 4, 8},        // 32/4 = 8 dim
-		{"falls back to head dim", 24, 5, 8, 3, 8},   // 24%5!=0 → 24/8 = 3 len
-		{"neither divides", 7, 4, 8, 0, 0},           // 7%4!=0, 7%8!=0
+		{"divides by seqLen", 32, 4, 8, 4, 8},              // 32/4 = 8 dim
+		{"falls back to head dim", 24, 5, 8, 3, 8},         // 24%5!=0 → 24/8 = 3 len
+		{"neither divides", 7, 4, 8, 0, 0},                 // 7%4!=0, 7%8!=0
 		{"seqLen preferred over fallback", 16, 4, 8, 4, 4}, // 16%4==0 wins
 	}
 	for _, tc := range cases {

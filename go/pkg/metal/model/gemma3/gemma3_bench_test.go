@@ -43,14 +43,14 @@ import (
 // unrepresentative first-token case.
 
 const (
-	gemmaBenchHidden    = 256
-	gemmaBenchHeads     = 4
-	gemmaBenchKVHeads   = 1   // GQA: repeatFactor = 4 (exercises RepeatKV)
-	gemmaBenchHeadDim   = 64  // Gemma 3 uses 256; 64 keeps the synthetic kernel cheap, same code path
-	gemmaBenchInter     = 512 // MLP intermediate
-	gemmaBenchVocab     = 320 // small token table
-	gemmaBenchLayers    = 2   // one sliding + one full — both RoPE thetas + both cache types
-	gemmaBenchPrefill   = 64
+	gemmaBenchHidden     = 256
+	gemmaBenchHeads      = 4
+	gemmaBenchKVHeads    = 1   // GQA: repeatFactor = 4 (exercises RepeatKV)
+	gemmaBenchHeadDim    = 64  // Gemma 3 uses 256; 64 keeps the synthetic kernel cheap, same code path
+	gemmaBenchInter      = 512 // MLP intermediate
+	gemmaBenchVocab      = 320 // small token table
+	gemmaBenchLayers     = 2   // one sliding + one full — both RoPE thetas + both cache types
+	gemmaBenchPrefill    = 64
 	gemmaBenchSlidingWin = 32
 )
 
