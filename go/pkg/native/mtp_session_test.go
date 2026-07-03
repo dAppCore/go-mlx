@@ -63,6 +63,13 @@ func newMTPDecodeFixtureWithArch(t testing.TB, configure func(*model.Arch)) func
 // weights too — the attention-fold tests use it to mint the gemma4 q/k norms the fold gates on.
 func newMTPDecodeFixtureWithArchAndLayers(t testing.TB, configure func(*model.Arch), configureLayers func([]DecodeLayerWeights)) func() *ArchSession {
 	t.Helper()
+	return newMTPDecodeFixtureWithArchLayersMaxLen(t, configure, configureLayers, mtpFixtureMaxLen)
+}
+
+// newMTPDecodeFixtureWithArchLayersMaxLen additionally sizes the session cache — the deferred-ring
+// tests need headroom for a full ring plus a steelGEMMMinRows-wide batch.
+func newMTPDecodeFixtureWithArchLayersMaxLen(t testing.TB, configure func(*model.Arch), configureLayers func([]DecodeLayerWeights), maxLen int) func() *ArchSession {
+	t.Helper()
 	layers := make([]DecodeLayerWeights, mtpFixtureLayers)
 	types := make([]string, mtpFixtureLayers)
 	for li := range layers {
@@ -92,7 +99,7 @@ func newMTPDecodeFixtureWithArchAndLayers(t testing.TB, configure func(*model.Ar
 		configure(&arch)
 	}
 	return func() *ArchSession {
-		s, err := NewArchSession(g, arch, mtpFixtureMaxLen)
+		s, err := NewArchSession(g, arch, maxLen)
 		if err != nil {
 			t.Fatalf("NewArchSession: %v", err)
 		}
@@ -715,6 +722,124 @@ func TestMTPVerifyBatchedSlidingRingWrapStagedFoldEngages(t *testing.T) {
 			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
 				t.Fatalf("layer %d V diverges at byte %d (staged ring landing broke cache identity)", i, j)
 			}
+		}
+	}
+}
+
+// TestStepTokensBatchedDenseDeferredRingLandingMatchesPerRow pins the staged sliding tail's
+// deferred-landing lane (#252): at steelGEMMMinRows over a FULL ring, K/V stay in per-layer
+// staging (roped/normed there), one two-segment ring SDPA replaces the K per-row landing+SDPA
+// interleave, and the ring lands in bulk afterwards. The LANDED cache must be byte-identical to
+// the per-row path (the landing copies the same roped bytes the per-row kernel writes); the
+// boundary hidden is tolerance-checked (fp accumulation order differs — the token-identity
+// trade). Engagement is pinned via the ring dispatch counter.
+func TestStepTokensBatchedDenseDeferredRingLandingMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasSDPAMultiQRing(mtpFixtureHead) || !gpuHasCopyKernel() {
+		t.Fatal("deferred-ring kernels missing — rebuild dist/lib/lthn_kernels.metallib (task build:kernels)")
+	}
+	const slideW = steelGEMMMinRows // ring exactly one batch wide: the tail chunk fills it end to end
+	mk := newMTPDecodeFixtureWithArchLayersMaxLen(t, func(arch *model.Arch) {
+		arch.SlidingWindow = slideW
+		for i := range arch.Layer {
+			arch.Layer[i].Attention = model.SlidingAttention
+		}
+		arch.ValueNorm = true
+	}, func(layers []DecodeLayerWeights) {
+		for li := range layers {
+			layers[li].QNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 900+li))
+			layers[li].KNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 950+li))
+		}
+	}, 3*steelGEMMMinRows)
+
+	prompt := make([]int32, slideW)
+	tail := make([]int32, steelGEMMMinRows)
+	for i := range prompt {
+		prompt[i] = int32(3 + (i*7)%29)
+	}
+	for i := range tail {
+		tail[i] = int32(5 + (i*11)%23)
+	}
+
+	run := func(disable bool) ([]byte, int64, *ArchSession) {
+		t.Helper()
+		sess := mk()
+		if err := sess.PrefillTokens(prompt); err != nil {
+			t.Fatalf("PrefillTokens: %v", err)
+		}
+		prev, prevTiming := stagedRingDisabledForTest, pieceTimingOn
+		stagedRingDisabledForTest = disable
+		pieceTimingOn = true
+		stagedRingDispatchesForTest = 0
+		defer func() {
+			stagedRingDisabledForTest = prev
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := sess.prefillRetainedTokensBatchedDenseOne(tail, "test.deferredRing")
+		if err != nil {
+			t.Fatalf("staged tail (disableRing=%v): %v", disable, err)
+		}
+		if !ok {
+			t.Fatalf("staged tail DECLINED (disableRing=%v)", disable)
+		}
+		return append([]byte(nil), hidden...), stagedRingDispatchesForTest, sess
+	}
+
+	ringHidden, ringDispatches, ringSess := run(false)
+	rowHidden, rowDispatches, rowSess := run(true)
+	if ringDispatches == 0 {
+		t.Fatal("deferred-ring lane did not engage (ring dispatch counter stayed 0)")
+	}
+	if rowDispatches != 0 {
+		t.Fatalf("kill switch leaked: per-row run counted %d ring dispatches", rowDispatches)
+	}
+	if ringSess.Pos() != rowSess.Pos() {
+		t.Fatalf("pos after staged tail: ring=%d perRow=%d", ringSess.Pos(), rowSess.Pos())
+	}
+
+	// the landed ring must be byte-identical — the deferred landing copies exactly the roped/
+	// normed bytes the per-row landing kernel writes into each slot.
+	va, err := rowSess.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := ringSess.stateLayerViews()
+	if err != nil {
+		t.Fatalf("ring views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d (deferred landing broke the ring bytes)", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d (deferred landing broke the ring bytes)", i, j)
+			}
+		}
+	}
+
+	// the boundary hidden is the token-identity surface: same math, different fp accumulation
+	// order — a few bf16 ulps, never structural divergence.
+	if len(ringHidden) != len(rowHidden) {
+		t.Fatalf("hidden sizes differ: ring=%d perRow=%d", len(ringHidden), len(rowHidden))
+	}
+	ringF := make([]float32, len(ringHidden)/bf16Size)
+	rowF := make([]float32, len(rowHidden)/bf16Size)
+	bf16ToF32Into(ringF, ringHidden)
+	bf16ToF32Into(rowF, rowHidden)
+	for i := range ringF {
+		diff := ringF[i] - rowF[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		limit := 0.03 * absf32(rowF[i])
+		if limit < 1e-2 {
+			limit = 1e-2
+		}
+		if diff > limit {
+			t.Fatalf("deferred-ring hidden diverges at element %d: ring=%g perRow=%g (|diff|=%g > %g)", i, ringF[i], rowF[i], diff, limit)
 		}
 	}
 }

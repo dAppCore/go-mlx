@@ -72,6 +72,13 @@ type denseBatchScratch struct {
 	vStagePacked   metal.MTLBuffer // K × kvDimMax staged V rows
 	foldQDimCap    int
 	foldKVDimCap   int
+	// per-layer staging for the deferred-landing lane (the big-K staged sliding tail): each
+	// staged owner's K/V stay alive across the whole layer loop for its sharers, landing in bulk
+	// at the end of the chunk.
+	layerKStage      []metal.MTLBuffer
+	layerVStage      []metal.MTLBuffer
+	layerStageRowCap int
+	layerStageKVCap  int
 }
 
 // mlpFold returns the K-row MLP-fold slabs, (re)allocating when the batch width, model width or
@@ -103,6 +110,22 @@ func (s *denseBatchScratch) attnFold(k, dModel, qDimMax, kvDimMax int) (normed, 
 		s.foldQDimCap, s.foldKVDimCap = qDimMax, kvDimMax
 	}
 	return s.attnNormPacked, s.qPacked, s.attnPacked, s.attnOutPacked, s.kStagePacked, s.vStagePacked
+}
+
+// layerStage returns layer li's PRIVATE K/V staging slabs for the deferred-landing lane — every
+// staged owner keeps its batch K/V alive until the end-of-chunk landing, so shared-KV layers can
+// read the owner's true pre-batch ring + stage. Sized by the attnFold caps; call after attnFold.
+func (s *denseBatchScratch) layerStage(li, layers, k, kvDimMax int) (kSt, vSt metal.MTLBuffer) {
+	if len(s.layerKStage) != layers || s.layerStageRowCap < k || s.layerStageKVCap < kvDimMax {
+		s.layerKStage = make([]metal.MTLBuffer, layers)
+		s.layerVStage = make([]metal.MTLBuffer, layers)
+		s.layerStageRowCap, s.layerStageKVCap = k, kvDimMax
+	}
+	if s.layerKStage[li] == nil {
+		s.layerKStage[li] = scratchBF16(s.layerStageRowCap * s.layerStageKVCap)
+		s.layerVStage[li] = scratchBF16(s.layerStageRowCap * s.layerStageKVCap)
+	}
+	return s.layerKStage[li], s.layerVStage[li]
 }
 
 func (s *denseBatchScratch) Close() {
@@ -597,6 +620,15 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 		hSlab, mlpNormSlab, gateSlab, upSlab, gatedSlab, downSlab = s.denseBatch.mlpFold(K, s.dModel, foldDFFMax)
 		attnNormSlab, qSlab, attnSlab, attnOutSlab, kStage, vStage = s.denseBatch.attnFold(K, s.dModel, foldQDimMax, foldKVDimMax)
 	}
+	// deferred-landing bookkeeping (the big-K staged sliding tail): which owners deferred their
+	// ring landing (their sharers then ride the owner's stage), and the landings to encode after
+	// every layer has read the pre-batch ring state.
+	type ringLanding struct{ li, kvDim, slideW int }
+	var pendingLandings []ringLanding
+	var stagedDeferred []bool
+	if foldDFFMax > 0 && K >= steelGEMMMinRows && !stagedRingDisabledForTest {
+		stagedDeferred = make([]bool, len(s.specs))
+	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	for li := 0; li < len(s.specs); li++ {
@@ -661,9 +693,36 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 				endEncodingFast(enc)
 				return nil, false, err
 			}
+			ownIdx := li
+			if !ownsCache {
+				ownIdx = s.specs[li].KVShareFrom
+			}
+			// batched rope: the K per-row fused norm+rope dispatches fold into one (grid Y carries
+			// the row, positions from the packed offsets buffer). Q always; the K landing + value
+			// norm only on the direct/no-evict path (a staged ring lands slot-wrapped, per row).
+			batchedRope := !batchedRopeDisabledForTest && gpuHasQKNormRopeRows()
+			// deferred-landing lane (the big-K staged sliding tail): K/V project into this layer's
+			// PRIVATE stage (roped/normed in place there), ONE two-segment ring SDPA reads the
+			// pre-batch ring minus each query's evicted run plus the staged causal rows, and the
+			// ring lands in bulk after every layer has read the pre-batch state. Sharers ride the
+			// owner's stage — the true sequential window. Token-identity lane (fp accumulation
+			// order differs from the ring-order oracle), engaged only at steelGEMMMinRows with a
+			// FULL ring; the byte-identical per-row interleave stays below.
+			deferredRing := false
+			if stagedDeferred != nil {
+				if ownsCache {
+					deferredRing = staged && batchedRope && basePos >= slideW &&
+						gpuHasSDPAMultiQRing(lhd) && gpuHasCopyKernel()
+				} else {
+					deferredRing = stagedDeferred[ownIdx] && slideW > 0
+				}
+			}
 			if ownsCache {
 				kDst, vDst, dstOff := s.lb[li].kCache, s.lb[li].vCache, uint(basePos*kvDim*bf16Size)
-				if staged {
+				if deferredRing {
+					kDst, vDst = s.denseBatch.layerStage(li, len(s.specs), K, foldKVDimMax)
+					dstOff = 0
+				} else if staged {
 					kDst, vDst, dstOff = kStage, vStage, 0
 				}
 				if err = encGemvBF16BatchedAt(enc, bproj.wK.buf, attnNormSlab, kDst, bproj.wK.off, 0, dstOff, kvDim, s.dModel, K); err != nil {
@@ -679,26 +738,33 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					return nil, false, err
 				}
 			}
-			ownIdx := li
-			if !ownsCache {
-				ownIdx = s.specs[li].KVShareFrom
-			}
 			// multi-query SDPA: all K rows' attention in ONE dispatch (grid Y carries the rows,
 			// the per-query causal cap computed in-kernel) — needs the direct/no-evict landing
 			// AND every row below the 2-pass knee, so each row's bytes match the per-row
 			// single-query kernel exactly (the same routing the sequential oracle takes).
 			useMultiQ := !sdpaMultiQDisabledForTest && (slideW == 0 || basePos+K <= slideW) &&
 				basePos+K < sdpa2PassMinKV && gpuHasSDPAMultiQ(lhd)
-			// batched rope: the K per-row fused norm+rope dispatches fold into one (grid Y carries
-			// the row, positions from the packed offsets buffer). Q always; the K landing + value
-			// norm only on the direct/no-evict path (a staged ring lands slot-wrapped, per row).
-			batchedRope := !batchedRopeDisabledForTest && gpuHasQKNormRopeRows()
 			if batchedRope {
 				if err = encQKNormRopeRows(enc, qSlab, s.lb[li].qNorm.buf, qSlab, 0, s.lb[li].qNorm.off, 0, qDim, qDim, offBuf[0], layerRopeFreqs, K, s.nHeads, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
 				}
-				if ownsCache && !staged {
+				if ownsCache && deferredRing {
+					// rope/norm the staged rows IN PLACE — the deferred landing copies the
+					// finished bytes into the ring slots, so the landed rows are identical to
+					// what the per-row landing would have written.
+					kSt, vSt := s.denseBatch.layerStage(li, len(s.specs), K, foldKVDimMax)
+					if err = encQKNormRopeRows(enc, kSt, s.lb[li].kNorm.buf, kSt, 0, s.lb[li].kNorm.off, 0, kvDim, kvDim, offBuf[0], layerRopeFreqs, K, lkv, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
+					if s.valueNormOnes != nil {
+						if err = encRMSNormRowsBF16(enc, vSt, s.valueNormOnes, vSt, 0, 0, 0, K*lkv, lhd, s.eps); err != nil {
+							endEncodingFast(enc)
+							return nil, false, err
+						}
+					}
+				} else if ownsCache && !staged {
 					kvBase := uint(basePos * kvDim * bf16Size)
 					if err = encQKNormRopeRows(enc, s.lb[li].kCache, s.lb[li].kNorm.buf, s.lb[li].kCache, kvBase, s.lb[li].kNorm.off, kvBase, kvDim, kvDim, offBuf[0], layerRopeFreqs, K, lkv, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
 						endEncodingFast(enc)
@@ -712,7 +778,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					}
 				}
 			}
-			for i := 0; i < K; i++ {
+			for i := 0; !deferredRing && i < K; i++ { // skipped whole on the deferred-ring lane
 				pos := basePos + i
 				slot, n := pos, pos+1
 				if slideW > 0 {
@@ -754,7 +820,19 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 					return nil, false, err
 				}
 			}
-			if useMultiQ {
+			if deferredRing {
+				kSt, vSt := s.denseBatch.layerStage(ownIdx, len(s.specs), K, foldKVDimMax)
+				if err = encSDPAMultiQRing(enc, qSlab, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, kSt, vSt, attnSlab,
+					s.nHeads, lkv, lhd, K, slideW, basePos%slideW,
+					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+				if ownsCache {
+					stagedDeferred[li] = true
+					pendingLandings = append(pendingLandings, ringLanding{li: li, kvDim: kvDim, slideW: slideW})
+				}
+			} else if useMultiQ {
 				if err = encSDPAMultiQCausal(enc, qSlab, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, attnSlab, s.nHeads, lkv, lhd, K, basePos+K,
 					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale); err != nil {
 					endEncodingFast(enc)
@@ -886,6 +964,35 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 		}
 		readRows, outRows = outRows, inRows // this layer's outputs feed the next layer
 		readOff = rowOff
+	}
+	// deferred ring landings: every layer (owners AND their sharers) has read the pre-batch ring
+	// state, so the staged rows now land in their slots — at most two contiguous runs per owner
+	// (the wrap split). The landed bytes are exactly the staged roped/normed rows.
+	for _, p := range pendingLandings {
+		kSt, vSt := s.denseBatch.layerKStage[p.li], s.denseBatch.layerVStage[p.li]
+		slotBase := basePos % p.slideW
+		run1 := p.slideW - slotBase
+		if run1 > K {
+			run1 = K
+		}
+		if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, 0, uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
+			endEncodingFast(enc)
+			return nil, false, err
+		}
+		if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, 0, uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
+			endEncodingFast(enc)
+			return nil, false, err
+		}
+		if K > run1 {
+			if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, uint(run1*p.kvDim*bf16Size), 0, (K-run1)*p.kvDim); err != nil {
+				endEncodingFast(enc)
+				return nil, false, err
+			}
+			if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, uint(run1*p.kvDim*bf16Size), 0, (K-run1)*p.kvDim); err != nil {
+				endEncodingFast(enc)
+				return nil, false, err
+			}
+		}
 	}
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)
