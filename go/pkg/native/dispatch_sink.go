@@ -491,9 +491,16 @@ func emitEmbedGatherQuant[S dispatchSink](sink S, pso metal.MTLComputePipelineSt
 // behind encGemvBF16To (live) and the recorder's setGemv. K/N/ld/batch bind the same memoised scalars
 // the recorder's count buffers hold; pso + the bm/bn/sm/tm tiling caller-provided (both from gemvTiles).
 func emitGemv[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat metal.MTLBuffer, matOff uint, vec, out metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
+	emitGemvVecAt(sink, pso, mat, matOff, vec, 0, out, outOff, inDim, outDim, bm, bn, sm, tm)
+}
+
+// emitGemvVecAt is emitGemv with the input VECTOR bound at vecOff BYTES — the batched dense
+// prefill's rows live at offsets inside shared K-row buffers, so per-row consumers (the PLE
+// input gate) bind the hidden at its row offset instead of copying it out first.
+func emitGemvVecAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat metal.MTLBuffer, matOff uint, vec metal.MTLBuffer, vecOff uint, out metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
 	sink.setPSO(pso)
 	sink.setBuf(mat, matOff, 0)
-	sink.setBuf(vec, 0, 1)
+	sink.setBuf(vec, vecOff, 1)
 	sink.setBuf(out, outOff, 3)
 	sink.setI32(int32(inDim), 4)
 	sink.setI32(int32(outDim), 5)

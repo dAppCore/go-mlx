@@ -243,6 +243,22 @@ func (s *archDecodeState) stepTokensBatchedDenseLastInto(embs [][]byte, basePos 
 	return out[0], true, nil
 }
 
+// stepTokensBatchedDenseLastIntoPLE is stepTokensBatchedDenseLastInto for a PLE (gemma4 E2B/E4B)
+// arch: pleSlab carries the K tokens' per-layer-input tensors (token-major, K × numLayers·pliDim
+// bf16) and each row's gate is encoded in the same command buffer as its attention + MLP halves.
+// Without a slab a PLE arch still declines — the bail keeps the MTP verify wrappers (which pass
+// no slab) on their proven sequential fallback.
+func (s *archDecodeState) stepTokensBatchedDenseLastIntoPLE(embs [][]byte, pleSlab []byte, basePos int, dst []byte) (last []byte, ok bool, err error) {
+	out, ok, err := s.stepTokensBatchedDenseResultWithInputViewsPLE(embs, pleSlab, basePos, true, true, dst, nil, true)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if len(out) != 1 {
+		return nil, true, core.NewError("native.stepTokensBatchedDenseLast: hidden result count mismatch")
+	}
+	return out[0], true, nil
+}
+
 func (s *archDecodeState) stepTokensBatchedDenseLastIntoCopyInputs(embs [][]byte, basePos int, dst []byte) (last []byte, ok bool, err error) {
 	out, ok, err := s.stepTokensBatchedDenseResultWithInputViews(embs, basePos, true, true, dst, nil, false)
 	if err != nil || !ok {
@@ -263,18 +279,41 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 }
 
 func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]byte, basePos int, readResult, readLastOnly bool, lastDst []byte, dstRows [][]byte, directInputs bool) (out [][]byte, ok bool, err error) {
+	return s.stepTokensBatchedDenseResultWithInputViewsPLE(embs, nil, basePos, readResult, readLastOnly, lastDst, dstRows, directInputs)
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][]byte, pleSlab []byte, basePos int, readResult, readLastOnly bool, lastDst []byte, dstRows [][]byte, directInputs bool) (out [][]byte, ok bool, err error) {
 	K := len(embs)
 	if K == 0 {
 		return nil, false, core.NewError("native.stepTokensBatchedDense: empty batch")
 	}
-	// dense uniform guard: every layer owns its cache + is non-MoE; no PLE gate, no trace, no recorded
-	// ICB (whose replay holds its OWN caches, not s.lb). These need a per-row host flush / a different
-	// cache — the sequential verify already covers them, byte-identically.
-	if s.trace || len(s.ple) > 0 || s.icb != nil {
+	// dense uniform guard: every layer owns its cache + is non-MoE; no trace, no recorded ICB (whose
+	// replay holds its OWN caches, not s.lb). These need a per-row host flush / a different cache —
+	// the sequential verify already covers them, byte-identically. The bf16 PLE gate is NOT a host
+	// flush (it is an encoded kernel chain reading a per-token input buffer), so a PLE arch batches
+	// when the caller supplies the K-token slab; without one (the MTP verify wrappers) it declines
+	// to the proven sequential fallback. Quant PLE still declines — its gate runs the qmv path and
+	// the quant lane owns ICB prefill anyway.
+	if s.trace || s.icb != nil {
 		return nil, false, nil
 	}
+	if len(s.ple) > 0 {
+		if pleSlab == nil {
+			return nil, false, nil
+		}
+		for li := range s.ple {
+			if len(s.ple[li].postNorm) > 0 && s.ple[li].bits != 0 {
+				return nil, false, nil
+			}
+		}
+		if want := K * len(s.specs) * s.pliDim * bf16Size; len(pleSlab) != want {
+			return nil, false, core.NewError("native.stepTokensBatchedDense: PLE slab size mismatch")
+		}
+	} else if pleSlab != nil {
+		return nil, false, core.NewError("native.stepTokensBatchedDense: PLE slab supplied for a non-PLE arch")
+	}
 	for li := range s.specs {
-		if !s.specs[li].OwnsCache() || s.specs[li].MoE {
+		if s.specs[li].MoE {
 			return nil, false, nil
 		}
 		if li < len(s.moeWeights) && s.moeWeights[li] != nil {
@@ -282,6 +321,15 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]by
 		}
 		if li < len(s.moeQuant) && s.moeQuant[li] != nil {
 			return nil, false, nil
+		}
+		// shared-KV layers (gemma4 E2B/E4B tails) attend an OWNER's cache: batchable —
+		// the owner's rows for this batch are encoded at a lower layer index in the same
+		// command buffer — provided the owner's linear caches are resident.
+		if !s.specs[li].OwnsCache() {
+			own := s.specs[li].KVShareFrom
+			if own < 0 || own >= len(s.lb) || s.lb[own].kCache == nil || s.lb[own].vCache == nil {
+				return nil, false, nil
+			}
 		}
 	}
 	for i := range embs {
@@ -361,6 +409,12 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]by
 		}
 	}
 
+	var pleSlabBuf metal.MTLBuffer
+	if len(pleSlab) > 0 {
+		if pleSlabBuf, err = s.pleSlabBuffer(pleSlab); err != nil {
+			return nil, false, err
+		}
+	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	for li := 0; li < len(s.specs); li++ {
@@ -386,15 +440,44 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]by
 			} else if usingDirectOutputRows && li == len(s.specs)-1 {
 				outBuf, outOff = directOutputRows[i], directOutputOff[i]
 			}
-			if err = encAttnHalfKVInputAt(enc, readRows[i], readOff[i], s.lb[li].kCache, s.lb[li].vCache, offBuf[i], s.hBuf, offOff[i],
-				s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj,
-				s.dModel, s.nHeads, lkv, lhd, basePos+i, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
-				endEncodingFast(enc)
-				return nil, false, err
+			if s.specs[li].OwnsCache() {
+				if err = encAttnHalfKVInputAt(enc, readRows[i], readOff[i], s.lb[li].kCache, s.lb[li].vCache, offBuf[i], s.hBuf, offOff[i],
+					s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj,
+					s.dModel, s.nHeads, lkv, lhd, basePos+i, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			} else {
+				own := s.specs[li].KVShareFrom
+				if err = encAttnHalfSharedInputAt(enc, readRows[i], readOff[i], s.lb[own].kCache, s.lb[own].vCache, offBuf[i], s.hBuf, offOff[i],
+					s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj,
+					s.dModel, s.nHeads, lkv, lhd, basePos+i, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
 			}
 			if err = encMLPHalfBF16At(enc, s.hBuf, outBuf, outOff, s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, lff, s.eps); err != nil {
 				endEncodingFast(enc)
 				return nil, false, err
+			}
+			// gemma4 per-layer-input gate (E2B/E4B): same encoded chain the sequential stepToken
+			// runs, reading row i's pliDim slice from the K-token slab. Applied to the layer
+			// output before the per-layer scalar; the shared gate scratch hazard-orders the rows.
+			if pleSlabBuf != nil && len(s.ple) > li && len(s.ple[li].postNorm) > 0 {
+				pl := s.ple[li]
+				if len(pl.postNorm) != s.dModel*bf16Size {
+					endEncodingFast(enc)
+					return nil, false, core.NewError("native.stepTokensBatchedDense: PLE post norm size mismatch")
+				}
+				if len(pl.gate.Packed) != s.pliDim*s.dModel*bf16Size || len(pl.proj.Packed) != s.dModel*s.pliDim*bf16Size {
+					endEncodingFast(enc)
+					return nil, false, core.NewError("native.stepTokensBatchedDense: PLE bf16 weight size mismatch")
+				}
+				pliOff := uint((i*len(s.specs) + li) * s.pliDim * bf16Size)
+				if err = encPerLayerInputGateBF16ScratchAt(enc, s.perLayerInputGateScratch(), outBuf, outOff, residentBytes(pl.gate.Packed), pleSlabBuf, residentBytes(pl.proj.Packed), residentBytes(pl.postNorm), outBuf, outOff, pliOff, s.dModel, s.pliDim, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
 			}
 			if s.lb[li].layerScalar != nil { // gemma4 per-layer output scalar (on-device)
 				if err = encMulBF16To(enc, outBuf, s.lb[li].layerScalar, outBuf, outOff, 0, outOff, s.dModel); err != nil {

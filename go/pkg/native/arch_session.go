@@ -1471,6 +1471,16 @@ func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	// A FRESH session (pos 0 — the first prompt of every generate/serve request) batches
+	// from a clean cache, byte-identically to stepping (proven by the batched parity
+	// tests). Restored sessions resuming mid-conversation without a live retained-hidden
+	// boundary stay on the token path — that shape is the decode-parity carve-out the
+	// prefillRetainedTokens guard exists for.
+	if s.pos == 0 {
+		if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "native.prefillPromptRetained"); ok || err != nil {
+			return hidden, err
+		}
+	}
 	if hidden, ok, err := s.prefillPromptRetainedGPUInputsInPool(ids); ok || err != nil {
 		return hidden, err
 	}
@@ -1688,7 +1698,11 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 	if s.verifyBatchedCrossesSlidingRingWrap(len(ids)) {
 		return nil, false, nil
 	}
-	if s.perLayerInput != nil || s.state.icb != nil {
+	// ICB (quant) sessions own their prefill via the GPU-chained inputs lane. A PLE arch
+	// (gemma4 E2B/E4B) batches here: the per-token PLE tensors are gathered into one slab
+	// below and the gate is encoded per row inside the same command buffer — without this,
+	// bf16 E-family prompts fell to n host-synced single-token forwards (O(n²) prefill).
+	if s.state.icb != nil {
 		return nil, false, nil
 	}
 	var embStack [16][]byte
@@ -1726,6 +1740,22 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 			embs[i] = emb
 		}
 	}
+	var pleSlab []byte
+	if s.perLayerInput != nil {
+		tokenPLE := len(s.state.specs) * s.state.pliDim * bf16Size
+		pleSlab = make([]byte, len(ids)*tokenPLE)
+		for i, id := range ids {
+			pli, err := s.perLayerInput(id, embs[i])
+			if err != nil {
+				return nil, false, err
+			}
+			if len(pli) != tokenPLE {
+				return nil, false, core.NewError("native.prefillRetainedTokensBatchedDense: PLE tensor size mismatch")
+			}
+			// the closure may reuse its scratch across calls — copy each token's tensor out.
+			copy(pleSlab[i*tokenPLE:(i+1)*tokenPLE], pli)
+		}
+	}
 	var (
 		hidden []byte
 		ok     bool
@@ -1739,7 +1769,11 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 		retained = true
 	}
 	withAutoreleasePool(func() {
-		hidden, ok, err = s.state.stepTokensBatchedDenseLastInto(embs, s.pos, dst)
+		if pleSlab != nil {
+			hidden, ok, err = s.state.stepTokensBatchedDenseLastIntoPLE(embs, pleSlab, s.pos, dst)
+		} else {
+			hidden, ok, err = s.state.stepTokensBatchedDenseLastInto(embs, s.pos, dst)
+		}
 	})
 	if err != nil || !ok {
 		return nil, ok, err

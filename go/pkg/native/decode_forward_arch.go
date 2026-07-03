@@ -112,6 +112,62 @@ func encAttnHalfShared(
 	return encResidualMaybeNorm(enc, x, sc.attnOut, sc.normed, h, postAttnNorm, dModel, eps)
 }
 
+// encAttnHalfSharedInputAt is encAttnHalfShared with the layer input bound at xOff and the
+// per-row position bound at offOff — the batched dense prefill's row shape (mirrors
+// encAttnHalfKVInputAt). Row i attends the owner's cache capped at its own live length; the
+// owner's rows for this batch were encoded earlier in the same command buffer (lower layer
+// index), and Metal's hazard tracking orders the cross-row write→read exactly as the
+// sequential per-token chain would.
+func encAttnHalfSharedInputAt(
+	enc metal.MTLComputeCommandEncoder,
+	x metal.MTLBuffer, xOff uint, attendK, attendV, offBuf, h metal.MTLBuffer, offOff uint,
+	attnNormW, postAttnNorm, qNorm bufView,
+	sc attnScratch, proj projector,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
+	ropeFreqs metal.MTLBuffer,
+) error {
+	kvDim := nKVHeads * headDim
+	if xOff == 0 {
+		if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
+			return err
+		}
+	} else if err := encRMSNormRowsBF16(enc, x, attnNormW.buf, sc.normed, xOff, attnNormW.off, 0, 1, dModel, eps); err != nil {
+		return err
+	}
+	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
+		return err
+	}
+	if gpuHasGeluKernel() && qNorm.buf != nil {
+		// fused: sc.q = RoPE(RMSNorm(sc.q, qNorm)) in one op — lockstep with the ICB setQKNormRope
+		if err := encQKNormRopeAt(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, offBuf, offOff, ropeFreqs, nHeads, headDim, rotaryDim, base, scale, eps); err != nil {
+			return err
+		}
+	} else {
+		if qNorm.buf != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
+			if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
+				return err
+			}
+		}
+		if err := encRopeDecodeAt(enc, sc.q, sc.q, 0, 0, offBuf, offOff, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
+			return err
+		}
+	}
+	// attend the OWNER's cache (no write): n live rows, matching encAttnHalfShared.
+	n := pos + 1
+	if slideW > 0 && n > slideW {
+		n = slideW
+	}
+	if err := encSDPADecode(enc, sc, sc.q, attendK, attendV, sc.attn,
+		nHeads, nKVHeads, headDim, n,
+		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, 0); err != nil {
+		return err
+	}
+	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
+		return err
+	}
+	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, 0, postAttnNorm, dModel, eps)
+}
+
 // archLayerBufs holds one layer's resident buffers for runArchDecode: bf16 norms +
 // the (bf16 or 4-bit qmv) projector + the growing KV caches. kCache/vCache are nil for
 // sharer layers (they attend the owner's); mnw and the projector's MLP weights are
@@ -187,6 +243,7 @@ type archDecodeState struct {
 	inputEmbCandidateHit int
 	pleGateScratch       *perLayerInputGateScratch
 	pleInputScratch      *pinnedNoCopyBytes
+	pleSlabScratch       *pinnedNoCopyBytes // batched dense prefill: K tokens' PLE tensors in one pinned slab
 
 	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
 	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
@@ -350,6 +407,30 @@ func (s *archDecodeState) hostPLEInputBuffer(want int) (metal.MTLBuffer, error) 
 	return s.pleInputScratch.copyBuffer(s.perLayerInput)
 }
 
+// pleSlabBuffer pins a batched-prefill PLE slab (K tokens × numLayers·pliDim bf16, token-major)
+// into a reusable device buffer. The copy is K·plDim bytes — trivial against the per-token host
+// round-trips the batched path exists to remove.
+func (s *archDecodeState) pleSlabBuffer(slab []byte) (metal.MTLBuffer, error) {
+	if s == nil {
+		return nil, core.NewError("native.archDecodeState.pleSlabBuffer: state is nil")
+	}
+	if len(slab) == 0 {
+		return nil, core.NewError("native.archDecodeState.pleSlabBuffer: empty PLE slab")
+	}
+	if s.pleSlabScratch != nil && len(s.pleSlabScratch.bytes) != len(slab) {
+		s.pleSlabScratch.Close()
+		s.pleSlabScratch = nil
+	}
+	if s.pleSlabScratch == nil {
+		scratch, err := newPinnedNoCopyBytes(len(slab))
+		if err != nil {
+			return nil, err
+		}
+		s.pleSlabScratch = scratch
+	}
+	return s.pleSlabScratch.copyBuffer(slab)
+}
+
 func (s *archDecodeState) Close() {
 	if s == nil {
 		return
@@ -357,6 +438,10 @@ func (s *archDecodeState) Close() {
 	if s.pleGateScratch != nil {
 		s.pleGateScratch.Close()
 		s.pleGateScratch = nil
+	}
+	if s.pleSlabScratch != nil {
+		s.pleSlabScratch.Close()
+		s.pleSlabScratch = nil
 	}
 	if s.pleInputScratch != nil {
 		s.pleInputScratch.Close()
@@ -1584,8 +1669,15 @@ func buildBF16ArchLayerBufsInternal(lb []archLayerBufs, moeWeights []*MoELayerWe
 			lFF = w.DFF
 		}
 		lb[li].dFF = lFF
+		// KV-shared layers project only Q (they attend an owner's cache) and carry no
+		// k/v weights — bind them optionally so the uploaded-copy path (sb == nil)
+		// tolerates their absence exactly like the no-copy shard path already does.
+		wK, wV := viewOrNil(w.WK), viewOrNil(w.WV)
+		if specs[li].OwnsCache() {
+			wK = view(w.WK)
+		}
 		p := bf16Projector{
-			wQ: view(w.WQ), wK: view(w.WK), wV: viewOrNil(w.WV), wO: view(w.WO),
+			wQ: view(w.WQ), wK: wK, wV: wV, wO: view(w.WO),
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: lFF,
 		}
 		if layers[li].MoE == nil {

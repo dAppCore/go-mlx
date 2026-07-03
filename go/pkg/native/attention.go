@@ -581,13 +581,20 @@ func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuff
 // the projection IS the cache append (no copy kernel; the gemv output index is relative to the
 // bound buffer offset). matOff=outOff=0 is the plain projection.
 func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, outOff uint, outDim, inDim int) error {
+	return encGemvBF16VecAt(enc, mat, vec, out, matOff, 0, outOff, outDim, inDim)
+}
+
+// encGemvBF16VecAt is encGemvBF16To that additionally binds the input VECTOR at vecOff BYTES —
+// used where the activation lives at a row offset inside a shared multi-row buffer (the batched
+// dense prefill's per-row PLE gate) rather than at the start of a dedicated buffer.
+func encGemvBF16VecAt(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, vecOff, outOff uint, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return err
 	}
 	// bf16 tiled gemv through the SHARED emitGemv body (with the ICB recorder's setGemv).
-	emitGemv(encSink{enc}, pso, mat, matOff, vec, out, outOff, inDim, outDim, bm, bn, sm, tm)
+	emitGemvVecAt(encSink{enc}, pso, mat, matOff, vec, vecOff, out, outOff, inDim, outDim, bm, bn, sm, tm)
 	return nil
 }
 

@@ -784,10 +784,20 @@ func perLayerInputGateQuantEncodedInto(
 }
 
 func encPerLayerInputGateBF16Scratch(enc metal.MTLComputeCommandEncoder, scratch *perLayerInputGateScratch, hBuf, gateWBuf, perLayerBuf, projWBuf, postNormWBuf, outBuf metal.MTLBuffer, perLayerOff uint, dModel, pliDim int, eps float32) error {
+	return encPerLayerInputGateBF16ScratchAt(enc, scratch, hBuf, 0, gateWBuf, perLayerBuf, projWBuf, postNormWBuf, outBuf, 0, perLayerOff, dModel, pliDim, eps)
+}
+
+// encPerLayerInputGateBF16ScratchAt is encPerLayerInputGateBF16Scratch with the layer hidden
+// bound at hOff and the output written at outOff — the batched dense prefill's rows live at
+// byte offsets inside shared K-row buffers, and each row applies the gate in place at its own
+// offset. The scratch is shared across rows within one command buffer: Metal's hazard tracking
+// on the scratch buffers serialises the gate chain row-by-row, preserving the sequential
+// byte-identity contract.
+func encPerLayerInputGateBF16ScratchAt(enc metal.MTLComputeCommandEncoder, scratch *perLayerInputGateScratch, hBuf metal.MTLBuffer, hOff uint, gateWBuf, perLayerBuf, projWBuf, postNormWBuf, outBuf metal.MTLBuffer, outOff, perLayerOff uint, dModel, pliDim int, eps float32) error {
 	if scratch == nil || scratch.dModel != dModel || scratch.pliDim != pliDim {
 		return core.NewError("native.encPerLayerInputGateBF16Scratch: scratch dimension mismatch")
 	}
-	if err := encGemvBF16To(enc, gateWBuf, hBuf, scratch.gate, 0, 0, pliDim, dModel); err != nil {
+	if err := encGemvBF16VecAt(enc, gateWBuf, hBuf, scratch.gate, 0, hOff, 0, pliDim, dModel); err != nil {
 		return err
 	}
 	if err := encPerLayerGeluGateMulBF16(enc, scratch.gate, perLayerBuf, scratch.gelu, scratch.multiplied, 0, perLayerOff, 0, pliDim); err != nil {
@@ -799,7 +809,7 @@ func encPerLayerInputGateBF16Scratch(enc metal.MTLComputeCommandEncoder, scratch
 	if err := encRMSNormBF16(enc, scratch.projected, postNormWBuf, scratch.normed, 0, dModel, eps); err != nil {
 		return err
 	}
-	return encAddBF16(enc, hBuf, scratch.normed, outBuf, dModel)
+	return encAddBF16To(enc, hBuf, scratch.normed, outBuf, hOff, 0, outOff, dModel)
 }
 
 func encPerLayerInputGateQuantScratch(
