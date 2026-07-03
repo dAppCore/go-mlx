@@ -1292,12 +1292,25 @@ func (pair *AssistantPair) verifyDraftBlockFromSessionWithSuppress(target *ArchS
 		return result, nil
 	}
 
-	hidden, logits, replacement, err := target.reforgeAssistantGreedyBoundary(posBefore, result.AcceptedTokens, suppress)
-	if err != nil {
+	// Adopt the boundary from the verify pass — the sampled lane's exact shape
+	// (verifyDraftBlockSampledFromSession): the accepted prefix's KV rows are
+	// already correct (batched/sequential verify parity), hiddens[accepted-1] IS
+	// the hidden at the last accepted token, and rows[accepted-1] already set the
+	// replacement above. Re-forwarding the accepted tokens (the old reforge) paid
+	// `accepted` extra target forwards per accepting round — more target work per
+	// committed token than plain decode, which kept MTP slower than plain even at
+	// 67% acceptance.
+	target.pos = posBefore + accepted
+	if err := target.truncateSpeculativeKV(target.pos); err != nil {
 		return AssistantVerifyResult{}, err
 	}
-	if !result.AllAccepted {
-		result.ReplacementToken = replacement
+	hidden := hiddens[accepted-1]
+	if len(hidden) != target.arch.Hidden*bf16Size {
+		return AssistantVerifyResult{}, core.NewError("native.assistant verify accepted hidden has wrong size")
+	}
+	logits, err := target.headLogitsScratch(hidden, false)
+	if err != nil {
+		return AssistantVerifyResult{}, core.E("native.assistant verify", "accepted boundary logits", err)
 	}
 	if copyOutputs {
 		result.Hidden = append([]byte(nil), hidden...)
@@ -1932,40 +1945,6 @@ func (s *ArchSession) verifyAssistantDraftHiddens(draftTokens []int32) ([][]byte
 		hiddens = append(hiddens, append([]byte(nil), hidden...))
 	}
 	return hiddens, nil
-}
-
-func (s *ArchSession) reforgeAssistantGreedyBoundary(posBefore int, accepted []int32, suppress []int32) (hidden, logits []byte, replacement int32, err error) {
-	if s == nil {
-		return nil, nil, 0, core.NewError("native.assistant verify reforge target session is nil")
-	}
-	if len(accepted) == 0 {
-		return nil, nil, 0, core.NewError("native.assistant verify reforge requires an accepted boundary")
-	}
-	if posBefore < 0 || posBefore+len(accepted) > s.maxLen {
-		return nil, nil, 0, core.NewError("native.assistant verify reforge boundary is out of range")
-	}
-	s.pos = posBefore
-	if err := s.truncateSpeculativeKV(s.pos); err != nil {
-		return nil, nil, 0, err
-	}
-	for _, id := range accepted {
-		hidden, err = s.stepID(id)
-		if err != nil {
-			return nil, nil, 0, core.E("native.assistant verify", "reforge accepted boundary", err)
-		}
-	}
-	if len(hidden) != s.arch.Hidden*bf16Size {
-		return nil, nil, 0, core.NewError("native.assistant verify reforged hidden has wrong size")
-	}
-	logits, err = s.headLogitsScratch(hidden, false)
-	if err != nil {
-		return nil, nil, 0, core.E("native.assistant verify", "reforged accepted logits", err)
-	}
-	replacement, err = greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
-	if err != nil {
-		return nil, nil, 0, core.E("native.assistant verify", "reforged replacement", err)
-	}
-	return hidden, logits, replacement, nil
 }
 
 func (s *ArchSession) rememberAssistantAcceptedIDs(posBefore int, accepted []int32) {
