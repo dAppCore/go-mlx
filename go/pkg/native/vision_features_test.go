@@ -56,6 +56,37 @@ func TestVisionImagePatchesNoResize_Good(t *testing.T) {
 	}
 }
 
+func TestVisionImagePixelsPatchParityNoResize_Good(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	img.SetNRGBA(15, 15, color.NRGBA{G: 255, B: 128, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	cfg := &VisionImageFeatureConfig{
+		PatchSize: 16, MaxSoftTokens: 1, PoolingKernelSize: 1, RescaleFactor: 1.0 / 255.0,
+	}
+	pixels, h, w, softTokens, err := VisionImagePixels(buf.Bytes(), cfg)
+	if err != nil {
+		t.Fatalf("VisionImagePixels: %v", err)
+	}
+	if h != 16 || w != 16 || softTokens != 1 {
+		t.Fatalf("VisionImagePixels geometry = %dx%d softTokens=%d, want 16x16/1", h, w, softTokens)
+	}
+	patches, patchSoftTokens, err := VisionImagePatches(buf.Bytes(), cfg)
+	if err != nil {
+		t.Fatalf("VisionImagePatches: %v", err)
+	}
+	if patchSoftTokens != softTokens {
+		t.Fatalf("soft tokens = pixels %d patches %d", softTokens, patchSoftTokens)
+	}
+	want := patchifyVisionPixelsBF16(pixels, h, w, cfg.PatchSize)
+	if !bytes.Equal(patches, want) {
+		t.Fatal("VisionImagePixels patchified output does not match VisionImagePatches")
+	}
+}
+
 func TestVisionImagePatchesResizeGoldenParity_Good(t *testing.T) {
 	const patch = int32(16)
 	const pixelTolerance = 5.0 / 255.0
@@ -139,6 +170,26 @@ func patchifiedVisionPixel(values []float32, targetW, patch, y, x int32) (float3
 	col := int((py*patch + px) * 3)
 	base := row*patchDim + col
 	return values[base], values[base+1], values[base+2]
+}
+
+func BenchmarkVisionImagePixelsResizeGolden(b *testing.B) {
+	data, err := os.ReadFile("../metal/model/gemma4/testdata/vision_video_frame.png")
+	if err != nil {
+		b.Fatalf("read golden png: %v", err)
+	}
+	cfg := &VisionImageFeatureConfig{
+		PatchSize: 16, MaxSoftTokens: 70, PoolingKernelSize: 3, RescaleFactor: 1.0 / 255.0, DoResize: true,
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		pixels, h, w, softTokens, err := VisionImagePixels(data, cfg)
+		if err != nil {
+			b.Fatalf("VisionImagePixels: %v", err)
+		}
+		if softTokens != 63 || len(pixels) != int(h*w*3) {
+			b.Fatalf("VisionImagePixels softTokens=%d pixels=%d shape=%dx%d, want resized frame pixels", softTokens, len(pixels), h, w)
+		}
+	}
 }
 
 func BenchmarkVisionImagePatchesResizeGolden(b *testing.B) {

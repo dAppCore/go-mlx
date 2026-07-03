@@ -463,6 +463,34 @@ func TestNativeTokenModelProjectImageFeatures_Good(t *testing.T) {
 	}
 }
 
+func TestNativeTokenModelProjectImagePixelsNHWC_Good(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	tm := &NativeTokenModel{vision: &model.LoadedVision{
+		PatchConvWeight: toBF16Bytes([]float32{
+			1, 1,
+			1, 1,
+			1, 0,
+			0, 0,
+		}),
+		Cfg: model.LoadedVisionConfig{
+			Hidden: 2, PatchDim: 4, PatchSize: 2, NumChannels: 1, NumHeads: 1, NumKVHeads: 1, HeadDim: 2,
+			RMSNormEps: 1e-6, PoolKernel: 1,
+		},
+	}}
+	got, err := tm.ProjectImagePixels([]float32{
+		1.0, 0.5,
+		0.0, 0.25,
+	}, 2, 2)
+	if err != nil {
+		t.Fatalf("ProjectImagePixels: %v", err)
+	}
+	if len(got) != 2*bf16Size {
+		t.Fatalf("projected raw feature bytes = %d, want %d", len(got), 2*bf16Size)
+	}
+}
+
 // TestNativeTokenModel_ContractParity gates the token-loop CONTRACT against the
 // proven native generation loop: model.Generate over a NativeTokenModel
 // (whole-sequence decode through model.Backend + the embed/head bookends) must

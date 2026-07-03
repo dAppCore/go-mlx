@@ -114,6 +114,16 @@ func (m *nativeSessionVisionTokenModel) ProjectImageFeatures([]byte) ([]byte, er
 	return append([]byte(nil), m.projected...), nil
 }
 
+type nativeSessionVisionPixelTokenModel struct {
+	*nativeSessionVisionTokenModel
+	projectPixelsCalls int
+}
+
+func (m *nativeSessionVisionPixelTokenModel) ProjectImagePixels([]float32, int, int) ([]byte, error) {
+	m.projectPixelsCalls++
+	return append([]byte(nil), m.projected...), nil
+}
+
 type nativeSessionAudioTokenModel struct {
 	*nativeSessionTextTokenModel
 	accepts           bool
@@ -909,6 +919,44 @@ func TestNativeTextModelChatImagesCachesProjectedFeatures_Good(t *testing.T) {
 	}
 	if tm.projectImageCalls != 1 {
 		t.Fatalf("ProjectImageFeatures calls = %d, want 1 for repeated image bytes", tm.projectImageCalls)
+	}
+}
+
+func TestNativeTextModelChatImagesPrefersRawPixelsProjection_Good(t *testing.T) {
+	tok, err := pkgtokenizer.LoadTokenizer(writeRootImageTokenizer(t))
+	if err != nil {
+		t.Fatalf("load tokenizer: %v", err)
+	}
+	session := newNativeSessionTextSession()
+	base := &nativeSessionVisionTokenModel{
+		nativeSessionTextTokenModel: &nativeSessionTextTokenModel{sessions: []*nativeSessionTextSession{session}},
+		accepts:                     true,
+		imageTokenID:                12,
+		projected:                   []byte{0xc1, 0xc2},
+	}
+	tm := &nativeSessionVisionPixelTokenModel{nativeSessionVisionTokenModel: base}
+	model := testNativeTextSessionModel()
+	model.tm = tm
+	model.tok = tok
+	model.maxLen = 64
+	model.imageFeatures = &native.VisionImageFeatureConfig{
+		PatchSize: 16, MaxSoftTokens: 2, PoolingKernelSize: 1, RescaleFactor: 1.0 / 255.0,
+	}
+
+	for range model.Chat(context.Background(), []inference.Message{{
+		Role:    "user",
+		Content: "describe",
+		Images:  [][]byte{nativeTextTestPNG(t, 32, 16)},
+	}}, inference.WithMaxTokens(1)) {
+	}
+	if err := resultError(model.Err()); err != nil {
+		t.Fatalf("Chat Err: %v", err)
+	}
+	if tm.projectPixelsCalls != 1 {
+		t.Fatalf("ProjectImagePixels calls = %d, want 1", tm.projectPixelsCalls)
+	}
+	if tm.projectImageCalls != 0 {
+		t.Fatalf("ProjectImageFeatures calls = %d, want 0 when raw pixel projection is available", tm.projectImageCalls)
 	}
 }
 

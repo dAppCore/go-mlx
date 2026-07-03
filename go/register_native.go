@@ -221,6 +221,10 @@ type nativeTextImageChatModel interface {
 	ProjectImageFeatures([]byte) ([]byte, error)
 }
 
+type nativeTextImagePixelProjector interface {
+	ProjectImagePixels([]float32, int, int) ([]byte, error)
+}
+
 type nativeTextAudioChatModel interface {
 	AcceptsAudioInput() bool
 	AudioPlaceholderBlock(int) string
@@ -425,17 +429,31 @@ func (m *nativeTextModel) chatVision(ctx context.Context, messages []inference.M
 				key := nativeVisionFeatureCacheKey(data)
 				projected, softTokens, ok := cache.get(key)
 				if !ok {
-					patches, st, err := native.VisionImagePatches(data, m.imageFeatures)
-					if err != nil {
-						m.setErr(core.E("mlx.nativeTextModel.Chat", "encode image", err))
-						return
+					if pixelModel, ok := imageModel.(nativeTextImagePixelProjector); ok {
+						pixels, h, w, st, err := native.VisionImagePixels(data, m.imageFeatures)
+						if err != nil {
+							m.setErr(core.E("mlx.nativeTextModel.Chat", "encode image", err))
+							return
+						}
+						projected, err = pixelModel.ProjectImagePixels(pixels, int(h), int(w))
+						if err != nil {
+							m.setErr(core.E("mlx.nativeTextModel.Chat", "project image pixels", err))
+							return
+						}
+						softTokens = st
+					} else {
+						patches, st, err := native.VisionImagePatches(data, m.imageFeatures)
+						if err != nil {
+							m.setErr(core.E("mlx.nativeTextModel.Chat", "encode image", err))
+							return
+						}
+						projected, err = imageModel.ProjectImageFeatures(patches)
+						if err != nil {
+							m.setErr(core.E("mlx.nativeTextModel.Chat", "project image features", err))
+							return
+						}
+						softTokens = st
 					}
-					projected, err = imageModel.ProjectImageFeatures(patches)
-					if err != nil {
-						m.setErr(core.E("mlx.nativeTextModel.Chat", "project image features", err))
-						return
-					}
-					softTokens = st
 					cache.put(key, projected, softTokens)
 				}
 				features = append(features, projected)

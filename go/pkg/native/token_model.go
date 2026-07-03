@@ -142,6 +142,17 @@ func (m *NativeTokenModel) ProjectImageFeatures(patches []byte) ([]byte, error) 
 	return VisionTower(patches, weights, cfg)
 }
 
+func (m *NativeTokenModel) ProjectImagePixels(pixels []float32, height, width int) ([]byte, error) {
+	if m == nil {
+		return nil, core.NewError("native.NativeTokenModel.ProjectImagePixels: nil model")
+	}
+	weights, cfg, ok := nativeVisionFromLoaded(m.vision)
+	if !ok {
+		return nil, core.NewError("native.NativeTokenModel.ProjectImagePixels: model has no vision payload")
+	}
+	return VisionTowerNHWC(pixels, height, width, weights, cfg)
+}
+
 func (m *NativeTokenModel) InjectImageFeatures(embeddings []byte, tokenIDs []int32, features []byte) ([]byte, error) {
 	if m == nil {
 		return nil, core.NewError("native.NativeTokenModel.InjectImageFeatures: nil model")

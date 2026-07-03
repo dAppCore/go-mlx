@@ -50,18 +50,29 @@ func normalizeVisionImageFeatureConfig(cfg *VisionImageFeatureConfig) *VisionIma
 // rule, rescales to [0,1], and returns pre-patchified BF16 rows
 // [numPatches, patchSize*patchSize*3] for VisionTower.
 func VisionImagePatches(data []byte, cfg *VisionImageFeatureConfig) ([]byte, int, error) {
+	pixels, h, w, softTokens, err := VisionImagePixels(data, cfg)
+	if err != nil {
+		return nil, 0, err
+	}
+	return patchifyVisionPixelsBF16(pixels, h, w, normalizeVisionImageFeatureConfig(cfg).PatchSize), softTokens, nil
+}
+
+// VisionImagePixels decodes PNG/JPEG bytes, applies the Gemma 4 image sizing
+// rule, and returns raw NHWC float32 pixels in [0,1] plus the soft-token count.
+// This is the native sibling of metal's Gemma4ImagePixels.
+func VisionImagePixels(data []byte, cfg *VisionImageFeatureConfig) ([]float32, int32, int32, int, error) {
 	cfg = normalizeVisionImageFeatureConfig(cfg)
 	if cfg == nil {
-		return nil, 0, core.NewError("native.VisionImagePatches: image feature config is nil")
+		return nil, 0, 0, 0, core.NewError("native.VisionImagePixels: image feature config is nil")
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, 0, core.E("native.VisionImagePatches", "decode image", err)
+		return nil, 0, 0, 0, core.E("native.VisionImagePixels", "decode image", err)
 	}
 	bounds := img.Bounds()
 	h, w := int32(bounds.Dy()), int32(bounds.Dx())
 	if h <= 0 || w <= 0 {
-		return nil, 0, core.NewError("native.VisionImagePatches: image has empty bounds")
+		return nil, 0, 0, 0, core.NewError("native.VisionImagePixels: image has empty bounds")
 	}
 
 	src := visionImageRGBFloat64(img, bounds)
@@ -71,7 +82,7 @@ func VisionImagePatches(data []byte, cfg *VisionImageFeatureConfig) ([]byte, int
 	if cfg.DoResize || th%(cfg.PatchSize*cfg.PoolingKernelSize) != 0 || tw%(cfg.PatchSize*cfg.PoolingKernelSize) != 0 {
 		th, tw, err = visionAspectPreservingSize(h, w, cfg.PatchSize, maxPatches, cfg.PoolingKernelSize)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, 0, err
 		}
 	}
 	resized := src
@@ -92,7 +103,7 @@ func VisionImagePatches(data []byte, cfg *VisionImageFeatureConfig) ([]byte, int
 
 	grid := (th / cfg.PatchSize) * (tw / cfg.PatchSize)
 	softTokens := int(grid / (cfg.PoolingKernelSize * cfg.PoolingKernelSize))
-	return patchifyVisionPixelsBF16(pixels, th, tw, cfg.PatchSize), softTokens, nil
+	return pixels, th, tw, softTokens, nil
 }
 
 func visionImageRGBFloat64(img image.Image, bounds image.Rectangle) []float64 {
