@@ -56,11 +56,21 @@ func newMTPDecodeFixture(t testing.TB) func() *ArchSession {
 
 func newMTPDecodeFixtureWithArch(t testing.TB, configure func(*model.Arch)) func() *ArchSession {
 	t.Helper()
+	return newMTPDecodeFixtureWithArchAndLayers(t, configure, nil)
+}
+
+// newMTPDecodeFixtureWithArchAndLayers is newMTPDecodeFixtureWithArch with a hook over the layer
+// weights too — the attention-fold tests use it to mint the gemma4 q/k norms the fold gates on.
+func newMTPDecodeFixtureWithArchAndLayers(t testing.TB, configure func(*model.Arch), configureLayers func([]DecodeLayerWeights)) func() *ArchSession {
+	t.Helper()
 	layers := make([]DecodeLayerWeights, mtpFixtureLayers)
 	types := make([]string, mtpFixtureLayers)
 	for li := range layers {
 		layers[li] = forwardLayer(mtpFixtureDModel, mtpFixtureNHeads, mtpFixtureNKV, mtpFixtureHead, mtpFixtureDFF, (li+1)*100)
 		types[li] = "full_attention"
+	}
+	if configureLayers != nil {
+		configureLayers(layers)
 	}
 	specs := model.DeriveLayers(types, 0)
 	embed := toBF16Bytes(syntheticFloat32(mtpFixtureVocab*mtpFixtureDModel, 21))
@@ -621,6 +631,91 @@ func TestMTPVerifyBatchedSlidingRingWrapMatchesSequential(t *testing.T) {
 	}
 	if sess.Pos() != len(prompt) {
 		t.Fatalf("verifyBatchedInto sliding wrap changed pos = %d, want %d", sess.Pos(), len(prompt))
+	}
+}
+
+// TestMTPVerifyBatchedSlidingRingWrapStagedFoldEngages pins the attention fold's STAGED lane
+// (#252): a sliding layer whose ring would evict during the batch folds its K/V projections into
+// staging rows (the fused norm+rope's full-row write lands each row into its slot in order),
+// byte-identical to the per-row halves — and the fold must actually engage: the gate
+// preconditions are asserted loudly and the folded pass must encode strictly fewer dispatches.
+func TestMTPVerifyBatchedSlidingRingWrapStagedFoldEngages(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("fused qknorm-rope kernel unavailable")
+	}
+	mk := newMTPDecodeFixtureWithArchAndLayers(t, func(arch *model.Arch) {
+		arch.SlidingWindow = 4
+		arch.Layer[0].Attention = model.SlidingAttention
+		arch.ValueNorm = true
+	}, func(layers []DecodeLayerWeights) {
+		for li := range layers { // the gemma4 per-head QK-norms the attention fold gates on
+			layers[li].QNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 900+li))
+			layers[li].KNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 950+li))
+		}
+	})
+	run := func(disableFold bool) ([]int32, int64, *ArchSession) {
+		t.Helper()
+		sess := mk()
+		if err := sess.PrefillTokens(mtpWordedPromptIDs()); err != nil {
+			t.Fatalf("PrefillTokens: %v", err)
+		}
+		if !disableFold {
+			// gate preconditions — if the fixture stops satisfying them the staged lane is
+			// silently untested, so fail loudly on the missing piece instead.
+			st := sess.state
+			if st.lb[0].qNorm.buf == nil || st.lb[0].kNorm.buf == nil {
+				t.Fatal("fixture lacks q/k norms — attention fold gate unmet, staged lane untested")
+			}
+			if st.valueNormOnes == nil {
+				t.Fatal("fixture lacks the value norm — staged K/V landing gate unmet, staged lane untested")
+			}
+		}
+		prevFold, prevTiming := batchedMLPFoldDisabledForTest, pieceTimingOn
+		batchedMLPFoldDisabledForTest = disableFold
+		pieceTimingOn = true
+		dispatchCountForTest = 0
+		defer func() {
+			batchedMLPFoldDisabledForTest = prevFold
+			pieceTimingOn = prevTiming
+		}()
+		ids := []int32{4, 5}
+		greedys, ok, err := sess.verifyBatchedInto(ids, make([]int32, len(ids)))
+		if err != nil {
+			t.Fatalf("verifyBatchedInto (disableFold=%v): %v", disableFold, err)
+		}
+		if !ok {
+			t.Fatalf("verifyBatchedInto declined (disableFold=%v)", disableFold)
+		}
+		return append([]int32(nil), greedys...), dispatchCountForTest, sess
+	}
+	foldGreedys, foldDispatches, folded := run(false)
+	rowGreedys, rowDispatches, perRow := run(true)
+	if foldDispatches >= rowDispatches {
+		t.Fatalf("attention fold did not engage on the wrap batch: folded=%d dispatches, per-row=%d", foldDispatches, rowDispatches)
+	}
+	if !mtpIDsEqual(foldGreedys, rowGreedys) {
+		t.Fatalf("folded wrap greedys = %v, per-row = %v (fold contract is byte-identity)", foldGreedys, rowGreedys)
+	}
+	va, err := perRow.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := folded.stateLayerViews()
+	if err != nil {
+		t.Fatalf("folded views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d (staged ring landing broke cache identity)", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d (staged ring landing broke cache identity)", i, j)
+			}
+		}
 	}
 }
 

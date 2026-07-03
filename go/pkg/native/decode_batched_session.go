@@ -62,6 +62,16 @@ type denseBatchScratch struct {
 	foldRowCap    int
 	foldDModel    int
 	foldDFFCap    int
+	// attention-fold slabs: the Q/K/V/O projections batch across rows the same way, with the
+	// ordered per-row tail (norm+rope, value norm, SDPA) keeping exact sequential cache semantics.
+	attnNormPacked metal.MTLBuffer // K × dModel rms(x) feeding Q/K/V
+	qPacked        metal.MTLBuffer // K × qDimMax roped queries
+	attnPacked     metal.MTLBuffer // K × qDimMax SDPA outputs
+	attnOutPacked  metal.MTLBuffer // K × dModel O-projection outputs
+	kStagePacked   metal.MTLBuffer // K × kvDimMax staged K rows (ring-wrap landing)
+	vStagePacked   metal.MTLBuffer // K × kvDimMax staged V rows
+	foldQDimCap    int
+	foldKVDimCap   int
 }
 
 // mlpFold returns the K-row MLP-fold slabs, (re)allocating when the batch width, model width or
@@ -78,6 +88,21 @@ func (s *denseBatchScratch) mlpFold(k, dModel, dFFMax int) (h, normed, gate, up,
 		s.foldRowCap, s.foldDModel, s.foldDFFCap = k, dModel, dFFMax
 	}
 	return s.hPacked, s.mlpNormPacked, s.gatePacked, s.upPacked, s.gatedPacked, s.downPacked
+}
+
+// attnFold returns the attention-fold slabs, (re)allocating alongside mlpFold's sizing. Call after
+// mlpFold (it owns foldRowCap/foldDModel); qDimMax/kvDimMax are the widest per-layer head geometry.
+func (s *denseBatchScratch) attnFold(k, dModel, qDimMax, kvDimMax int) (normed, q, attn, attnOut, kStage, vStage metal.MTLBuffer) {
+	if s.attnNormPacked == nil || s.foldRowCap < k || s.foldDModel != dModel || s.foldQDimCap < qDimMax || s.foldKVDimCap < kvDimMax {
+		s.attnNormPacked = scratchBF16(k * dModel)
+		s.attnOutPacked = scratchBF16(k * dModel)
+		s.qPacked = scratchBF16(k * qDimMax)
+		s.attnPacked = scratchBF16(k * qDimMax)
+		s.kStagePacked = scratchBF16(k * kvDimMax)
+		s.vStagePacked = scratchBF16(k * kvDimMax)
+		s.foldQDimCap, s.foldKVDimCap = qDimMax, kvDimMax
+	}
+	return s.attnNormPacked, s.qPacked, s.attnPacked, s.attnOutPacked, s.kStagePacked, s.vStagePacked
 }
 
 func (s *denseBatchScratch) Close() {
@@ -495,7 +520,7 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 	// the per-row interleave; both produce byte-identical rows (a batched gemv's z-slices run the
 	// single-row tile loop unchanged, and the residual's offset-keyed kernel selection matches the
 	// per-row path row for row).
-	foldDFFMax := 0
+	foldDFFMax, foldQDimMax, foldKVDimMax := 0, 0, 0
 	if !batchedMLPFoldDisabledForTest && K > 1 && gpuHasGeluKernel() {
 		for li := range s.specs {
 			if _, isBF16 := s.lb[li].proj.(bf16Projector); !isBF16 {
@@ -508,11 +533,20 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			if lff > foldDFFMax {
 				foldDFFMax = lff
 			}
+			lhd := headDimOf(s.specs[li], s.headDim)
+			if q := s.nHeads * lhd; q > foldQDimMax {
+				foldQDimMax = q
+			}
+			if kv := kvHeadsOf(s.specs[li], s.nKVHeads) * lhd; kv > foldKVDimMax {
+				foldKVDimMax = kv
+			}
 		}
 	}
 	var hSlab, mlpNormSlab, gateSlab, upSlab, gatedSlab, downSlab metal.MTLBuffer
+	var attnNormSlab, qSlab, attnSlab, attnOutSlab, kStage, vStage metal.MTLBuffer
 	if foldDFFMax > 0 {
 		hSlab, mlpNormSlab, gateSlab, upSlab, gatedSlab, downSlab = s.denseBatch.mlpFold(K, s.dModel, foldDFFMax)
+		attnNormSlab, qSlab, attnSlab, attnOutSlab, kStage, vStage = s.denseBatch.attnFold(K, s.dModel, foldQDimMax, foldKVDimMax)
 	}
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
@@ -531,16 +565,119 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 		}
 		bproj, foldMLP := s.lb[li].proj.(bf16Projector)
 		foldMLP = foldMLP && hSlab != nil
+		// attention fold: the Q/K/V/O projections batch across the K rows too (grid Z, each weight
+		// read once), while the ordered per-row tail — fused per-head norm+rope, value norm, SDPA
+		// capped at the row's own live length — keeps the exact sequential cache semantics: only
+		// the projections were hoisted; the cache MUTATIONS still land row by row. A ring layer
+		// whose window would evict during this batch projects K/V into staging rows and the fused
+		// norm+rope (a full-row write) lands each row into its slot in order. Needs the fused
+		// qknorm-rope kernel + the gemma4 norms; anything else keeps the proven per-row halves.
+		foldAttn := foldMLP && s.lb[li].qNorm.buf != nil
+		ownsCache := s.specs[li].OwnsCache()
+		kvDim := lkv * lhd
+		qDim := s.nHeads * lhd
+		staged := false
+		if ownsCache {
+			foldAttn = foldAttn && s.lb[li].kNorm.buf != nil
+			staged = slideW > 0 && basePos+K > slideW
+			if staged && s.valueNormOnes == nil {
+				foldAttn = false // staged V lands via the value norm's full-row write
+			}
+		}
+		if foldAttn {
+			anw := s.lb[li].anw
+			// per-row rms into the norm slab (layer inputs may be non-contiguous direct views)
+			for i := 0; i < K; i++ {
+				if err = encRMSNormRowsBF16(enc, readRows[i], anw.buf, attnNormSlab, readOff[i], anw.off, uint(i*rowBytes), 1, s.dModel, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			}
+			if err = encGemvBF16BatchedAt(enc, bproj.wQ.buf, attnNormSlab, qSlab, bproj.wQ.off, 0, 0, qDim, s.dModel, K); err != nil {
+				endEncodingFast(enc)
+				return nil, false, err
+			}
+			if ownsCache {
+				kDst, vDst, dstOff := s.lb[li].kCache, s.lb[li].vCache, uint(basePos*kvDim*bf16Size)
+				if staged {
+					kDst, vDst, dstOff = kStage, vStage, 0
+				}
+				if err = encGemvBF16BatchedAt(enc, bproj.wK.buf, attnNormSlab, kDst, bproj.wK.off, 0, dstOff, kvDim, s.dModel, K); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+				vW := bproj.wV
+				if !bproj.hasV() {
+					vW = bproj.wK // gemma4 K==V layers: V is the k-proj output, value-normed
+				}
+				if err = encGemvBF16BatchedAt(enc, vW.buf, attnNormSlab, vDst, vW.off, 0, dstOff, kvDim, s.dModel, K); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			}
+			ownIdx := li
+			if !ownsCache {
+				ownIdx = s.specs[li].KVShareFrom
+			}
+			for i := 0; i < K; i++ {
+				pos := basePos + i
+				slot, n := pos, pos+1
+				if slideW > 0 {
+					slot = pos % slideW
+					if n > slideW {
+						n = slideW
+					}
+				}
+				qRow := uint(i * qDim * bf16Size)
+				if err = encQKNormRopeAt(enc, qSlab, s.lb[li].qNorm.buf, qSlab, qRow, s.lb[li].qNorm.off, qRow, offBuf[i], offOff[i], layerRopeFreqs, s.nHeads, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+				if ownsCache {
+					kvRow := uint(slot * kvDim * bf16Size)
+					kSrc, vSrc, srcOff := s.lb[li].kCache, s.lb[li].vCache, kvRow
+					if staged {
+						kSrc, vSrc, srcOff = kStage, vStage, uint(i*kvDim*bf16Size)
+					}
+					if err = encQKNormRopeAt(enc, kSrc, s.lb[li].kNorm.buf, s.lb[li].kCache, srcOff, s.lb[li].kNorm.off, kvRow, offBuf[i], offOff[i], layerRopeFreqs, lkv, lhd, rotDim, rbase, s.scale, s.eps); err != nil {
+						endEncodingFast(enc)
+						return nil, false, err
+					}
+					if s.valueNormOnes != nil {
+						if err = encRMSNormRowsBF16(enc, vSrc, s.valueNormOnes, s.lb[li].vCache, srcOff, 0, kvRow, lkv, lhd, s.eps); err != nil {
+							endEncodingFast(enc)
+							return nil, false, err
+						}
+					}
+				}
+				if err = encSDPADecodeAt(enc, s.asc, qSlab, qRow, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, attnSlab, qRow, s.nHeads, lkv, lhd, n,
+					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale, 0); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			}
+			if err = encGemvBF16BatchedAt(enc, bproj.wO.buf, attnSlab, attnOutSlab, bproj.wO.off, 0, 0, s.dModel, qDim, K); err != nil {
+				endEncodingFast(enc)
+				return nil, false, err
+			}
+			for i := 0; i < K; i++ {
+				// h row i = x row i + postAttnNorm(Wo·attn row i) — attnNormSlab is free as scratch
+				if err = encResidualMaybeNormAt(enc, readRows[i], readOff[i], attnOutSlab, uint(i*rowBytes), attnNormSlab, hSlab, uint(i*rowBytes), s.lb[li].postAttnNorm, s.dModel, s.eps); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			}
+		}
 		// each row in turn: attention half (writes its K/V row, attends [0..basePos+i]), then the
 		// MLP half — folded across the K rows for bf16 layers, per-row otherwise. Metal's buffer
 		// hazard tracking orders the cross-row cache write→read, so row i+1 attends row i's freshly
 		// written K/V — exactly the sequential per-token causal structure.
-		for i := 0; i < K; i++ {
+		for i := 0; !foldAttn && i < K; i++ { // skipped whole when the attention fold ran above
 			hTarget, hOff := s.hBuf, uint(0)
 			if foldMLP {
 				hTarget, hOff = hSlab, uint(i*rowBytes)
 			}
-			if s.specs[li].OwnsCache() {
+			if ownsCache {
 				if err = encAttnHalfKVInputAt(enc, readRows[i], readOff[i], s.lb[li].kCache, s.lb[li].vCache, offBuf[i], hTarget, hOff, offOff[i],
 					s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj,
 					s.dModel, s.nHeads, lkv, lhd, basePos+i, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {

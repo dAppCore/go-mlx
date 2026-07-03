@@ -768,10 +768,35 @@ func encSDPA2PassStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out, parti
 // token-identical — only the cache-reduction parallelism differs. The intermediates
 // live in sc so the long-context path adds NO per-token allocation.
 func encSDPADecode(enc metal.MTLComputeCommandEncoder, sc attnScratch, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
+	return encSDPADecodeAt(enc, sc, q, 0, k, v, out, 0, nHeads, nKVHeads, headDim, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale, kvByteOff)
+}
+
+// encSDPADecodeAt is encSDPADecode with the query and output bound at byte offsets — the batched
+// pass's attention fold keeps each row's q/attn in shared K-row slabs. Same 2-pass routing; the
+// 2-pass intermediates stay the shared per-session scratch (the rows hazard-serialise on them,
+// exactly as they did on the shared single-row scratch).
+func encSDPADecodeAt(enc metal.MTLComputeCommandEncoder, sc attnScratch, q metal.MTLBuffer, qOff uint, k, v, out metal.MTLBuffer, outOff uint, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
 	if n >= sdpa2PassMinKV && sc.p2Partials != nil && !sdpa2PassDisabledForTest {
-		return encSDPA2PassStrided(enc, q, k, v, out, sc.p2Partials, sc.p2Sums, sc.p2Maxs, nHeads, nKVHeads, headDim, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale, kvByteOff)
+		blocks := sdpa2PassBlocks(n)
+		pso1, err := sdpaVector2Pass1PipelineForHeadDim(headDim, blocks)
+		if err != nil {
+			return err
+		}
+		pso2, err := sdpaVector2Pass2PipelineForHeadDim(headDim)
+		if err != nil {
+			return err
+		}
+		sink := encSink{enc}
+		emitSDPA2Pass1At(sink, pso1, q, qOff, k, v, sc.p2Partials, sc.p2Sums, sc.p2Maxs, kvByteOff, 1, nHeads, nKVHeads, n, int(blocks), kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale)
+		emitSDPA2Pass2At(sink, pso2, sc.p2Partials, sc.p2Sums, sc.p2Maxs, out, outOff, 1, nHeads, int(blocks))
+		return nil
 	}
-	return encSDPAStrided(enc, q, k, v, out, nHeads, nKVHeads, headDim, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale, kvByteOff)
+	pso, err := sdpaVectorPipelineForHeadDim(headDim)
+	if err != nil {
+		return err
+	}
+	emitSDPAAt(encSink{enc}, pso, q, qOff, k, v, out, outOff, kvByteOff, nil, nHeads, nKVHeads, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale)
+	return nil
 }
 
 // encBinaryDT encodes the element-wise binary op (op = "Add" | "Multiply") in the
