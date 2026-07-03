@@ -1854,7 +1854,7 @@ func TestGemma4AssistantGenerateResultPreallocatesOutputBuffers(t *testing.T) {
 	}
 }
 
-func TestGemma4AssistantPairGenerateFromSessionStandsDownAfterZeroAcceptBlock(t *testing.T) {
+func TestGemma4AssistantPairGenerateFromSessionFallsBackAfterLowAcceptFullBlock(t *testing.T) {
 	requireNativeRuntime(t)
 
 	pair, mk := newNativeAssistantGenerateFixture(t)
@@ -1877,29 +1877,26 @@ func TestGemma4AssistantPairGenerateFromSessionStandsDownAfterZeroAcceptBlock(t 
 		t.Fatalf("GenerateFromSession tokens = %v, want %v", got.Tokens, want)
 	}
 	if target.Pos() != len(prompt)+len(want) {
-		t.Fatalf("target Pos after stand-down = %d, want %d", target.Pos(), len(prompt)+len(want))
+		t.Fatalf("target Pos after low-accept fallback = %d, want %d", target.Pos(), len(prompt)+len(want))
 	}
 	if got.AcceptedTokens != 0 {
-		t.Fatalf("accepted draft tokens = %d, want 0 for zero-accept stand-down fixture", got.AcceptedTokens)
+		t.Fatalf("accepted draft tokens = %d, want 0 for zero-accept fixture", got.AcceptedTokens)
 	}
 	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
-		t.Fatalf("draft/verify calls = %d/%d, want one zero-accept block before stand-down", got.DraftCalls, got.TargetVerifyCalls)
+		t.Fatalf("draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
 	}
-	if got.TargetCalls != 2 {
-		t.Fatalf("target calls = %d, want verify + boundary-logits target-cache finish", got.TargetCalls)
-	}
-	if got.DraftTokens != 1 || got.RejectedTokens != 1 {
-		t.Fatalf("draft/reject tokens = %d/%d, want one-token probe before stand-down", got.DraftTokens, got.RejectedTokens)
+	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
+		t.Fatalf("draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
 	}
 	if got.TargetTokens != len(want) {
 		t.Fatalf("target tokens = %d, want %d", got.TargetTokens, len(want))
 	}
-	if len(got.DraftTokenSchedule) != 1 || got.DraftTokenSchedule[0] != 1 {
-		t.Fatalf("draft schedule = %v, want [1] probe", got.DraftTokenSchedule)
+	if len(got.DraftTokenSchedule) == 0 || got.DraftTokenSchedule[0] != draftTokens {
+		t.Fatalf("draft schedule = %v, want first verify block to use requested draft size %d", got.DraftTokenSchedule, draftTokens)
 	}
 }
 
-func TestGemma4AssistantPairGenerateFromSessionRequiresRepeatedAcceptedProbesBeforeRamping(t *testing.T) {
+func TestGemma4AssistantPairGenerateFromSessionUsesFullDraftBlockWithoutProbeRamp(t *testing.T) {
 	requireNativeRuntime(t)
 
 	pair, mk := newNativeAssistantGenerateFixture(t)
@@ -1924,17 +1921,17 @@ func TestGemma4AssistantPairGenerateFromSessionRequiresRepeatedAcceptedProbesBef
 	if got.AcceptedTokens != 1 {
 		t.Fatalf("accepted draft tokens = %d, want only the first probe accepted", got.AcceptedTokens)
 	}
-	if got.DraftTokens != 2 || got.RejectedTokens != 1 {
-		t.Fatalf("draft/reject tokens = %d/%d, want conservative second probe 2/1", got.DraftTokens, got.RejectedTokens)
+	if got.DraftTokens != draftTokens || got.RejectedTokens == 0 {
+		t.Fatalf("draft/reject tokens = %d/%d, want one full initial block before fallback", got.DraftTokens, got.RejectedTokens)
 	}
-	if len(got.DraftTokenSchedule) != 2 || got.DraftTokenSchedule[0] != 1 || got.DraftTokenSchedule[1] != 1 {
-		t.Fatalf("draft schedule = %v, want [1 1]", got.DraftTokenSchedule)
+	if len(got.DraftTokenSchedule) == 0 || got.DraftTokenSchedule[0] != draftTokens {
+		t.Fatalf("draft schedule = %v, want first verify block to use requested draft size %d", got.DraftTokenSchedule, draftTokens)
 	}
-	if got.TargetCalls != 3 {
-		t.Fatalf("target calls = %d, want accepted-probe verify + reject verify + boundary-logits finish", got.TargetCalls)
+	if got.TargetVerifyCalls != 1 {
+		t.Fatalf("target verify calls = %d, want target-cache fallback after first low-accept block", got.TargetVerifyCalls)
 	}
 	if target.Pos() != len(prompt)+len(want) {
-		t.Fatalf("target Pos after conservative stand-down = %d, want %d", target.Pos(), len(prompt)+len(want))
+		t.Fatalf("target Pos after continued speculative generate = %d, want %d", target.Pos(), len(prompt)+len(want))
 	}
 }
 

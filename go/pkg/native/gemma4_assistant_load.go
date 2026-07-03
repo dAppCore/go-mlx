@@ -1531,17 +1531,9 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 	lastToken := promptIDs[len(promptIDs)-1]
 	carryLead := int32(-1)
 	stopped := false
-	draftBlockLimit := draftTokens
-	if draftBlockLimit > 1 {
-		draftBlockLimit = 1
-	}
-	acceptedBlockStreak := 0
 	for len(result.Tokens) < maxNew && !stopped {
 		remaining := maxNew - len(result.Tokens)
 		blockSize := draftTokens
-		if blockSize > draftBlockLimit {
-			blockSize = draftBlockLimit
-		}
 		if blockSize > remaining {
 			blockSize = remaining
 		}
@@ -1599,27 +1591,8 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 			break
 		}
 		if verify.AllAccepted {
-			if verify.AcceptedCount > 0 {
-				acceptedBlockStreak++
-			}
-			if acceptedBlockStreak >= 2 && draftBlockLimit < draftTokens {
-				draftBlockLimit++
-				acceptedBlockStreak = 0
-			}
 			carryLead = -1
 			continue
-		}
-
-		if verify.AcceptedCount == 0 && yield == nil {
-			if draftBlockLimit > 1 {
-				draftBlockLimit = 1
-			}
-			acceptedBlockStreak = 0
-			carryLead = -1
-			if err := nativeGemma4AssistantFinishFromTargetBoundaryLogits(target, &result, maxNew, eosID, suppress); err != nil {
-				return result, err
-			}
-			break
 		}
 
 		replacement := verify.ReplacementToken
@@ -1628,27 +1601,13 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		}
 		result.TargetTokens++
 		lastToken = replacement
-		if stopped {
-			carryLead = replacement
-			continue
+		if !stopped && yield == nil && len(result.Tokens) < maxNew && nativeGemma4AssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+			if err := nativeGemma4AssistantFinishLowAcceptFromTargetCache(target, &result, replacement, maxNew, eosID, suppress); err != nil {
+				return result, err
+			}
+			break
 		}
-		if draftBlockLimit > 1 {
-			draftBlockLimit = 1
-		}
-		acceptedBlockStreak = 0
-		if verify.AcceptedCount > 0 {
-			carryLead = replacement
-			continue
-		}
-		if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
-			return result, err
-		}
-		result.TargetCalls++
-		carryLead = -1
-		if err := nativeGemma4AssistantFinishFromTargetCache(target, &result, maxNew, eosID, suppress, yield); err != nil {
-			return result, err
-		}
-		break
+		carryLead = replacement
 	}
 	if carryLead >= 0 && !stopped && yield == nil {
 		if _, err := target.stepID(carryLead); err != nil {
@@ -1865,33 +1824,21 @@ func nativeGemma4AssistantEmitToken(result *Gemma4AssistantGenerateResult, id in
 	return false
 }
 
-func nativeGemma4AssistantFinishFromTargetBoundaryLogits(target *ArchSession, result *Gemma4AssistantGenerateResult, maxNew, eosID int, suppress []int32) error {
-	remaining := maxNew - len(result.Tokens)
-	if remaining <= 0 {
-		return nil
-	}
-	logits, err := target.BoundaryLogits()
-	if err != nil {
-		return err
-	}
-	tail, err := target.generateFromCacheLogitsEach(logits, remaining, eosID, suppress, nil, func(id int32) bool {
-		return !nativeGemma4AssistantEmitToken(result, id, eosID, nil)
-	})
-	if err != nil {
+func nativeGemma4AssistantLowAcceptBlock(drafted, accepted int) bool {
+	return drafted > 0 && accepted*2 < drafted
+}
+
+func nativeGemma4AssistantFinishLowAcceptFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, replacement int32, maxNew, eosID int, suppress []int32) error {
+	if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
 		return err
 	}
 	result.TargetCalls++
-	result.TargetTokens += len(tail)
-	return nil
-}
-
-func nativeGemma4AssistantFinishFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, maxNew, eosID int, suppress []int32, yield Gemma4AssistantTokenSink) error {
 	remaining := maxNew - len(result.Tokens)
 	if remaining <= 0 {
 		return nil
 	}
 	tail, err := target.GenerateFromCacheEachWithSuppression(remaining, eosID, suppress, func(id int32) bool {
-		return !nativeGemma4AssistantEmitToken(result, id, eosID, yield)
+		return !nativeGemma4AssistantEmitToken(result, id, eosID, nil)
 	})
 	if err != nil {
 		return err
