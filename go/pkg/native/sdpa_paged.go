@@ -32,18 +32,14 @@ type sdpaPagedP2Params struct {
 	PageCount uint32
 }
 
-// resourceUntrackedShared composes shared storage with HAZARD-UNTRACKED mode. The
-// binding's generated MTLResourceHazardTrackingModeUntracked constant carries the
-// un-shifted enum value (1), not the composed MTLResourceOptions bit — Apple packs
-// the hazard mode at bit 8 — so compose it here. Untracked buffers do not serialise
-// disjoint writes: the per-page pass-1 dispatches all write this scratch, and the
-// single explicit barrier before pass 2 is the only ordering they need.
-const resourceUntrackedShared = metal.MTLResourceStorageModeShared | metal.MTLResourceOptions(1<<8)
-
 // sdpaPagedDecodeScratch holds the parallel two-pass partials: one (max, sum,
 // acc[headDim]) cell per (head, page). Pass 1 fully overwrites the cells it owns
 // and pass 2 reads only [0, pageCount) cells, so no host reset is needed between
-// tokens — ensure only reallocates when the page count outgrows capacity.
+// tokens — ensure only reallocates when the page count outgrows capacity. The
+// buffers stay hazard-TRACKED: the per-layer page count is small (pageSize 256),
+// each pass-1 dispatch is ~90µs, and measurement showed tracked serialisation of
+// those few dispatches costs the same as untracked-plus-explicit-barrier — so the
+// simpler tracked form wins (ordering pass 1 → pass 2 comes for free).
 type sdpaPagedDecodeScratch struct {
 	nHeads, headDim, maxPages int
 	maxs, sums, acc           metal.MTLBuffer
@@ -74,9 +70,7 @@ func newSDPAPagedDecodeScratch(nHeads, headDim int) (*sdpaPagedDecodeScratch, er
 }
 
 // ensure sizes the per-(head, page) partials for at least pages cells, reallocating
-// only on growth or shape change. Buffers are hazard-UNTRACKED: the per-page pass-1
-// dispatches write disjoint cells concurrently and the encoder's explicit barrier
-// orders them against pass 2.
+// only on growth or shape change.
 func (s *sdpaPagedDecodeScratch) ensure(nHeads, headDim, pages int) error {
 	if s == nil {
 		return core.NewError("native.sdpaPagedDecodeScratch.ensure: nil scratch")
@@ -92,9 +86,9 @@ func (s *sdpaPagedDecodeScratch) ensure(nHeads, headDim, pages int) error {
 		capPages = s.maxPages * 2 // grow geometrically as the context adds pages
 	}
 	cells := nHeads * capPages
-	maxs := device.NewBufferWithLengthOptions(uint(cells*4), resourceUntrackedShared)
-	sums := device.NewBufferWithLengthOptions(uint(cells*4), resourceUntrackedShared)
-	acc := device.NewBufferWithLengthOptions(uint(cells*headDim*4), resourceUntrackedShared)
+	maxs := device.NewBufferWithLengthOptions(uint(cells*4), metal.MTLResourceStorageModeShared)
+	sums := device.NewBufferWithLengthOptions(uint(cells*4), metal.MTLResourceStorageModeShared)
+	acc := device.NewBufferWithLengthOptions(uint(cells*headDim*4), metal.MTLResourceStorageModeShared)
 	if maxs == nil || sums == nil || acc == nil ||
 		maxs.GetID() == 0 || sums.GetID() == 0 || acc.GetID() == 0 {
 		return core.NewError("native.sdpaPagedDecodeScratch.ensure: failed to allocate scratch buffers")
@@ -216,12 +210,11 @@ func encSDPAPagedDecodeStrided(
 		return err
 	}
 
-	// pass 1: one dispatch per page, each writing its OWN (head, page) partial cells.
-	// The scratch is hazard-untracked so these overlap freely — the single barrier
-	// below is the only ordering pass 2 needs. (The previous kernel carried the
-	// online softmax ACROSS pages through shared tracked scratch: a hazard-serialised
-	// chain of one-scalar-thread-per-head dispatches whose length grew with context —
-	// the #252 decode collapse.)
+	// pass 1: one dispatch per page, each writing its OWN (head, page) partial cells;
+	// pass 2 merges per head. Hazard tracking on the scratch orders pass 1 → pass 2
+	// for free. (The previous kernel carried the online softmax ACROSS pages at one
+	// scalar thread per head, looping each page twice — a serialised chain whose
+	// length grew with context: the #252 decode collapse.)
 	for i := range keyPages {
 		params := sdpaPagedP1Params{
 			NHeads:      uint32(nHeads),
@@ -246,11 +239,9 @@ func encSDPAPagedDecodeStrided(
 		setBytes(enc, unsafe.Pointer(&params), uint(unsafe.Sizeof(params)), 6)
 		dispatchThreadgroups(enc,
 			metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 32, Height: 1, Depth: 1},
+			metal.MTLSize{Width: 256, Height: 1, Depth: 1}, // 8 simdgroups split the page rows
 		)
 	}
-	// order the untracked partials: every pass-1 write completes before pass 2 reads.
-	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
 	p2 := sdpaPagedP2Params{HeadDim: uint32(headDim), PageCount: uint32(pages)}
 	setPSO(enc, p2PSO)
 	setBuf(enc, scratch.maxs, 0, 0)

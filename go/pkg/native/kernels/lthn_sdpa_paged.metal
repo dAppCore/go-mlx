@@ -32,6 +32,12 @@ struct PagedSDPAP1Dims {
 // so 16 covers every shipped shape (8 and 16 slices respectively).
 constant constexpr uint kPagedMaxPerLane = 16;
 
+// 8 simdgroups per threadgroup: each owns every-8th page row (its own online
+// softmax over dim-sliced lanes), then simdgroup 0 merges the 8 partials with
+// log-sum-exp through threadgroup memory. Cuts the sequential row chain 8x and
+// runs 256 threads per head instead of 32.
+constant constexpr uint kPagedSimdGroups = 8;
+
 [[kernel]] void lthn_sdpa_paged_p1_bf16(
     const device bf16* q      [[buffer(0)]],
     const device bf16* kPage  [[buffer(1)]],
@@ -41,6 +47,7 @@ constant constexpr uint kPagedMaxPerLane = 16;
     device float*      acc    [[buffer(5)]],  // [nHeads * pageCount * headDim]
     const constant PagedSDPAP1Dims& D [[buffer(6)]],
     uint h    [[threadgroup_position_in_grid]],
+    uint sg   [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   if (h >= D.nHeads) return;
   const uint per = D.headDim / 32;
@@ -64,7 +71,7 @@ constant constexpr uint kPagedMaxPerLane = 16;
     o[i] = 0.0f;
   }
 
-  for (uint t = 0; t < D.pageLen; t++) {
+  for (uint t = sg; t < D.pageLen; t += kPagedSimdGroups) {
     const device bf16* kt = kh + t * D.kSeqStride;
     float partial = 0.0f;
     for (uint i = 0; i < per; i++) {
@@ -82,14 +89,51 @@ constant constexpr uint kPagedMaxPerLane = 16;
     m = newM;
   }
 
+  // merge the simdgroup partials in threadgroup memory (log-sum-exp).
+  threadgroup float tgM[kPagedSimdGroups];
+  threadgroup float tgS[kPagedSimdGroups];
+  threadgroup float tgO[kPagedSimdGroups * 512]; // headDim <= 512
+  if (lane == 0) {
+    tgM[sg] = m;
+    tgS[sg] = s;
+  }
+  for (uint i = 0; i < per; i++) {
+    tgO[sg * D.headDim + lane * per + i] = o[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (sg != 0) return;
+
+  float M = -3.0e38f;
+  for (uint g = 0; g < kPagedSimdGroups; g++) {
+    if (tgS[g] > 0.0f) {
+      M = max(M, tgM[g]);
+    }
+  }
+  float S = 0.0f;
+  float of[kPagedMaxPerLane];
+  for (uint i = 0; i < per; i++) {
+    of[i] = 0.0f;
+  }
+  for (uint g = 0; g < kPagedSimdGroups; g++) {
+    const float sgS = tgS[g];
+    if (sgS <= 0.0f) {
+      continue;
+    }
+    const float w = exp(tgM[g] - M);
+    S += sgS * w;
+    for (uint i = 0; i < per; i++) {
+      of[i] += tgO[g * D.headDim + lane * per + i] * w;
+    }
+  }
+
   const uint cell = h * D.pageCount + D.pageIdx;
   if (lane == 0) {
-    maxs[cell] = m;
-    sums[cell] = s;
+    maxs[cell] = M;
+    sums[cell] = S;
   }
   device float* a = acc + cell * D.headDim + lane * per;
   for (uint i = 0; i < per; i++) {
-    a[i] = o[i];
+    a[i] = of[i];
   }
 }
 
