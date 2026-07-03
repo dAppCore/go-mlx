@@ -358,10 +358,10 @@ func TestCliTuningSelectionLabels_FullTelemetry_Good(t *testing.T) {
 	failed := inference.TuningResult{Candidate: inference.TuningCandidate{ID: "x"}, Error: "boom"}
 	labels := cliTuningSelectionLabels([]inference.TuningResult{selected, runnerUp, failed}, selected)
 	for k, want := range map[string]string{
-		"selected_candidate_id":           "win",
-		"successful_candidates":           "2",
-		"failed_candidates":               "1",
-		"runner_up_candidate_id":          "second",
+		"selected_candidate_id":             "win",
+		"successful_candidates":             "2",
+		"failed_candidates":                 "1",
+		"runner_up_candidate_id":            "second",
 		"selected_correctness_smoke_result": "pass",
 	} {
 		if labels[k] != want {

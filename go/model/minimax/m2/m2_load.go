@@ -487,10 +487,10 @@ func tryPackedWeightName(index safetensors.Index, buf []byte, base string) (safe
 type sidecarForm uint8
 
 const (
-	sidecarFormNone     sidecarForm = iota
-	sidecarFormDot                  // base + "." + sidecar
-	sidecarFormTrimDot              // trim(base) + "." + sidecar
-	sidecarFormUnderscore           // base + "_" + sidecar
+	sidecarFormNone       sidecarForm = iota
+	sidecarFormDot                    // base + "." + sidecar
+	sidecarFormTrimDot                // trim(base) + "." + sidecar
+	sidecarFormUnderscore             // base + "_" + sidecar
 )
 
 // lookupSidecarRef walks the four candidate bases (weightName, its packed-trim,

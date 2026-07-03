@@ -34,7 +34,7 @@ func benchProbe() *modelConfigProbe {
 		HiddenSize:            2048,
 		NumHiddenLayers:       28,
 		MaxPositionEmbeddings: 40960,
-		QuantizationConfig: quantBlock{Present: true, Bits: 4, GroupSize: 64},
+		QuantizationConfig:    quantBlock{Present: true, Bits: 4, GroupSize: 64},
 	}
 }
 

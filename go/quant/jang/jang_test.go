@@ -12,8 +12,8 @@
 // as the CPU infjang reference, so we use infjang.DequantizePackedTensor as
 // the bit-exact oracle and assert the Metal result matches within tolerance.
 //
-// Run: MLX_METALLIB_PATH=<repo>/dist/lib/mlx.metallib \
-//      go test -tags metal_runtime -cover ./quant/jang
+//	Run: MLX_METALLIB_PATH=<repo>/dist/lib/mlx.metallib \
+//	     go test -tags metal_runtime -cover ./quant/jang
 package jang
 
 import (

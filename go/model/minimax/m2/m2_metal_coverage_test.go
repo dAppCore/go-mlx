@@ -180,15 +180,15 @@ func TestM2MetalCover_DispatchPackedExpertsMetal_OutputShapeMismatch(t *testing.
 	// second's differing length trips the output-shape-mismatch guard. Both
 	// experts are well-formed and project cleanly on device.
 	narrowGate := miniMaxM2PackedProjectionFixture(t, "gate_proj", []uint8{0, 1, 2, 3}) // [2,2]
-	narrowUp := miniMaxM2PackedProjectionFixture(t, "up_proj", []uint8{0, 1, 2, 3})      // [2,2]
-	narrowDown := miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{0, 1, 2, 3})  // [2,2] → 2 outputs
+	narrowUp := miniMaxM2PackedProjectionFixture(t, "up_proj", []uint8{0, 1, 2, 3})     // [2,2]
+	narrowDown := miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{0, 1, 2, 3}) // [2,2] → 2 outputs
 
 	// Wide expert: gate/up are [3,2] so swiGLU produces 3 activations, and the
 	// down projection [2,3] maps them back to 2 outputs — but we instead use a
 	// down projection that yields 3 outputs to force the length difference.
-	wideGate := miniMaxM2WidePackedProjectionForCover(t, "gate_proj")  // [3,2] → 3
-	wideUp := miniMaxM2WidePackedProjectionForCover(t, "up_proj")      // [3,2] → 3
-	wideDown := miniMaxM2WideDownPackedProjectionForCover(t)           // [3,3] → 3 outputs
+	wideGate := miniMaxM2WidePackedProjectionForCover(t, "gate_proj") // [3,2] → 3
+	wideUp := miniMaxM2WidePackedProjectionForCover(t, "up_proj")     // [3,2] → 3
+	wideDown := miniMaxM2WideDownPackedProjectionForCover(t)          // [3,3] → 3 outputs
 
 	experts := map[int]PackedExpertWeights{
 		0: {GateProj: narrowGate, UpProj: narrowUp, DownProj: narrowDown},

@@ -354,8 +354,8 @@ func TestModulesDeclareNormalize_Branches(t *testing.T) {
 		}
 	})
 	for _, bad := range []string{
-		`{"type":"x"}`,             // not an array
-		`[{"type":5}]`,             // non-string element value
+		`{"type":"x"}`,              // not an array
+		`[{"type":5}]`,              // non-string element value
 		`[{"type":"a"} {"path":1}]`, // missing comma between elements
 		`[{"type":"x"}] trailing`,   // trailing junk after close
 	} {

@@ -295,8 +295,8 @@ func TestCPUSplitForwardDenseRow_Good(t *testing.T) {
 	}
 	scale := float32(1 / math.Sqrt(sq/2+1e-6))
 	n0, n1 := hidden[0]*scale, hidden[1]*scale
-	gate0, gate1 := n0, n1           // identity
-	up0, up1 := n0+n1, n0+n1         // sum rows
+	gate0, gate1 := n0, n1   // identity
+	up0, up1 := n0+n1, n0+n1 // sum rows
 	act0 := cpuSplitSiLU(gate0) * up0
 	act1 := cpuSplitSiLU(gate1) * up1
 	down0 := act0 // identity → row0 picks act0

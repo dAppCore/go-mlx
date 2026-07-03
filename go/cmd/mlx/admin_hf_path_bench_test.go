@@ -22,8 +22,8 @@ func BenchmarkIsSafeHFEntryPath(b *testing.B) {
 		"model-00001-of-00004.safetensors",
 		"onnx/decoder_model_merged.onnx",
 		"subdir/nested/deeper/weights.bin",
-		".git/config",            // dotfile segment → reject
-		"ok/.hidden/thing",       // mid-path dotfile → reject
+		".git/config",      // dotfile segment → reject
+		"ok/.hidden/thing", // mid-path dotfile → reject
 		"config.json",
 	}
 	b.ReportAllocs()

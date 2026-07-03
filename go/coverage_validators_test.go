@@ -90,15 +90,15 @@ func TestNormalizeLoadConfig_DeviceArms(t *testing.T) {
 
 func TestNormalizeKVCacheStorageDType_AllArms(t *testing.T) {
 	cases := map[string]string{
-		"":          "",
-		"native":    "",
-		"default":   "",
-		"fp16":      "fp16",
-		"float16":   "fp16",
-		"f16":       "fp16",
-		"bf16":      "bf16",
-		"bfloat16":  "bf16",
-		"  FP16  ":  "fp16", // trim + lower
+		"":           "",
+		"native":     "",
+		"default":    "",
+		"fp16":       "fp16",
+		"float16":    "fp16",
+		"f16":        "fp16",
+		"bf16":       "bf16",
+		"bfloat16":   "bf16",
+		"  FP16  ":   "fp16", // trim + lower
 		"int4-weird": "unsupported",
 	}
 	for in, want := range cases {

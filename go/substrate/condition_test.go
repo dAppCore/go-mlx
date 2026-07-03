@@ -240,9 +240,9 @@ func TestCondition_MustNormalize_Bad(t *testing.T) {
 // trim + case-fold slow path.
 func TestCondition_MustNormalize_Ugly(t *testing.T) {
 	cases := map[string]Condition{
-		"  TRAD-No-Replay  ":     TRADNoReplay,
+		"  TRAD-No-Replay  ":      TRADNoReplay,
 		"\tCONTINUOUS-WITH-GAP\n": CONTWithGap,
-		"\rTraditional\r":        TRAD,
+		"\rTraditional\r":         TRAD,
 	}
 	for input, want := range cases {
 		if got := MustNormalize(input); got != want {

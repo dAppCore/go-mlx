@@ -130,13 +130,13 @@ func ExamplePackInfo_NativeTensorMap() {
 // consistency between its shape, bit width and derived packed-byte count.
 func ExamplePackTensor_Validate() {
 	tensor := autoround.PackTensor{
-		Name:       "weight",
-		Packed:     "weight.packed",
-		Scales:     "weight.scales",
-		ZeroPoints: "weight.zeros",
-		Shape:      []int32{4, 8},
-		Bits:       4,
-		GroupSize:  32,
+		Name:        "weight",
+		Packed:      "weight.packed",
+		Scales:      "weight.scales",
+		ZeroPoints:  "weight.zeros",
+		Shape:       []int32{4, 8},
+		Bits:        4,
+		GroupSize:   32,
 		PackedBytes: 16,
 		Groups:      1,
 	}

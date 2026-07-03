@@ -44,11 +44,11 @@ func TestRunSFTJob_SyntheticLoadAndTrain_Good(t *testing.T) {
 	}
 	reg.active = job
 	runSFTJob(context.Background(), reg, job, adminSFTRequest{
-		ModelPath:   model,
-		DatasetPath: dataset,
-		Epochs:      1,
-		BatchSize:   1,
-		MaxSeqLen:   32,
+		ModelPath:     model,
+		DatasetPath:   dataset,
+		Epochs:        1,
+		BatchSize:     1,
+		MaxSeqLen:     32,
 		ContextLength: 64,
 	})
 
