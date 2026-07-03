@@ -619,6 +619,12 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			if !ownsCache {
 				ownIdx = s.specs[li].KVShareFrom
 			}
+			// multi-query SDPA: all K rows' attention in ONE dispatch (grid Y carries the rows,
+			// the per-query causal cap computed in-kernel) — needs the direct/no-evict landing
+			// AND every row below the 2-pass knee, so each row's bytes match the per-row
+			// single-query kernel exactly (the same routing the sequential oracle takes).
+			useMultiQ := !sdpaMultiQDisabledForTest && (slideW == 0 || basePos+K <= slideW) &&
+				basePos+K < sdpa2PassMinKV && gpuHasSDPAMultiQ(lhd)
 			for i := 0; i < K; i++ {
 				pos := basePos + i
 				slot, n := pos, pos+1
@@ -650,8 +656,18 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 						}
 					}
 				}
+				if useMultiQ {
+					continue // the K SDPAs run as one multi-query dispatch after every landing
+				}
 				if err = encSDPADecodeAt(enc, s.asc, qSlab, qRow, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, attnSlab, qRow, s.nHeads, lkv, lhd, n,
 					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale, 0); err != nil {
+					endEncodingFast(enc)
+					return nil, false, err
+				}
+			}
+			if useMultiQ {
+				if err = encSDPAMultiQCausal(enc, qSlab, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, attnSlab, s.nHeads, lkv, lhd, K, basePos+K,
+					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
 				}

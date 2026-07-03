@@ -262,6 +262,76 @@ func TestStepTokensBatchedDenseMLPFoldEngagesAndMatchesPerRow(t *testing.T) {
 	}
 }
 
+// TestStepTokensBatchedDenseMultiQSDPAEngagesAndMatchesPerRow pins the multi-query SDPA (#252):
+// on a no-evict batch every (head, row) attention runs in ONE dispatch (grid Y carries the rows,
+// the causal cap computed in-kernel), byte-identical to the per-row single-query dispatches — and
+// it must actually ENGAGE: strictly fewer dispatches than the per-row SDPA path, or the kernel is
+// dead code.
+func TestStepTokensBatchedDenseMultiQSDPAEngagesAndMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasSDPAMultiQ(64) {
+		t.Fatal("multi-query SDPA kernel missing for headDim 64 — rebuild dist/lib/lthn_kernels.metallib (task build:kernels)")
+	}
+	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
+
+	run := func(s *ArchSession, disable bool) ([]byte, int64) {
+		t.Helper()
+		prev, prevTiming := sdpaMultiQDisabledForTest, pieceTimingOn
+		sdpaMultiQDisabledForTest = disable
+		pieceTimingOn = true
+		dispatchCountForTest = 0
+		defer func() {
+			sdpaMultiQDisabledForTest = prev
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "test.multiq")
+		if err != nil {
+			t.Fatalf("batched dense prefill (disableMultiQ=%v): %v", disable, err)
+		}
+		if !ok {
+			t.Fatalf("batched dense prefill DECLINED (disableMultiQ=%v)", disable)
+		}
+		return append([]byte(nil), hidden...), dispatchCountForTest
+	}
+
+	multiq := newBatchedPLEBF16FixtureShared(t, 2)
+	perRow := newBatchedPLEBF16FixtureShared(t, 2)
+	mqHidden, mqDispatches := run(multiq, false)
+	rowHidden, rowDispatches := run(perRow, true)
+
+	if mqDispatches >= rowDispatches {
+		t.Fatalf("multi-query SDPA did not engage: multiq pass encoded %d dispatches, per-row %d — the kernel must strictly reduce dispatch count", mqDispatches, rowDispatches)
+	}
+	if len(mqHidden) != len(rowHidden) {
+		t.Fatalf("hidden sizes differ: multiq=%d perRow=%d", len(mqHidden), len(rowHidden))
+	}
+	for i := range mqHidden {
+		if mqHidden[i] != rowHidden[i] {
+			t.Fatalf("boundary hidden diverges at byte %d: multiq=%02x perRow=%02x (the multi-query kernel contract is byte-identity with the single-query dispatches)", i, mqHidden[i], rowHidden[i])
+		}
+	}
+	va, err := perRow.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := multiq.stateLayerViews()
+	if err != nil {
+		t.Fatalf("multiq views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d", i, j)
+			}
+		}
+	}
+}
+
 func batchedPLEParity(t *testing.T, control, candidate *ArchSession) {
 	t.Helper()
 	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
