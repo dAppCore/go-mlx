@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"time"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -44,6 +45,10 @@ type ArchSession struct {
 	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
 	// for models without the PLE tower.
 	perLayerInput func(id int32, emb []byte) ([]byte, error)
+	// perLayerInputBatch fills a layer-major PLE slab for a whole token batch in one command
+	// buffer (steel GEMM + batched chain) — the K-per-token CB round-trips were the prefill's
+	// largest host cost. false = not applicable (small batch, quant tower) → per-token loop.
+	perLayerInputBatch func(ids []int32, embs [][]byte, slab []byte) (bool, error)
 	// pleHostScratch reuses pinned host staging and intermediate Metal buffers for the host-side
 	// resident BF16 PLE projection path. nil when the model has no PLE tower or uses quant PLE projection.
 	pleHostScratch *plHostScratch
@@ -715,6 +720,17 @@ func newArchSessionShardsWithHeadConfig(g *BF16Model, arch model.Arch, maxLen in
 					scratch = nil
 				}
 				return PerLayerInputs(g.EmbedPerLayer, nil, nil, g.PerLayerModelProjW, nil, nil, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, 0, 0, 0, 0, arch.Eps, pv, scratch)
+			}
+			if pleProjView.buf != nil {
+				// the K-token slab builder: one steel GEMM + batched chain in ONE command buffer
+				// instead of K per-token CB round-trips (the 183ms/512-token host wall).
+				batchScratch := &pleBatchScratch{}
+				sess.perLayerInputBatch = func(ids []int32, embs [][]byte, slab []byte) (bool, error) {
+					if pleResidentDisabled {
+						return false, nil
+					}
+					return perLayerInputsBatchIntoSlab(batchScratch, g.EmbedPerLayer, pleProjView, g.PerLayerProjNormW, ids, embs, slab, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, arch.Eps)
+				}
 			}
 		}
 	})
@@ -1720,6 +1736,7 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 	if s.state.icb != nil {
 		return nil, false, nil
 	}
+	embedStart := time.Now()
 	var embStack [16][]byte
 	var embs [][]byte
 	if len(ids) <= len(embStack) {
@@ -1755,10 +1772,13 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 			embs[i] = emb
 		}
 	}
+	hostSpan("embed", embedStart, len(ids))
+	pleStart := time.Now()
 	pleSlab, slabErr := s.pleSlabFor(ids, embs)
 	if slabErr != nil {
 		return nil, false, slabErr
 	}
+	hostSpan("pleSlab", pleStart, len(ids))
 	var (
 		hidden []byte
 		ok     bool
@@ -1810,6 +1830,13 @@ func (s *ArchSession) pleSlabFor(ids []int32, embs [][]byte) ([]byte, error) {
 	numLayers, pliBytes := len(s.state.specs), s.state.pliDim*bf16Size
 	tokenPLE := numLayers * pliBytes
 	pleSlab := make([]byte, len(ids)*tokenPLE)
+	if s.perLayerInputBatch != nil {
+		if ok, err := s.perLayerInputBatch(ids, embs, pleSlab); err != nil {
+			return nil, err
+		} else if ok {
+			return pleSlab, nil
+		}
+	}
 	for i, id := range ids {
 		pli, err := s.perLayerInput(id, embs[i])
 		if err != nil {

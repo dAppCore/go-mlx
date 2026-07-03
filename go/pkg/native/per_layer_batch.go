@@ -5,12 +5,121 @@
 package native
 
 import (
+	"math"
 	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+// pleBatchScratch holds the K-token PLE builder's reusable buffers (grow-once on the session):
+// the contiguous hidden slab feeding the steel GEMM, the gathered per-layer embeddings, the
+// projection/normed slabs, and the two broadcast scale buffers.
+type pleBatchScratch struct {
+	hidden          []byte // K × dModel bf16, host staging for the GEMM input
+	perLayerRaw     []byte // K × plDim bf16, host-gathered per-layer embeddings (token-major)
+	hiddenBuf       metal.MTLBuffer
+	perLayerBuf     metal.MTLBuffer
+	projectedBuf    metal.MTLBuffer // K × plDim, reused across the scale/combine steps
+	normedBuf       metal.MTLBuffer // K × plDim, the rms output and final combined tensor
+	projScaleBuf    metal.MTLBuffer // 1-element bf16 broadcast scales (mul-rows rowLen=1)
+	combineScaleBuf metal.MTLBuffer
+	rowCap          int
+	plDim, dModel   int
+}
+
+func (s *pleBatchScratch) ensure(k, plDim, dModel int, projScale, combineScale float32) {
+	if s.rowCap >= k && s.plDim == plDim && s.dModel == dModel && s.hiddenBuf != nil {
+		return
+	}
+	s.hidden = make([]byte, k*dModel*bf16Size)
+	s.perLayerRaw = make([]byte, k*plDim*bf16Size)
+	s.hiddenBuf = device.NewBufferWithLengthOptions(uint(k*dModel*bf16Size), metal.MTLResourceStorageModeShared)
+	s.perLayerBuf = device.NewBufferWithLengthOptions(uint(k*plDim*bf16Size), metal.MTLResourceStorageModeShared)
+	s.projectedBuf = device.NewBufferWithLengthOptions(uint(k*plDim*bf16Size), metal.MTLResourceStorageModeShared)
+	s.normedBuf = device.NewBufferWithLengthOptions(uint(k*plDim*bf16Size), metal.MTLResourceStorageModeShared)
+	ps, cs := bf16ScalarBytes(projScale), bf16ScalarBytes(combineScale)
+	s.projScaleBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&ps[0]), 2, metal.MTLResourceStorageModeShared)
+	s.combineScaleBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&cs[0]), 2, metal.MTLResourceStorageModeShared)
+	s.rowCap, s.plDim, s.dModel = k, plDim, dModel
+}
+
+// perLayerInputsBatchIntoSlab builds the K-token PLE tensor set in ONE command buffer and
+// scatters it layer-major into slab — the batched twin of K PerLayerInputs calls, which each
+// paid their own CB round-trip (the 183ms/512-token host wall the GPU trace exposed). The
+// projection runs as one steel GEMM (token-identity at large K, the pass's standing policy);
+// the scale/rms/combine steps are the same per-element math batched over K·plDim. bf16
+// projection weights only (the resident view path); anything else reports false and the caller
+// keeps the per-token closure loop.
+func perLayerInputsBatchIntoSlab(sc *pleBatchScratch, embedPerLayer []byte, projView bufView, projNormW []byte, ids []int32, embs [][]byte, slab []byte, vocabPLI, numLayers, pliDim, dModel int, eps float32) (bool, error) {
+	k := len(ids)
+	plDim := numLayers * pliDim
+	if projView.buf == nil || k < steelGEMMMinRows || len(projNormW) != pliDim*bf16Size {
+		return false, nil
+	}
+	if len(slab) != k*plDim*bf16Size {
+		return false, core.NewError("native.perLayerInputsBatch: slab size mismatch")
+	}
+	embScale := float32(math.Sqrt(float64(pliDim)))
+	projScale := float32(1.0 / math.Sqrt(float64(dModel)))
+	sc.ensure(k, plDim, dModel, projScale, gemma4PerLayerCombineScale)
+
+	// host: stage the hidden rows contiguously and gather the per-layer embeddings token-major.
+	rowBytes := dModel * bf16Size
+	for i, emb := range embs {
+		if len(emb) != rowBytes {
+			return false, core.NewError("native.perLayerInputsBatch: hidden row size mismatch")
+		}
+		copy(sc.hidden[i*rowBytes:(i+1)*rowBytes], emb)
+	}
+	plBytes := plDim * bf16Size
+	for i, id := range ids {
+		if _, err := embedTokenBF16Into(sc.perLayerRaw[i*plBytes:(i+1)*plBytes], embedPerLayer, id, vocabPLI, plDim, embScale); err != nil {
+			return false, err
+		}
+	}
+	copy(unsafe.Slice((*byte)(sc.hiddenBuf.Contents()), len(sc.hidden)), sc.hidden)
+	copy(unsafe.Slice((*byte)(sc.perLayerBuf.Contents()), len(sc.perLayerRaw)), sc.perLayerRaw)
+
+	var encErr error
+	engaged := false
+	withAutoreleasePool(func() {
+		cb := commandBufferFast(queue)
+		enc := computeCommandEncoderFast(cb)
+		// projected = hidden @ projWᵀ (ONE steel GEMM for all K tokens)
+		if !encGemmBF16NT(enc, projView.buf, sc.hiddenBuf, sc.projectedBuf, projView.off, 0, 0, plDim, dModel, k) {
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			return // steel unavailable — fall back to the per-token loop
+		}
+		// ×1/√dModel → rms per (token,layer) row → +perLayer → ×1/√2, all batched
+		if encErr = encMulRowsBF16(enc, sc.projectedBuf, sc.projScaleBuf, sc.projectedBuf, 0, 0, 0, k*plDim, 1); encErr == nil {
+			if encErr = encRMSNormRowsBF16(enc, sc.projectedBuf, residentBytes(projNormW), sc.normedBuf, 0, 0, 0, k*numLayers, pliDim, eps); encErr == nil {
+				if encErr = encAddBF16To(enc, sc.normedBuf, sc.perLayerBuf, sc.normedBuf, 0, 0, 0, k*plDim); encErr == nil {
+					encErr = encMulRowsBF16(enc, sc.normedBuf, sc.combineScaleBuf, sc.normedBuf, 0, 0, 0, k*plDim, 1)
+				}
+			}
+		}
+		endEncodingFast(enc)
+		commitCommandBufferFast(cb)
+		waitUntilCompletedFast(cb)
+		engaged = encErr == nil
+	})
+	if encErr != nil || !engaged {
+		return false, encErr
+	}
+	// scatter token-major → layer-major (the slab layout the batched epilogue reads)
+	out := unsafe.Slice((*byte)(sc.normedBuf.Contents()), k*plBytes)
+	pliBytes := pliDim * bf16Size
+	for i := 0; i < k; i++ {
+		for li := 0; li < numLayers; li++ {
+			copy(slab[(li*k+i)*pliBytes:(li*k+i+1)*pliBytes], out[i*plBytes+li*pliBytes:i*plBytes+(li+1)*pliBytes])
+		}
+	}
+	return true, nil
+}
 
 type plHostScratchKey struct {
 	plDim, dModel int

@@ -6,6 +6,7 @@ package native
 
 import (
 	"os"
+	"time"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -74,6 +75,15 @@ func (t *batchedGPUTrace) commandBuffer(fallback metal.MTLCommandBufferObject) m
 		return fallback
 	}
 	return t.cb
+}
+
+// hostSpan logs a host-side phase duration under the same trace gate — the wall-vs-GPU gap's
+// decomposition (embedding gathers, the PLE slab scatter, the paged<->linear KV syncs).
+func hostSpan(name string, since time.Time, rows int) {
+	if !gpuTraceEnabled() {
+		return
+	}
+	nativeTraceLog(core.Sprintf("gpu-trace: host  %-16s %7.1fms  rows=%d\n", name, float64(time.Since(since))/1e6, rows))
 }
 
 // finish charges the final segment (the caller has already committed+waited the last CB) and

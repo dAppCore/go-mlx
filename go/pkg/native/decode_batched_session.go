@@ -5,6 +5,7 @@
 package native
 
 import (
+	"time"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -508,9 +509,11 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			return nil, false, core.NewError("native.stepTokensBatchedDense: emb must be dModel bf16 bytes")
 		}
 	}
+	syncStart := time.Now()
 	if err := s.syncLinearKVFromDevicePaged(basePos); err != nil {
 		return nil, false, err
 	}
+	hostSpan("syncKV", syncStart, K)
 
 	rowBytes := s.dModel * bf16Size
 	var (
@@ -1018,9 +1021,11 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			s.denseBatch.setLastRows(readRows, readOff, K)
 		}
 	}
+	reloadStart := time.Now()
 	if err := s.reloadDevicePagedKVFromLinear(basePos + K); err != nil {
 		return nil, false, err
 	}
+	hostSpan("reloadKV", reloadStart, K)
 
 	if readResult {
 		if readLastOnly {
