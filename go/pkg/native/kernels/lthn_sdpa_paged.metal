@@ -5,7 +5,16 @@ using namespace metal;
 
 typedef bfloat bf16;
 
-struct PagedSDPADims {
+// Paged decode SDPA, parallel two-pass. Pass 1 runs one threadgroup per (head, page-dispatch):
+// 32 lanes cooperate over the page's rows (each lane owns headDim/32 accumulator dims, the row
+// dot reduces across lanes with simd_sum), writing an INDEPENDENT per-(head, page) partial —
+// online-softmax max, denom, and weighted-V accumulator. No cross-page state: every page's
+// dispatch is hazard-free against the others, so Metal overlaps them (the previous kernel
+// carried the online softmax across pages through shared scratch, serialising the whole chain
+// per layer at one scalar thread per head). Pass 2 merges the per-page partials per head with
+// the standard log-sum-exp combine and writes the bf16 output.
+
+struct PagedSDPAP1Dims {
   uint nHeads;
   uint nKVHeads;
   uint headDim;
@@ -14,73 +23,120 @@ struct PagedSDPADims {
   uint kSeqStride;
   uint vHeadStride;
   uint vSeqStride;
+  uint pageIdx;
+  uint pageCount;
   float scale;
 };
 
-[[kernel]] void lthn_sdpa_paged_update_bf16(
+// headDim/32 accumulator dims per lane; gemma4 head dims are 256 (sliding) and 512 (full),
+// so 16 covers every shipped shape (8 and 16 slices respectively).
+constant constexpr uint kPagedMaxPerLane = 16;
+
+[[kernel]] void lthn_sdpa_paged_p1_bf16(
     const device bf16* q      [[buffer(0)]],
     const device bf16* kPage  [[buffer(1)]],
     const device bf16* vPage  [[buffer(2)]],
-    device float*      maxs   [[buffer(3)]],
-    device float*      denoms [[buffer(4)]],
-    device float*      acc    [[buffer(5)]],
-    const constant PagedSDPADims& D [[buffer(6)]],
-    uint h [[thread_position_in_grid]]) {
+    device float*      maxs   [[buffer(3)]],  // [nHeads * pageCount]
+    device float*      sums   [[buffer(4)]],  // [nHeads * pageCount]
+    device float*      acc    [[buffer(5)]],  // [nHeads * pageCount * headDim]
+    const constant PagedSDPAP1Dims& D [[buffer(6)]],
+    uint h    [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
   if (h >= D.nHeads) return;
+  const uint per = D.headDim / 32;
+  if (per == 0 || per > kPagedMaxPerLane) return;
 
   const uint gqa = D.nHeads / D.nKVHeads;
   const uint kvh = h / gqa;
-  const device bf16* qh = q + h * D.headDim;
-  const device bf16* kh = kPage + kvh * D.kHeadStride;
-  const device bf16* vh = vPage + kvh * D.vHeadStride;
+  const device bf16* qh = q + h * D.headDim + lane * per;
+  const device bf16* kh = kPage + kvh * D.kHeadStride + lane * per;
+  const device bf16* vh = vPage + kvh * D.vHeadStride + lane * per;
 
-  float pageMax = -3.0e38f;
-  for (uint t = 0; t < D.pageLen; t++) {
-    float dot = 0.0f;
-    const device bf16* kt = kh + t * D.kSeqStride;
-    for (uint d = 0; d < D.headDim; d++) {
-      dot += float(qh[d]) * float(kt[d]);
-    }
-    pageMax = max(pageMax, dot * D.scale);
+  float qv[kPagedMaxPerLane];
+  for (uint i = 0; i < per; i++) {
+    qv[i] = float(qh[i]);
   }
 
-  const uint accOff = h * D.headDim;
-  const float oldMax = maxs[h];
-  const float oldDenom = denoms[h];
-  const float newMax = max(oldMax, pageMax);
-  const float oldScale = oldDenom > 0.0f ? exp(oldMax - newMax) : 0.0f;
-  float denom = oldDenom * oldScale;
-  for (uint d = 0; d < D.headDim; d++) {
-    acc[accOff + d] *= oldScale;
+  float m = -3.0e38f;
+  float s = 0.0f;
+  float o[kPagedMaxPerLane];
+  for (uint i = 0; i < per; i++) {
+    o[i] = 0.0f;
   }
 
   for (uint t = 0; t < D.pageLen; t++) {
-    float dot = 0.0f;
     const device bf16* kt = kh + t * D.kSeqStride;
-    for (uint d = 0; d < D.headDim; d++) {
-      dot += float(qh[d]) * float(kt[d]);
+    float partial = 0.0f;
+    for (uint i = 0; i < per; i++) {
+      partial += qv[i] * float(kt[i]);
     }
-    const float p = exp(dot * D.scale - newMax);
-    denom += p;
+    const float dot = simd_sum(partial) * D.scale;
+    const float newM = max(m, dot);
+    const float f = s > 0.0f ? exp(m - newM) : 0.0f;
+    const float p = exp(dot - newM);
+    s = s * f + p;
     const device bf16* vt = vh + t * D.vSeqStride;
-    for (uint d = 0; d < D.headDim; d++) {
-      acc[accOff + d] += p * float(vt[d]);
+    for (uint i = 0; i < per; i++) {
+      o[i] = o[i] * f + p * float(vt[i]);
     }
+    m = newM;
   }
 
-  maxs[h] = newMax;
-  denoms[h] = denom;
+  const uint cell = h * D.pageCount + D.pageIdx;
+  if (lane == 0) {
+    maxs[cell] = m;
+    sums[cell] = s;
+  }
+  device float* a = acc + cell * D.headDim + lane * per;
+  for (uint i = 0; i < per; i++) {
+    a[i] = o[i];
+  }
 }
 
-[[kernel]] void lthn_sdpa_paged_finalise_bf16(
-    const device float* denoms  [[buffer(0)]],
-    const device float* acc     [[buffer(1)]],
-    device bf16*        out     [[buffer(2)]],
-    const constant uint& headDim [[buffer(3)]],
-    const constant uint& total   [[buffer(4)]],
-    uint i [[thread_position_in_grid]]) {
-  if (i >= total) return;
-  const uint h = i / headDim;
-  const float denom = denoms[h];
-  out[i] = denom > 0.0f ? bf16(acc[i] / denom) : bf16(0.0f);
+struct PagedSDPAP2Dims {
+  uint headDim;
+  uint pageCount;
+};
+
+[[kernel]] void lthn_sdpa_paged_p2_bf16(
+    const device float* maxs [[buffer(0)]],
+    const device float* sums [[buffer(1)]],
+    const device float* acc  [[buffer(2)]],
+    device bf16*        out  [[buffer(3)]],  // [nHeads * headDim]
+    const constant PagedSDPAP2Dims& D [[buffer(4)]],
+    uint h    [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint per = D.headDim / 32;
+  if (per == 0 || per > kPagedMaxPerLane) return;
+  const uint base = h * D.pageCount;
+
+  float M = -3.0e38f;
+  for (uint p = 0; p < D.pageCount; p++) {
+    if (sums[base + p] > 0.0f) {
+      M = max(M, maxs[base + p]);
+    }
+  }
+
+  float denom = 0.0f;
+  float o[kPagedMaxPerLane];
+  for (uint i = 0; i < per; i++) {
+    o[i] = 0.0f;
+  }
+  for (uint p = 0; p < D.pageCount; p++) {
+    const float s = sums[base + p];
+    if (s <= 0.0f) {
+      continue;
+    }
+    const float w = exp(maxs[base + p] - M);
+    denom += s * w;
+    const device float* a = acc + (base + p) * D.headDim + lane * per;
+    for (uint i = 0; i < per; i++) {
+      o[i] += a[i] * w;
+    }
+  }
+
+  device bf16* oh = out + h * D.headDim + lane * per;
+  for (uint i = 0; i < per; i++) {
+    oh[i] = denom > 0.0f ? bf16(o[i] / denom) : bf16(0.0f);
+  }
 }

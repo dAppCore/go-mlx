@@ -13,7 +13,7 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
-type sdpaPagedKernelParams struct {
+type sdpaPagedP1Params struct {
 	NHeads      uint32
 	NKVHeads    uint32
 	HeadDim     uint32
@@ -22,24 +22,41 @@ type sdpaPagedKernelParams struct {
 	KSeqStride  uint32
 	VHeadStride uint32
 	VSeqStride  uint32
+	PageIdx     uint32
+	PageCount   uint32
 	Scale       float32
 }
 
+type sdpaPagedP2Params struct {
+	HeadDim   uint32
+	PageCount uint32
+}
+
+// resourceUntrackedShared composes shared storage with HAZARD-UNTRACKED mode. The
+// binding's generated MTLResourceHazardTrackingModeUntracked constant carries the
+// un-shifted enum value (1), not the composed MTLResourceOptions bit — Apple packs
+// the hazard mode at bit 8 — so compose it here. Untracked buffers do not serialise
+// disjoint writes: the per-page pass-1 dispatches all write this scratch, and the
+// single explicit barrier before pass 2 is the only ordering they need.
+const resourceUntrackedShared = metal.MTLResourceStorageModeShared | metal.MTLResourceOptions(1<<8)
+
+// sdpaPagedDecodeScratch holds the parallel two-pass partials: one (max, sum,
+// acc[headDim]) cell per (head, page). Pass 1 fully overwrites the cells it owns
+// and pass 2 reads only [0, pageCount) cells, so no host reset is needed between
+// tokens — ensure only reallocates when the page count outgrows capacity.
 type sdpaPagedDecodeScratch struct {
-	nHeads, headDim   int
-	maxs, denoms, acc metal.MTLBuffer
-	maxPtr, denomPtr  []float32
-	accPtr            []float32
+	nHeads, headDim, maxPages int
+	maxs, sums, acc           metal.MTLBuffer
 }
 
 var (
-	sdpaPagedUpdatePSOOnce sync.Once
-	sdpaPagedUpdatePSO     metal.MTLComputePipelineState
-	sdpaPagedUpdatePSOErr  error
+	sdpaPagedP1PSOOnce sync.Once
+	sdpaPagedP1PSO     metal.MTLComputePipelineState
+	sdpaPagedP1PSOErr  error
 
-	sdpaPagedFinalisePSOOnce sync.Once
-	sdpaPagedFinalisePSO     metal.MTLComputePipelineState
-	sdpaPagedFinalisePSOErr  error
+	sdpaPagedP2PSOOnce sync.Once
+	sdpaPagedP2PSO     metal.MTLComputePipelineState
+	sdpaPagedP2PSOErr  error
 )
 
 func newSDPAPagedDecodeScratch(nHeads, headDim int) (*sdpaPagedDecodeScratch, error) {
@@ -49,71 +66,74 @@ func newSDPAPagedDecodeScratch(nHeads, headDim int) (*sdpaPagedDecodeScratch, er
 	if nHeads <= 0 || headDim <= 0 {
 		return nil, core.NewError("native.newSDPAPagedDecodeScratch: dimensions must be > 0")
 	}
-	maxs := scratchF32(nHeads)
-	denoms := scratchF32(nHeads)
-	acc := scratchF32(nHeads * headDim)
-	if maxs == nil || denoms == nil || acc == nil ||
-		maxs.GetID() == 0 || denoms.GetID() == 0 || acc.GetID() == 0 {
-		return nil, core.NewError("native.newSDPAPagedDecodeScratch: failed to allocate scratch buffers")
+	s := &sdpaPagedDecodeScratch{nHeads: nHeads, headDim: headDim}
+	if err := s.ensure(nHeads, headDim, 1); err != nil {
+		return nil, err
 	}
-	return &sdpaPagedDecodeScratch{
-		nHeads:   nHeads,
-		headDim:  headDim,
-		maxs:     maxs,
-		denoms:   denoms,
-		acc:      acc,
-		maxPtr:   unsafe.Slice((*float32)(maxs.Contents()), nHeads),
-		denomPtr: unsafe.Slice((*float32)(denoms.Contents()), nHeads),
-		accPtr:   unsafe.Slice((*float32)(acc.Contents()), nHeads*headDim),
-	}, nil
+	return s, nil
 }
 
-func (s *sdpaPagedDecodeScratch) reset(nHeads, headDim int) error {
-	if s == nil || s.maxs == nil || s.denoms == nil || s.acc == nil {
-		return core.NewError("native.sdpaPagedDecodeScratch.reset: nil scratch")
+// ensure sizes the per-(head, page) partials for at least pages cells, reallocating
+// only on growth or shape change. Buffers are hazard-UNTRACKED: the per-page pass-1
+// dispatches write disjoint cells concurrently and the encoder's explicit barrier
+// orders them against pass 2.
+func (s *sdpaPagedDecodeScratch) ensure(nHeads, headDim, pages int) error {
+	if s == nil {
+		return core.NewError("native.sdpaPagedDecodeScratch.ensure: nil scratch")
 	}
-	if s.nHeads != nHeads || s.headDim != headDim ||
-		len(s.maxPtr) != nHeads || len(s.denomPtr) != nHeads || len(s.accPtr) != nHeads*headDim {
-		return core.NewError("native.sdpaPagedDecodeScratch.reset: dimension mismatch")
+	if nHeads <= 0 || headDim <= 0 || pages <= 0 {
+		return core.NewError("native.sdpaPagedDecodeScratch.ensure: dimensions must be > 0")
 	}
-	for i := range s.maxPtr {
-		s.maxPtr[i] = -3.0e38
+	if s.maxs != nil && s.nHeads == nHeads && s.headDim == headDim && pages <= s.maxPages {
+		return nil
 	}
-	clear(s.denomPtr)
-	clear(s.accPtr)
+	capPages := pages
+	if s.maxPages*2 > capPages && s.nHeads == nHeads && s.headDim == headDim {
+		capPages = s.maxPages * 2 // grow geometrically as the context adds pages
+	}
+	cells := nHeads * capPages
+	maxs := device.NewBufferWithLengthOptions(uint(cells*4), resourceUntrackedShared)
+	sums := device.NewBufferWithLengthOptions(uint(cells*4), resourceUntrackedShared)
+	acc := device.NewBufferWithLengthOptions(uint(cells*headDim*4), resourceUntrackedShared)
+	if maxs == nil || sums == nil || acc == nil ||
+		maxs.GetID() == 0 || sums.GetID() == 0 || acc.GetID() == 0 {
+		return core.NewError("native.sdpaPagedDecodeScratch.ensure: failed to allocate scratch buffers")
+	}
+	s.nHeads, s.headDim, s.maxPages = nHeads, headDim, capPages
+	s.maxs, s.sums, s.acc = maxs, sums, acc
 	return nil
 }
 
-func sdpaPagedUpdatePipeline() (metal.MTLComputePipelineState, error) {
-	sdpaPagedUpdatePSOOnce.Do(func() {
+func sdpaPagedP1Pipeline() (metal.MTLComputePipelineState, error) {
+	sdpaPagedP1PSOOnce.Do(func() {
 		if customLibrary == nil || customLibrary.GetID() == 0 {
-			sdpaPagedUpdatePSOErr = core.NewError("native.sdpaPagedUpdatePipeline: custom library unavailable")
+			sdpaPagedP1PSOErr = core.NewError("native.sdpaPagedP1Pipeline: custom library unavailable")
 			return
 		}
-		fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_update_bf16")
+		fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_p1_bf16")
 		if fn == nil || fn.GetID() == 0 {
-			sdpaPagedUpdatePSOErr = core.NewError("native.sdpaPagedUpdatePipeline: kernel lthn_sdpa_paged_update_bf16 not found")
+			sdpaPagedP1PSOErr = core.NewError("native.sdpaPagedP1Pipeline: kernel lthn_sdpa_paged_p1_bf16 not found")
 			return
 		}
-		sdpaPagedUpdatePSO, sdpaPagedUpdatePSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+		sdpaPagedP1PSO, sdpaPagedP1PSOErr = device.NewComputePipelineStateWithFunctionError(fn)
 	})
-	return sdpaPagedUpdatePSO, sdpaPagedUpdatePSOErr
+	return sdpaPagedP1PSO, sdpaPagedP1PSOErr
 }
 
-func sdpaPagedFinalisePipeline() (metal.MTLComputePipelineState, error) {
-	sdpaPagedFinalisePSOOnce.Do(func() {
+func sdpaPagedP2Pipeline() (metal.MTLComputePipelineState, error) {
+	sdpaPagedP2PSOOnce.Do(func() {
 		if customLibrary == nil || customLibrary.GetID() == 0 {
-			sdpaPagedFinalisePSOErr = core.NewError("native.sdpaPagedFinalisePipeline: custom library unavailable")
+			sdpaPagedP2PSOErr = core.NewError("native.sdpaPagedP2Pipeline: custom library unavailable")
 			return
 		}
-		fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_finalise_bf16")
+		fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_p2_bf16")
 		if fn == nil || fn.GetID() == 0 {
-			sdpaPagedFinalisePSOErr = core.NewError("native.sdpaPagedFinalisePipeline: kernel lthn_sdpa_paged_finalise_bf16 not found")
+			sdpaPagedP2PSOErr = core.NewError("native.sdpaPagedP2Pipeline: kernel lthn_sdpa_paged_p2_bf16 not found")
 			return
 		}
-		sdpaPagedFinalisePSO, sdpaPagedFinalisePSOErr = device.NewComputePipelineStateWithFunctionError(fn)
+		sdpaPagedP2PSO, sdpaPagedP2PSOErr = device.NewComputePipelineStateWithFunctionError(fn)
 	})
-	return sdpaPagedFinalisePSO, sdpaPagedFinalisePSOErr
+	return sdpaPagedP2PSO, sdpaPagedP2PSOErr
 }
 
 func encSDPAPagedDecode(
@@ -177,20 +197,33 @@ func encSDPAPagedDecodeStrided(
 			return core.NewError("native.encSDPAPagedDecodeStrided: page lengths and strides must be > 0")
 		}
 	}
-	if err := scratch.reset(nHeads, headDim); err != nil {
+	// the lane slicing owns headDim/32 dims per lane — every shipped head dim (64,
+	// 128, 256, 512) is a multiple of 32; reject anything else loudly rather than
+	// silently dropping tail dims.
+	if headDim%32 != 0 || headDim/32 > 16 {
+		return core.NewError("native.encSDPAPagedDecodeStrided: headDim must be a multiple of 32, at most 512")
+	}
+	pages := len(keyPages)
+	if err := scratch.ensure(nHeads, headDim, pages); err != nil {
 		return err
 	}
-	updatePSO, err := sdpaPagedUpdatePipeline()
+	p1PSO, err := sdpaPagedP1Pipeline()
 	if err != nil {
 		return err
 	}
-	finalisePSO, err := sdpaPagedFinalisePipeline()
+	p2PSO, err := sdpaPagedP2Pipeline()
 	if err != nil {
 		return err
 	}
 
+	// pass 1: one dispatch per page, each writing its OWN (head, page) partial cells.
+	// The scratch is hazard-untracked so these overlap freely — the single barrier
+	// below is the only ordering pass 2 needs. (The previous kernel carried the
+	// online softmax ACROSS pages through shared tracked scratch: a hazard-serialised
+	// chain of one-scalar-thread-per-head dispatches whose length grew with context —
+	// the #252 decode collapse.)
 	for i := range keyPages {
-		params := sdpaPagedKernelParams{
+		params := sdpaPagedP1Params{
 			NHeads:      uint32(nHeads),
 			NKVHeads:    uint32(nKVHeads),
 			HeadDim:     uint32(headDim),
@@ -199,31 +232,35 @@ func encSDPAPagedDecodeStrided(
 			KSeqStride:  uint32(keySeqStrides[i]),
 			VHeadStride: uint32(valueHeadStrides[i]),
 			VSeqStride:  uint32(valueSeqStrides[i]),
+			PageIdx:     uint32(i),
+			PageCount:   uint32(pages),
 			Scale:       scale,
 		}
-		setPSO(enc, updatePSO)
+		setPSO(enc, p1PSO)
 		setBuf(enc, q, 0, 0)
 		setBuf(enc, keyPages[i], 0, 1)
 		setBuf(enc, valuePages[i], 0, 2)
 		setBuf(enc, scratch.maxs, 0, 3)
-		setBuf(enc, scratch.denoms, 0, 4)
+		setBuf(enc, scratch.sums, 0, 4)
 		setBuf(enc, scratch.acc, 0, 5)
 		setBytes(enc, unsafe.Pointer(&params), uint(unsafe.Sizeof(params)), 6)
 		dispatchThreadgroups(enc,
 			metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1},
-			metal.MTLSize{Width: 64, Height: 1, Depth: 1},
+			metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 		)
 	}
-	total := nHeads * headDim
-	setPSO(enc, finalisePSO)
-	setBuf(enc, scratch.denoms, 0, 0)
-	setBuf(enc, scratch.acc, 0, 1)
-	setBuf(enc, out, 0, 2)
-	setBytesI32(enc, int32(headDim), 3)
-	setBytesI32(enc, int32(total), 4)
+	// order the untracked partials: every pass-1 write completes before pass 2 reads.
+	memoryBarrier(enc, metal.MTLBarrierScopeBuffers)
+	p2 := sdpaPagedP2Params{HeadDim: uint32(headDim), PageCount: uint32(pages)}
+	setPSO(enc, p2PSO)
+	setBuf(enc, scratch.maxs, 0, 0)
+	setBuf(enc, scratch.sums, 0, 1)
+	setBuf(enc, scratch.acc, 0, 2)
+	setBuf(enc, out, 0, 3)
+	setBytes(enc, unsafe.Pointer(&p2), uint(unsafe.Sizeof(p2)), 4)
 	dispatchThreadgroups(enc,
-		metal.MTLSize{Width: uint(total), Height: 1, Depth: 1},
-		metal.MTLSize{Width: 256, Height: 1, Depth: 1},
+		metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1},
+		metal.MTLSize{Width: 32, Height: 1, Depth: 1},
 	)
 	return nil
 }

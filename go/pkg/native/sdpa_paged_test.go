@@ -38,11 +38,11 @@ func requireSDPAPagedKernel(t *testing.T) {
 	if customLibrary == nil || customLibrary.GetID() == 0 {
 		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
 	}
-	if fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_update_bf16"); fn == nil || fn.GetID() == 0 {
-		t.Skip("custom paged SDPA update kernel not loaded - run `task build:kernels`")
+	if fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_p1_bf16"); fn == nil || fn.GetID() == 0 {
+		t.Skip("custom paged SDPA pass-1 kernel not loaded - run `task build:kernels`")
 	}
-	if fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_finalise_bf16"); fn == nil || fn.GetID() == 0 {
-		t.Skip("custom paged SDPA finalise kernel not loaded - run `task build:kernels`")
+	if fn := customLibrary.NewFunctionWithName("lthn_sdpa_paged_p2_bf16"); fn == nil || fn.GetID() == 0 {
+		t.Skip("custom paged SDPA pass-2 kernel not loaded - run `task build:kernels`")
 	}
 }
 
