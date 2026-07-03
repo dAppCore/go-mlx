@@ -304,14 +304,14 @@ func encAttnHalfKVAt(
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 	ropeFreqs metal.MTLBuffer,
 ) error {
-	return encAttnHalfKVInputAt(enc, x, 0, kCacheBuf, vCacheBuf, offBuf, h, offOff,
+	return encAttnHalfKVInputAt(enc, x, 0, kCacheBuf, vCacheBuf, offBuf, h, 0, offOff,
 		attnNormW, postAttnNorm, qNorm, kNorm, valueNorm, sc, proj,
 		dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim, base, scale, eps, ropeFreqs)
 }
 
 func encAttnHalfKVInputAt(
 	enc metal.MTLComputeCommandEncoder,
-	x metal.MTLBuffer, xOff uint, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer, offOff uint,
+	x metal.MTLBuffer, xOff uint, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer, hOff, offOff uint,
 	attnNormW, postAttnNorm, qNorm, kNorm bufView, valueNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
@@ -408,7 +408,7 @@ func encAttnHalfKVInputAt(
 		return err
 	}
 	// h = x + Wo·attn  (gemma4: post-attention norm on Wo·attn first; sc.normed is free)
-	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, 0, postAttnNorm, dModel, eps)
+	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, hOff, postAttnNorm, dModel, eps)
 }
 
 // encMLPHalfBF16 encodes the gemma MLP half — rms, gate/up projections, the tanh

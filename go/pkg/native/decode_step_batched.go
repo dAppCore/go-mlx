@@ -260,7 +260,7 @@ func DecodeLayerBatchedKVInto(
 			xOff := uint(i * rowBytes)
 			// attention half: project q/k/v from row i, write k/v into the cache at row basePos+i,
 			// attend [0..basePos+i] (single-query, the exact per-token kernel) → h.
-			if err := encAttnHalfKVInputAt(enc, xsBuf, xOff, kBuf, vBuf, sc.offBuf[i], sc.hBuf, 0,
+			if err := encAttnHalfKVInputAt(enc, xsBuf, xOff, kBuf, vBuf, sc.offBuf[i], sc.hBuf, 0, 0,
 				bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, sc.asc, proj,
 				dModel, nHeads, nKVHeads, headDim, basePos+i, 0, headDim, base, scale, eps, nil); err != nil {
 				endEncodingFast(enc)

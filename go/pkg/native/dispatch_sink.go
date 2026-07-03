@@ -498,6 +498,16 @@ func emitGemv[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat met
 // prefill's rows live at offsets inside shared K-row buffers, so per-row consumers (the PLE
 // input gate) bind the hidden at its row offset instead of copying it out first.
 func emitGemvVecAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat metal.MTLBuffer, matOff uint, vec metal.MTLBuffer, vecOff uint, out metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
+	emitGemvBatchedVecAt(sink, pso, mat, matOff, vec, vecOff, out, outOff, inDim, outDim, 1, bm, bn, sm, tm)
+}
+
+// emitGemvBatchedVecAt is emitGemvVecAt across `batch` contiguous input rows in ONE dispatch: the
+// grid's Z carries the batch through the kernel's nc0 stride branch (in_vec += z·vecStride,
+// mat += z·matStride, out_vec += z·out_vec_size), so with matStride=0 every z-slice runs the
+// single-row tile loop unchanged against the SHARED weight matrix — each row's bytes identical
+// to `batch` separate dispatches, the weight swept once through the cache instead of `batch`
+// times. vec rows contiguous at vecOff + z·inDim elements; out rows land at outOff + z·outDim.
+func emitGemvBatchedVecAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat metal.MTLBuffer, matOff uint, vec metal.MTLBuffer, vecOff uint, out metal.MTLBuffer, outOff uint, inDim, outDim, batch, bm, bn, sm, tm int) {
 	sink.setPSO(pso)
 	sink.setBuf(mat, matOff, 0)
 	sink.setBuf(vec, vecOff, 1)
@@ -506,9 +516,13 @@ func emitGemvVecAt[S dispatchSink](sink S, pso metal.MTLComputePipelineState, ma
 	sink.setI32(int32(outDim), 5)
 	sink.setI32(int32(inDim), 6) // leading dim
 	sink.setI32(1, 9)            // batch_ndim
-	sink.setI32(1, 10)           // batch_shape
-	sink.setI64(0, 11)           // vec batch stride
-	sink.setI64(0, 12)           // mat batch stride
+	sink.setI32(int32(batch), 10)
+	vecStride := int64(0)
+	if batch > 1 {
+		vecStride = int64(inDim) // element stride between the contiguous input rows
+	}
+	sink.setI64(vecStride, 11)
+	sink.setI64(0, 12) // mat batch stride: one weight matrix shared by every row
 	nTgp := uint((outDim + bm*sm*tm - 1) / (bm * sm * tm))
-	sink.dispatchThreadgroups(metal.MTLSize{Width: nTgp, Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
+	sink.dispatchThreadgroups(metal.MTLSize{Width: nTgp, Height: 1, Depth: uint(batch)}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
 }

@@ -598,6 +598,22 @@ func encGemvBF16VecAt(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MT
 	return nil
 }
 
+// encGemvBF16BatchedAt encodes `batch` independent gemvs against ONE shared weight matrix in a
+// single dispatch (grid Z carries the batch): out row z = mat @ vec row z. vec rows are contiguous
+// bf16 at vecOff + z·inDim elements; out rows land at outOff + z·outDim. The kernel variant and
+// per-row tile loop are exactly encGemvBF16VecAt's (gemvTiles ignores batch), so each row's output
+// is byte-identical to `batch` single-row dispatches — the weight matrix is just swept once. This
+// is the batched dense pass's MLP fold: K rows' gate/up/down share each layer's weight read.
+func encGemvBF16BatchedAt(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, vecOff, outOff uint, outDim, inDim, batch int) error {
+	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))
+	if err != nil {
+		return err
+	}
+	emitGemvBatchedVecAt(encSink{enc}, pso, mat, matOff, vec, vecOff, out, outOff, inDim, outDim, batch, bm, bn, sm, tm)
+	return nil
+}
+
 func encGemvBF16ToObject(enc metal.MTLComputeCommandEncoderObject, mat, vec, out metal.MTLBuffer, matOff, outOff uint, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 	pso, err := pipelineFor(gemvKernelName("bfloat16", bm, bn, sm, sn, tm, tn))

@@ -195,6 +195,73 @@ func TestPrefillPromptRetainedInPoolBatchesLiveBoundaryAppend(t *testing.T) {
 
 }
 
+// TestStepTokensBatchedDenseMLPFoldEngagesAndMatchesPerRow pins the MLP fold (#252): the batched
+// dense pass folds each bf16 layer's MLP into one rms-rows + three batched gemvs + one fused gelu
+// (grid Z carries the rows, each layer's gate/up/down weights read once instead of K times),
+// byte-identical to the per-row interleave — and actually ENGAGES: the folded pass must encode
+// strictly fewer dispatches than the per-row pass on the same batch, or the fold is dead code.
+func TestStepTokensBatchedDenseMLPFoldEngagesAndMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}
+
+	run := func(s *ArchSession, disableFold bool) ([]byte, int64) {
+		t.Helper()
+		prevFold, prevTiming := batchedMLPFoldDisabledForTest, pieceTimingOn
+		batchedMLPFoldDisabledForTest = disableFold
+		pieceTimingOn = true
+		dispatchCountForTest = 0
+		defer func() {
+			batchedMLPFoldDisabledForTest = prevFold
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "test.mlpFold")
+		if err != nil {
+			t.Fatalf("batched dense prefill (disableFold=%v): %v", disableFold, err)
+		}
+		if !ok {
+			t.Fatalf("batched dense prefill DECLINED (disableFold=%v)", disableFold)
+		}
+		return append([]byte(nil), hidden...), dispatchCountForTest
+	}
+
+	folded := newBatchedPLEBF16FixtureShared(t, 2)
+	perRow := newBatchedPLEBF16FixtureShared(t, 2)
+	foldedHidden, foldedDispatches := run(folded, false)
+	perRowHidden, perRowDispatches := run(perRow, true)
+
+	if foldedDispatches >= perRowDispatches {
+		t.Fatalf("MLP fold did not engage: folded pass encoded %d dispatches, per-row %d — the fold must strictly reduce dispatch count", foldedDispatches, perRowDispatches)
+	}
+	if len(foldedHidden) != len(perRowHidden) {
+		t.Fatalf("hidden sizes differ: folded=%d perRow=%d", len(foldedHidden), len(perRowHidden))
+	}
+	for i := range foldedHidden {
+		if foldedHidden[i] != perRowHidden[i] {
+			t.Fatalf("boundary hidden diverges at byte %d: folded=%02x perRow=%02x (the fold contract is byte-identity with the per-row interleave)", i, foldedHidden[i], perRowHidden[i])
+		}
+	}
+	va, err := perRow.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := folded.stateLayerViews()
+	if err != nil {
+		t.Fatalf("folded views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d", i, j)
+			}
+		}
+	}
+}
+
 func batchedPLEParity(t *testing.T, control, candidate *ArchSession) {
 	t.Helper()
 	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}

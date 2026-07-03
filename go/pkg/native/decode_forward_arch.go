@@ -120,7 +120,7 @@ func encAttnHalfShared(
 // sequential per-token chain would.
 func encAttnHalfSharedInputAt(
 	enc metal.MTLComputeCommandEncoder,
-	x metal.MTLBuffer, xOff uint, attendK, attendV, offBuf, h metal.MTLBuffer, offOff uint,
+	x metal.MTLBuffer, xOff uint, attendK, attendV, offBuf, h metal.MTLBuffer, hOff, offOff uint,
 	attnNormW, postAttnNorm, qNorm bufView,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
@@ -165,7 +165,7 @@ func encAttnHalfSharedInputAt(
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
 		return err
 	}
-	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, 0, postAttnNorm, dModel, eps)
+	return encResidualMaybeNormAt(enc, x, xOff, sc.attnOut, 0, sc.normed, h, hOff, postAttnNorm, dModel, eps)
 }
 
 // archLayerBufs holds one layer's resident buffers for runArchDecode: bf16 norms +
