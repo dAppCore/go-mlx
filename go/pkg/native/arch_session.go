@@ -90,6 +90,11 @@ type ArchSession struct {
 	retainedLogits       []byte
 	retainedHiddenPinned *pinnedNoCopyBytes
 	retainedLogitsPinned *pinnedNoCopyBytes
+	// restoredKV marks a session whose K/V state came from RestoreState /
+	// RestoreStateBlocks rather than live decode. The batched dense prefill's
+	// paged→linear sync assumptions do not hold for restored state (the
+	// decode-parity carve-out): restored sessions append on the token path.
+	restoredKV bool
 	// shards holds the memory-mapped checkpoint + its per-shard no-copy Metal buffers when the
 	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
 	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
@@ -1424,8 +1429,10 @@ func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, 
 	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
 		return s.prefillPromptRetainedInPool(ids)
 	}
-	if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, scope); ok || err != nil {
-		return hidden, err
+	if !s.restoredKV {
+		if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, scope); ok || err != nil {
+			return hidden, err
+		}
 	}
 	if hidden, ok, err := s.prefillPromptRetainedGPUInputsInPool(ids); ok || err != nil {
 		return hidden, err
@@ -1471,12 +1478,13 @@ func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	// A FRESH session (pos 0 — the first prompt of every generate/serve request) batches
-	// from a clean cache, byte-identically to stepping (proven by the batched parity
-	// tests). Restored sessions resuming mid-conversation without a live retained-hidden
-	// boundary stay on the token path — that shape is the decode-parity carve-out the
-	// prefillRetainedTokens guard exists for.
-	if s.pos == 0 {
+	// A FRESH session (pos 0 — the first prompt of every generate/serve request) and a
+	// LIVE session appending a turn (pos > 0 with a retained boundary — the prompt
+	// cache's suffix path, every multi-turn serve request) both batch byte-identically
+	// to stepping (proven by the batched parity + append tests). Only a restored
+	// session without a live retained-hidden boundary stays on the token path — the
+	// decode-parity carve-out the prefillRetainedTokens guard exists for.
+	if s.pos == 0 || (len(s.retainedHidden) == s.arch.Hidden*bf16Size && !s.restoredKV) {
 		if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, "native.prefillPromptRetained"); ok || err != nil {
 			return hidden, err
 		}

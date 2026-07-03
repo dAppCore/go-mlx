@@ -109,6 +109,92 @@ func TestPrefillRetainedTokensBatchedDenseEngagesSharedKVAndMatchesSequential(t 
 	batchedPLEParity(t, newBatchedPLEBF16FixtureShared(t, 2), newBatchedPLEBF16FixtureShared(t, 2))
 }
 
+// TestPrefillPromptRetainedInPoolBatchesLiveBoundaryAppend pins the multi-turn
+// serve lane (#252 slice 3): appending a turn to a LIVE session (pos > 0 with a
+// retained boundary — the prompt-cache suffix path) must ride the batched dense
+// prefill, not fall to n host-synced single-token steps. A +540-token turn on a
+// real E2B session took 6m28s down the per-token path while the identical fresh
+// prompt batched in ~5s. Byte-identity with the sequential path stays the bar,
+// and engagement is asserted via dispatch counts (batched ≈ tens of dispatches;
+// per-token ≈ hundreds per appended token).
+func TestPrefillPromptRetainedInPoolBatchesLiveBoundaryAppend(t *testing.T) {
+	requireNativeRuntime(t)
+	turn1 := []int32{3, 9, 17, 24}
+	turn2 := []int32{6, 11, 29, 2, 21, 14, 8, 27}
+
+	// both sessions establish the same live boundary: turn 1 + one decoded token.
+	control := newBatchedPLEBF16Fixture(t)
+	candidate := newBatchedPLEBF16Fixture(t)
+	for _, s := range []*ArchSession{control, candidate} {
+		if _, err := s.prefillRetainedTokens(turn1, "test.appendSetup"); err != nil {
+			t.Fatalf("turn 1 prefill: %v", err)
+		}
+	}
+
+	// control: the sequential per-token append (the old pool fallback).
+	var ctrlHidden []byte
+	var err error
+	for _, id := range turn2[:len(turn2)-1] {
+		if _, err = control.stepIDInPool(id); err != nil {
+			t.Fatalf("control step: %v", err)
+		}
+	}
+	if ctrlHidden, err = control.stepIDRetainedInPool(turn2[len(turn2)-1]); err != nil {
+		t.Fatalf("control last step: %v", err)
+	}
+
+	// engagement: the batched lane must ACCEPT a live-boundary append (a third
+	// session, same boundary). This is the lane the pool's gate routes to.
+	engaged := newBatchedPLEBF16Fixture(t)
+	if _, err := engaged.prefillRetainedTokens(turn1, "test.appendSetup"); err != nil {
+		t.Fatalf("engaged turn 1: %v", err)
+	}
+	if _, ok, err := engaged.prefillRetainedTokensBatchedDense(turn2, "test.appendEngaged"); err != nil {
+		t.Fatalf("batched append: %v", err)
+	} else if !ok {
+		t.Fatal("batched dense prefill DECLINED a live-boundary append — multi-turn serve pays the per-token path every turn (#252 slice 3)")
+	}
+
+	// candidate: the pool path the prompt cache calls for a turn suffix.
+	hidden, err := candidate.prefillPromptRetainedInPool(turn2)
+	if err != nil {
+		t.Fatalf("candidate append: %v", err)
+	}
+
+	if candidate.Pos() != control.Pos() {
+		t.Fatalf("pos after append: candidate=%d control=%d", candidate.Pos(), control.Pos())
+	}
+	if len(hidden) != len(ctrlHidden) {
+		t.Fatalf("hidden sizes differ: candidate=%d control=%d", len(hidden), len(ctrlHidden))
+	}
+	for i := range hidden {
+		if hidden[i] != ctrlHidden[i] {
+			t.Fatalf("boundary hidden diverges at byte %d (batched append contract is byte-identity with stepping)", i)
+		}
+	}
+	va, err := control.stateLayerViews()
+	if err != nil {
+		t.Fatalf("control views: %v", err)
+	}
+	vb, err := candidate.stateLayerViews()
+	if err != nil {
+		t.Fatalf("candidate views: %v", err)
+	}
+	for i := range va {
+		for j := range va[i].keyBytes {
+			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
+				t.Fatalf("layer %d K diverges at byte %d", i, j)
+			}
+		}
+		for j := range va[i].valueBytes {
+			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
+				t.Fatalf("layer %d V diverges at byte %d", i, j)
+			}
+		}
+	}
+
+}
+
 func batchedPLEParity(t *testing.T, control, candidate *ArchSession) {
 	t.Helper()
 	ids := []int32{3, 9, 17, 24, 6, 11, 29, 2}

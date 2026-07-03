@@ -278,6 +278,7 @@ func (s *ArchSession) RestoreStateBlocks(source SessionStateBlockSource) error {
 			return err
 		}
 	}
+	s.restoredKV = true // restored K/V: appends take the token path (decode-parity carve-out)
 	return nil
 }
 

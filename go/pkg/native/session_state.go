@@ -154,6 +154,7 @@ func (s *ArchSession) RestoreState(data []byte) error {
 	s.pos = pos
 	s.cachedIDs = s.cachedIDs[:0]
 	s.resetRetainedHidden()
+	s.restoredKV = true // restored K/V: appends take the token path (decode-parity carve-out)
 	if off == len(data) {
 		s.clearCachedPromptHidden()
 		return nil
