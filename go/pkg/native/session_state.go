@@ -110,7 +110,14 @@ func (s *ArchSession) RestoreState(data []byte) error {
 		}
 		n := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
-		if cache := s.state.layerPagedKV(li); cache != nil {
+		// An ICB session's live K/V lives in the ICB's own cache buffers — its paged
+		// caches are allocated but dormant (decode never reads them). SerializeState
+		// reads through snapshotCacheViews, which resolves to the ICB buffers, so
+		// restore must write the SAME store: taking the paged branch here left the
+		// ICB buffers zeroed — the restored session decoded against empty history
+		// and, worse, re-serialising it exported an EMPTY conversation (save →
+		// restore → save silently lost the state).
+		if cache := s.state.layerPagedKV(li); cache != nil && s.state.icb == nil {
 			spec := s.state.specs[li]
 			rows := s.stateCacheRows(spec)
 			if _, err := s.stateCacheRowBytes(n, rows); err != nil {

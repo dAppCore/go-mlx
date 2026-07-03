@@ -3171,6 +3171,50 @@ func TestSessionStateRoundTrip(t *testing.T) {
 	t.Logf("native continuity: serialize→restore→continue is token-identical over %d continuation tokens (snapshot %d bytes)", len(genA), len(blob))
 }
 
+// TestSessionStateRoundTripICBReplayReserialize pins the restore-side twin of the
+// ICB extraction bug: an ICB session's live K/V lives in the ICB cache buffers and
+// its paged caches are dormant, but RestoreState used to take the paged branch for
+// any layer with a device paged cache — so the blob landed in pages decode never
+// reads, the ICB buffers stayed zeroed, and re-serialising the "restored" session
+// exported an EMPTY conversation (save → restore → save silently lost the state;
+// the continuation also decoded against zero history). Restore must write the same
+// store SerializeState reads: byte-identical re-serialisation is the contract.
+func TestSessionStateRoundTripICBReplayReserialize(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := icbSessionStateFixture(t)
+
+	a := newICBSessionStateFixture(t, g, arch, maxLen)
+	if _, err := a.Generate([]int32{1, 5, 3, 2}, 4, -1); err != nil {
+		t.Fatalf("A turn 1: %v", err)
+	}
+	blob, err := a.SerializeState()
+	if err != nil {
+		t.Fatalf("SerializeState: %v", err)
+	}
+
+	b := newICBSessionStateFixture(t, g, arch, maxLen)
+	if err := b.RestoreState(blob); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	blob2, err := b.SerializeState()
+	if err != nil {
+		t.Fatalf("re-serialise restored session: %v", err)
+	}
+	if !bytes.Equal(blob, blob2) {
+		nz := func(bs []byte) int {
+			n := 0
+			for _, x := range bs {
+				if x != 0 {
+					n++
+				}
+			}
+			return n
+		}
+		t.Fatalf("restore → serialize is not lossless: %d vs %d bytes, %d vs %d nonzero — the restored session's live KV store does not hold the snapshot",
+			len(blob), len(blob2), nz(blob), nz(blob2))
+	}
+}
+
 func TestSessionStateRoundTripICBReplay(t *testing.T) {
 	requireNativeRuntime(t)
 	g, arch, maxLen := icbSessionStateFixture(t)

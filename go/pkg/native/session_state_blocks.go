@@ -268,8 +268,15 @@ func (s *ArchSession) RestoreStateBlocks(source SessionStateBlockSource) error {
 	if err := s.restoreStateBlockMetadata(source); err != nil {
 		return err
 	}
-	if err := s.reloadPagedStateLayerViews(source.Position, targetViews); err != nil {
-		return err
+	// ICB sessions: the block copies above already landed in the live ICB cache
+	// buffers (the views wrap them directly); the paged caches are dormant, so
+	// re-uploading the slabs into pages would only write a store decode never
+	// reads. Paged sessions still need the upload — their views are a host
+	// snapshot, not the live pages.
+	if s.state.icb == nil {
+		if err := s.reloadPagedStateLayerViews(source.Position, targetViews); err != nil {
+			return err
+		}
 	}
 	return nil
 }
