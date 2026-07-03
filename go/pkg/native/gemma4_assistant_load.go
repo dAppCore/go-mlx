@@ -1601,8 +1601,8 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		}
 		result.TargetTokens++
 		lastToken = replacement
-		if !stopped && yield == nil && len(result.Tokens) < maxNew && nativeGemma4AssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
-			if err := nativeGemma4AssistantFinishLowAcceptFromTargetCache(target, &result, replacement, maxNew, eosID, suppress); err != nil {
+		if !stopped && len(result.Tokens) < maxNew && nativeGemma4AssistantLowAcceptBlock(len(draft.Tokens), newDrafts) {
+			if err := nativeGemma4AssistantFinishLowAcceptFromTargetCache(target, &result, replacement, maxNew, eosID, suppress, yield); err != nil {
 				return result, err
 			}
 			break
@@ -1828,7 +1828,7 @@ func nativeGemma4AssistantLowAcceptBlock(drafted, accepted int) bool {
 	return drafted > 0 && accepted*2 < drafted
 }
 
-func nativeGemma4AssistantFinishLowAcceptFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, replacement int32, maxNew, eosID int, suppress []int32) error {
+func nativeGemma4AssistantFinishLowAcceptFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, replacement int32, maxNew, eosID int, suppress []int32, yield Gemma4AssistantTokenSink) error {
 	if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
 		return err
 	}
@@ -1838,7 +1838,7 @@ func nativeGemma4AssistantFinishLowAcceptFromTargetCache(target *ArchSession, re
 		return nil
 	}
 	tail, err := target.GenerateFromCacheEachWithSuppression(remaining, eosID, suppress, func(id int32) bool {
-		return !nativeGemma4AssistantEmitToken(result, id, eosID, nil)
+		return !nativeGemma4AssistantEmitToken(result, id, eosID, yield)
 	})
 	if err != nil {
 		return err

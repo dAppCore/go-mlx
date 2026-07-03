@@ -508,8 +508,8 @@ func TestGemma4AssistantDraftInputProjectionIntoAllocationBudget(t *testing.T) {
 			t.Fatalf("DraftInputProjectionInto: %v", err)
 		}
 	})
-	if allocs > 30 {
-		t.Fatalf("DraftInputProjectionInto allocations/run = %.0f, want <= 30 with caller output and warm scratch", allocs)
+	if allocs > 10 {
+		t.Fatalf("DraftInputProjectionInto allocations/run = %.0f, want <= 10 with caller output and warm scratch", allocs)
 	}
 }
 
@@ -699,6 +699,36 @@ func TestGemma4AssistantDraftOutputProjectionMatchesReference(t *testing.T) {
 
 	want := nativeAssistantMatMulBF16NTReference(assistantHidden, toBF16Bytes(postW), 1, 4, 8)
 	assertFloat32Near(t, "draft output projection", bf16Floats(got), want, 0.02)
+}
+
+func TestGemma4AssistantDraftOutputProjectionIntoAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	tensors := nativeAssistantTinyTensors(true)
+	postW := nativeAssistantProjectionFixture(8, 4)
+	tensors["post_projection.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{8, 4}, Data: toBF16Bytes(postW)}
+	dir := writeNativeAssistantDir(t, tensors)
+
+	assistant, err := LoadGemma4AssistantDir(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4AssistantDir: %v", err)
+	}
+	defer assistant.Close()
+
+	assistantHidden := toBF16Bytes([]float32{1, -1, 0.5, 2})
+	out := make([]byte, assistant.BackboneHiddenSize*bf16Size)
+	if _, err := assistant.DraftOutputProjectionInto(out, assistantHidden); err != nil {
+		t.Fatalf("warm DraftOutputProjectionInto: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(20, func() {
+		if _, err := assistant.DraftOutputProjectionInto(out, assistantHidden); err != nil {
+			t.Fatalf("DraftOutputProjectionInto: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("DraftOutputProjectionInto allocations/run = %.0f, want <= 10 with caller output", allocs)
+	}
 }
 
 func TestGemma4AssistantDraftFinalNormMatchesRMSNorm(t *testing.T) {
@@ -2156,6 +2186,43 @@ func TestGemma4AssistantPairGenerateFromSessionStopsWhenYieldReturnsFalse(t *tes
 	}
 	if target.Pos() != len(prompt) {
 		t.Fatalf("target Pos after replacement yield stop = %d, want unforwarded carry position %d", target.Pos(), len(prompt))
+	}
+}
+
+func TestGemma4AssistantPairGenerateFromSessionEachFallsBackAfterLowAcceptFullBlock(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	maxNew := 6
+	draftTokens := 2
+	prompt := nativeAssistantPromptWhoseTargetTokensAvoid(t, mk, 0, maxNew)
+	want, err := mk().Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("reference Generate: %v", err)
+	}
+	target := mk()
+	var yielded []int32
+
+	got, err := pair.GenerateFromSessionEach(target, prompt, maxNew, -1, draftTokens, nil, func(id int32) bool {
+		yielded = append(yielded, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("GenerateFromSessionEach: %v", err)
+	}
+
+	if !idsEqual(got.Tokens, want) || !idsEqual(yielded, want) {
+		t.Fatalf("stream fallback tokens got=%v yielded=%v, want %v", got.Tokens, yielded, want)
+	}
+	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
+		t.Fatalf("stream draft/verify calls = %d/%d, want one full block before target-cache fallback", got.DraftCalls, got.TargetVerifyCalls)
+	}
+	if got.DraftTokens != draftTokens || got.RejectedTokens != draftTokens {
+		t.Fatalf("stream draft/reject tokens = %d/%d, want one rejected full block of %d", got.DraftTokens, got.RejectedTokens, draftTokens)
+	}
+	if target.Pos() != len(prompt)+len(want) {
+		t.Fatalf("target Pos after stream low-accept fallback = %d, want %d", target.Pos(), len(prompt)+len(want))
 	}
 }
 

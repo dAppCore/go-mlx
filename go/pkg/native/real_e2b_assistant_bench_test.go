@@ -128,4 +128,54 @@ func BenchmarkRealE2BAssistantPair(b *testing.B) {
 			b.ReportMetric(float64(totals.TargetVerifyCalls)/float64(b.N), "target-verify-calls/op")
 		}
 	})
+
+	b.Run("assistant_stream", func(b *testing.B) {
+		defer debug.SetMemoryLimit(debug.SetMemoryLimit(60 << 30))
+		if b.N > realE2BBenchMax {
+			b.Skipf("real-e2b assistant stream bench is capped at -benchtime=%dx (OOM guard); got b.N=%d", realE2BBenchMax, b.N)
+		}
+		sess, err := LoadDir(targetDir, realE2BMaxLen)
+		if err != nil {
+			b.Fatalf("LoadDir(%s): %v", targetDir, err)
+		}
+		defer func() { _ = sess.Close() }()
+		pair, err := LoadGemma4AssistantPairDirs(targetDir, assistantDir)
+		if err != nil {
+			b.Fatalf("LoadGemma4AssistantPairDirs(%s, %s): %v", targetDir, assistantDir, err)
+		}
+		defer pair.Close()
+
+		var totals Gemma4AssistantGenerateResult
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			streamed := 0
+			res, err := pair.GenerateFromSessionEach(sess, prompt, realE2BMaxNew, -1, realE2BAssistantDraftTokens, nil, func(int32) bool {
+				streamed++
+				return true
+			})
+			if err != nil {
+				b.Fatalf("GenerateFromSessionEach (op %d, pos=%d): %v", i, sess.Pos(), err)
+			}
+			if len(res.Tokens) != realE2BMaxNew || streamed != realE2BMaxNew {
+				b.Fatalf("op %d: generated/streamed %d/%d tokens, want %d", i, len(res.Tokens), streamed, realE2BMaxNew)
+			}
+			totals.DraftCalls += res.DraftCalls
+			totals.DraftTokens += res.DraftTokens
+			totals.TargetCalls += res.TargetCalls
+			totals.TargetVerifyCalls += res.TargetVerifyCalls
+			totals.AcceptedTokens += res.AcceptedTokens
+			totals.RejectedTokens += res.RejectedTokens
+			totals.TargetTokens += res.TargetTokens
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(tokensPerOp), "tokens/op")
+		if b.N > 0 {
+			b.ReportMetric(float64(totals.DraftTokens)/float64(b.N), "draft-tokens/op")
+			b.ReportMetric(float64(totals.AcceptedTokens)/float64(b.N), "accepted-tokens/op")
+			b.ReportMetric(float64(totals.RejectedTokens)/float64(b.N), "rejected-tokens/op")
+			b.ReportMetric(float64(totals.TargetCalls)/float64(b.N), "target-calls/op")
+			b.ReportMetric(float64(totals.TargetVerifyCalls)/float64(b.N), "target-verify-calls/op")
+		}
+	})
 }
