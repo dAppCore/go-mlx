@@ -33,6 +33,11 @@ func TestAssembleVision(t *testing.T) {
 		w[p+".mlp.down_proj.weight"] = mk(H, H*4)
 	}
 	w["multi_modal_projector.proj.weight"] = mk(H, H)
+	w["patch_embedder.position_embedding_table"] = safetensors.Tensor{
+		Dtype: "BF16",
+		Shape: []int{2, 7, H},
+		Data:  make([]byte, 2*7*H*2),
+	}
 
 	tc := &Gemma4TextConfig{}
 	tc.ModelType = "gemma4"
@@ -68,6 +73,12 @@ func TestAssembleVision(t *testing.T) {
 	}
 	if v.Cfg.VideoTokenID != 258884 || v.Cfg.VideoToken != Gemma4VideoToken {
 		t.Fatalf("video prompt tokens = %d/%q", v.Cfg.VideoTokenID, v.Cfg.VideoToken)
+	}
+	if v.Cfg.PositionEmbeddingSize != 7 {
+		t.Fatalf("position embedding size = %d, want 7", v.Cfg.PositionEmbeddingSize)
+	}
+	if len(v.PositionEmbeddings) != 2*7*H*2 {
+		t.Fatalf("position embedding bytes = %d, want %d", len(v.PositionEmbeddings), 2*7*H*2)
 	}
 }
 

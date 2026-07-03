@@ -51,6 +51,76 @@ func TestVisionPoolerBranches(t *testing.T) {
 	}
 }
 
+func TestVisionPositionEmbeddingsSplitXYGood(t *testing.T) {
+	const hidden, gridH, gridW, slots = 2, 2, 3, 3
+	table := toBF16Bytes([]float32{
+		// x table rows.
+		10, 100,
+		20, 200,
+		30, 300,
+		// y table rows.
+		1, 2,
+		3, 4,
+		5, 6,
+	})
+
+	got, err := visionPositionEmbeddings(table, gridH*gridW, hidden, gridH, gridW, slots)
+	if err != nil {
+		t.Fatalf("visionPositionEmbeddings(split): %v", err)
+	}
+	values := bf16Floats(got)
+	want := []float32{
+		11, 102,
+		21, 202,
+		31, 302,
+		13, 104,
+		23, 204,
+		33, 304,
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("split position value %d = %v, want %v", i, values[i], want[i])
+		}
+	}
+}
+
+func TestVisionPositionEmbeddingsSplitXYAllocationBudget(t *testing.T) {
+	const hidden, gridH, gridW, slots = 64, 12, 10, 16
+	table := toBF16Bytes(syntheticFloat32(2*slots*hidden, 71))
+	got, err := visionPositionEmbeddings(table, gridH*gridW, hidden, gridH, gridW, slots)
+	if err != nil {
+		t.Fatalf("visionPositionEmbeddings(split warmup): %v", err)
+	}
+	if len(got) != gridH*gridW*hidden*bf16Size {
+		t.Fatalf("split position embedding bytes = %d, want %d", len(got), gridH*gridW*hidden*bf16Size)
+	}
+	var embedErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, embedErr = visionPositionEmbeddings(table, gridH*gridW, hidden, gridH, gridW, slots)
+	})
+	if embedErr != nil {
+		t.Fatalf("visionPositionEmbeddings(split): %v", embedErr)
+	}
+	if allocs > 1 {
+		t.Fatalf("split position embedding allocations = %.0f, want <= 1", allocs)
+	}
+}
+
+func BenchmarkVisionPositionEmbeddingsSplitXY(b *testing.B) {
+	const hidden, gridH, gridW, slots = 768, 24, 18, 32
+	table := toBF16Bytes(syntheticFloat32(2*slots*hidden, 73))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		got, err := visionPositionEmbeddings(table, gridH*gridW, hidden, gridH, gridW, slots)
+		if err != nil {
+			b.Fatalf("visionPositionEmbeddings(split): %v", err)
+		}
+		if len(got) != gridH*gridW*hidden*bf16Size {
+			b.Fatalf("split position embedding bytes = %d, want %d", len(got), gridH*gridW*hidden*bf16Size)
+		}
+	}
+}
+
 func TestVisionStandardize(t *testing.T) {
 	pooled := toBF16Bytes([]float32{2, 4, 6, 8})
 	if got := visionStandardize(pooled, nil, nil, 2); &got[0] != &pooled[0] {

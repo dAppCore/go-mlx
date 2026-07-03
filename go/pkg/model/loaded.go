@@ -65,25 +65,26 @@ type LoadedVisionProjector struct {
 
 // LoadedVisionConfig is the engine-neutral vision tower geometry.
 type LoadedVisionConfig struct {
-	Hidden          int
-	PatchDim        int
-	NumLayers       int
-	NumHeads        int
-	NumKVHeads      int
-	HeadDim         int
-	GridH           int
-	GridW           int
-	RopeBase        float32
-	RMSNormEps      float32
-	PoolKernel      int
-	Standardize     bool
-	EmbeddingScale  float32
-	ImageTokenID    int32
-	ImageBeginToken string
-	ImageToken      string
-	ImageEndToken   string
-	VideoTokenID    int32
-	VideoToken      string
+	Hidden                int
+	PatchDim              int
+	NumLayers             int
+	NumHeads              int
+	NumKVHeads            int
+	HeadDim               int
+	GridH                 int
+	GridW                 int
+	PositionEmbeddingSize int
+	RopeBase              float32
+	RMSNormEps            float32
+	PoolKernel            int
+	Standardize           bool
+	EmbeddingScale        float32
+	ImageTokenID          int32
+	ImageBeginToken       string
+	ImageToken            string
+	ImageEndToken         string
+	VideoTokenID          int32
+	VideoToken            string
 }
 
 // LoadedVision is the neutral vision payload a backend can upload/build.

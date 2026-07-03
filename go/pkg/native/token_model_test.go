@@ -60,7 +60,7 @@ func TestNativeVisionFromLoadedMapsPayload_Good(t *testing.T) {
 		StdScale:           []byte{9, 10},
 		Cfg: model.LoadedVisionConfig{
 			Hidden: 64, PatchDim: 48, NumLayers: 1, NumHeads: 2, NumKVHeads: 1,
-			HeadDim: 32, RopeBase: 100, RMSNormEps: 1e-6, PoolKernel: 3,
+			HeadDim: 32, PositionEmbeddingSize: 16, RopeBase: 100, RMSNormEps: 1e-6, PoolKernel: 3,
 			Standardize: true, EmbeddingScale: 8,
 			ImageTokenID: 262145, ImageBeginToken: "<|image>", ImageToken: "<|image|>", ImageEndToken: "<image|>",
 			VideoTokenID: 258884, VideoToken: "<|video|>",
@@ -94,7 +94,7 @@ func TestNativeVisionFromLoadedMapsPayload_Good(t *testing.T) {
 	if cfg.Hidden != 64 || cfg.PatchDim != 48 || cfg.NumLayers != 1 || cfg.NumHeads != 2 || cfg.NumKVHeads != 1 || cfg.HeadDim != 32 {
 		t.Fatalf("native vision cfg = %+v, want loaded geometry", cfg)
 	}
-	if cfg.RopeBase != 100 || cfg.RMSNormEps != 1e-6 || cfg.PoolKernel != 3 || !cfg.Standardize || cfg.EmbeddingScale != 8 {
+	if cfg.PositionEmbeddingSize != 16 || cfg.RopeBase != 100 || cfg.RMSNormEps != 1e-6 || cfg.PoolKernel != 3 || !cfg.Standardize || cfg.EmbeddingScale != 8 {
 		t.Fatalf("native vision cfg extras = %+v, want loaded extras", cfg)
 	}
 	if cfg.ImageTokenID != 262145 || cfg.ImageBeginToken != "<|image>" || cfg.ImageToken != "<|image|>" || cfg.ImageEndToken != "<image|>" {

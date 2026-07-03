@@ -25,18 +25,19 @@ import (
 // loader fills it from the checkpoint's own declared dims (the vision-side sibling of model.Arch).
 // No model name lives here: the same fields describe any patch-embedded vision transformer.
 type VisionConfig struct {
-	Hidden      int     // encoder width (gemma4-E4B: 768)
-	PatchDim    int     // channels·patch·patch — the flattened patch-projection input (3·16·16 = 768)
-	NumLayers   int     // encoder layer count
-	NumHeads    int     // attention query heads
-	NumKVHeads  int     // attention kv heads (GQA; == NumHeads for SigLIP)
-	HeadDim     int     // per-head width (Hidden/NumHeads = 64)
-	GridH       int     // patch grid rows (for 2-D rope + spatial pooling)
-	GridW       int     // patch grid cols
-	RopeBase    float32 // 2-D rope theta
-	RMSNormEps  float32
-	PoolKernel  int  // spatial pooling kernel (gemma4 default 3)
-	Standardize bool // post-pool (x-bias)·scale
+	Hidden                int     // encoder width (gemma4-E4B: 768)
+	PatchDim              int     // channels·patch·patch — the flattened patch-projection input (3·16·16 = 768)
+	NumLayers             int     // encoder layer count
+	NumHeads              int     // attention query heads
+	NumKVHeads            int     // attention kv heads (GQA; == NumHeads for SigLIP)
+	HeadDim               int     // per-head width (Hidden/NumHeads = 64)
+	GridH                 int     // patch grid rows (for 2-D rope + spatial pooling)
+	GridW                 int     // patch grid cols
+	PositionEmbeddingSize int     // slots in a flat or split-axis position embedding table
+	RopeBase              float32 // 2-D rope theta
+	RMSNormEps            float32
+	PoolKernel            int  // spatial pooling kernel (gemma4 default 3)
+	Standardize           bool // post-pool (x-bias)·scale
 	// EmbeddingScale is √Hidden, multiplied into the pooled rows (cached to skip a per-pass sqrt).
 	EmbeddingScale  float32
 	ImageTokenID    int32
@@ -745,12 +746,52 @@ func addVisionLinearBiasRows(out, bias []byte, rows, outDim int, label string) (
 	return f32ToBf16Slice(f), nil
 }
 
+func visionPositionEmbeddings(table []byte, L, hidden, gridH, gridW, slots int) ([]byte, error) {
+	if table == nil {
+		return nil, nil
+	}
+	rowBytes := hidden * bf16Size
+	if slots > 0 {
+		splitBytes := 2 * slots * rowBytes
+		if len(table) == splitBytes {
+			if gridH > slots || gridW > slots {
+				return nil, core.NewError("native.VisionTower: split position embeddings shorter than grid")
+			}
+			out := make([]byte, L*rowBytes)
+			for y := 0; y < gridH; y++ {
+				for x := 0; x < gridW; x++ {
+					pos := y*gridW + x
+					if pos >= L {
+						break
+					}
+					xBase := x * rowBytes
+					yBase := (slots + y) * rowBytes
+					dst := pos * rowBytes
+					for h := 0; h < hidden; h++ {
+						xi := xBase + h*bf16Size
+						yi := yBase + h*bf16Size
+						v := bf16ToF32(table[xi], table[xi+1]) + bf16ToF32(table[yi], table[yi+1])
+						b := f32ToBF16(v)
+						out[dst+h*bf16Size], out[dst+h*bf16Size+1] = byte(b), byte(b>>8)
+					}
+				}
+			}
+			return out, nil
+		}
+	}
+	need := L * rowBytes
+	if len(table) < need {
+		return nil, core.NewError("native.VisionTower: position embeddings shorter than patch count")
+	}
+	return append([]byte(nil), table[:need]...), nil
+}
+
 // VisionTower runs the whole gemma4 SigLIP vision forward on pre-patchified pixel patches [L, patchDim]
 // bf16, returning the projected soft-token rows [*, textHidden] bf16 — the faithful port of metal's
-// Gemma4VisionModel.Forward: patch embed (+ flat 2-D position table) → encoder layers → post-layernorm
+// Gemma4VisionModel.Forward: patch embed (+ flat or split-axis 2-D position table) → encoder layers → post-layernorm
 // → spatial pooler → standardize → projector. The grid is derived from the patch count exactly as
-// metal does. (The X/Y split position table and the raw-image conv patchify are the two remaining
-// edge cases; the standard serve path is pre-patchified with a flat-or-absent position table.)
+// metal does. Raw-image conv patchify is the remaining edge case; the standard serve path is
+// pre-patchified.
 func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -766,14 +807,9 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 	lcfg := cfg
 	lcfg.GridH, lcfg.GridW = gridH, gridW
 
-	var posEmb []byte
-	if w.PositionEmbeddings != nil {
-		// flat position table: row i = table[i] (metal's flat fallback, flatID = i % (gridH·gridW)).
-		need := L * cfg.Hidden * bf16Size
-		if len(w.PositionEmbeddings) < need {
-			return nil, core.NewError("native.VisionTower: position embeddings shorter than patch count")
-		}
-		posEmb = append([]byte(nil), w.PositionEmbeddings[:need]...)
+	posEmb, err := visionPositionEmbeddings(w.PositionEmbeddings, L, cfg.Hidden, gridH, gridW, cfg.PositionEmbeddingSize)
+	if err != nil {
+		return nil, err
 	}
 	h, err := VisionPatchEmbed(patches, w.PatchEmbedding, posEmb, L, cfg.PatchDim, cfg.Hidden)
 	if err != nil {

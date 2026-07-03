@@ -43,6 +43,21 @@ func visionWeight(weights map[string]safetensors.Tensor, names ...string) []byte
 	return nil
 }
 
+func visionPositionEmbeddingTable(weights map[string]safetensors.Tensor) ([]byte, int) {
+	t, ok := model.WeightAny(weights, "patch_embedder.position_embedding_table", "embeddings.position_embedding.weight")
+	if !ok {
+		return nil, 0
+	}
+	slots := 0
+	switch shape := t.Shape; {
+	case len(shape) >= 3 && shape[0] >= 2:
+		slots = shape[1]
+	case len(shape) >= 2:
+		slots = shape[0]
+	}
+	return t.Data, slots
+}
+
 // visionLinear gathers a vision linear's weight + bias from the first present prefix (.weight or
 // .linear.weight, with the matching .bias / .linear.bias).
 func visionLinear(weights map[string]safetensors.Tensor, prefixes ...string) LoadedVisionLinear {
@@ -95,15 +110,19 @@ func AssembleVision(weights map[string]safetensors.Tensor, textCfg *Gemma4TextCo
 	if patch == nil {
 		return nil, core.E("gemma4.AssembleVision", "missing patch embedding weight", nil)
 	}
+	positionTable, positionSlots := visionPositionEmbeddingTable(weights)
 
 	v := &LoadedVision{
 		PatchEmbedding:     patch,
-		PositionEmbeddings: visionWeight(weights, "patch_embedder.position_embedding_table", "embeddings.position_embedding.weight"),
+		PositionEmbeddings: positionTable,
 		PostLayernorm:      visionWeight(weights, "post_layernorm.weight", "post_layer_norm.weight", "encoder.post_layernorm.weight", "vision_model.post_layernorm.weight"),
 		StdBias:            visionWeight(weights, "std_bias"),
 		StdScale:           visionWeight(weights, "std_scale"),
 		Layers:             make([]LoadedVisionLayer, int(visionCfg.NumHiddenLayers)),
 		Cfg:                loadedVisionConfig(visionCfg, textCfg),
+	}
+	if v.Cfg.PositionEmbeddingSize == 0 {
+		v.Cfg.PositionEmbeddingSize = positionSlots
 	}
 	for i := range v.Layers {
 		p := core.Sprintf("encoder.layers.%d", i)
@@ -144,17 +163,18 @@ func loadedVisionConfig(cfg *Gemma4VisionConfig, textCfg *Gemma4TextConfig) mode
 	patch := int(cfg.PatchSize)
 	channels := int(cfg.NumChannels)
 	out := model.LoadedVisionConfig{
-		Hidden:         hidden,
-		PatchDim:       channels * patch * patch,
-		NumLayers:      int(cfg.NumHiddenLayers),
-		NumHeads:       int(cfg.NumAttentionHeads),
-		NumKVHeads:     int(cfg.NumKeyValueHeads),
-		HeadDim:        int(cfg.HeadDim),
-		RopeBase:       cfg.RopeParameters.RopeTheta,
-		RMSNormEps:     cfg.RMSNormEps,
-		PoolKernel:     int(cfg.PoolingKernelSize),
-		Standardize:    cfg.Standardize,
-		EmbeddingScale: float32(math.Sqrt(float64(hidden))),
+		Hidden:                hidden,
+		PatchDim:              channels * patch * patch,
+		NumLayers:             int(cfg.NumHiddenLayers),
+		NumHeads:              int(cfg.NumAttentionHeads),
+		NumKVHeads:            int(cfg.NumKeyValueHeads),
+		HeadDim:               int(cfg.HeadDim),
+		PositionEmbeddingSize: int(cfg.PositionEmbeddingSize),
+		RopeBase:              cfg.RopeParameters.RopeTheta,
+		RMSNormEps:            cfg.RMSNormEps,
+		PoolKernel:            int(cfg.PoolingKernelSize),
+		Standardize:           cfg.Standardize,
+		EmbeddingScale:        float32(math.Sqrt(float64(hidden))),
 	}
 	if textCfg != nil {
 		out.ImageTokenID = textCfg.ImageTokenID
