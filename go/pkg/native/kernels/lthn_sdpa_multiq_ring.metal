@@ -35,6 +35,7 @@ template <typename T, int D>
     const device T* stage_k [[buffer(11)]],  // this batch's K rows, staged (roped), K rows
     const device T* stage_v [[buffer(12)]],
     const constant int& slot_base [[buffer(13)]], // nBase % slide_w — the first slot this batch lands in
+    const constant int& ring_live [[buffer(14)]], // min(nBase, slide_w) — valid pre-batch ring rows (0 = fresh ring)
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -80,7 +81,7 @@ template <typename T, int D>
     const device T* values = ring_v + kv_head_idx * v_head_stride +
         simd_gid * v_seq_stride + simd_lid * v_per_thread;
     const int excl_len = q_seq_idx + 1;
-    for (int i = simd_gid; i < slide_w; i += BN) {
+    for (int i = simd_gid; i < ring_live; i += BN) {
       int d = i - slot_base;
       if (d < 0) {
         d += slide_w;
@@ -118,7 +119,7 @@ template <typename T, int D>
         simd_gid * v_seq_stride + simd_lid * v_per_thread;
     const int rows = int(tpg.y);
     for (int i = simd_gid; i < rows; i += BN) {
-      bool use_key = i <= q_seq_idx;
+      bool use_key = i <= q_seq_idx && i + slide_w > q_seq_idx; // causal cap + the sliding window lower bound (binds only when K > slide_w)
       if (use_key) {
         for (int j = 0; j < qk_per_thread; j++) {
           k[j] = keys[j];
@@ -177,7 +178,7 @@ template <typename T, int D>
       const constant size_t&, const constant size_t&,                       \
       const constant size_t&, const constant size_t&,                       \
       const constant float&, const device bfloat*, const device bfloat*,   \
-      const constant int&, uint3, uint3, uint, uint);
+      const constant int&, const constant int&, uint3, uint3, uint, uint);
 
 LTHN_SDPA_MULTIQ_RING_INST(64)
 LTHN_SDPA_MULTIQ_RING_INST(128)

@@ -116,10 +116,11 @@ func encCopyBF16Contig(enc metal.MTLComputeCommandEncoder, in, out metal.MTLBuff
 }
 
 // encSDPAMultiQRing encodes the two-segment multi-query SDPA: query row s (query-major slab)
-// attends the pre-batch ring minus its evicted run [slotBase, slotBase+s] plus the staged causal
-// rows [0..s]; out rows land query-major. The caller guarantees a FULL ring (basePos >= slideW)
-// and that the ring buffers still hold the pre-batch state (the landing is deferred).
-func encSDPAMultiQRing(enc metal.MTLComputeCommandEncoder, q, ringK, ringV, stageK, stageV, out metal.MTLBuffer, nHeads, nKVHeads, headDim, kRows, slideW, slotBase int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) error {
+// attends the live pre-batch ring rows minus its evicted run plus the staged window rows
+// [max(0, s-slideW+1) .. s]; out rows land query-major. ringLive = min(basePos, slideW) — the
+// kernel handles a partial or fresh ring AND a batch wider than the window, so a chunk may CROSS
+// the ring wrap. The ring buffers must still hold the pre-batch state (the landing is deferred).
+func encSDPAMultiQRing(enc metal.MTLComputeCommandEncoder, q, ringK, ringV, stageK, stageV, out metal.MTLBuffer, nHeads, nKVHeads, headDim, kRows, slideW, slotBase, ringLive int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) error {
 	pso, ok := sdpaMultiQRingPipelineForHeadDim(headDim)
 	if !ok {
 		return core.NewError("native.encSDPAMultiQRing: kernel unavailable for headDim")
@@ -143,6 +144,7 @@ func encSDPAMultiQRing(enc metal.MTLComputeCommandEncoder, q, ringK, ringV, stag
 	sink.setBuf(stageK, 0, 11)
 	sink.setBuf(stageV, 0, 12)
 	sink.setI32(int32(slotBase), 13)
+	sink.setI32(int32(ringLive), 14)
 	sink.dispatchThreadgroups(
 		metal.MTLSize{Width: uint(nHeads), Height: uint(kRows), Depth: 1},
 		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},

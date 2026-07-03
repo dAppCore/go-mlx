@@ -716,7 +716,9 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			deferredRing := false
 			if stagedDeferred != nil {
 				if ownsCache {
-					deferredRing = staged && batchedRope && basePos >= slideW &&
+					// any basePos: the ring kernel handles a partial/fresh pre-batch ring and a
+					// batch wider than the window (a chunk may cross the ring wrap).
+					deferredRing = staged && batchedRope &&
 						gpuHasSDPAMultiQRing(lhd) && gpuHasCopyKernel()
 				} else {
 					deferredRing = stagedDeferred[ownIdx] && slideW > 0
@@ -829,8 +831,12 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 			}
 			if deferredRing {
 				kSt, vSt := s.denseBatch.layerStage(ownIdx, len(s.specs), K, foldKVDimMax)
+				ringLive := basePos
+				if ringLive > slideW {
+					ringLive = slideW
+				}
 				if err = encSDPAMultiQRing(enc, qSlab, s.lb[ownIdx].kCache, s.lb[ownIdx].vCache, kSt, vSt, attnSlab,
-					s.nHeads, lkv, lhd, K, slideW, basePos%slideW,
+					s.nHeads, lkv, lhd, K, slideW, basePos%slideW, ringLive,
 					int64(lhd), int64(kvDim), int64(lhd), int64(kvDim), s.scale); err != nil {
 					endEncodingFast(enc)
 					return nil, false, err
@@ -977,29 +983,35 @@ func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViewsPLE(embs [][
 	}
 	// deferred ring landings: every layer (owners AND their sharers) has read the pre-batch ring
 	// state, so the staged rows now land in their slots — at most two contiguous runs per owner
-	// (the wrap split). The landed bytes are exactly the staged roped/normed rows.
+	// (the wrap split). Only the LAST slideW rows land (a batch wider than the window evicted its
+	// own head rows during the batch); the landed bytes are exactly the staged roped/normed rows.
 	enc = trace.checkpoint(enc, "landings")
 	for _, p := range pendingLandings {
 		kSt, vSt := s.denseBatch.layerKStage[p.li], s.denseBatch.layerVStage[p.li]
-		slotBase := basePos % p.slideW
+		r0 := 0
+		if K > p.slideW {
+			r0 = K - p.slideW
+		}
+		landRows := K - r0
+		slotBase := (basePos + r0) % p.slideW
 		run1 := p.slideW - slotBase
-		if run1 > K {
-			run1 = K
+		if run1 > landRows {
+			run1 = landRows
 		}
-		if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, 0, uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
+		if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, uint(r0*p.kvDim*bf16Size), uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
 			endEncodingFast(enc)
 			return nil, false, err
 		}
-		if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, 0, uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
+		if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, uint(r0*p.kvDim*bf16Size), uint(slotBase*p.kvDim*bf16Size), run1*p.kvDim); err != nil {
 			endEncodingFast(enc)
 			return nil, false, err
 		}
-		if K > run1 {
-			if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, uint(run1*p.kvDim*bf16Size), 0, (K-run1)*p.kvDim); err != nil {
+		if landRows > run1 {
+			if err = encCopyBF16Contig(enc, kSt, s.lb[p.li].kCache, uint((r0+run1)*p.kvDim*bf16Size), 0, (landRows-run1)*p.kvDim); err != nil {
 				endEncodingFast(enc)
 				return nil, false, err
 			}
-			if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, uint(run1*p.kvDim*bf16Size), 0, (K-run1)*p.kvDim); err != nil {
+			if err = encCopyBF16Contig(enc, vSt, s.lb[p.li].vCache, uint((r0+run1)*p.kvDim*bf16Size), 0, (landRows-run1)*p.kvDim); err != nil {
 				endEncodingFast(enc)
 				return nil, false, err
 			}

@@ -1716,6 +1716,12 @@ func (s *ArchSession) batchedDensePrefillChunkLen(limit int) int {
 	if remain > limit {
 		return limit
 	}
+	// absorb a small tail into ONE wrap-crossing chunk: the deferred-ring lane handles a batch
+	// wider than the window (and the per-row staged fallback always did), while a skinny
+	// follow-up chunk pays a full weight sweep for a handful of rows.
+	if limit <= remain+s.arch.SlidingWindow/2 {
+		return limit
+	}
 	return remain
 }
 
@@ -1725,9 +1731,6 @@ func (s *ArchSession) prefillRetainedTokensBatchedDenseOne(ids []int32, scope st
 	}
 	if s.pos+len(ids) > s.maxLen {
 		return nil, false, core.NewError(scope + ": sequence would exceed maxLen cache rows")
-	}
-	if s.verifyBatchedCrossesSlidingRingWrap(len(ids)) {
-		return nil, false, nil
 	}
 	// ICB (quant) sessions own their prefill via the GPU-chained inputs lane. A PLE arch
 	// (gemma4 E2B/E4B) batches here: the per-token PLE tensors are gathered into one slab

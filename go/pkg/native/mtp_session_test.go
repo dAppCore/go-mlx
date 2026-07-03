@@ -808,16 +808,7 @@ func TestStepTokensBatchedDenseDeferredRingLandingMatchesPerRow(t *testing.T) {
 		t.Fatalf("ring views: %v", err)
 	}
 	for i := range va {
-		for j := range va[i].keyBytes {
-			if va[i].keyBytes[j] != vb[i].keyBytes[j] {
-				t.Fatalf("layer %d K diverges at byte %d (deferred landing broke the ring bytes)", i, j)
-			}
-		}
-		for j := range va[i].valueBytes {
-			if va[i].valueBytes[j] != vb[i].valueBytes[j] {
-				t.Fatalf("layer %d V diverges at byte %d (deferred landing broke the ring bytes)", i, j)
-			}
-		}
+		assertRingKVMatch(t, "full-ring", i, va[i].keyBytes, vb[i].keyBytes, va[i].valueBytes, vb[i].valueBytes)
 	}
 
 	// the boundary hidden is the token-identity surface: same math, different fp accumulation
@@ -842,6 +833,149 @@ func TestStepTokensBatchedDenseDeferredRingLandingMatchesPerRow(t *testing.T) {
 			t.Fatalf("deferred-ring hidden diverges at element %d: ring=%g perRow=%g (|diff|=%g > %g)", i, ringF[i], rowF[i], diff, limit)
 		}
 	}
+}
+
+// TestStepTokensBatchedDenseDeferredRingCrossingMatchesPerRow pins the wrap-CROSSING deferred
+// chunk (#252): a single batch wider than the sliding window (basePos 0, K = 1.5·slideW — the
+// merged tail the chunker now produces instead of a skinny follow-up chunk) runs the generalised
+// ring kernel: empty pre-batch ring, per-query staged window [max(0, s-slideW+1) .. s], and only
+// the last slideW rows landing. Landed ring byte-identity + tolerance hiddens vs the per-row
+// staged interleave (the sequential-semantics oracle).
+func TestStepTokensBatchedDenseDeferredRingCrossingMatchesPerRow(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasSDPAMultiQRing(mtpFixtureHead) || !gpuHasCopyKernel() {
+		t.Fatal("deferred-ring kernels missing — rebuild dist/lib/lthn_kernels.metallib (task build:kernels)")
+	}
+	const slideW = steelGEMMMinRows
+	kRows := slideW + slideW/2 // crosses the wrap: rows [slideW..kRows) evict during the batch
+	mk := newMTPDecodeFixtureWithArchLayersMaxLen(t, func(arch *model.Arch) {
+		arch.SlidingWindow = slideW
+		for i := range arch.Layer {
+			arch.Layer[i].Attention = model.SlidingAttention
+		}
+		arch.ValueNorm = true
+	}, func(layers []DecodeLayerWeights) {
+		for li := range layers {
+			layers[li].QNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 900+li))
+			layers[li].KNormW = toBF16Bytes(syntheticFloat32(mtpFixtureHead, 950+li))
+		}
+	}, 3*steelGEMMMinRows)
+
+	tail := make([]int32, kRows)
+	for i := range tail {
+		tail[i] = int32(5 + (i*11)%23)
+	}
+
+	run := func(disable bool) ([]byte, int64, *ArchSession) {
+		t.Helper()
+		sess := mk()
+		prev, prevTiming := stagedRingDisabledForTest, pieceTimingOn
+		stagedRingDisabledForTest = disable
+		pieceTimingOn = true
+		stagedRingDispatchesForTest = 0
+		defer func() {
+			stagedRingDisabledForTest = prev
+			pieceTimingOn = prevTiming
+		}()
+		hidden, ok, err := sess.prefillRetainedTokensBatchedDenseOne(tail, "test.deferredRingCrossing")
+		if err != nil {
+			t.Fatalf("crossing chunk (disableRing=%v): %v", disable, err)
+		}
+		if !ok {
+			t.Fatalf("crossing chunk DECLINED (disableRing=%v)", disable)
+		}
+		return append([]byte(nil), hidden...), stagedRingDispatchesForTest, sess
+	}
+
+	ringHidden, ringDispatches, ringSess := run(false)
+	rowHidden, rowDispatches, rowSess := run(true)
+	if ringDispatches == 0 {
+		t.Fatal("crossing deferred-ring lane did not engage (ring dispatch counter stayed 0)")
+	}
+	if rowDispatches != 0 {
+		t.Fatalf("kill switch leaked: per-row run counted %d ring dispatches", rowDispatches)
+	}
+	if ringSess.Pos() != rowSess.Pos() {
+		t.Fatalf("pos after crossing chunk: ring=%d perRow=%d", ringSess.Pos(), rowSess.Pos())
+	}
+
+	va, err := rowSess.stateLayerViews()
+	if err != nil {
+		t.Fatalf("per-row views: %v", err)
+	}
+	vb, err := ringSess.stateLayerViews()
+	if err != nil {
+		t.Fatalf("ring views: %v", err)
+	}
+	for i := range va {
+		assertRingKVMatch(t, "crossing", i, va[i].keyBytes, vb[i].keyBytes, va[i].valueBytes, vb[i].valueBytes)
+	}
+
+	if len(ringHidden) != len(rowHidden) {
+		t.Fatalf("hidden sizes differ: ring=%d perRow=%d", len(ringHidden), len(rowHidden))
+	}
+	ringF := make([]float32, len(ringHidden)/bf16Size)
+	rowF := make([]float32, len(rowHidden)/bf16Size)
+	bf16ToF32Into(ringF, ringHidden)
+	bf16ToF32Into(rowF, rowHidden)
+	for i := range ringF {
+		diff := ringF[i] - rowF[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		limit := 0.03 * absf32(rowF[i])
+		if limit < 1e-2 {
+			limit = 1e-2
+		}
+		if diff > limit {
+			t.Fatalf("crossing hidden diverges at element %d: ring=%g perRow=%g (|diff|=%g > %g)", i, ringF[i], rowF[i], diff, limit)
+		}
+	}
+}
+
+// assertRingKVMatch pins the deferred-landing KV contract per layer: LAYER 0's landed rows must
+// be byte-identical to the per-row lane (same inputs, same projection+rope — only the landing
+// mechanics differ), while later layers inherit the SDPA's token-identity hiddens through their
+// projections, so their landed rows are tolerance-checked (a few bf16 ulps, never structural).
+func assertRingKVMatch(t *testing.T, lane string, li int, kA, kB, vA, vB []byte) {
+	t.Helper()
+	if li == 0 {
+		for j := range kA {
+			if kA[j] != kB[j] {
+				t.Fatalf("%s layer 0 K diverges at byte %d (the landing must be byte-exact at layer 0)", lane, j)
+			}
+		}
+		for j := range vA {
+			if vA[j] != vB[j] {
+				t.Fatalf("%s layer 0 V diverges at byte %d (the landing must be byte-exact at layer 0)", lane, j)
+			}
+		}
+		return
+	}
+	// later layers compound the reordering noise through the synthetic fixture's unnormalised
+	// weights (observed ~2% at layer 1, ~15% at layer 2 on small elements) — the bound's job is
+	// catching landing/layout breaks, which diverge by orders of magnitude, not percents.
+	check := func(name string, a, b []byte) {
+		af := make([]float32, len(a)/bf16Size)
+		bf := make([]float32, len(b)/bf16Size)
+		bf16ToF32Into(af, a)
+		bf16ToF32Into(bf, b)
+		for j := range af {
+			diff := af[j] - bf[j]
+			if diff < 0 {
+				diff = -diff
+			}
+			limit := 0.2 * absf32(bf[j])
+			if limit < 5e-2 {
+				limit = 5e-2
+			}
+			if diff > limit {
+				t.Fatalf("%s layer %d %s diverges at element %d: %g vs %g (|diff|=%g > %g)", lane, li, name, j, af[j], bf[j], diff, limit)
+			}
+		}
+	}
+	check("K", kA, kB)
+	check("V", vA, vB)
 }
 
 func TestMTPVerifyBatchedHiddensMatchesSequential(t *testing.T) {
