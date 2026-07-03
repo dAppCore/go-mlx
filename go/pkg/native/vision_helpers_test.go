@@ -121,6 +121,115 @@ func BenchmarkVisionPositionEmbeddingsSplitXY(b *testing.B) {
 	}
 }
 
+func TestVisionPatchConvEmbedNHWCGood(t *testing.T) {
+	const height, width, channels, hidden, patch = 4, 4, 1, 2, 2
+	pixels := []float32{
+		1.0, 0.5, 0.25, 0.75,
+		0.0, 0.25, 1.0, 0.5,
+		0.5, 1.0, 0.0, 0.25,
+		0.75, 0.5, 0.25, 1.0,
+	}
+	conv := toBF16Bytes([]float32{
+		// hidden row 0: sum the scaled 2x2 patch.
+		1, 1,
+		1, 1,
+		// hidden row 1: read the top-left scaled pixel.
+		1, 0,
+		0, 0,
+	})
+
+	got, gridH, gridW, err := visionPatchConvEmbedNHWC(pixels, conv, height, width, channels, hidden, patch)
+	if err != nil {
+		t.Fatalf("visionPatchConvEmbedNHWC: %v", err)
+	}
+	if gridH != 2 || gridW != 2 {
+		t.Fatalf("grid = %dx%d, want 2x2", gridH, gridW)
+	}
+	values := bf16Floats(got)
+	want := []float32{
+		-0.5, 1.0,
+		1.0, -0.5,
+		1.5, 0.0,
+		-1.0, -1.0,
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("raw conv value %d = %v, want %v", i, values[i], want[i])
+		}
+	}
+}
+
+func TestVisionPatchEmbedNHWCAddsPositionEmbeddings(t *testing.T) {
+	pixels := []float32{
+		1.0, 0.5,
+		0.0, 0.25,
+	}
+	weights := &VisionWeights{
+		PatchConvWeight: toBF16Bytes([]float32{
+			1, 1,
+			1, 1,
+			1, 0,
+			0, 0,
+		}),
+		PositionEmbeddings: toBF16Bytes([]float32{1.0, 2.0}),
+	}
+	got, gridH, gridW, err := VisionPatchEmbedNHWC(pixels, 2, 2, weights, VisionConfig{
+		Hidden: 2, PatchDim: 4, PatchSize: 2, NumChannels: 1, PositionEmbeddingSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("VisionPatchEmbedNHWC: %v", err)
+	}
+	if gridH != 1 || gridW != 1 {
+		t.Fatalf("grid = %dx%d, want 1x1", gridH, gridW)
+	}
+	values := bf16Floats(got)
+	want := []float32{0.5, 3.0}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("raw patch embedding value %d = %v, want %v", i, values[i], want[i])
+		}
+	}
+}
+
+func TestVisionPatchConvEmbedNHWCAllocationBudget(t *testing.T) {
+	const height, width, channels, hidden, patch = 64, 64, 3, 64, 16
+	pixels := syntheticFloat32(height*width*channels, 75)
+	conv := toBF16Bytes(syntheticFloat32(hidden*patch*patch*channels, 77))
+	got, gridH, gridW, err := visionPatchConvEmbedNHWC(pixels, conv, height, width, channels, hidden, patch)
+	if err != nil {
+		t.Fatalf("visionPatchConvEmbedNHWC warmup: %v", err)
+	}
+	if gridH != 4 || gridW != 4 || len(got) != gridH*gridW*hidden*bf16Size {
+		t.Fatalf("raw conv output = grid %dx%d bytes %d", gridH, gridW, len(got))
+	}
+	var convErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, _, _, convErr = visionPatchConvEmbedNHWC(pixels, conv, height, width, channels, hidden, patch)
+	})
+	if convErr != nil {
+		t.Fatalf("visionPatchConvEmbedNHWC: %v", convErr)
+	}
+	if allocs > 1 {
+		t.Fatalf("raw conv patch embed allocations = %.0f, want <= 1", allocs)
+	}
+}
+
+func BenchmarkVisionPatchConvEmbedNHWC(b *testing.B) {
+	const height, width, channels, hidden, patch = 64, 64, 3, 64, 16
+	pixels := syntheticFloat32(height*width*channels, 79)
+	conv := toBF16Bytes(syntheticFloat32(hidden*patch*patch*channels, 81))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		got, gridH, gridW, err := visionPatchConvEmbedNHWC(pixels, conv, height, width, channels, hidden, patch)
+		if err != nil {
+			b.Fatalf("visionPatchConvEmbedNHWC: %v", err)
+		}
+		if gridH != 4 || gridW != 4 || len(got) != gridH*gridW*hidden*bf16Size {
+			b.Fatalf("raw conv output = grid %dx%d bytes %d", gridH, gridW, len(got))
+		}
+	}
+}
+
 func TestVisionStandardize(t *testing.T) {
 	pooled := toBF16Bytes([]float32{2, 4, 6, 8})
 	if got := visionStandardize(pooled, nil, nil, 2); &got[0] != &pooled[0] {

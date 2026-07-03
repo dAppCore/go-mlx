@@ -43,6 +43,77 @@ func visionWeight(weights map[string]safetensors.Tensor, names ...string) []byte
 	return nil
 }
 
+func visionPatchProjection(weights map[string]safetensors.Tensor, cfg *Gemma4VisionConfig) ([]byte, []byte) {
+	t, ok := model.WeightAny(weights,
+		"patch_embedder.input_proj.weight",
+		"patch_embedder.input_proj.linear.weight",
+		"embeddings.patch_embedding.weight",
+		"patch_embedding.weight",
+	)
+	if !ok {
+		return nil, nil
+	}
+	shape := t.Shape
+	if len(shape) != 4 {
+		if len(shape) == 2 {
+			return t.Data, t.Data
+		}
+		return t.Data, nil
+	}
+	channels := int(cfg.NumChannels)
+	if channels <= 0 {
+		channels = 3
+	}
+	if shape[3] == channels {
+		return t.Data, t.Data
+	}
+	if shape[1] == channels {
+		if out := transposeVisionPatchConvChannelsFirst(t); out != nil {
+			return out, out
+		}
+	}
+	return t.Data, t.Data
+}
+
+func transposeVisionPatchConvChannelsFirst(t safetensors.Tensor) []byte {
+	shape := t.Shape
+	if len(shape) != 4 {
+		return nil
+	}
+	elem := visionTensorElemBytes(t)
+	if elem <= 0 {
+		return nil
+	}
+	hidden, channels, patchH, patchW := shape[0], shape[1], shape[2], shape[3]
+	out := make([]byte, len(t.Data))
+	for h := 0; h < hidden; h++ {
+		for y := 0; y < patchH; y++ {
+			for x := 0; x < patchW; x++ {
+				for c := 0; c < channels; c++ {
+					src := (((h*channels+c)*patchH+y)*patchW + x) * elem
+					dst := (((h*patchH+y)*patchW+x)*channels + c) * elem
+					copy(out[dst:dst+elem], t.Data[src:src+elem])
+				}
+			}
+		}
+	}
+	return out
+}
+
+func visionTensorElemBytes(t safetensors.Tensor) int {
+	n := 1
+	for _, d := range t.Shape {
+		if d <= 0 {
+			return 0
+		}
+		n *= d
+	}
+	if n <= 0 || len(t.Data)%n != 0 {
+		return 0
+	}
+	return len(t.Data) / n
+}
+
 func visionPositionEmbeddingTable(weights map[string]safetensors.Tensor) ([]byte, int) {
 	t, ok := model.WeightAny(weights, "patch_embedder.position_embedding_table", "embeddings.position_embedding.weight")
 	if !ok {
@@ -104,9 +175,7 @@ func AssembleVision(weights map[string]safetensors.Tensor, textCfg *Gemma4TextCo
 	}
 	visionCfg = inferGemma4VisionConfig(weights, normalizeGemma4VisionConfig(visionCfg))
 
-	patch := visionWeight(weights,
-		"patch_embedder.input_proj.weight", "patch_embedder.input_proj.linear.weight",
-		"embeddings.patch_embedding.weight", "patch_embedding.weight")
+	patch, patchConv := visionPatchProjection(weights, visionCfg)
 	if patch == nil {
 		return nil, core.E("gemma4.AssembleVision", "missing patch embedding weight", nil)
 	}
@@ -114,6 +183,7 @@ func AssembleVision(weights map[string]safetensors.Tensor, textCfg *Gemma4TextCo
 
 	v := &LoadedVision{
 		PatchEmbedding:     patch,
+		PatchConvWeight:    patchConv,
 		PositionEmbeddings: positionTable,
 		PostLayernorm:      visionWeight(weights, "post_layernorm.weight", "post_layer_norm.weight", "encoder.post_layernorm.weight", "vision_model.post_layernorm.weight"),
 		StdBias:            visionWeight(weights, "std_bias"),
@@ -169,6 +239,8 @@ func loadedVisionConfig(cfg *Gemma4VisionConfig, textCfg *Gemma4TextConfig) mode
 		NumHeads:              int(cfg.NumAttentionHeads),
 		NumKVHeads:            int(cfg.NumKeyValueHeads),
 		HeadDim:               int(cfg.HeadDim),
+		PatchSize:             int(cfg.PatchSize),
+		NumChannels:           int(cfg.NumChannels),
 		PositionEmbeddingSize: int(cfg.PositionEmbeddingSize),
 		RopeBase:              cfg.RopeParameters.RopeTheta,
 		RMSNormEps:            cfg.RMSNormEps,

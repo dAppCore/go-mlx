@@ -71,6 +71,8 @@ type LoadedVisionConfig struct {
 	NumHeads              int
 	NumKVHeads            int
 	HeadDim               int
+	PatchSize             int
+	NumChannels           int
 	GridH                 int
 	GridW                 int
 	PositionEmbeddingSize int
@@ -90,6 +92,7 @@ type LoadedVisionConfig struct {
 // LoadedVision is the neutral vision payload a backend can upload/build.
 type LoadedVision struct {
 	PatchEmbedding     []byte
+	PatchConvWeight    []byte
 	PositionEmbeddings []byte
 	PostLayernorm      []byte
 	StdBias, StdScale  []byte

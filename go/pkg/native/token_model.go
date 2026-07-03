@@ -325,6 +325,8 @@ func nativeVisionFromLoaded(loaded *model.LoadedVision) (*VisionWeights, VisionC
 		NumHeads:              loaded.Cfg.NumHeads,
 		NumKVHeads:            loaded.Cfg.NumKVHeads,
 		HeadDim:               loaded.Cfg.HeadDim,
+		PatchSize:             loaded.Cfg.PatchSize,
+		NumChannels:           loaded.Cfg.NumChannels,
 		GridH:                 loaded.Cfg.GridH,
 		GridW:                 loaded.Cfg.GridW,
 		PositionEmbeddingSize: loaded.Cfg.PositionEmbeddingSize,
@@ -342,6 +344,7 @@ func nativeVisionFromLoaded(loaded *model.LoadedVision) (*VisionWeights, VisionC
 	}
 	weights := &VisionWeights{
 		PatchEmbedding:     loaded.PatchEmbedding,
+		PatchConvWeight:    loaded.PatchConvWeight,
 		PositionEmbeddings: loaded.PositionEmbeddings,
 		PostLayernorm:      loaded.PostLayernorm,
 		StdBias:            loaded.StdBias,

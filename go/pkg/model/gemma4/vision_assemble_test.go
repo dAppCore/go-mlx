@@ -59,6 +59,12 @@ func TestAssembleVision(t *testing.T) {
 	if v.PatchEmbedding == nil {
 		t.Fatal("patch embedding missing")
 	}
+	if len(v.PatchConvWeight) != len(v.PatchEmbedding) {
+		t.Fatalf("patch conv weight bytes = %d, want %d", len(v.PatchConvWeight), len(v.PatchEmbedding))
+	}
+	if v.Cfg.PatchSize != 14 || v.Cfg.NumChannels != 3 {
+		t.Fatalf("patch geometry = patch %d channels %d, want 14/3", v.Cfg.PatchSize, v.Cfg.NumChannels)
+	}
 	if v.Layers[0].Q.Weight == nil || v.Layers[0].QNorm == nil || v.Layers[0].Gate.Weight == nil {
 		t.Fatal("layer 0 q/qnorm/gate missing")
 	}
@@ -79,6 +85,50 @@ func TestAssembleVision(t *testing.T) {
 	}
 	if len(v.PositionEmbeddings) != 2*7*H*2 {
 		t.Fatalf("position embedding bytes = %d, want %d", len(v.PositionEmbeddings), 2*7*H*2)
+	}
+}
+
+func TestAssembleVisionPatchConvChannelsFirstNormalisesGood(t *testing.T) {
+	mk := func(shape ...int) safetensors.Tensor {
+		n := 1
+		for _, d := range shape {
+			n *= d
+		}
+		data := make([]byte, n*2)
+		for i := range data {
+			data[i] = byte(i)
+		}
+		return safetensors.Tensor{Dtype: "BF16", Shape: shape, Data: data}
+	}
+	weights := map[string]safetensors.Tensor{
+		"patch_embedding.weight": mk(1, 3, 2, 2), // [hidden, channels, patch, patch]
+	}
+	tc := &Gemma4TextConfig{}
+	tc.ModelType = "gemma4"
+	tc.VisionConfig = &Gemma4VisionConfig{}
+	tc.VisionConfig.NumChannels = 3
+	tc.VisionConfig.NumHiddenLayers = 0
+
+	v, err := AssembleVision(weights, tc)
+	if err != nil {
+		t.Fatalf("AssembleVision: %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected a vision tower")
+	}
+	want := []byte{
+		0, 1, 8, 9, 16, 17,
+		2, 3, 10, 11, 18, 19,
+		4, 5, 12, 13, 20, 21,
+		6, 7, 14, 15, 22, 23,
+	}
+	if len(v.PatchConvWeight) != len(want) {
+		t.Fatalf("channels-first conv bytes = %d, want %d", len(v.PatchConvWeight), len(want))
+	}
+	for i := range want {
+		if v.PatchConvWeight[i] != want[i] || v.PatchEmbedding[i] != want[i] {
+			t.Fatalf("normalised byte %d = conv %d linear %d, want %d", i, v.PatchConvWeight[i], v.PatchEmbedding[i], want[i])
+		}
 	}
 }
 

@@ -31,6 +31,8 @@ type VisionConfig struct {
 	NumHeads              int     // attention query heads
 	NumKVHeads            int     // attention kv heads (GQA; == NumHeads for SigLIP)
 	HeadDim               int     // per-head width (Hidden/NumHeads = 64)
+	PatchSize             int     // raw image patch-conv kernel and stride
+	NumChannels           int     // raw image channel count
 	GridH                 int     // patch grid rows (for 2-D rope + spatial pooling)
 	GridW                 int     // patch grid cols
 	PositionEmbeddingSize int     // slots in a flat or split-axis position embedding table
@@ -597,6 +599,7 @@ type VisionProjectorWeights struct {
 // PostLayernorm and StdBias/StdScale are nil when the checkpoint omits them.
 type VisionWeights struct {
 	PatchEmbedding     []byte
+	PatchConvWeight    []byte
 	PositionEmbeddings []byte
 	PostLayernorm      []byte
 	StdBias, StdScale  []byte
@@ -786,12 +789,164 @@ func visionPositionEmbeddings(table []byte, L, hidden, gridH, gridW, slots int) 
 	return append([]byte(nil), table[:need]...), nil
 }
 
+func visionPatchConvEmbedNHWC(pixels []float32, weight []byte, height, width, channels, hidden, patch int) ([]byte, int, int, error) {
+	if height <= 0 || width <= 0 || channels <= 0 || hidden <= 0 || patch <= 0 {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: invalid geometry")
+	}
+	if len(pixels) != height*width*channels {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: pixels must be height*width*channels")
+	}
+	patchDim := patch * patch * channels
+	if len(weight) != hidden*patchDim*bf16Size {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: conv weight must be hidden*patch*patch*channels bf16 bytes")
+	}
+	gridH, gridW := height/patch, width/patch
+	if gridH <= 0 || gridW <= 0 {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: image smaller than patch")
+	}
+	out := make([]byte, gridH*gridW*hidden*bf16Size)
+	row := 0
+	for gy := 0; gy < gridH; gy++ {
+		for gx := 0; gx < gridW; gx++ {
+			for h := 0; h < hidden; h++ {
+				var acc float32
+				wBase := h * patchDim * bf16Size
+				for py := 0; py < patch; py++ {
+					y := gy*patch + py
+					for px := 0; px < patch; px++ {
+						x := gx*patch + px
+						for c := 0; c < channels; c++ {
+							pix := pixels[(y*width+x)*channels+c]
+							wi := wBase + ((py*patch+px)*channels+c)*bf16Size
+							acc += (pix - 0.5) * 2 * bf16ToF32(weight[wi], weight[wi+1])
+						}
+					}
+				}
+				b := f32ToBF16(acc)
+				dst := (row*hidden + h) * bf16Size
+				out[dst], out[dst+1] = byte(b), byte(b>>8)
+			}
+			row++
+		}
+	}
+	return out, gridH, gridW, nil
+}
+
+func visionPatchGeometry(cfg VisionConfig) (int, int, error) {
+	channels := cfg.NumChannels
+	if channels <= 0 {
+		channels = 3
+	}
+	patch := cfg.PatchSize
+	if patch <= 0 {
+		if cfg.PatchDim <= 0 || cfg.PatchDim%channels != 0 {
+			return 0, 0, core.NewError("native.VisionPatchEmbedNHWC: cfg.PatchSize or valid cfg.PatchDim must be set")
+		}
+		side := int(math.Round(math.Sqrt(float64(cfg.PatchDim / channels))))
+		if side <= 0 || side*side*channels != cfg.PatchDim {
+			return 0, 0, core.NewError("native.VisionPatchEmbedNHWC: cfg.PatchDim is not channels*patch*patch")
+		}
+		patch = side
+	}
+	if cfg.PatchDim > 0 && patch*patch*channels != cfg.PatchDim {
+		return 0, 0, core.NewError("native.VisionPatchEmbedNHWC: patch geometry does not match cfg.PatchDim")
+	}
+	return patch, channels, nil
+}
+
+func visionAddBF16Host(x, y []byte, label string) ([]byte, error) {
+	if len(x) != len(y) {
+		return nil, core.NewError(label + ": add inputs must have equal bf16 byte length")
+	}
+	out := make([]byte, len(x))
+	for i := 0; i < len(x); i += bf16Size {
+		v := bf16ToF32(x[i], x[i+1]) + bf16ToF32(y[i], y[i+1])
+		b := f32ToBF16(v)
+		out[i], out[i+1] = byte(b), byte(b>>8)
+	}
+	return out, nil
+}
+
+// VisionPatchEmbedNHWC runs metal's raw NHWC patch-embed path for one image:
+// scale pixels by (x-0.5)*2, apply the patch conv with stride=patch, then add
+// optional position embeddings. It returns [gridH*gridW, hidden] bf16 rows.
+func VisionPatchEmbedNHWC(pixels []float32, height, width int, w *VisionWeights, cfg VisionConfig) ([]byte, int, int, error) {
+	if w == nil {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: weights must be non-nil")
+	}
+	if cfg.Hidden <= 0 {
+		return nil, 0, 0, core.NewError("native.VisionPatchEmbedNHWC: cfg.Hidden must be set")
+	}
+	patch, channels, err := visionPatchGeometry(cfg)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	conv := w.PatchConvWeight
+	if conv == nil {
+		conv = w.PatchEmbedding
+	}
+	h, gridH, gridW, err := visionPatchConvEmbedNHWC(pixels, conv, height, width, channels, cfg.Hidden, patch)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	posEmb, err := visionPositionEmbeddings(w.PositionEmbeddings, gridH*gridW, cfg.Hidden, gridH, gridW, cfg.PositionEmbeddingSize)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if posEmb != nil {
+		h, err = visionAddBF16Host(h, posEmb, "native.VisionPatchEmbedNHWC")
+		if err != nil {
+			return nil, 0, 0, err
+		}
+	}
+	return h, gridH, gridW, nil
+}
+
+// VisionTowerNHWC runs the whole vision tower from a raw NHWC float32 image,
+// matching metal's raw-image conv patchify route before entering the shared
+// native encoder/pool/projector tail.
+func VisionTowerNHWC(pixels []float32, height, width int, w *VisionWeights, cfg VisionConfig) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	h, gridH, gridW, err := VisionPatchEmbedNHWC(pixels, height, width, w, cfg)
+	if err != nil {
+		return nil, err
+	}
+	lcfg := cfg
+	lcfg.GridH, lcfg.GridW = gridH, gridW
+	return visionTowerProjected(h, w, lcfg)
+}
+
+func visionTowerProjected(h []byte, w *VisionWeights, cfg VisionConfig) ([]byte, error) {
+	L := cfg.GridH * cfg.GridW
+	if L <= 0 {
+		return nil, core.NewError("native.VisionTower: empty patch grid")
+	}
+	var err error
+	for i := range w.Layers {
+		if h, err = VisionEncoderLayer(h, &w.Layers[i], cfg); err != nil {
+			return nil, err
+		}
+	}
+	if w.PostLayernorm != nil {
+		if h, err = RMSNormBF16(h, w.PostLayernorm, L, cfg.Hidden, cfg.RMSNormEps); err != nil {
+			return nil, err
+		}
+	}
+	embScale := cfg.EmbeddingScale
+	if embScale == 0 && cfg.Hidden > 0 {
+		embScale = float32(math.Sqrt(float64(cfg.Hidden)))
+	}
+	pooled := visionStandardize(visionPooler(h, cfg.GridH, cfg.GridW, cfg.Hidden, cfg.PoolKernel, embScale), w.StdBias, w.StdScale, cfg.Hidden)
+	return visionProjector(pooled, &w.Projector, cfg.Hidden)
+}
+
 // VisionTower runs the whole gemma4 SigLIP vision forward on pre-patchified pixel patches [L, patchDim]
 // bf16, returning the projected soft-token rows [*, textHidden] bf16 — the faithful port of metal's
 // Gemma4VisionModel.Forward: patch embed (+ flat or split-axis 2-D position table) → encoder layers → post-layernorm
 // → spatial pooler → standardize → projector. The grid is derived from the patch count exactly as
-// metal does. Raw-image conv patchify is the remaining edge case; the standard serve path is
-// pre-patchified.
+// metal does.
 func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -815,19 +970,7 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	for i := range w.Layers {
-		if h, err = VisionEncoderLayer(h, &w.Layers[i], lcfg); err != nil {
-			return nil, err
-		}
-	}
-	if w.PostLayernorm != nil {
-		if h, err = RMSNormBF16(h, w.PostLayernorm, L, cfg.Hidden, cfg.RMSNormEps); err != nil {
-			return nil, err
-		}
-	}
-	embScale := float32(math.Sqrt(float64(cfg.Hidden)))
-	pooled := visionStandardize(visionPooler(h, gridH, gridW, cfg.Hidden, cfg.PoolKernel, embScale), w.StdBias, w.StdScale, cfg.Hidden)
-	return visionProjector(pooled, &w.Projector, cfg.Hidden)
+	return visionTowerProjected(h, w, lcfg)
 }
 
 // VisionInjectFeatures splices the vision soft-token rows into the text embedding stream at the
