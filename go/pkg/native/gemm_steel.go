@@ -125,11 +125,17 @@ func encGemmBF16NT(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 	}
 	tilesM := (rows + steelGEMMBM - 1) / steelGEMMBM
 	tilesN := (outDim + steelGEMMBN - 1) / steelGEMMBN
+	// threadblock swizzle (mlx matmul.cpp): interleave the tile walk so neighbouring threadgroups
+	// share B panels in L2 — 0 for short grids, 2 on this device class for tall ones.
+	swizzle := 0
+	if tilesM > 3 {
+		swizzle = 2
+	}
 	params := steelGEMMParams{
 		M: int32(rows), N: int32(outDim), K: int32(inDim),
 		LDA: int32(inDim), LDB: int32(inDim), LDD: int32(outDim),
 		TilesN: int32(tilesN), TilesM: int32(tilesM),
-		SwizzleLog: 0, GemmKIterationsAligned: int32(inDim / steelGEMMBK), BatchNDim: 1,
+		SwizzleLog: int32(swizzle), GemmKIterationsAligned: int32(inDim / steelGEMMBK), BatchNDim: 1,
 	}
 	sink := encSink{enc}
 	sink.setPSO(pso)
@@ -137,8 +143,11 @@ func encGemmBF16NT(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 	sink.setBuf(mat, matOff, 1) // B: the weight, read transposed (nt)
 	sink.setBuf(out, outOff, 3) // D
 	setBytes(enc, unsafe.Pointer(&params), uint(unsafe.Sizeof(params)), 4)
+	tile := 1 << swizzle
+	gridX := tilesN * tile
+	gridY := (tilesM + tile - 1) / tile
 	sink.dispatchThreadgroups(
-		metal.MTLSize{Width: uint(tilesN), Height: uint(tilesM), Depth: 1},
+		metal.MTLSize{Width: uint(gridX), Height: uint(gridY), Depth: 1},
 		metal.MTLSize{Width: 32, Height: steelGEMMWN, Depth: steelGEMMWM},
 	)
 	return true
