@@ -2039,7 +2039,16 @@ func (m *AssistantModel) draftAttentionIntoScratch(out []byte, layerIdx int, hid
 	if err != nil {
 		return nil, core.E("native.assistant draft attention", "q_norm", err)
 	}
-	q, err = nativeAssistantRoPEInto(scratch.bytes(assistantDraftScratchAttnQRope, qBytes), q, m, layer, nHeads, headDim, targetKV.Offset)
+	// the draft query ropes at the LAST SEEN token's position (target pos-1), the
+	// constant the drafter was trained with (HF SinglePositionMultiTokenCandidateGenerator:
+	// position_ids = input_ids.shape[1]-1, never advanced across draft steps) — NOT the
+	// KV capture-window start. Offset+Length-1 equals it for both stream types (full:
+	// 0+pos-1; sliding: windowStart+count-1).
+	qPos := targetKV.Offset + targetKV.Length - 1
+	if qPos < 0 {
+		qPos = 0
+	}
+	q, err = nativeAssistantRoPEInto(scratch.bytes(assistantDraftScratchAttnQRope, qBytes), q, m, layer, nHeads, headDim, qPos)
 	if err != nil {
 		return nil, err
 	}

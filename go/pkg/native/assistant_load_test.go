@@ -800,7 +800,9 @@ func TestAssistantDraftAttentionMatchesTargetKVPrimitivePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RMSNormBF16 q reference: %v", err)
 	}
-	q, err = RoPEDimsBF16(q, 1, nHeads, headDim, headDim, assistant.Arch.RopeLocalBase, 1, targetKV.Offset, false)
+	// the draft query ropes at the LAST SEEN token's position (Offset+Length-1), the
+	// trained constant per the HF reference — see draftAttentionIntoScratch.
+	q, err = RoPEDimsBF16(q, 1, nHeads, headDim, headDim, assistant.Arch.RopeLocalBase, 1, targetKV.Offset+targetKV.Length-1, false)
 	if err != nil {
 		t.Fatalf("RoPEDimsBF16 q reference: %v", err)
 	}

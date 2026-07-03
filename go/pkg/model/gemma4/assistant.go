@@ -34,12 +34,13 @@ func init() {
 // target-attachment dims + the ordered-embedding head declaration at the top level, with
 // the drafter's own text arch nested under text_config (or flat, in early exports).
 type assistantConfig struct {
-	ModelType                string `json:"model_type"`
-	BackboneHiddenSize       int    `json:"backbone_hidden_size"`
-	NumCentroids             int    `json:"num_centroids"`
-	CentroidIntermediateTopK int    `json:"centroid_intermediate_top_k"`
-	UseOrderedEmbeddings     bool   `json:"use_ordered_embeddings"`
-	TextConfig               Config `json:"text_config"`
+	ModelType                string             `json:"model_type"`
+	BackboneHiddenSize       int                `json:"backbone_hidden_size"`
+	NumCentroids             int                `json:"num_centroids"`
+	CentroidIntermediateTopK int                `json:"centroid_intermediate_top_k"`
+	UseOrderedEmbeddings     bool               `json:"use_ordered_embeddings"`
+	Quantization             *model.QuantConfig `json:"quantization"` // quantised exports put the block at the TOP level (mlx convention), beside text_config
+	TextConfig               Config             `json:"text_config"`
 }
 
 // ParseAssistantConfig parses a gemma4 assistant config.json into the neutral
@@ -66,8 +67,17 @@ func ParseAssistantConfig(data []byte) (model.AssistantConfig, error) {
 	if modelType == "" {
 		modelType = "gemma4_assistant"
 	}
-	return buildAssistantConfig(modelType, raw.BackboneHiddenSize, raw.NumCentroids,
+	cfg, err := buildAssistantConfig(modelType, raw.BackboneHiddenSize, raw.NumCentroids,
 		raw.CentroidIntermediateTopK, raw.UseOrderedEmbeddings, textConfig)
+	if err != nil {
+		return model.AssistantConfig{}, err
+	}
+	if raw.Quantization != nil {
+		// the top-level block outranks a nested text_config one, matching
+		// Config.ResolvedQuant's convention for the multimodal wrapper.
+		cfg.Quant = raw.Quantization
+	}
+	return cfg, nil
 }
 
 // buildAssistantConfig validates the parsed dims and derives the neutral config — shared

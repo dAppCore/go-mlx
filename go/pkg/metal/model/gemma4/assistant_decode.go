@@ -1185,7 +1185,15 @@ func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *metal.Array, target
 	oldQ := q
 	q = attn.QNorm.Forward(q, cfg.RMSNormEps)
 	metal.Free(oldQ)
-	qRoPE := attn.applyRoPE(q, targetKV.Offset)
+	// the draft query ropes at the LAST SEEN token's position (N-1), the constant the
+	// drafter was trained with (HF SinglePositionMultiTokenCandidateGenerator:
+	// position_ids = input_ids.shape[1] - 1, never advanced across draft steps) — NOT
+	// the cache length N. targetKV.Offset is the cache token count.
+	qPos := targetKV.Offset - 1
+	if qPos < 0 {
+		qPos = 0
+	}
+	qRoPE := attn.applyRoPE(q, qPos)
 	metal.Free(q)
 	q = qRoPE
 
