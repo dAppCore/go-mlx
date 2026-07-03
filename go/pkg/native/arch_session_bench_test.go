@@ -451,6 +451,19 @@ func BenchmarkArchSessionPrefillRetainedDense(b *testing.B) {
 
 	g, arch := gemma4BF16Fixture(b, 128, 2, 1, 64, 256, 64, 2)
 	ids := []int32{1, 2, 3, 4, 5, 6, 7, 8}
+	embeddingSource, err := NewArchSession(g, arch, 24)
+	if err != nil {
+		b.Fatal(err)
+	}
+	embeddings := make([][]byte, len(ids))
+	for i, id := range ids {
+		emb, err := embeddingSource.embedID(id)
+		if err != nil {
+			b.Fatal(err)
+		}
+		embeddings[i] = append([]byte(nil), emb...)
+	}
+	_ = embeddingSource.Close()
 	b.Run("prefix-plus-final-step", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
@@ -480,6 +493,126 @@ func BenchmarkArchSessionPrefillRetainedDense(b *testing.B) {
 			}
 			sess.state.icb = nil
 			if _, err := sess.prefillRetainedTokens(ids, "bench"); err != nil {
+				b.Fatal(err)
+			}
+			_ = sess.Close()
+		}
+	})
+	b.Run("explicit-embeddings", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sess, err := NewArchSession(g, arch, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sess.state.icb = nil
+			if err := sess.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+				b.Fatal(err)
+			}
+			_ = sess.Close()
+		}
+	})
+	b.Run("explicit-embeddings-icb", func(b *testing.B) {
+		const gs, bits = 64, 4
+		icbArch, err := g4.Config{
+			HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+			NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 256, RMSNormEps: 1e-6,
+			Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+		}.Arch()
+		if err != nil {
+			b.Fatalf("Arch: %v", err)
+		}
+		lm, err := model.Assemble(quantGemma4Tensors(b, icbArch, gs, bits), icbArch, model.StandardWeightNames())
+		if err != nil {
+			b.Fatalf("Assemble: %v", err)
+		}
+		icbG, err := loadedToQuant(lm, gs, bits)
+		if err != nil {
+			b.Fatalf("loadedToQuant: %v", err)
+		}
+		icbIDs := []int32{1, 2, 3, 4, 5, 6, 7, 8}
+		embeddingSource, err := NewArchQuantSession(icbG, icbArch, 24)
+		if err != nil {
+			b.Fatalf("NewArchQuantSession embeddings: %v", err)
+		}
+		if embeddingSource.state.icb == nil {
+			b.Skip("ICB replay unavailable")
+		}
+		icbEmbeddings := make([][]byte, len(icbIDs))
+		for i, id := range icbIDs {
+			emb, err := embeddingSource.embedID(id)
+			if err != nil {
+				b.Fatalf("embedID(%d): %v", id, err)
+			}
+			icbEmbeddings[i] = append([]byte(nil), emb...)
+		}
+		_ = embeddingSource.Close()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sess, err := NewArchQuantSession(icbG, icbArch, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if sess.state.icb == nil {
+				b.Skip("ICB replay unavailable")
+			}
+			if err := sess.PrefillTokenEmbeddings(icbIDs, icbEmbeddings); err != nil {
+				b.Fatal(err)
+			}
+			_ = sess.Close()
+		}
+	})
+	b.Run("explicit-embeddings-icb-ple", func(b *testing.B) {
+		const gs, bits = 64, 4
+		icbArch, err := g4.Config{
+			HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+			NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 256, RMSNormEps: 1e-6,
+			HiddenSizePerLayerInput: 64, VocabSizePerLayerInput: 256,
+			Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+		}.Arch()
+		if err != nil {
+			b.Fatalf("Arch: %v", err)
+		}
+		ts := quantGemma4Tensors(b, icbArch, gs, bits)
+		addPLETensors(b, ts, icbArch, gs, bits)
+		lm, err := model.Assemble(ts, icbArch, model.StandardWeightNames())
+		if err != nil {
+			b.Fatalf("Assemble: %v", err)
+		}
+		icbG, err := loadedToQuant(lm, gs, bits)
+		if err != nil {
+			b.Fatalf("loadedToQuant: %v", err)
+		}
+		if !icbG.HasPLE() {
+			b.Fatal("assembled benchmark model should have PLE tensors")
+		}
+		icbIDs := []int32{1, 2, 3, 4, 5, 6, 7, 8}
+		embeddingSource, err := NewArchQuantSession(icbG, icbArch, 24)
+		if err != nil {
+			b.Fatalf("NewArchQuantSession embeddings: %v", err)
+		}
+		if embeddingSource.state.icb == nil || !embeddingSource.state.icb.hasPLE {
+			b.Skip("PLE ICB replay unavailable")
+		}
+		icbEmbeddings := make([][]byte, len(icbIDs))
+		for i, id := range icbIDs {
+			emb, err := embeddingSource.embedID(id)
+			if err != nil {
+				b.Fatalf("embedID(%d): %v", id, err)
+			}
+			icbEmbeddings[i] = append([]byte(nil), emb...)
+		}
+		_ = embeddingSource.Close()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sess, err := NewArchQuantSession(icbG, icbArch, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if sess.state.icb == nil || !sess.state.icb.hasPLE {
+				b.Skip("PLE ICB replay unavailable")
+			}
+			if err := sess.PrefillTokenEmbeddings(icbIDs, icbEmbeddings); err != nil {
 				b.Fatal(err)
 			}
 			_ = sess.Close()

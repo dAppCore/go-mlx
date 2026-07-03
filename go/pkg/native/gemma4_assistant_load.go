@@ -7,6 +7,7 @@ package native
 import (
 	"encoding/binary"
 	"math"
+	"sync"
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
@@ -19,6 +20,8 @@ import (
 
 const nativeGemma4AssistantLogitsFloor = -3.4028234663852886e38
 const nativeGemma4AssistantDefaultDraftTokens = 4
+
+var nativeGemma4AssistantByteScratchPools sync.Map
 
 // Gemma4AssistantConfig is the assistant-only MTP drafter config used by the
 // native loader. It mirrors pkg/metal's assistant config without materialising
@@ -107,6 +110,25 @@ type Gemma4AssistantGenerateResult struct {
 // generation loop emits it. Returning false stops generation without error.
 type Gemma4AssistantTokenSink func(int32) bool
 
+func newGemma4AssistantGenerateResult(promptTokens, maxNew, draftTokens int) Gemma4AssistantGenerateResult {
+	scheduleCap := 0
+	if maxNew > 0 && draftTokens > 0 {
+		scheduleCap = (maxNew + draftTokens - 1) / draftTokens
+	}
+	return Gemma4AssistantGenerateResult{
+		Tokens:             make([]int32, 0, maxNew),
+		PromptTokens:       promptTokens,
+		DraftTokenSchedule: make([]int, 0, scheduleCap),
+	}
+}
+
+func nativeGemma4AssistantSuppressArg(suppressTokens [][]int32) []int32 {
+	if len(suppressTokens) == 0 {
+		return nil
+	}
+	return suppressTokens[0]
+}
+
 // Gemma4AssistantTargetKV is a native byte-view of a target K/V stream that the
 // assistant can attend to by target layer type.
 type Gemma4AssistantTargetKV struct {
@@ -133,6 +155,138 @@ type Gemma4AssistantKVEntry struct {
 // "sliding_attention" and "full_attention", so a slice scan is enough.
 type Gemma4AssistantTargetKVByType struct {
 	entries []Gemma4AssistantKVEntry
+}
+
+type gemma4AssistantDraftLayerScratchSlot int
+
+const (
+	gemma4AssistantDraftScratchInputNorm gemma4AssistantDraftLayerScratchSlot = iota
+	gemma4AssistantDraftScratchAttnQ
+	gemma4AssistantDraftScratchAttnQNorm
+	gemma4AssistantDraftScratchAttnQRope
+	gemma4AssistantDraftScratchAttn
+	gemma4AssistantDraftScratchAttnOut
+	gemma4AssistantDraftScratchAttnResidual
+	gemma4AssistantDraftScratchResidual
+	gemma4AssistantDraftScratchFFIn
+	gemma4AssistantDraftScratchGate
+	gemma4AssistantDraftScratchUp
+	gemma4AssistantDraftScratchGated
+	gemma4AssistantDraftScratchFF
+	gemma4AssistantDraftScratchFFResidual
+	gemma4AssistantDraftScratchNext
+	gemma4AssistantDraftScratchLayerOut
+	gemma4AssistantDraftScratchSlotCount
+)
+
+type gemma4AssistantDraftLayerScratch struct {
+	usePinned bool
+	pinned    [gemma4AssistantDraftScratchSlotCount]*pinnedNoCopyBytes
+
+	inputNorm    []byte
+	attnQ        []byte
+	attnQNorm    []byte
+	attnQRope    []byte
+	attn         []byte
+	attnOut      []byte
+	attnResidual []byte
+	residual     []byte
+	ffIn         []byte
+	gate         []byte
+	up           []byte
+	gated        []byte
+	ff           []byte
+	ffResidual   []byte
+	next         []byte
+	layerOut     []byte
+}
+
+func (s *gemma4AssistantDraftLayerScratch) usePinnedBacking() {
+	if s != nil {
+		s.usePinned = true
+	}
+}
+
+func (s *gemma4AssistantDraftLayerScratch) close() {
+	if s == nil {
+		return
+	}
+	for i := range s.pinned {
+		if s.pinned[i] != nil {
+			s.pinned[i].Close()
+			s.pinned[i] = nil
+		}
+	}
+}
+
+func (s *gemma4AssistantDraftLayerScratch) slot(slot gemma4AssistantDraftLayerScratchSlot) *[]byte {
+	switch slot {
+	case gemma4AssistantDraftScratchInputNorm:
+		return &s.inputNorm
+	case gemma4AssistantDraftScratchAttnQ:
+		return &s.attnQ
+	case gemma4AssistantDraftScratchAttnQNorm:
+		return &s.attnQNorm
+	case gemma4AssistantDraftScratchAttnQRope:
+		return &s.attnQRope
+	case gemma4AssistantDraftScratchAttn:
+		return &s.attn
+	case gemma4AssistantDraftScratchAttnOut:
+		return &s.attnOut
+	case gemma4AssistantDraftScratchAttnResidual:
+		return &s.attnResidual
+	case gemma4AssistantDraftScratchResidual:
+		return &s.residual
+	case gemma4AssistantDraftScratchFFIn:
+		return &s.ffIn
+	case gemma4AssistantDraftScratchGate:
+		return &s.gate
+	case gemma4AssistantDraftScratchUp:
+		return &s.up
+	case gemma4AssistantDraftScratchGated:
+		return &s.gated
+	case gemma4AssistantDraftScratchFF:
+		return &s.ff
+	case gemma4AssistantDraftScratchFFResidual:
+		return &s.ffResidual
+	case gemma4AssistantDraftScratchNext:
+		return &s.next
+	case gemma4AssistantDraftScratchLayerOut:
+		return &s.layerOut
+	default:
+		return nil
+	}
+}
+
+func (s *gemma4AssistantDraftLayerScratch) bytes(slot gemma4AssistantDraftLayerScratchSlot, n int) []byte {
+	if s == nil {
+		return make([]byte, n)
+	}
+	dst := s.slot(slot)
+	if dst == nil {
+		return make([]byte, n)
+	}
+	if s.usePinned {
+		pinned := s.pinned[slot]
+		if pinned != nil && len(pinned.bytes) == n && pinned.buf != nil {
+			*dst = pinned.bytes[:n]
+			return *dst
+		}
+		if pinned != nil {
+			pinned.Close()
+			s.pinned[slot] = nil
+		}
+		if pinned, err := newPinnedNoCopyBytes(n); err == nil {
+			s.pinned[slot] = pinned
+			*dst = pinned.bytes[:n]
+			return *dst
+		}
+	}
+	if cap(*dst) < n {
+		*dst = make([]byte, n)
+	}
+	*dst = (*dst)[:n]
+	return *dst
 }
 
 func (m *Gemma4AssistantTargetKVByType) set(layerType string, targetKV Gemma4AssistantTargetKV) {
@@ -577,10 +731,14 @@ func (m *Gemma4AssistantModel) Tensor(name string) (safetensors.Tensor, bool) {
 }
 
 func (pair *Gemma4AssistantPair) TargetKVByLayerType(targetKVs []Gemma4AssistantTargetKV) (Gemma4AssistantTargetKVByType, error) {
+	return pair.targetKVByLayerType(targetKVs, nil)
+}
+
+func (pair *Gemma4AssistantPair) targetKVByLayerType(targetKVs []Gemma4AssistantTargetKV, entries []Gemma4AssistantKVEntry) (Gemma4AssistantTargetKVByType, error) {
 	if pair == nil || pair.Assistant == nil {
 		return Gemma4AssistantTargetKVByType{}, core.NewError("gemma4.assistant draft step requires a validated pair")
 	}
-	var out Gemma4AssistantTargetKVByType
+	out := Gemma4AssistantTargetKVByType{entries: entries[:0]}
 	for layerIdx, layer := range pair.TargetArch.Layer {
 		layerType := nativeGemma4LayerType(layer)
 		if layerType == "" {
@@ -618,6 +776,14 @@ func (pair *Gemma4AssistantPair) TargetKVByLayerType(targetKVs []Gemma4Assistant
 // token-major; the assistant attention primitive consumes head-major slabs, so
 // this materialises the visible cache window in assistant-ready order.
 func (pair *Gemma4AssistantPair) TargetKVByLayerTypeFromSession(target *ArchSession) (Gemma4AssistantTargetKVByType, error) {
+	return pair.targetKVByLayerTypeFromSession(target, false)
+}
+
+func (pair *Gemma4AssistantPair) targetKVByLayerTypeFromSessionScratch(target *ArchSession) (Gemma4AssistantTargetKVByType, error) {
+	return pair.targetKVByLayerTypeFromSession(target, true)
+}
+
+func (pair *Gemma4AssistantPair) targetKVByLayerTypeFromSession(target *ArchSession, useScratch bool) (Gemma4AssistantTargetKVByType, error) {
 	if pair == nil || pair.Assistant == nil {
 		return Gemma4AssistantTargetKVByType{}, core.NewError("gemma4.assistant draft step requires a validated pair")
 	}
@@ -643,7 +809,12 @@ func (pair *Gemma4AssistantPair) TargetKVByLayerTypeFromSession(target *ArchSess
 	if maxCacheIndex < 0 {
 		return Gemma4AssistantTargetKVByType{}, core.NewError("gemma4.assistant draft step target session has no K/V cache owners")
 	}
-	targetKVs := make([]Gemma4AssistantTargetKV, maxCacheIndex+1)
+	var targetKVs []Gemma4AssistantTargetKV
+	if useScratch {
+		targetKVs = target.mtpTargetKVScratchEntries(maxCacheIndex + 1)
+	} else {
+		targetKVs = make([]Gemma4AssistantTargetKV, maxCacheIndex+1)
+	}
 	for _, view := range views {
 		if view.cacheIndex < 0 {
 			continue
@@ -659,8 +830,13 @@ func (pair *Gemma4AssistantPair) TargetKVByLayerTypeFromSession(target *ArchSess
 		if len(keyRows) == 0 || len(valueRows) == 0 {
 			return Gemma4AssistantTargetKVByType{}, core.NewError(core.Sprintf("gemma4.assistant draft step target layer %d has empty K/V stream", view.layer))
 		}
-		keySlab := make([]byte, len(keyRows))
-		valueSlab := make([]byte, len(valueRows))
+		var keySlab, valueSlab []byte
+		if useScratch {
+			keySlab, valueSlab = target.mtpTargetKVSlabs(view.cacheIndex, len(keyRows), len(valueRows))
+		} else {
+			keySlab = make([]byte, len(keyRows))
+			valueSlab = make([]byte, len(valueRows))
+		}
 		nativeKVTokenRowsToLayerSlab(keySlab, keyRows, tokenCount, view.kvHeads, view.headDim)
 		nativeKVTokenRowsToLayerSlab(valueSlab, valueRows, tokenCount, view.kvHeads, view.headDim)
 		targetKVs[view.cacheIndex] = Gemma4AssistantTargetKV{
@@ -671,6 +847,9 @@ func (pair *Gemma4AssistantPair) TargetKVByLayerTypeFromSession(target *ArchSess
 			KVHeads: view.kvHeads,
 			HeadDim: view.headDim,
 		}
+	}
+	if useScratch {
+		return pair.targetKVByLayerType(targetKVs, target.mtpTargetKVByTypeEntries(len(pair.Assistant.Arch.Layer)))
 	}
 	return pair.TargetKVByLayerType(targetKVs)
 }
@@ -707,13 +886,9 @@ func (m *Gemma4AssistantModel) DraftInputProjection(tokenEmbedding, previousHidd
 }
 
 func (m *Gemma4AssistantModel) DraftInputProjectionInto(out []byte, tokenEmbedding, previousHidden []byte) ([]byte, error) {
-	if m == nil {
-		return nil, core.NewError("gemma4.assistant draft input model is nil")
-	}
-	backbone := m.BackboneHiddenSize
-	hidden := m.Arch.Hidden
-	if backbone <= 0 || hidden <= 0 {
-		return nil, core.NewError("gemma4.assistant draft input has incomplete dimensions")
+	backbone, hidden, input, weight, err := m.draftInputProjectionShape()
+	if err != nil {
+		return nil, err
 	}
 	backboneBytes := backbone * bf16Size
 	if len(tokenEmbedding) != backboneBytes {
@@ -722,24 +897,71 @@ func (m *Gemma4AssistantModel) DraftInputProjectionInto(out []byte, tokenEmbeddi
 	if len(previousHidden) != backboneBytes {
 		return nil, core.NewError(core.Sprintf("gemma4.assistant draft input previous hidden bytes = %d, want %d", len(previousHidden), backboneBytes))
 	}
-	weight, ok := m.Tensors["pre_projection.weight"]
-	if !ok {
-		return nil, core.NewError("gemma4.assistant draft input missing pre_projection.weight")
-	}
-	if weight.Dtype != "BF16" {
-		return nil, core.NewError("gemma4.assistant draft input pre_projection.weight dtype = " + weight.Dtype + ", want BF16")
-	}
-	input := backbone * 2
-	if len(weight.Shape) < 2 || weight.Shape[len(weight.Shape)-2] != hidden || weight.Shape[len(weight.Shape)-1] != input {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant draft input pre_projection.weight shape = %v, want [%d %d]", weight.Shape, hidden, input))
-	}
-	if len(weight.Data) != hidden*input*bf16Size {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant draft input pre_projection.weight bytes = %d, want %d", len(weight.Data), hidden*input*bf16Size))
-	}
-	combined := make([]byte, input*bf16Size)
+	combined := getNativeGemma4AssistantByteScratch(input * bf16Size)
+	defer putNativeGemma4AssistantByteScratch(combined)
 	copy(combined, tokenEmbedding)
 	copy(combined[backboneBytes:], previousHidden)
-	return MatMulBF16NTInto(out, combined, weight.Data, 1, input, hidden)
+	return MatMulBF16NTInto(out, combined, weight, 1, input, hidden)
+}
+
+func (m *Gemma4AssistantModel) draftInputProjectionShape() (backbone, hidden, input int, weight []byte, err error) {
+	if m == nil {
+		err = core.NewError("gemma4.assistant draft input model is nil")
+		return
+	}
+	backbone = m.BackboneHiddenSize
+	hidden = m.Arch.Hidden
+	if backbone <= 0 || hidden <= 0 {
+		err = core.NewError("gemma4.assistant draft input has incomplete dimensions")
+		return
+	}
+	tensor, ok := m.Tensors["pre_projection.weight"]
+	if !ok {
+		err = core.NewError("gemma4.assistant draft input missing pre_projection.weight")
+		return
+	}
+	if tensor.Dtype != "BF16" {
+		err = core.NewError("gemma4.assistant draft input pre_projection.weight dtype = " + tensor.Dtype + ", want BF16")
+		return
+	}
+	input = backbone * 2
+	if len(tensor.Shape) < 2 || tensor.Shape[len(tensor.Shape)-2] != hidden || tensor.Shape[len(tensor.Shape)-1] != input {
+		err = core.NewError(core.Sprintf("gemma4.assistant draft input pre_projection.weight shape = %v, want [%d %d]", tensor.Shape, hidden, input))
+		return
+	}
+	if len(tensor.Data) != hidden*input*bf16Size {
+		err = core.NewError(core.Sprintf("gemma4.assistant draft input pre_projection.weight bytes = %d, want %d", len(tensor.Data), hidden*input*bf16Size))
+		return
+	}
+	return backbone, hidden, input, tensor.Data, nil
+}
+
+func nativeGemma4AssistantByteScratchPoolFor(byteLen int) *sync.Pool {
+	if v, ok := nativeGemma4AssistantByteScratchPools.Load(byteLen); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := nativeGemma4AssistantByteScratchPools.LoadOrStore(byteLen, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func getNativeGemma4AssistantByteScratch(byteLen int) []byte {
+	pool := nativeGemma4AssistantByteScratchPoolFor(byteLen)
+	if v := pool.Get(); v != nil {
+		if b, ok := v.([]byte); ok && cap(b) >= byteLen {
+			return b[:byteLen]
+		}
+	}
+	return make([]byte, byteLen)
+}
+
+func putNativeGemma4AssistantByteScratch(buf []byte) {
+	if len(buf) == 0 {
+		return
+	}
+	nativeGemma4AssistantByteScratchPoolFor(len(buf)).Put(buf)
 }
 
 func (pair *Gemma4AssistantPair) DraftInputProjectionForToken(targetEmbed []byte, lastToken int32, previousHidden []byte) ([]byte, error) {
@@ -751,11 +973,21 @@ func (pair *Gemma4AssistantPair) DraftInputProjectionForTokenInto(out []byte, ta
 	if err != nil {
 		return nil, err
 	}
-	tokenEmbedding := make([]byte, target.Hidden*bf16Size)
-	if _, err := embedTokenBF16Into(tokenEmbedding, targetEmbed, lastToken, target.Vocab, target.Hidden, nativeGemma4EmbeddingScale(target)); err != nil {
+	backbone, hidden, input, weight, err := pair.Assistant.draftInputProjectionShape()
+	if err != nil {
+		return nil, err
+	}
+	if len(previousHidden) != backbone*bf16Size {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant draft input previous hidden bytes = %d, want %d", len(previousHidden), backbone*bf16Size))
+	}
+	combined := getNativeGemma4AssistantByteScratch(input * bf16Size)
+	defer putNativeGemma4AssistantByteScratch(combined)
+	backboneBytes := backbone * bf16Size
+	if _, err := embedTokenBF16Into(combined[:backboneBytes], targetEmbed, lastToken, target.Vocab, target.Hidden, nativeGemma4EmbeddingScale(target)); err != nil {
 		return nil, core.E("gemma4.assistant draft input", "target token embedding", err)
 	}
-	return pair.Assistant.DraftInputProjectionInto(out, tokenEmbedding, previousHidden)
+	copy(combined[backboneBytes:], previousHidden)
+	return MatMulBF16NTInto(out, combined, weight, 1, input, hidden)
 }
 
 func (pair *Gemma4AssistantPair) DraftInputProjectionForTokenQuant(packed, scales, biases []byte, groupSize, bits int, lastToken int32, previousHidden []byte) ([]byte, error) {
@@ -767,11 +999,21 @@ func (pair *Gemma4AssistantPair) DraftInputProjectionForTokenQuantInto(out []byt
 	if err != nil {
 		return nil, err
 	}
-	tokenEmbedding := make([]byte, target.Hidden*bf16Size)
-	if _, err := embedTokenQuantInto(tokenEmbedding, packed, scales, biases, lastToken, target.Vocab, target.Hidden, groupSize, bits, nativeGemma4EmbeddingScale(target)); err != nil {
+	backbone, hidden, input, weight, err := pair.Assistant.draftInputProjectionShape()
+	if err != nil {
+		return nil, err
+	}
+	if len(previousHidden) != backbone*bf16Size {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant draft input previous hidden bytes = %d, want %d", len(previousHidden), backbone*bf16Size))
+	}
+	combined := getNativeGemma4AssistantByteScratch(input * bf16Size)
+	defer putNativeGemma4AssistantByteScratch(combined)
+	backboneBytes := backbone * bf16Size
+	if _, err := embedTokenQuantInto(combined[:backboneBytes], packed, scales, biases, lastToken, target.Vocab, target.Hidden, groupSize, bits, nativeGemma4EmbeddingScale(target)); err != nil {
 		return nil, core.E("gemma4.assistant draft input", "target quant token embedding", err)
 	}
-	return pair.Assistant.DraftInputProjectionInto(out, tokenEmbedding, previousHidden)
+	copy(combined[backboneBytes:], previousHidden)
+	return MatMulBF16NTInto(out, combined, weight, 1, input, hidden)
 }
 
 func (pair *Gemma4AssistantPair) DraftStep(targetEmbed []byte, lastToken int32, previousHidden []byte, targetKVs Gemma4AssistantTargetKVByType, suppressTokens ...[]int32) (Gemma4AssistantDraftStepResult, error) {
@@ -782,7 +1024,7 @@ func (pair *Gemma4AssistantPair) DraftStep(targetEmbed []byte, lastToken int32, 
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	return pair.draftStepFromProjected(projected, targetKVs, suppressTokens...)
+	return pair.draftStepFromProjectedWithSuppress(projected, targetKVs, nativeGemma4AssistantSuppressArg(suppressTokens))
 }
 
 func (pair *Gemma4AssistantPair) DraftStepQuant(packed, scales, biases []byte, groupSize, bits int, lastToken int32, previousHidden []byte, targetKVs Gemma4AssistantTargetKVByType, suppressTokens ...[]int32) (Gemma4AssistantDraftStepResult, error) {
@@ -793,12 +1035,13 @@ func (pair *Gemma4AssistantPair) DraftStepQuant(packed, scales, biases []byte, g
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	return pair.draftStepFromProjected(projected, targetKVs, suppressTokens...)
+	return pair.draftStepFromProjectedWithSuppress(projected, targetKVs, nativeGemma4AssistantSuppressArg(suppressTokens))
 }
 
 // DraftStepFromSession drafts one assistant token from a target ArchSession
 // boundary. The target session must already hold the accepted prefix in its
-// resident cache and retainedHidden boundary.
+// resident cache and retainedHidden boundary. Logits and Hidden are
+// session-owned scratch slices and are overwritten by the next MTP draft call.
 func (pair *Gemma4AssistantPair) DraftStepFromSession(target *ArchSession, lastToken int32, suppressTokens ...[]int32) (Gemma4AssistantDraftStepResult, error) {
 	if pair == nil || pair.Assistant == nil {
 		return Gemma4AssistantDraftStepResult{}, core.NewError("gemma4.assistant draft step requires a validated pair")
@@ -812,11 +1055,11 @@ func (pair *Gemma4AssistantPair) DraftStepFromSession(target *ArchSession, lastT
 	if target.embed == nil && target.embedInto == nil {
 		return Gemma4AssistantDraftStepResult{}, core.NewError("gemma4.assistant draft step target session has no embedder")
 	}
-	targetKVs, err := pair.TargetKVByLayerTypeFromSession(target)
+	targetKVs, err := pair.targetKVByLayerTypeFromSessionScratch(target)
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	previousHidden, err := target.BoundaryNormedHidden()
+	previousHidden, err := target.boundaryNormedHiddenScratch()
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, core.E("gemma4.assistant draft step", "target boundary hidden", err)
 	}
@@ -827,17 +1070,33 @@ func (pair *Gemma4AssistantPair) DraftStepFromSession(target *ArchSession, lastT
 	if len(tokenEmbedding) != pair.TargetArch.Hidden*bf16Size {
 		return Gemma4AssistantDraftStepResult{}, core.NewError(core.Sprintf("gemma4.assistant draft step target token embedding bytes = %d, want %d", len(tokenEmbedding), pair.TargetArch.Hidden*bf16Size))
 	}
-	projected, err := pair.Assistant.DraftInputProjection(tokenEmbedding, previousHidden)
+	projectedOut := target.mtpProjectionScratch(pair.Assistant.Arch.Hidden * bf16Size)
+	projected, err := pair.Assistant.DraftInputProjectionInto(projectedOut, tokenEmbedding, previousHidden)
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	return pair.draftStepFromProjected(projected, targetKVs, suppressTokens...)
+	normedOut := target.mtpDraftScratch(&target.mtpDraftNormed, pair.Assistant.Arch.Hidden*bf16Size)
+	hiddenOut := target.mtpDraftScratch(&target.mtpDraftHidden, pair.TargetArch.Hidden*bf16Size)
+	logitsOut := target.mtpDraftScratch(&target.mtpDraftLogits, pair.Assistant.Arch.Vocab*bf16Size)
+	logitScores := target.mtpDraftLogitScoreScratch(pair.Assistant.NumCentroids)
+	logitSelected := target.mtpDraftLogitSelectedScratch(pair.Assistant.CentroidIntermediateTopK)
+	target.mtpDraftLayerScratch.usePinnedBacking()
+	return pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, normedOut, hiddenOut, logitsOut, logitScores, logitSelected, &target.mtpDraftLayerScratch, nativeGemma4AssistantSuppressArg(suppressTokens))
 }
 
 // DraftBlockFromSession chains assistant draft steps from a target ArchSession
 // boundary and returns CPU-visible proposed token ids. Verification is a
-// separate target-session concern.
+// separate target-session concern. Hidden is session-owned scratch and is
+// overwritten by the next MTP draft call.
 func (pair *Gemma4AssistantPair) DraftBlockFromSession(target *ArchSession, lastToken int32, maxDraftTokens int, suppressTokens ...[]int32) (Gemma4AssistantDraftBlockResult, error) {
+	return pair.draftBlockFromSessionWithSuppress(target, lastToken, maxDraftTokens, true, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) draftBlockFromSession(target *ArchSession, lastToken int32, maxDraftTokens int, copyTokens bool, suppressTokens ...[]int32) (Gemma4AssistantDraftBlockResult, error) {
+	return pair.draftBlockFromSessionWithSuppress(target, lastToken, maxDraftTokens, copyTokens, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) draftBlockFromSessionWithSuppress(target *ArchSession, lastToken int32, maxDraftTokens int, copyTokens bool, suppress []int32) (Gemma4AssistantDraftBlockResult, error) {
 	if pair == nil || pair.Assistant == nil {
 		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant draft block requires a validated pair")
 	}
@@ -853,16 +1112,21 @@ func (pair *Gemma4AssistantPair) DraftBlockFromSession(target *ArchSession, last
 	if target.embed == nil && target.embedInto == nil {
 		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant draft step target session has no embedder")
 	}
-	targetKVs, err := pair.TargetKVByLayerTypeFromSession(target)
+	targetKVs, err := pair.targetKVByLayerTypeFromSessionScratch(target)
 	if err != nil {
 		return Gemma4AssistantDraftBlockResult{}, err
 	}
-	currentHidden, err := target.BoundaryNormedHidden()
+	currentHidden, err := target.boundaryNormedHiddenScratch()
 	if err != nil {
 		return Gemma4AssistantDraftBlockResult{}, core.E("gemma4.assistant draft block", "target boundary hidden", err)
 	}
 	currentToken := lastToken
-	tokens := make([]int32, 0, maxDraftTokens)
+	var tokens []int32
+	if copyTokens {
+		tokens = make([]int32, 0, maxDraftTokens)
+	} else {
+		tokens = target.mtpDraftTokenScratch(maxDraftTokens)
+	}
 	for len(tokens) < maxDraftTokens {
 		tokenEmbedding, err := target.embedID(currentToken)
 		if err != nil {
@@ -871,17 +1135,97 @@ func (pair *Gemma4AssistantPair) DraftBlockFromSession(target *ArchSession, last
 		if len(tokenEmbedding) != pair.TargetArch.Hidden*bf16Size {
 			return Gemma4AssistantDraftBlockResult{}, core.NewError(core.Sprintf("gemma4.assistant draft block target token embedding bytes = %d, want %d", len(tokenEmbedding), pair.TargetArch.Hidden*bf16Size))
 		}
-		projected, err := pair.Assistant.DraftInputProjection(tokenEmbedding, currentHidden)
+		projectedOut := target.mtpProjectionScratch(pair.Assistant.Arch.Hidden * bf16Size)
+		projected, err := pair.Assistant.DraftInputProjectionInto(projectedOut, tokenEmbedding, currentHidden)
 		if err != nil {
 			return Gemma4AssistantDraftBlockResult{}, err
 		}
-		step, err := pair.draftStepFromProjected(projected, targetKVs, suppressTokens...)
+		normedOut := target.mtpDraftScratch(&target.mtpDraftNormed, pair.Assistant.Arch.Hidden*bf16Size)
+		hiddenOut := target.mtpDraftScratch(&target.mtpDraftHidden, pair.TargetArch.Hidden*bf16Size)
+		logitsOut := target.mtpDraftScratch(&target.mtpDraftLogits, pair.Assistant.Arch.Vocab*bf16Size)
+		logitScores := target.mtpDraftLogitScoreScratch(pair.Assistant.NumCentroids)
+		logitSelected := target.mtpDraftLogitSelectedScratch(pair.Assistant.CentroidIntermediateTopK)
+		target.mtpDraftLayerScratch.usePinnedBacking()
+		step, err := pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, normedOut, hiddenOut, logitsOut, logitScores, logitSelected, &target.mtpDraftLayerScratch, suppress)
 		if err != nil {
 			return Gemma4AssistantDraftBlockResult{}, err
 		}
 		tokens = append(tokens, step.Token)
 		currentToken = step.Token
 		currentHidden = step.Hidden
+	}
+	if !copyTokens {
+		target.mtpDraftTokens = tokens
+	}
+	return Gemma4AssistantDraftBlockResult{Tokens: tokens, Hidden: currentHidden}, nil
+}
+
+func (pair *Gemma4AssistantPair) draftBlockSampledFromSessionWithSuppress(target *ArchSession, lastToken int32, maxDraftTokens int, copyTokens bool, params model.SampleParams, sampler *model.Sampler) (Gemma4AssistantDraftBlockResult, error) {
+	if pair == nil || pair.Assistant == nil {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft block requires a validated pair")
+	}
+	if sampler == nil {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft block sampler is nil")
+	}
+	if maxDraftTokens <= 0 {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft block maxDraftTokens must be > 0")
+	}
+	if lastToken < 0 {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft step token is invalid")
+	}
+	if target == nil {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft step target session is nil")
+	}
+	if target.embed == nil && target.embedInto == nil {
+		return Gemma4AssistantDraftBlockResult{}, core.NewError("gemma4.assistant sampled draft step target session has no embedder")
+	}
+	targetKVs, err := pair.targetKVByLayerTypeFromSessionScratch(target)
+	if err != nil {
+		return Gemma4AssistantDraftBlockResult{}, err
+	}
+	currentHidden, err := target.boundaryNormedHiddenScratch()
+	if err != nil {
+		return Gemma4AssistantDraftBlockResult{}, core.E("gemma4.assistant sampled draft block", "target boundary hidden", err)
+	}
+	currentToken := lastToken
+	var tokens []int32
+	if copyTokens {
+		tokens = make([]int32, 0, maxDraftTokens)
+	} else {
+		tokens = target.mtpDraftTokenScratch(maxDraftTokens)
+	}
+	for len(tokens) < maxDraftTokens {
+		tokenEmbedding, err := target.embedID(currentToken)
+		if err != nil {
+			return Gemma4AssistantDraftBlockResult{}, core.E("gemma4.assistant sampled draft block", "target token embedding", err)
+		}
+		if len(tokenEmbedding) != pair.TargetArch.Hidden*bf16Size {
+			return Gemma4AssistantDraftBlockResult{}, core.NewError(core.Sprintf("gemma4.assistant sampled draft block target token embedding bytes = %d, want %d", len(tokenEmbedding), pair.TargetArch.Hidden*bf16Size))
+		}
+		projectedOut := target.mtpProjectionScratch(pair.Assistant.Arch.Hidden * bf16Size)
+		projected, err := pair.Assistant.DraftInputProjectionInto(projectedOut, tokenEmbedding, currentHidden)
+		if err != nil {
+			return Gemma4AssistantDraftBlockResult{}, err
+		}
+		normedOut := target.mtpDraftScratch(&target.mtpDraftNormed, pair.Assistant.Arch.Hidden*bf16Size)
+		hiddenOut := target.mtpDraftScratch(&target.mtpDraftHidden, pair.TargetArch.Hidden*bf16Size)
+		logitsOut := target.mtpDraftScratch(&target.mtpDraftLogits, pair.Assistant.Arch.Vocab*bf16Size)
+		logitScores := target.mtpDraftLogitScoreScratch(pair.Assistant.NumCentroids)
+		logitSelected := target.mtpDraftLogitSelectedScratch(pair.Assistant.CentroidIntermediateTopK)
+		target.mtpDraftLayerScratch.usePinnedBacking()
+		step, err := pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, normedOut, hiddenOut, logitsOut, logitScores, logitSelected, &target.mtpDraftLayerScratch, params.SuppressTokens)
+		if err != nil {
+			return Gemma4AssistantDraftBlockResult{}, err
+		}
+		currentToken, err = sampler.Sample(step.Logits, pair.Assistant.Arch.Vocab, params)
+		if err != nil {
+			return Gemma4AssistantDraftBlockResult{}, core.E("gemma4.assistant sampled draft block", "sample assistant logits", err)
+		}
+		tokens = append(tokens, currentToken)
+		currentHidden = step.Hidden
+	}
+	if !copyTokens {
+		target.mtpDraftTokens = tokens
 	}
 	return Gemma4AssistantDraftBlockResult{Tokens: tokens, Hidden: currentHidden}, nil
 }
@@ -891,6 +1235,14 @@ func (pair *Gemma4AssistantPair) DraftBlockFromSession(target *ArchSession, last
 // rolls back any rejected suffix. The caller commits ReplacementToken separately
 // on reject, matching pkg/metal's assistant verifier contract.
 func (pair *Gemma4AssistantPair) VerifyDraftBlockFromSession(target *ArchSession, draftTokens []int32, suppressTokens ...[]int32) (Gemma4AssistantVerifyResult, error) {
+	return pair.verifyDraftBlockFromSessionWithSuppress(target, draftTokens, true, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) verifyDraftBlockFromSession(target *ArchSession, draftTokens []int32, copyOutputs bool, suppressTokens ...[]int32) (Gemma4AssistantVerifyResult, error) {
+	return pair.verifyDraftBlockFromSessionWithSuppress(target, draftTokens, copyOutputs, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) verifyDraftBlockFromSessionWithSuppress(target *ArchSession, draftTokens []int32, copyOutputs bool, suppress []int32) (Gemma4AssistantVerifyResult, error) {
 	if pair == nil {
 		return Gemma4AssistantVerifyResult{}, core.NewError("gemma4.assistant verify requires a target pair")
 	}
@@ -903,24 +1255,51 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockFromSession(target *ArchSession
 	if err := pair.validateTargetSessionArch(target.arch); err != nil {
 		return Gemma4AssistantVerifyResult{}, err
 	}
-	var suppress []int32
-	if len(suppressTokens) > 0 {
-		suppress = suppressTokens[0]
+	boundaryHidden := target.retainedHidden
+	if copyOutputs {
+		boundaryHidden = append([]byte(nil), target.retainedHidden...)
 	}
-	boundaryHidden := append([]byte(nil), target.retainedHidden...)
 	boundaryLogits, err := target.BoundaryLogits()
 	if err != nil {
 		return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant verify", "target boundary logits", err)
 	}
-	boundaryLogits = append([]byte(nil), boundaryLogits...)
+	if copyOutputs {
+		boundaryLogits = append([]byte(nil), boundaryLogits...)
+	}
 	first, err := greedyBF16Suppressed(boundaryLogits, target.arch.Vocab, suppress)
 	if err != nil {
 		return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant verify", "target boundary token", err)
 	}
 
 	posBefore := target.pos
-	result := Gemma4AssistantVerifyResult{
-		DraftedTokens: append([]int32(nil), draftTokens...),
+	result := Gemma4AssistantVerifyResult{}
+	if copyOutputs {
+		result.DraftedTokens = append([]int32(nil), draftTokens...)
+	} else {
+		result.DraftedTokens = draftTokens
+	}
+	if draftTokens[0] != first {
+		if copyOutputs {
+			result.TargetTokens = append(result.TargetTokens, first)
+		}
+		result.RejectedCount = len(draftTokens)
+		if copyOutputs {
+			result.RejectedTokens = append([]int32(nil), draftTokens...)
+		} else {
+			result.RejectedTokens = draftTokens
+		}
+		result.ReplacementToken = first
+		target.pos = posBefore
+		if err := target.truncateSpeculativeKV(target.pos); err != nil {
+			return Gemma4AssistantVerifyResult{}, err
+		}
+		target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
+		if copyOutputs {
+			target.rememberRetainedHidden(boundaryHidden)
+			target.rememberRetainedLogits(boundaryLogits)
+			result.Logits = append([]byte(nil), boundaryLogits...)
+		}
+		return result, nil
 	}
 	rows, hiddens, err := target.verifyGemma4AssistantDraftRows(draftTokens, suppress)
 	if err != nil {
@@ -936,51 +1315,62 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockFromSession(target *ArchSession
 		if i > 0 {
 			targetToken = rows[i-1]
 		}
-		if i == 0 {
+		if copyOutputs && i == 0 {
 			result.TargetTokens = append(result.TargetTokens, targetToken)
 		}
 		if targetToken != draft {
 			break
 		}
-		result.AcceptedTokens = append(result.AcceptedTokens, draft)
 		accepted++
+	}
+	if copyOutputs {
+		result.AcceptedTokens = append(result.AcceptedTokens, draftTokens[:accepted]...)
+	} else {
+		result.AcceptedTokens = draftTokens[:accepted]
 	}
 	result.AcceptedCount = accepted
 	result.RejectedCount = len(draftTokens) - accepted
 	result.AllAccepted = accepted == len(draftTokens)
 	if !result.AllAccepted {
-		result.RejectedTokens = append([]int32(nil), draftTokens[accepted:]...)
+		if copyOutputs {
+			result.RejectedTokens = append([]int32(nil), draftTokens[accepted:]...)
+		} else {
+			result.RejectedTokens = draftTokens[accepted:]
+		}
 		result.ReplacementToken = first
 		if accepted > 0 {
 			result.ReplacementToken = rows[accepted-1]
 		}
 	}
 
-	target.pos = posBefore + accepted
-	if err := target.truncateSpeculativeKV(target.pos); err != nil {
-		return Gemma4AssistantVerifyResult{}, err
-	}
-	target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
-
 	if accepted == 0 {
+		target.pos = posBefore
+		if err := target.truncateSpeculativeKV(target.pos); err != nil {
+			return Gemma4AssistantVerifyResult{}, err
+		}
+		target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
 		target.rememberRetainedHidden(boundaryHidden)
 		target.rememberRetainedLogits(boundaryLogits)
-		result.Logits = append([]byte(nil), boundaryLogits...)
+		if copyOutputs {
+			result.Logits = append([]byte(nil), boundaryLogits...)
+		}
 		return result, nil
 	}
 
-	hidden := hiddens[accepted-1]
-	if len(hidden) != target.arch.Hidden*bf16Size {
-		return Gemma4AssistantVerifyResult{}, core.NewError("gemma4.assistant verify accepted hidden has wrong size")
-	}
-	logits, err := target.headLogitsScratch(hidden, false)
+	hidden, logits, replacement, err := target.reforgeGemma4AssistantGreedyBoundary(posBefore, result.AcceptedTokens, suppress)
 	if err != nil {
-		return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant verify", "accepted logits", err)
+		return Gemma4AssistantVerifyResult{}, err
 	}
-	result.Hidden = append([]byte(nil), hidden...)
-	result.Logits = append([]byte(nil), logits...)
+	if !result.AllAccepted {
+		result.ReplacementToken = replacement
+	}
+	if copyOutputs {
+		result.Hidden = append([]byte(nil), hidden...)
+		result.Logits = append([]byte(nil), logits...)
+	}
 	target.rememberRetainedHidden(hidden)
-	target.rememberRetainedLogits(result.Logits)
+	target.rememberRetainedLogits(logits)
+	target.rememberGemma4AssistantAcceptedIDs(posBefore, result.AcceptedTokens)
 	return result, nil
 }
 
@@ -989,6 +1379,10 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockFromSession(target *ArchSession
 // is an already-emitted replacement token from the previous round and is
 // accepted without consuming a sampler draw.
 func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *ArchSession, draftTokens []int32, sampler *model.Sampler, params model.SampleParams, carry bool) (Gemma4AssistantVerifyResult, error) {
+	return pair.verifyDraftBlockSampledFromSession(target, draftTokens, sampler, params, carry, true, nil)
+}
+
+func (pair *Gemma4AssistantPair) verifyDraftBlockSampledFromSession(target *ArchSession, draftTokens []int32, sampler *model.Sampler, params model.SampleParams, carry, copyOutputs bool, history []int32) (Gemma4AssistantVerifyResult, error) {
 	if pair == nil {
 		return Gemma4AssistantVerifyResult{}, core.NewError("gemma4.assistant sampled verify requires a target pair")
 	}
@@ -1012,8 +1406,11 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 	boundaryLogits = append([]byte(nil), boundaryLogits...)
 
 	posBefore := target.pos
-	result := Gemma4AssistantVerifyResult{
-		DraftedTokens: append([]int32(nil), draftTokens...),
+	result := Gemma4AssistantVerifyResult{}
+	if copyOutputs {
+		result.DraftedTokens = append([]int32(nil), draftTokens...)
+	} else {
+		result.DraftedTokens = draftTokens
 	}
 	hiddens, err := target.verifyGemma4AssistantDraftHiddens(draftTokens)
 	if err != nil {
@@ -1024,22 +1421,23 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 	}
 
 	accepted := 0
+	verifyHistory := history
 	for i, draft := range draftTokens {
 		if i == 0 && carry {
-			result.AcceptedTokens = append(result.AcceptedTokens, draft)
 			accepted++
 			continue
 		}
-		rowLogits := boundaryLogits
-		if i > 0 {
-			rowLogits, err = target.headLogitsScratch(hiddens[i-1], false)
+		var targetToken int32
+		if i == 0 {
+			targetToken, err = target.sampleMTPTokenFromHidden(boundaryHidden, sampler, params, verifyHistory)
 			if err != nil {
-				return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant sampled verify", "target row logits", err)
+				return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant sampled verify", "sample verifier boundary", err)
 			}
-		}
-		targetToken, err := sampler.Sample(rowLogits, target.arch.Vocab, params)
-		if err != nil {
-			return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant sampled verify", "sample verifier row", err)
+		} else {
+			targetToken, err = target.sampleMTPTokenFromDenseBatchRowOrHidden(i-1, hiddens[i-1], sampler, params, verifyHistory)
+			if err != nil {
+				return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant sampled verify", "sample verifier row", err)
+			}
 		}
 		if len(result.TargetTokens) == 0 {
 			result.TargetTokens = append(result.TargetTokens, targetToken)
@@ -1048,14 +1446,25 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 			result.ReplacementToken = targetToken
 			break
 		}
-		result.AcceptedTokens = append(result.AcceptedTokens, draft)
 		accepted++
+		if params.RepeatPenalty > 1 {
+			verifyHistory = append(verifyHistory, targetToken)
+		}
+	}
+	if copyOutputs {
+		result.AcceptedTokens = append(result.AcceptedTokens, draftTokens[:accepted]...)
+	} else {
+		result.AcceptedTokens = draftTokens[:accepted]
 	}
 	result.AcceptedCount = accepted
 	result.RejectedCount = len(draftTokens) - accepted
 	result.AllAccepted = accepted == len(draftTokens)
 	if !result.AllAccepted {
-		result.RejectedTokens = append([]int32(nil), draftTokens[accepted:]...)
+		if copyOutputs {
+			result.RejectedTokens = append([]int32(nil), draftTokens[accepted:]...)
+		} else {
+			result.RejectedTokens = draftTokens[accepted:]
+		}
 	}
 
 	target.pos = posBefore + accepted
@@ -1067,7 +1476,9 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 	if accepted == 0 {
 		target.rememberRetainedHidden(boundaryHidden)
 		target.rememberRetainedLogits(boundaryLogits)
-		result.Logits = append([]byte(nil), boundaryLogits...)
+		if copyOutputs {
+			result.Logits = append([]byte(nil), boundaryLogits...)
+		}
 		return result, nil
 	}
 
@@ -1079,10 +1490,12 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockSampledFromSession(target *Arch
 	if err != nil {
 		return Gemma4AssistantVerifyResult{}, core.E("gemma4.assistant sampled verify", "accepted logits", err)
 	}
-	result.Hidden = append([]byte(nil), hidden...)
-	result.Logits = append([]byte(nil), logits...)
+	if copyOutputs {
+		result.Hidden = append([]byte(nil), hidden...)
+		result.Logits = append([]byte(nil), logits...)
+	}
 	target.rememberRetainedHidden(hidden)
-	target.rememberRetainedLogits(result.Logits)
+	target.rememberRetainedLogits(logits)
 	return result, nil
 }
 
@@ -1114,20 +1527,25 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		return Gemma4AssistantGenerateResult{}, err
 	}
 
-	result := Gemma4AssistantGenerateResult{
-		PromptTokens:       len(promptIDs),
-		DraftTokenSchedule: make([]int, 0, (maxNew+draftTokens-1)/draftTokens),
-	}
+	result := newGemma4AssistantGenerateResult(len(promptIDs), maxNew, draftTokens)
 	lastToken := promptIDs[len(promptIDs)-1]
 	carryLead := int32(-1)
 	stopped := false
+	draftBlockLimit := draftTokens
+	if draftBlockLimit > 1 {
+		draftBlockLimit = 1
+	}
+	acceptedBlockStreak := 0
 	for len(result.Tokens) < maxNew && !stopped {
 		remaining := maxNew - len(result.Tokens)
 		blockSize := draftTokens
+		if blockSize > draftBlockLimit {
+			blockSize = draftBlockLimit
+		}
 		if blockSize > remaining {
 			blockSize = remaining
 		}
-		draft, err := pair.DraftBlockFromSession(target, lastToken, blockSize, suppress)
+		draft, err := pair.draftBlockFromSessionWithSuppress(target, lastToken, blockSize, false, suppress)
 		if err != nil {
 			return result, err
 		}
@@ -1138,10 +1556,10 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		block := draft.Tokens
 		carryPresent := carryLead >= 0
 		if carryPresent {
-			block = append([]int32{carryLead}, draft.Tokens...)
+			block = target.mtpDraftVerifyBlockScratch(carryLead, draft.Tokens)
 		}
 		posBeforeVerify := target.pos
-		verify, err := pair.VerifyDraftBlockFromSession(target, block, suppress)
+		verify, err := pair.verifyDraftBlockFromSessionWithSuppress(target, block, false, suppress)
 		if err != nil {
 			return result, err
 		}
@@ -1157,12 +1575,17 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		result.RejectedTokens += verify.RejectedCount
 		for _, id := range verify.AcceptedTokens[emitStart:] {
 			keptAccepted++
+			beforeTokens := len(result.Tokens)
 			if nativeGemma4AssistantEmitToken(&result, id, eosID, yield) {
 				stopped = true
+			}
+			if len(result.Tokens) > beforeTokens {
+				lastToken = id
+				newDrafts++
+			}
+			if stopped {
 				break
 			}
-			lastToken = id
-			newDrafts++
 		}
 		result.AcceptedTokens += newDrafts
 		result.TargetTokens += newDrafts
@@ -1176,8 +1599,27 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 			break
 		}
 		if verify.AllAccepted {
+			if verify.AcceptedCount > 0 {
+				acceptedBlockStreak++
+			}
+			if acceptedBlockStreak >= 2 && draftBlockLimit < draftTokens {
+				draftBlockLimit++
+				acceptedBlockStreak = 0
+			}
 			carryLead = -1
 			continue
+		}
+
+		if verify.AcceptedCount == 0 && yield == nil {
+			if draftBlockLimit > 1 {
+				draftBlockLimit = 1
+			}
+			acceptedBlockStreak = 0
+			carryLead = -1
+			if err := nativeGemma4AssistantFinishFromTargetBoundaryLogits(target, &result, maxNew, eosID, suppress); err != nil {
+				return result, err
+			}
+			break
 		}
 
 		replacement := verify.ReplacementToken
@@ -1186,12 +1628,33 @@ func (pair *Gemma4AssistantPair) GenerateFromSessionEach(target *ArchSession, pr
 		}
 		result.TargetTokens++
 		lastToken = replacement
-		carryLead = replacement
+		if stopped {
+			carryLead = replacement
+			continue
+		}
+		if draftBlockLimit > 1 {
+			draftBlockLimit = 1
+		}
+		acceptedBlockStreak = 0
+		if verify.AcceptedCount > 0 {
+			carryLead = replacement
+			continue
+		}
+		if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
+			return result, err
+		}
+		result.TargetCalls++
+		carryLead = -1
+		if err := nativeGemma4AssistantFinishFromTargetCache(target, &result, maxNew, eosID, suppress, yield); err != nil {
+			return result, err
+		}
+		break
 	}
 	if carryLead >= 0 && !stopped && yield == nil {
 		if _, err := target.stepID(carryLead); err != nil {
 			return result, err
 		}
+		result.TargetCalls++
 	}
 	return result, nil
 }
@@ -1229,13 +1692,14 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		return Gemma4AssistantGenerateResult{}, err
 	}
 
-	result := Gemma4AssistantGenerateResult{
-		PromptTokens:       len(promptIDs),
-		DraftTokenSchedule: make([]int, 0, (maxNew+draftTokens-1)/draftTokens),
-	}
+	result := newGemma4AssistantGenerateResult(len(promptIDs), maxNew, draftTokens)
 	lastToken := promptIDs[len(promptIDs)-1]
 	carryLead := int32(-1)
 	stopped := false
+	history := target.sampleHistoryScratchFor(params, maxNew)
+	finalHistory := history
+	draftSampler := model.NewSampler(0)
+	defer func() { target.sampleHistory = finalHistory }()
 	for len(result.Tokens) < maxNew && !stopped {
 		remaining := maxNew - len(result.Tokens)
 		blockSize := draftTokens
@@ -1243,7 +1707,7 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 			blockSize = remaining
 		}
 		pickParams := target.mtpSamplePickParams(params, stopTokens, len(result.Tokens))
-		draft, err := pair.DraftBlockFromSession(target, lastToken, blockSize, pickParams.SuppressTokens)
+		draft, err := pair.draftBlockSampledFromSessionWithSuppress(target, lastToken, blockSize, false, pickParams, draftSampler)
 		if err != nil {
 			return result, err
 		}
@@ -1254,10 +1718,10 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		block := draft.Tokens
 		carryPresent := carryLead >= 0
 		if carryPresent {
-			block = append([]int32{carryLead}, draft.Tokens...)
+			block = target.mtpDraftVerifyBlockScratch(carryLead, draft.Tokens)
 		}
 		posBeforeVerify := target.pos
-		verify, err := pair.VerifyDraftBlockSampledFromSession(target, block, sampler, pickParams, carryPresent)
+		verify, err := pair.verifyDraftBlockSampledFromSession(target, block, sampler, pickParams, carryPresent, false, history)
 		if err != nil {
 			return result, err
 		}
@@ -1273,12 +1737,21 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		result.RejectedTokens += verify.RejectedCount
 		for _, id := range verify.AcceptedTokens[emitStart:] {
 			keptAccepted++
+			beforeTokens := len(result.Tokens)
 			if nativeGemma4AssistantEmitSampledToken(&result, id, stopTokens, yield) {
 				stopped = true
+			}
+			if len(result.Tokens) > beforeTokens {
+				lastToken = id
+				newDrafts++
+				if params.RepeatPenalty > 1 {
+					history = append(history, id)
+					finalHistory = history
+				}
+			}
+			if stopped {
 				break
 			}
-			lastToken = id
-			newDrafts++
 		}
 		result.AcceptedTokens += newDrafts
 		result.TargetTokens += newDrafts
@@ -1297,17 +1770,33 @@ func (pair *Gemma4AssistantPair) GenerateSampledFromSessionEach(target *ArchSess
 		}
 
 		replacement := verify.ReplacementToken
-		if nativeGemma4AssistantEmitSampledToken(&result, replacement, stopTokens, yield) {
+		result.Tokens = append(result.Tokens, replacement)
+		yieldStopped := yield != nil && !yield(replacement)
+		stopToken := nativeTokenInSet(replacement, stopTokens)
+		if yieldStopped || stopToken {
 			stopped = true
+		}
+		if params.RepeatPenalty > 1 {
+			history = append(history, replacement)
+			finalHistory = history
 		}
 		result.TargetTokens++
 		lastToken = replacement
+		if stopToken && !yieldStopped {
+			if err := target.commitGemma4AssistantReplacement(replacement); err != nil {
+				return result, err
+			}
+			result.TargetCalls++
+			carryLead = -1
+			continue
+		}
 		carryLead = replacement
 	}
 	if carryLead >= 0 && !stopped && yield == nil {
 		if _, err := target.stepID(carryLead); err != nil {
 			return result, err
 		}
+		result.TargetCalls++
 	}
 	return result, nil
 }
@@ -1328,7 +1817,7 @@ func (s *ArchSession) prepareGemma4AssistantPrompt(promptIDs []int32) error {
 	}
 	if hidden := s.cachedPromptHiddenFor(promptIDs); hidden != nil {
 		s.pos = len(promptIDs)
-		if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+		if err := s.truncateSpeculativeKV(s.pos); err != nil {
 			return err
 		}
 		resident := s.cachedIDs[:0]
@@ -1347,7 +1836,7 @@ func (s *ArchSession) prepareGemma4AssistantPrompt(promptIDs []int32) error {
 		lcp = len(promptIDs) - 1
 	}
 	s.pos = lcp
-	if err := s.state.truncateDevicePagedKV(s.pos); err != nil {
+	if err := s.truncateSpeculativeKV(s.pos); err != nil {
 		return err
 	}
 	hidden, logits, err := s.prefillPromptCacheEntry(promptIDs[lcp:])
@@ -1376,6 +1865,42 @@ func nativeGemma4AssistantEmitToken(result *Gemma4AssistantGenerateResult, id in
 	return false
 }
 
+func nativeGemma4AssistantFinishFromTargetBoundaryLogits(target *ArchSession, result *Gemma4AssistantGenerateResult, maxNew, eosID int, suppress []int32) error {
+	remaining := maxNew - len(result.Tokens)
+	if remaining <= 0 {
+		return nil
+	}
+	logits, err := target.BoundaryLogits()
+	if err != nil {
+		return err
+	}
+	tail, err := target.generateFromCacheLogitsEach(logits, remaining, eosID, suppress, nil, func(id int32) bool {
+		return !nativeGemma4AssistantEmitToken(result, id, eosID, nil)
+	})
+	if err != nil {
+		return err
+	}
+	result.TargetCalls++
+	result.TargetTokens += len(tail)
+	return nil
+}
+
+func nativeGemma4AssistantFinishFromTargetCache(target *ArchSession, result *Gemma4AssistantGenerateResult, maxNew, eosID int, suppress []int32, yield Gemma4AssistantTokenSink) error {
+	remaining := maxNew - len(result.Tokens)
+	if remaining <= 0 {
+		return nil
+	}
+	tail, err := target.GenerateFromCacheEachWithSuppression(remaining, eosID, suppress, func(id int32) bool {
+		return !nativeGemma4AssistantEmitToken(result, id, eosID, yield)
+	})
+	if err != nil {
+		return err
+	}
+	result.TargetCalls++
+	result.TargetTokens += len(tail)
+	return nil
+}
+
 func nativeGemma4AssistantEmitSampledToken(result *Gemma4AssistantGenerateResult, id int32, stopTokens []int32, yield Gemma4AssistantTokenSink) bool {
 	result.Tokens = append(result.Tokens, id)
 	return (yield != nil && !yield(id)) || nativeTokenInSet(id, stopTokens)
@@ -1395,12 +1920,26 @@ func nativeGemma4AssistantRollbackAccepted(target *ArchSession, posBefore int, a
 	return target.retainMTPCommittedBoundary(posBefore, accepted[:keep])
 }
 
+func (s *ArchSession) commitGemma4AssistantReplacement(id int32) error {
+	if s == nil {
+		return core.NewError("gemma4.assistant replacement commit target session is nil")
+	}
+	posBefore := s.pos
+	hidden, err := s.stepID(id)
+	if err != nil {
+		return err
+	}
+	s.rememberRetainedHidden(hidden)
+	s.rememberGemma4AssistantAcceptedIDs(posBefore, []int32{id})
+	return nil
+}
+
 func (s *ArchSession) verifyGemma4AssistantDraftRows(draftTokens, suppress []int32) ([]int32, [][]byte, error) {
 	hiddens, err := s.verifyGemma4AssistantDraftHiddens(draftTokens)
 	if err != nil {
 		return nil, nil, err
 	}
-	rows := make([]int32, len(draftTokens))
+	rows := s.mtpVerifyRowScratch(len(draftTokens))
 	if len(hiddens) != len(draftTokens) {
 		return nil, nil, core.NewError("gemma4.assistant verify target rows are incomplete")
 	}
@@ -1426,6 +1965,21 @@ func (s *ArchSession) verifyGemma4AssistantDraftHiddens(draftTokens []int32) ([]
 		return hiddens, nil
 	}
 
+	rowBytes := s.arch.Hidden * bf16Size
+	if rows, ok := s.mtpVerifyHiddenRowsScratch(len(draftTokens), rowBytes); ok {
+		for i, draft := range draftTokens {
+			hidden, err := s.stepID(draft)
+			if err != nil {
+				return nil, err
+			}
+			if len(hidden) != rowBytes {
+				return nil, core.NewError("gemma4.assistant verify sequential hidden has wrong size")
+			}
+			copy(rows[i], hidden)
+		}
+		return rows, nil
+	}
+
 	hiddens = make([][]byte, 0, len(draftTokens))
 	for _, draft := range draftTokens {
 		hidden, err := s.stepID(draft)
@@ -1435,6 +1989,40 @@ func (s *ArchSession) verifyGemma4AssistantDraftHiddens(draftTokens []int32) ([]
 		hiddens = append(hiddens, append([]byte(nil), hidden...))
 	}
 	return hiddens, nil
+}
+
+func (s *ArchSession) reforgeGemma4AssistantGreedyBoundary(posBefore int, accepted []int32, suppress []int32) (hidden, logits []byte, replacement int32, err error) {
+	if s == nil {
+		return nil, nil, 0, core.NewError("gemma4.assistant verify reforge target session is nil")
+	}
+	if len(accepted) == 0 {
+		return nil, nil, 0, core.NewError("gemma4.assistant verify reforge requires an accepted boundary")
+	}
+	if posBefore < 0 || posBefore+len(accepted) > s.maxLen {
+		return nil, nil, 0, core.NewError("gemma4.assistant verify reforge boundary is out of range")
+	}
+	s.pos = posBefore
+	if err := s.truncateSpeculativeKV(s.pos); err != nil {
+		return nil, nil, 0, err
+	}
+	for _, id := range accepted {
+		hidden, err = s.stepID(id)
+		if err != nil {
+			return nil, nil, 0, core.E("gemma4.assistant verify", "reforge accepted boundary", err)
+		}
+	}
+	if len(hidden) != s.arch.Hidden*bf16Size {
+		return nil, nil, 0, core.NewError("gemma4.assistant verify reforged hidden has wrong size")
+	}
+	logits, err = s.headLogitsScratch(hidden, false)
+	if err != nil {
+		return nil, nil, 0, core.E("gemma4.assistant verify", "reforged accepted logits", err)
+	}
+	replacement, err = greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
+	if err != nil {
+		return nil, nil, 0, core.E("gemma4.assistant verify", "reforged replacement", err)
+	}
+	return hidden, logits, replacement, nil
 }
 
 func (s *ArchSession) rememberGemma4AssistantAcceptedIDs(posBefore int, accepted []int32) {
@@ -1450,18 +2038,30 @@ func (s *ArchSession) rememberGemma4AssistantAcceptedIDs(posBefore int, accepted
 }
 
 func (pair *Gemma4AssistantPair) draftStepFromProjected(projected []byte, targetKVs Gemma4AssistantTargetKVByType, suppressTokens ...[]int32) (Gemma4AssistantDraftStepResult, error) {
+	return pair.draftStepFromProjectedWithSuppress(projected, targetKVs, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) draftStepFromProjectedInto(projected []byte, targetKVs Gemma4AssistantTargetKVByType, normedOut, hiddenOut, logitsOut []byte, logitScores []float32, logitSelected []int, layerScratch *gemma4AssistantDraftLayerScratch, suppressTokens ...[]int32) (Gemma4AssistantDraftStepResult, error) {
+	return pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, normedOut, hiddenOut, logitsOut, logitScores, logitSelected, layerScratch, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (pair *Gemma4AssistantPair) draftStepFromProjectedWithSuppress(projected []byte, targetKVs Gemma4AssistantTargetKVByType, suppress []int32) (Gemma4AssistantDraftStepResult, error) {
+	return pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, nil, nil, nil, nil, nil, nil, suppress)
+}
+
+func (pair *Gemma4AssistantPair) draftStepFromProjectedIntoWithSuppress(projected []byte, targetKVs Gemma4AssistantTargetKVByType, normedOut, hiddenOut, logitsOut []byte, logitScores []float32, logitSelected []int, layerScratch *gemma4AssistantDraftLayerScratch, suppress []int32) (Gemma4AssistantDraftStepResult, error) {
 	if pair == nil || pair.Assistant == nil {
 		return Gemma4AssistantDraftStepResult{}, core.NewError("gemma4.assistant draft step requires a validated pair")
 	}
-	normed, hidden, err := pair.Assistant.DraftStepActivations(projected, targetKVs)
+	normed, hidden, err := pair.Assistant.draftStepActivationsIntoScratch(normedOut, hiddenOut, projected, targetKVs, layerScratch)
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	logits, err := pair.Assistant.DraftLogits(normed)
+	logits, err := pair.Assistant.draftLogitsIntoScratch(logitsOut, normed, logitScores, logitSelected)
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
-	token, err := pair.Assistant.DraftGreedyToken(logits, suppressTokens...)
+	token, err := pair.Assistant.draftGreedyTokenWithSuppress(logits, suppress)
 	if err != nil {
 		return Gemma4AssistantDraftStepResult{}, err
 	}
@@ -1502,6 +2102,13 @@ func (m *Gemma4AssistantModel) DraftAttention(layerIdx int, hiddenStates []byte,
 }
 
 func (m *Gemma4AssistantModel) DraftAttentionInto(out []byte, layerIdx int, hiddenStates []byte, targetKV Gemma4AssistantTargetKV) ([]byte, error) {
+	return m.draftAttentionIntoScratch(out, layerIdx, hiddenStates, targetKV, nil)
+}
+
+func (m *Gemma4AssistantModel) draftAttentionIntoScratch(out []byte, layerIdx int, hiddenStates []byte, targetKV Gemma4AssistantTargetKV, scratch *gemma4AssistantDraftLayerScratch) ([]byte, error) {
+	if scratch == nil {
+		scratch = &gemma4AssistantDraftLayerScratch{}
+	}
 	layer, nHeads, headDim, err := m.validateDraftAttentionInput(layerIdx, hiddenStates, targetKV)
 	if err != nil {
 		return nil, err
@@ -1528,19 +2135,20 @@ func (m *Gemma4AssistantModel) DraftAttentionInto(out []byte, layerIdx int, hidd
 		return nil, err
 	}
 
-	q, err := MatVecBF16(qProj.Data, hiddenStates, nHeads*headDim, m.Arch.Hidden)
+	qBytes := nHeads * headDim * bf16Size
+	q, err := MatVecBF16Into(scratch.bytes(gemma4AssistantDraftScratchAttnQ, qBytes), qProj.Data, hiddenStates, nHeads*headDim, m.Arch.Hidden)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft attention", "q_proj", err)
 	}
-	q, err = RMSNormBF16(q, qNorm.Data, nHeads, headDim, m.Arch.Eps)
+	q, err = RMSNormBF16Into(scratch.bytes(gemma4AssistantDraftScratchAttnQNorm, qBytes), q, qNorm.Data, nHeads, headDim, m.Arch.Eps)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft attention", "q_norm", err)
 	}
-	q, err = nativeGemma4AssistantRoPE(q, m, layer, nHeads, headDim, targetKV.Offset)
+	q, err = nativeGemma4AssistantRoPEInto(scratch.bytes(gemma4AssistantDraftScratchAttnQRope, qBytes), q, m, layer, nHeads, headDim, targetKV.Offset)
 	if err != nil {
 		return nil, err
 	}
-	attn, err := SDPA(q, targetKV.Key, targetKV.Value, 1, nHeads, kvHeads, headDim, targetKV.Length, nativeGemma4AssistantAttentionScale(m))
+	attn, err := SDPAInto(scratch.bytes(gemma4AssistantDraftScratchAttn, qBytes), q, targetKV.Key, targetKV.Value, 1, nHeads, kvHeads, headDim, targetKV.Length, nativeGemma4AssistantAttentionScale(m))
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft attention", "target kv sdpa", err)
 	}
@@ -1556,6 +2164,10 @@ func (m *Gemma4AssistantModel) DraftStepActivations(projectedHidden []byte, targ
 }
 
 func (m *Gemma4AssistantModel) DraftStepActivationsInto(normedOut, targetHiddenOut []byte, projectedHidden []byte, targetKVs Gemma4AssistantTargetKVByType) (normed []byte, targetHidden []byte, err error) {
+	return m.draftStepActivationsIntoScratch(normedOut, targetHiddenOut, projectedHidden, targetKVs, nil)
+}
+
+func (m *Gemma4AssistantModel) draftStepActivationsIntoScratch(normedOut, targetHiddenOut []byte, projectedHidden []byte, targetKVs Gemma4AssistantTargetKVByType, scratch *gemma4AssistantDraftLayerScratch) (normed []byte, targetHidden []byte, err error) {
 	if m == nil {
 		return nil, nil, core.NewError("gemma4.assistant draft step model is nil")
 	}
@@ -1573,7 +2185,12 @@ func (m *Gemma4AssistantModel) DraftStepActivationsInto(normedOut, targetHiddenO
 		if !ok || !targetKV.HasState() {
 			return nil, nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layerType)
 		}
-		h, err = m.DraftLayer(idx, h, targetKV)
+		if scratch == nil {
+			h, err = m.DraftLayer(idx, h, targetKV)
+		} else {
+			layerOut := scratch.bytes(gemma4AssistantDraftScratchLayerOut, hidden*bf16Size)
+			h, err = m.draftLayerIntoScratch(layerOut, idx, h, targetKV, scratch)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1590,6 +2207,13 @@ func (m *Gemma4AssistantModel) DraftStepActivationsInto(normedOut, targetHiddenO
 }
 
 func (m *Gemma4AssistantModel) DraftLayerInto(out []byte, layerIdx int, hiddenStates []byte, targetKV Gemma4AssistantTargetKV) ([]byte, error) {
+	return m.draftLayerIntoScratch(out, layerIdx, hiddenStates, targetKV, nil)
+}
+
+func (m *Gemma4AssistantModel) draftLayerIntoScratch(out []byte, layerIdx int, hiddenStates []byte, targetKV Gemma4AssistantTargetKV, scratch *gemma4AssistantDraftLayerScratch) ([]byte, error) {
+	if scratch == nil {
+		scratch = &gemma4AssistantDraftLayerScratch{}
+	}
 	hidden, dFF, err := m.validateDraftLayerInput(layerIdx, hiddenStates)
 	if err != nil {
 		return nil, err
@@ -1628,49 +2252,51 @@ func (m *Gemma4AssistantModel) DraftLayerInto(out []byte, layerIdx int, hiddenSt
 		return nil, err
 	}
 
-	normed, err := RMSNormBF16(hiddenStates, inputNorm.Data, 1, hidden, m.Arch.Eps)
+	hiddenBytes := hidden * bf16Size
+	ffBytes := dFF * bf16Size
+	normed, err := RMSNormBF16Into(scratch.bytes(gemma4AssistantDraftScratchInputNorm, hiddenBytes), hiddenStates, inputNorm.Data, 1, hidden, m.Arch.Eps)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "input norm", err)
 	}
-	attnOut, err := m.DraftAttention(layerIdx, normed, targetKV)
+	attnOut, err := m.draftAttentionIntoScratch(scratch.bytes(gemma4AssistantDraftScratchAttnOut, hiddenBytes), layerIdx, normed, targetKV, scratch)
 	if err != nil {
 		return nil, err
 	}
-	attnResidual, err := RMSNormBF16(attnOut, postAttnNorm.Data, 1, hidden, m.Arch.Eps)
+	attnResidual, err := RMSNormBF16Into(scratch.bytes(gemma4AssistantDraftScratchAttnResidual, hiddenBytes), attnOut, postAttnNorm.Data, 1, hidden, m.Arch.Eps)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "post attention norm", err)
 	}
-	h, err := AddBF16(hiddenStates, attnResidual)
-	if err != nil {
+	h := scratch.bytes(gemma4AssistantDraftScratchResidual, hiddenBytes)
+	if err := AddBF16Into(h, hiddenStates, attnResidual); err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "attention residual", err)
 	}
 
-	ffIn, err := RMSNormBF16(h, preFFNorm.Data, 1, hidden, m.Arch.Eps)
+	ffIn, err := RMSNormBF16Into(scratch.bytes(gemma4AssistantDraftScratchFFIn, hiddenBytes), h, preFFNorm.Data, 1, hidden, m.Arch.Eps)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "pre feed-forward norm", err)
 	}
-	gate, err := MatVecBF16(gateProj.Data, ffIn, dFF, hidden)
+	gate, err := MatVecBF16Into(scratch.bytes(gemma4AssistantDraftScratchGate, ffBytes), gateProj.Data, ffIn, dFF, hidden)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "mlp gate projection", err)
 	}
-	up, err := MatVecBF16(upProj.Data, ffIn, dFF, hidden)
+	up, err := MatVecBF16Into(scratch.bytes(gemma4AssistantDraftScratchUp, ffBytes), upProj.Data, ffIn, dFF, hidden)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "mlp up projection", err)
 	}
-	gated, err := GeluGateMulBF16(gate, up)
-	if err != nil {
+	gated := scratch.bytes(gemma4AssistantDraftScratchGated, ffBytes)
+	if err := GeluGateMulBF16Into(gated, gate, up); err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "mlp gate activation", err)
 	}
-	ff, err := MatVecBF16(downProj.Data, gated, hidden, dFF)
+	ff, err := MatVecBF16Into(scratch.bytes(gemma4AssistantDraftScratchFF, hiddenBytes), downProj.Data, gated, hidden, dFF)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "mlp down projection", err)
 	}
-	ffResidual, err := RMSNormBF16(ff, postFFNorm.Data, 1, hidden, m.Arch.Eps)
+	ffResidual, err := RMSNormBF16Into(scratch.bytes(gemma4AssistantDraftScratchFFResidual, hiddenBytes), ff, postFFNorm.Data, 1, hidden, m.Arch.Eps)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "post feed-forward norm", err)
 	}
-	hNext, err := AddBF16(h, ffResidual)
-	if err != nil {
+	hNext := scratch.bytes(gemma4AssistantDraftScratchNext, hiddenBytes)
+	if err := AddBF16Into(hNext, h, ffResidual); err != nil {
 		return nil, core.E("gemma4.assistant draft layer", "feed-forward residual", err)
 	}
 	if len(layerScalar) == bf16Size {
@@ -1768,20 +2394,24 @@ func nativeGemma4AssistantTargetKVByteLen(kv Gemma4AssistantTargetKV, headDim in
 }
 
 func nativeGemma4AssistantRoPE(q []byte, m *Gemma4AssistantModel, layer model.LayerSpec, nHeads, headDim, offset int) ([]byte, error) {
+	return nativeGemma4AssistantRoPEInto(nil, q, m, layer, nHeads, headDim, offset)
+}
+
+func nativeGemma4AssistantRoPEInto(out []byte, q []byte, m *Gemma4AssistantModel, layer model.LayerSpec, nHeads, headDim, offset int) ([]byte, error) {
 	rotaryDim := nativeGemma4AssistantLayerRotaryDim(m, layer, headDim)
 	scale := m.Arch.RopeScale
 	if scale == 0 {
 		scale = 1
 	}
 	if len(m.Arch.RopeFreqs) > 0 {
-		out, err := RoPEFreqsBF16(q, 1, nHeads, headDim, rotaryDim, m.Arch.RopeFreqs, scale, offset, false)
+		out, err := RoPEFreqsBF16Into(out, q, 1, nHeads, headDim, rotaryDim, m.Arch.RopeFreqs, scale, offset, false)
 		if err != nil {
 			return nil, core.E("gemma4.assistant draft attention", "q_rope", err)
 		}
 		return out, nil
 	}
 	base := nativeGemma4AssistantLayerRopeBase(m, layer)
-	out, err := RoPEDimsBF16(q, 1, nHeads, headDim, rotaryDim, base, scale, offset, false)
+	out, err := RoPEDimsBF16Into(out, q, 1, nHeads, headDim, rotaryDim, base, scale, offset, false)
 	if err != nil {
 		return nil, core.E("gemma4.assistant draft attention", "q_rope", err)
 	}
@@ -1877,6 +2507,10 @@ func (m *Gemma4AssistantModel) DraftLogits(hiddenStates []byte) ([]byte, error) 
 }
 
 func (m *Gemma4AssistantModel) DraftLogitsInto(out []byte, hiddenStates []byte) ([]byte, error) {
+	return m.draftLogitsIntoScratch(out, hiddenStates, nil, nil)
+}
+
+func (m *Gemma4AssistantModel) draftLogitsIntoScratch(out []byte, hiddenStates []byte, scores []float32, selected []int) ([]byte, error) {
 	if m == nil {
 		return nil, core.NewError("gemma4.assistant logits model is nil")
 	}
@@ -1889,7 +2523,7 @@ func (m *Gemma4AssistantModel) DraftLogitsInto(out []byte, hiddenStates []byte) 
 		return nil, core.NewError(core.Sprintf("gemma4.assistant logits hidden bytes = %d, want %d", len(hiddenStates), hidden*bf16Size))
 	}
 	if m.UseOrderedEmbeddings {
-		return m.draftOrderedLogitsInto(out, hiddenStates)
+		return m.draftOrderedLogitsIntoScratch(out, hiddenStates, scores, selected)
 	}
 	embed, err := nativeGemma4AssistantBF16Matrix(m, "model.embed_tokens.weight", vocab, hidden)
 	if err != nil {
@@ -1912,6 +2546,10 @@ func (m *Gemma4AssistantModel) DraftLogitsInto(out []byte, hiddenStates []byte) 
 }
 
 func (m *Gemma4AssistantModel) draftOrderedLogitsInto(out []byte, hiddenStates []byte) ([]byte, error) {
+	return m.draftOrderedLogitsIntoScratch(out, hiddenStates, nil, nil)
+}
+
+func (m *Gemma4AssistantModel) draftOrderedLogitsIntoScratch(out []byte, hiddenStates []byte, scores []float32, selected []int) ([]byte, error) {
 	hidden := m.Arch.Hidden
 	vocab := m.Arch.Vocab
 	numCentroids := m.NumCentroids
@@ -1939,11 +2577,15 @@ func (m *Gemma4AssistantModel) draftOrderedLogitsInto(out []byte, hiddenStates [
 		return nil, err
 	}
 
-	scores := make([]float32, numCentroids)
+	if cap(scores) < numCentroids {
+		scores = make([]float32, numCentroids)
+	} else {
+		scores = scores[:numCentroids]
+	}
 	for c := 0; c < numCentroids; c++ {
 		scores[c] = nativeGemma4AssistantDotBF16Row(hiddenStates, centroids.Data, c, hidden)
 	}
-	selected := nativeGemma4AssistantTopK(scores, topK)
+	selected = nativeGemma4AssistantTopKInto(selected, scores, topK)
 
 	outLen := vocab * bf16Size
 	if cap(out) < outLen {
@@ -2112,7 +2754,15 @@ func nativeGemma4AssistantDotBF16Row(vec, rows []byte, row, cols int) float32 {
 }
 
 func nativeGemma4AssistantTopK(scores []float32, k int) []int {
-	selected := make([]int, 0, k)
+	return nativeGemma4AssistantTopKInto(nil, scores, k)
+}
+
+func nativeGemma4AssistantTopKInto(selected []int, scores []float32, k int) []int {
+	if cap(selected) < k {
+		selected = make([]int, 0, k)
+	} else {
+		selected = selected[:0]
+	}
 	for idx, score := range scores {
 		pos := len(selected)
 		for pos > 0 && score > scores[selected[pos-1]] {
@@ -2132,6 +2782,10 @@ func nativeGemma4AssistantTopK(scores []float32, k int) []int {
 }
 
 func (m *Gemma4AssistantModel) DraftGreedyToken(logits []byte, suppressTokens ...[]int32) (int32, error) {
+	return m.draftGreedyTokenWithSuppress(logits, nativeGemma4AssistantSuppressArg(suppressTokens))
+}
+
+func (m *Gemma4AssistantModel) draftGreedyTokenWithSuppress(logits []byte, suppressed []int32) (int32, error) {
 	if m == nil {
 		return 0, core.NewError("gemma4.assistant greedy token model is nil")
 	}
@@ -2141,10 +2795,6 @@ func (m *Gemma4AssistantModel) DraftGreedyToken(logits []byte, suppressTokens ..
 	}
 	if len(logits) != vocab*bf16Size {
 		return 0, core.NewError(core.Sprintf("gemma4.assistant greedy token logits bytes = %d, want %d", len(logits), vocab*bf16Size))
-	}
-	var suppressed []int32
-	if len(suppressTokens) > 0 {
-		suppressed = suppressTokens[0]
 	}
 	var bestID int32 = -1
 	var best float32

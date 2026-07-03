@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"image"
+	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
@@ -63,17 +64,7 @@ func VisionImagePatches(data []byte, cfg *VisionImageFeatureConfig) ([]byte, int
 		return nil, 0, core.NewError("native.VisionImagePatches: image has empty bounds")
 	}
 
-	src := make([]float64, int(h)*int(w)*3)
-	idx := 0
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r, g, b, _ := img.At(x, y).RGBA()
-			src[idx] = float64(r >> 8)
-			src[idx+1] = float64(g >> 8)
-			src[idx+2] = float64(b >> 8)
-			idx += 3
-		}
-	}
+	src := visionImageRGBFloat64(img, bounds)
 
 	maxPatches := cfg.MaxSoftTokens * cfg.PoolingKernelSize * cfg.PoolingKernelSize
 	th, tw := h, w
@@ -102,6 +93,102 @@ func VisionImagePatches(data []byte, cfg *VisionImageFeatureConfig) ([]byte, int
 	grid := (th / cfg.PatchSize) * (tw / cfg.PatchSize)
 	softTokens := int(grid / (cfg.PoolingKernelSize * cfg.PoolingKernelSize))
 	return patchifyVisionPixelsBF16(pixels, th, tw, cfg.PatchSize), softTokens, nil
+}
+
+func visionImageRGBFloat64(img image.Image, bounds image.Rectangle) []float64 {
+	switch src := img.(type) {
+	case *image.NRGBA:
+		return visionNRGBAToRGBFloat64(src, bounds)
+	case *image.RGBA:
+		return visionRGBAToRGBFloat64(src, bounds)
+	case *image.YCbCr:
+		return visionYCbCrToRGBFloat64(src, bounds)
+	default:
+		return visionGenericRGBFloat64(img, bounds)
+	}
+}
+
+func visionNRGBAToRGBFloat64(img *image.NRGBA, bounds image.Rectangle) []float64 {
+	h, w := bounds.Dy(), bounds.Dx()
+	out := make([]float64, h*w*3)
+	dst := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		src := img.PixOffset(bounds.Min.X, y)
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			a := img.Pix[src+3]
+			if a == 0xff {
+				out[dst] = float64(img.Pix[src])
+				out[dst+1] = float64(img.Pix[src+1])
+				out[dst+2] = float64(img.Pix[src+2])
+			} else {
+				out[dst] = float64(visionNRGBAPremul8(img.Pix[src], a))
+				out[dst+1] = float64(visionNRGBAPremul8(img.Pix[src+1], a))
+				out[dst+2] = float64(visionNRGBAPremul8(img.Pix[src+2], a))
+			}
+			dst += 3
+			src += 4
+		}
+	}
+	return out
+}
+
+func visionNRGBAPremul8(v, a byte) byte {
+	x := uint32(v)
+	x |= x << 8
+	x *= uint32(a)
+	x /= 0xff
+	return byte(x >> 8)
+}
+
+func visionRGBAToRGBFloat64(img *image.RGBA, bounds image.Rectangle) []float64 {
+	h, w := bounds.Dy(), bounds.Dx()
+	out := make([]float64, h*w*3)
+	dst := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		src := img.PixOffset(bounds.Min.X, y)
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			out[dst] = float64(img.Pix[src])
+			out[dst+1] = float64(img.Pix[src+1])
+			out[dst+2] = float64(img.Pix[src+2])
+			dst += 3
+			src += 4
+		}
+	}
+	return out
+}
+
+func visionYCbCrToRGBFloat64(img *image.YCbCr, bounds image.Rectangle) []float64 {
+	h, w := bounds.Dy(), bounds.Dx()
+	out := make([]float64, h*w*3)
+	dst := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			yi := img.YOffset(x, y)
+			ci := img.COffset(x, y)
+			r, g, b := color.YCbCrToRGB(img.Y[yi], img.Cb[ci], img.Cr[ci])
+			out[dst] = float64(r)
+			out[dst+1] = float64(g)
+			out[dst+2] = float64(b)
+			dst += 3
+		}
+	}
+	return out
+}
+
+func visionGenericRGBFloat64(img image.Image, bounds image.Rectangle) []float64 {
+	h, w := bounds.Dy(), bounds.Dx()
+	out := make([]float64, h*w*3)
+	idx := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			out[idx] = float64(r >> 8)
+			out[idx+1] = float64(g >> 8)
+			out[idx+2] = float64(b >> 8)
+			idx += 3
+		}
+	}
+	return out
 }
 
 func visionAspectPreservingSize(height, width, patchSize, maxPatches, pool int32) (int32, int32, error) {

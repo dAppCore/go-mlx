@@ -76,6 +76,44 @@ func loadContractTokenModel(tb testing.TB, dir string) model.TokenModel {
 	return tm
 }
 
+// BenchmarkRealE2BContractOpenSession isolates the fresh-session setup paid by
+// the contract path before the first token is prefetched. It keeps the E2B
+// checkpoint loaded once, then opens/closes contract sessions inside the timer.
+func BenchmarkRealE2BContractOpenSession(b *testing.B) {
+	requireNativeRuntime(b)
+	dir := realE2BDir()
+	if dir == "" {
+		b.Skip("set E2B_Q4_DIR to the gemma-4-e2b-it-4bit snapshot dir (opt-in real-model bench)")
+	}
+	defer debug.SetMemoryLimit(debug.SetMemoryLimit(60 << 30))
+	if b.N > contractBenchMax {
+		b.Skipf("real-e2b contract session bench is capped at -benchtime=%dx (OOM guard); got b.N=%d", contractBenchMax, b.N)
+	}
+
+	tm := loadContractTokenModel(b, dir)
+	if c, ok := tm.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+	sm, ok := tm.(model.SessionModel)
+	if !ok {
+		b.Fatalf("LoadTokenModelDir(%s) = %T, want model.SessionModel", dir, tm)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sess, err := sm.OpenSession()
+		if err != nil {
+			b.Fatalf("OpenSession (op %d): %v", i, err)
+		}
+		if c, ok := sess.(interface{ Close() error }); ok {
+			if err := c.Close(); err != nil {
+				b.Fatalf("Close session (op %d): %v", i, err)
+			}
+		}
+	}
+}
+
 // BenchmarkRealE2BContractGreedy measures the heap allocations of the GREEDY contract loop
 // (model.Generate) over a real E2B-4bit TokenModel — the deterministic serve path (Temperature<=0
 // in register_native.go falls to model.Generate). Greedy output is reproducible, so this is the

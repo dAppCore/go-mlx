@@ -1101,6 +1101,101 @@ func TestHeadEncoderBF16GreedyAtOffsetMatchesFullLogits(t *testing.T) {
 	}
 }
 
+func TestHeadEncoderBF16TopKTokenAtOffsetMatchesStandalone(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 19
+	const eps = float32(1e-6)
+	hidden0 := toBF16Bytes(syntheticFloat32(dModel, 51))
+	hidden1 := toBF16Bytes(syntheticFloat32(dModel, 73))
+	packed := append(append([]byte(nil), hidden0...), hidden1...)
+	h := &headEncoder{
+		finalNorm: copyView(toBF16Bytes(syntheticFloat32(dModel, 53))),
+		weight:    copyView(toBF16Bytes(syntheticFloat32(vocab*dModel, 57))),
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+	}
+	params := model.SampleParams{
+		Temperature:    0.8,
+		TopK:           7,
+		TopP:           0.75,
+		MinP:           0.01,
+		RepeatPenalty:  1.2,
+		SuppressTokens: []int32{2, 7},
+	}
+	history := []int32{3, 5, 8}
+	draw := model.NewSampler(123).Draw()
+	want, ok, err := h.sampleTopKTokenInPool(hidden1, params, draw, history)
+	if err != nil {
+		t.Fatalf("headEncoder standalone top-k sample: %v", err)
+	}
+	if !ok {
+		t.Fatal("headEncoder standalone top-k sample declined BF16 head")
+	}
+
+	var got int32
+	withAutoreleasePool(func() {
+		got, ok, err = h.sampleTopKTokenBufferAtInPool(sharedBytes(packed), uint(len(hidden0)), params, draw, history)
+	})
+	if err != nil {
+		t.Fatalf("headEncoder top-k sample at offset: %v", err)
+	}
+	if !ok {
+		t.Fatal("headEncoder top-k sample at offset declined BF16 head")
+	}
+	if got != want {
+		t.Fatalf("headEncoder top-k sample at offset = %d, want standalone sample %d", got, want)
+	}
+}
+
+func TestHeadEncoderBF16LogitsSampleAtOffsetMatchesStandalone(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 19
+	const eps = float32(1e-6)
+	hidden0 := toBF16Bytes(syntheticFloat32(dModel, 51))
+	hidden1 := toBF16Bytes(syntheticFloat32(dModel, 73))
+	packed := append(append([]byte(nil), hidden0...), hidden1...)
+	h := &headEncoder{
+		finalNorm: copyView(toBF16Bytes(syntheticFloat32(dModel, 53))),
+		weight:    copyView(toBF16Bytes(syntheticFloat32(vocab*dModel, 57))),
+		dModel:    dModel,
+		vocab:     vocab,
+		eps:       eps,
+	}
+	params := model.SampleParams{
+		Temperature:    0.8,
+		TopP:           0.85,
+		MinP:           0.01,
+		RepeatPenalty:  1.2,
+		SuppressTokens: []int32{2, 7},
+	}
+	history := []int32{3, 5, 8}
+	draw := model.NewSampler(123).Draw()
+	want, ok, err := h.sampleLogitsTokenInPool(hidden1, params, draw, history)
+	if err != nil {
+		t.Fatalf("headEncoder standalone logits sample: %v", err)
+	}
+	if !ok {
+		t.Fatal("headEncoder standalone logits sample declined BF16 head")
+	}
+
+	var got int32
+	withAutoreleasePool(func() {
+		got, ok, err = h.sampleLogitsTokenBufferAtInPool(sharedBytes(packed), uint(len(hidden0)), params, draw, history)
+	})
+	if err != nil {
+		t.Fatalf("headEncoder logits sample at offset: %v", err)
+	}
+	if !ok {
+		t.Fatal("headEncoder logits sample at offset declined BF16 head")
+	}
+	if got != want {
+		t.Fatalf("headEncoder logits sample at offset = %d, want standalone sample %d", got, want)
+	}
+}
+
 func TestHeadEncoderBF16GreedySuppressesIDs(t *testing.T) {
 	requireNativeRuntime(t)
 

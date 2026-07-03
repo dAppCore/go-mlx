@@ -4,12 +4,16 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
+)
 
 func BenchmarkMTPDecodeDraftEqualsTarget(b *testing.B) {
 	requireNativeRuntime(b)
 	const K, maxNew = 4, 16
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(b)
 	target := mk()
 	draft := mk()
@@ -32,7 +36,7 @@ func BenchmarkMTPDecodeDraftEqualsTarget(b *testing.B) {
 func BenchmarkMTPDecodeDensePromptPrefill(b *testing.B) {
 	requireNativeRuntime(b)
 	const K, maxNew = 4, 1
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(b)
 	target := mk()
 	draft := mk()
@@ -52,10 +56,45 @@ func BenchmarkMTPDecodeDensePromptPrefill(b *testing.B) {
 	}
 }
 
+func BenchmarkMTPDecodeSampledDirectRows(b *testing.B) {
+	requireNativeRuntime(b)
+	const K, maxNew = 4, 12
+	const seed uint64 = 53
+	prompt := mtpWordedPromptIDs()
+	params := model.SampleParams{
+		Temperature:   0.8,
+		TopK:          7,
+		TopP:          0.75,
+		MinP:          0.01,
+		RepeatPenalty: 1.2,
+		SuppressTokens: []int32{
+			2,
+			7,
+		},
+	}
+	mk := newMTPDecodeFixture(b)
+	target := mk()
+	draft := mk()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		target.pos = 0
+		draft.pos = 0
+		res, err := MTPDecodeSampled(target, draft, prompt, maxNew, nil, model.NewSampler(seed), model.NewSampler(seed+1), params, K)
+		if err != nil {
+			b.Fatalf("MTPDecodeSampled: %v", err)
+		}
+		if len(res.Tokens) != maxNew {
+			b.Fatalf("tokens = %d, want %d", len(res.Tokens), maxNew)
+		}
+	}
+}
+
 func BenchmarkMTPDecodeSequentialFallback(b *testing.B) {
 	requireNativeRuntime(b)
 	const K, maxNew = 4, 12
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(b)
 	target := mtpSequentialFallbackSession(mk())
 	draft := mtpSequentialFallbackSession(mk())
@@ -79,7 +118,7 @@ func BenchmarkMTPVerifyBatchedFallbackReusedHiddenRows(b *testing.B) {
 	requireNativeRuntime(b)
 	mk := newMTPDecodeFixture(b)
 	dense := mk()
-	for _, id := range []int32{1, 2, 3} {
+	for _, id := range mtpWordedPromptIDs() {
 		if _, err := dense.stepID(id); err != nil {
 			b.Fatalf("prefill dense stepID(%d): %v", id, err)
 		}

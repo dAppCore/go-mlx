@@ -142,6 +142,26 @@ func (m *NativeTokenModel) ProjectImageFeatures(patches []byte) ([]byte, error) 
 	return VisionTower(patches, weights, cfg)
 }
 
+func (m *NativeTokenModel) InjectImageFeatures(embeddings []byte, tokenIDs []int32, features []byte) ([]byte, error) {
+	if m == nil {
+		return nil, core.NewError("native.NativeTokenModel.InjectImageFeatures: nil model")
+	}
+	if !m.AcceptsImageInput() {
+		return nil, core.NewError("native.NativeTokenModel.InjectImageFeatures: model has no vision payload")
+	}
+	return VisionInjectFeatures(embeddings, tokenIDs, features, m.ImagePlaceholderTokenID(), m.HiddenSize())
+}
+
+func (m *NativeTokenModel) InjectVideoFeatures(embeddings []byte, tokenIDs []int32, features []byte) ([]byte, error) {
+	if m == nil {
+		return nil, core.NewError("native.NativeTokenModel.InjectVideoFeatures: nil model")
+	}
+	if !m.AcceptsImageInput() {
+		return nil, core.NewError("native.NativeTokenModel.InjectVideoFeatures: model has no vision payload")
+	}
+	return VisionInjectFeatures(embeddings, tokenIDs, features, m.VideoPlaceholderTokenID(), m.HiddenSize())
+}
+
 func (m *NativeTokenModel) AcceptsAudioInput() bool {
 	return m != nil && m.audio != nil
 }
@@ -206,6 +226,92 @@ func (m *NativeTokenModel) InjectAudioFeatures(embeddings []byte, tokenIDs []int
 		return nil, core.NewError("native.NativeTokenModel.InjectAudioFeatures: model has no audio payload")
 	}
 	return AudioInjectFeatures(embeddings, tokenIDs, features, m.AudioPlaceholderTokenID(), m.HiddenSize())
+}
+
+// TokenEmbeddingsWithFeatures gathers scaled token embeddings and splices any
+// pre-projected multimodal soft-token rows into their placeholder positions.
+// The returned rows share one backing store and are ready for
+// ArchSession.PrefillTokenEmbeddings.
+func (m *NativeTokenModel) TokenEmbeddingsWithFeatures(tokenIDs []int32, imageFeatures, audioFeatures, videoFeatures []byte) ([][]byte, error) {
+	if m == nil {
+		return nil, core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: nil model")
+	}
+	if len(tokenIDs) == 0 {
+		return nil, core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: empty token ids")
+	}
+	row := m.EmbeddingBytes()
+	if row <= 0 {
+		return nil, core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: invalid embedding width")
+	}
+	if m.embedInto == nil && m.embed == nil {
+		return nil, core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: model has no embedding bookend")
+	}
+
+	stream := make([]byte, len(tokenIDs)*row)
+	for i, id := range tokenIDs {
+		start := i * row
+		if _, err := m.EmbedInto(stream[start:start+row], id); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(imageFeatures) > 0 {
+		if err := m.spliceTokenFeaturesInto(stream, tokenIDs, imageFeatures, m.ImagePlaceholderTokenID(), "image"); err != nil {
+			return nil, err
+		}
+	}
+	if len(audioFeatures) > 0 {
+		if err := m.spliceTokenFeaturesInto(stream, tokenIDs, audioFeatures, m.AudioPlaceholderTokenID(), "audio"); err != nil {
+			return nil, err
+		}
+	}
+	if len(videoFeatures) > 0 {
+		if err := m.spliceTokenFeaturesInto(stream, tokenIDs, videoFeatures, m.VideoPlaceholderTokenID(), "video"); err != nil {
+			return nil, err
+		}
+	}
+
+	rows := make([][]byte, len(tokenIDs))
+	for i := range tokenIDs {
+		start := i * row
+		rows[i] = stream[start : start+row]
+	}
+	return rows, nil
+}
+
+func (m *NativeTokenModel) spliceTokenFeaturesInto(stream []byte, tokenIDs []int32, features []byte, tokenID int32, label string) error {
+	row := m.EmbeddingBytes()
+	if row <= 0 {
+		return core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: invalid embedding width")
+	}
+	if tokenID == 0 {
+		return core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: " + label + " token id is not configured")
+	}
+	if len(stream) != len(tokenIDs)*row {
+		return core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: token ids must match embedding rows")
+	}
+	if len(features)%row != 0 {
+		return core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: " + label + " feature rows must align to embedding width")
+	}
+	featureRows := len(features) / row
+	slots := 0
+	for _, id := range tokenIDs {
+		if id == tokenID {
+			slots++
+		}
+	}
+	if slots != featureRows {
+		return core.NewError("native.NativeTokenModel.TokenEmbeddingsWithFeatures: " + label + " feature count must equal token slots")
+	}
+	featureIdx := 0
+	for pos, id := range tokenIDs {
+		if id != tokenID {
+			continue
+		}
+		copy(stream[pos*row:(pos+1)*row], features[featureIdx*row:(featureIdx+1)*row])
+		featureIdx++
+	}
+	return nil
 }
 
 func nativeVisionFromLoaded(loaded *model.LoadedVision) (*VisionWeights, VisionConfig, bool) {

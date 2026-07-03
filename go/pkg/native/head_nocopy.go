@@ -824,14 +824,21 @@ func (h *headEncoder) greedyInPool(hidden []byte, suppress []int32) (token int32
 }
 
 func (h *headEncoder) greedyBufferInPool(hiddenBuf metal.MTLBuffer, suppress []int32) (token int32, ok bool, err error) {
+	return h.greedyBufferAtInPool(hiddenBuf, 0, suppress)
+}
+
+func (h *headEncoder) greedyBufferAtInPool(hiddenBuf metal.MTLBuffer, hiddenOff uint, suppress []int32) (token int32, ok bool, err error) {
 	if hiddenBuf == nil {
 		return 0, true, core.NewError("native.headEncoder.greedy: missing hidden buffer")
+	}
+	if !h.hiddenBufferOffsetInRange(hiddenBuf, hiddenOff) {
+		return 0, true, core.NewError("native.headEncoder.greedy: hidden offset is out of range")
 	}
 	token = -1
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	var scratch *headGreedyScratch
-	scratch, ok, err = h.encodeGreedy(enc, hiddenBuf, suppress)
+	scratch, ok, err = h.encodeGreedyAt(enc, hiddenBuf, hiddenOff, suppress)
 	if !ok || err != nil {
 		endEncodingFast(enc)
 		if scratch != nil {
@@ -894,8 +901,15 @@ func (h *headEncoder) sampleLogitsTokenInPool(hidden []byte, params model.Sample
 }
 
 func (h *headEncoder) sampleLogitsTokenBufferInPool(hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (token int32, ok bool, err error) {
+	return h.sampleLogitsTokenBufferAtInPool(hiddenBuf, 0, params, draw, history)
+}
+
+func (h *headEncoder) sampleLogitsTokenBufferAtInPool(hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32) (token int32, ok bool, err error) {
 	if hiddenBuf == nil {
 		return 0, true, core.NewError("native.headEncoder.sampleLogitsToken: missing hidden buffer")
+	}
+	if !h.hiddenBufferOffsetInRange(hiddenBuf, hiddenOff) {
+		return 0, true, core.NewError("native.headEncoder.sampleLogitsToken: hidden offset is out of range")
 	}
 	if !h.logitsSampleUsable() {
 		return 0, false, nil
@@ -903,7 +917,7 @@ func (h *headEncoder) sampleLogitsTokenBufferInPool(hiddenBuf metal.MTLBuffer, p
 	token = -1
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
-	scratch, ok, err := h.encodeLogitsSampleObject(enc, hiddenBuf, params, draw, history)
+	scratch, ok, err := h.encodeLogitsSampleObjectAt(enc, hiddenBuf, hiddenOff, params, draw, history)
 	if !ok || err != nil {
 		endEncodingFast(enc)
 		if scratch != nil {
@@ -955,14 +969,45 @@ func (h *headEncoder) sampleLogitsBufferInPool(logitsBuf metal.MTLBuffer, params
 	return token, true, nil
 }
 
+func (h *headEncoder) hiddenBufferOffsetInRange(hiddenBuf metal.MTLBuffer, hiddenOff uint) bool {
+	if h == nil || hiddenBuf == nil || h.dModel <= 0 {
+		return false
+	}
+	rowBytes := uint(h.dModel * bf16Size)
+	n := bufferLengthFast(hiddenBuf)
+	return hiddenOff <= n && rowBytes <= n-hiddenOff
+}
+
+func (h *headEncoder) encodeFinalNormObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, hiddenOff uint, normed metal.MTLBuffer) error {
+	if hiddenOff == 0 {
+		sink := encObjectSink{enc: enc}
+		rmsPSO, err := pipelineFor(rmsKernelBF16(h.dModel))
+		if err != nil {
+			return err
+		}
+		emitRMSNorm(sink, rmsPSO, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps, rmsThreadgroup(h.dModel, rmsPSO))
+		return nil
+	}
+	return encRMSNormRowsBF16Object(enc, hiddenBuf, h.finalNorm.buf, normed, hiddenOff, h.finalNorm.off, 0, 1, h.dModel, h.eps)
+}
+
 func (h *headEncoder) encodeLogitsSample(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (scratch *headGreedyScratch, ok bool, err error) {
+	return h.encodeLogitsSampleAt(enc, hiddenBuf, 0, params, draw, history)
+}
+
+func (h *headEncoder) encodeLogitsSampleAt(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32) (scratch *headGreedyScratch, ok bool, err error) {
 	if !h.logitsSampleUsable() {
 		return nil, false, nil
 	}
 	scratch = h.getGreedyScratch(1, true, h.softCap > 0 && h.vocab > 0)
 	normed := scratch.normed
 	logits := scratch.logits
-	if err = encRMSNormBF16(enc, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps); err != nil {
+	if hiddenOff == 0 {
+		err = encRMSNormBF16(enc, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps)
+	} else {
+		err = encRMSNormRowsBF16(enc, hiddenBuf, h.finalNorm.buf, normed, hiddenOff, h.finalNorm.off, 0, 1, h.dModel, h.eps)
+	}
+	if err != nil {
 		return scratch, true, err
 	}
 	if h.quant {
@@ -1005,6 +1050,10 @@ func (h *headEncoder) encodeLogitsSample(enc metal.MTLComputeCommandEncoder, hid
 }
 
 func (h *headEncoder) encodeLogitsSampleObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (scratch *headGreedyScratch, ok bool, err error) {
+	return h.encodeLogitsSampleObjectAt(enc, hiddenBuf, 0, params, draw, history)
+}
+
+func (h *headEncoder) encodeLogitsSampleObjectAt(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32) (scratch *headGreedyScratch, ok bool, err error) {
 	if !h.logitsSampleUsable() {
 		return nil, false, nil
 	}
@@ -1012,11 +1061,9 @@ func (h *headEncoder) encodeLogitsSampleObject(enc metal.MTLComputeCommandEncode
 	normed := scratch.normed
 	logits := scratch.logits
 	sink := encObjectSink{enc: enc}
-	rmsPSO, err := pipelineFor(rmsKernelBF16(h.dModel))
-	if err != nil {
+	if err = h.encodeFinalNormObject(enc, hiddenBuf, hiddenOff, normed); err != nil {
 		return scratch, true, err
 	}
-	emitRMSNorm(sink, rmsPSO, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps, rmsThreadgroup(h.dModel, rmsPSO))
 	if h.quant {
 		qmvPSO, err := pipelineFor(qmvBF16KernelName(h.vocab, h.dModel, h.groupSize, h.bits))
 		if err != nil {
@@ -1109,8 +1156,15 @@ func (h *headEncoder) sampleTopKTokenInPool(hidden []byte, params model.SamplePa
 }
 
 func (h *headEncoder) sampleTopKTokenBufferInPool(hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (token int32, ok bool, err error) {
+	return h.sampleTopKTokenBufferAtInPool(hiddenBuf, 0, params, draw, history)
+}
+
+func (h *headEncoder) sampleTopKTokenBufferAtInPool(hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32) (token int32, ok bool, err error) {
 	if hiddenBuf == nil {
 		return 0, true, core.NewError("native.headEncoder.sampleTopKToken: missing hidden buffer")
+	}
+	if !h.hiddenBufferOffsetInRange(hiddenBuf, hiddenOff) {
+		return 0, true, core.NewError("native.headEncoder.sampleTopKToken: hidden offset is out of range")
 	}
 	if !h.topKSampleUsable(params.TopK) {
 		return 0, false, nil
@@ -1119,7 +1173,7 @@ func (h *headEncoder) sampleTopKTokenBufferInPool(hiddenBuf metal.MTLBuffer, par
 	cb := commandBufferFast(queue)
 	enc := computeCommandEncoderFast(cb)
 	var scratch *headTopKScratch
-	scratch, ok, err = h.encodeTopKSampleFast(enc, hiddenBuf, params, draw, history)
+	scratch, ok, err = h.encodeTopKSampleAtFast(enc, hiddenBuf, hiddenOff, params, draw, history)
 	if !ok || err != nil {
 		endEncodingFast(enc)
 		if scratch != nil {
@@ -1221,8 +1275,12 @@ func (h *headEncoder) sampleTopKCandidatesBufferWithHistoryInto(hiddenBuf metal.
 }
 
 func (h *headEncoder) encodeTopKSampleFast(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32) (scratch *headTopKScratch, ok bool, err error) {
+	return h.encodeTopKSampleAtFast(enc, hiddenBuf, 0, params, draw, history)
+}
+
+func (h *headEncoder) encodeTopKSampleAtFast(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32) (scratch *headTopKScratch, ok bool, err error) {
 	preferFusedQ4 := h.preferFusedQ4TopK(params.TopK)
-	return h.encodeTopKSampleObject(enc, hiddenBuf, params, draw, history, preferFusedQ4)
+	return h.encodeTopKSampleObjectAt(enc, hiddenBuf, hiddenOff, params, draw, history, preferFusedQ4)
 }
 
 func (h *headEncoder) encodeTopKSample(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
@@ -1238,8 +1296,12 @@ func (h *headEncoder) encodeTopKSample(enc metal.MTLComputeCommandEncoder, hidde
 }
 
 func (h *headEncoder) encodeTopKSampleObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, params model.SampleParams, draw float32, history []int32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
+	return h.encodeTopKSampleObjectAt(enc, hiddenBuf, 0, params, draw, history, preferFusedQ4)
+}
+
+func (h *headEncoder) encodeTopKSampleObjectAt(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, hiddenOff uint, params model.SampleParams, draw float32, history []int32, preferFusedQ4 bool) (scratch *headTopKScratch, ok bool, err error) {
 	var candidateCount int
-	scratch, candidateCount, ok, err = h.encodeTopKCandidateRowsObject(enc, hiddenBuf, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, preferFusedQ4)
+	scratch, candidateCount, ok, err = h.encodeTopKCandidateRowsObjectAt(enc, hiddenBuf, hiddenOff, params.TopK, params.SuppressTokens, history, params.RepeatPenalty, preferFusedQ4)
 	if !ok || err != nil {
 		return scratch, ok, err
 	}
@@ -1283,6 +1345,10 @@ func (h *headEncoder) encodeTopKCandidatesWithHistoryObject(enc metal.MTLCompute
 }
 
 func (h *headEncoder) encodeTopKCandidateRowsObject(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, topK int, suppress []int32, history []int32, repeatPenalty float32, preferFusedQ4 bool) (scratch *headTopKScratch, candidateCount int, ok bool, err error) {
+	return h.encodeTopKCandidateRowsObjectAt(enc, hiddenBuf, 0, topK, suppress, history, repeatPenalty, preferFusedQ4)
+}
+
+func (h *headEncoder) encodeTopKCandidateRowsObjectAt(enc metal.MTLComputeCommandEncoderObject, hiddenBuf metal.MTLBuffer, hiddenOff uint, topK int, suppress []int32, history []int32, repeatPenalty float32, preferFusedQ4 bool) (scratch *headTopKScratch, candidateCount int, ok bool, err error) {
 	if h.finalNorm.buf == nil || h.weight.buf == nil || topK <= 0 || topK > headSampleTopKMaxK || topK > h.vocab {
 		return nil, 0, false, nil
 	}
@@ -1326,11 +1392,9 @@ func (h *headEncoder) encodeTopKCandidateRowsObject(enc metal.MTLComputeCommandE
 	historyBuf := scratch.historyBuffer(history)
 	historyCount := len(history)
 	sink := encObjectSink{enc: enc}
-	rmsPSO, err := pipelineFor(rmsKernelBF16(h.dModel))
-	if err != nil {
+	if err = h.encodeFinalNormObject(enc, hiddenBuf, hiddenOff, normed); err != nil {
 		return scratch, candidateCount, true, err
 	}
-	emitRMSNorm(sink, rmsPSO, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps, rmsThreadgroup(h.dModel, rmsPSO))
 	if h.quant {
 		if fusedQuantTopK {
 			if err = encQ4LMHeadTopKTilesBF16Object(enc, normed, h.weight.buf, h.scales.buf, h.biases.buf,

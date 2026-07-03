@@ -416,6 +416,9 @@ func (s *ArchSession) prefillCachedIDs(ids []int32) error {
 }
 
 func (s *ArchSession) prefillCachedIDsGPUInputs(ids []int32) error {
+	if len(ids) == 0 {
+		return nil
+	}
 	var err error
 	withAutoreleasePool(func() {
 		for _, id := range ids {

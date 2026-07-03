@@ -489,6 +489,82 @@ func TestArchSessionPrefillRetainedTokensBatchedDenseMatchesSerial(t *testing.T)
 	}
 }
 
+func TestArchSessionPrefillTokenEmbeddingsBatchedDenseMatchesSerial(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
+	serial, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession serial: %v", err)
+	}
+	batched, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession batched: %v", err)
+	}
+	serial.state.icb = nil
+	batched.state.icb = nil
+	ids := []int32{1, 5, 3, 9}
+	embeddings := make([][]byte, len(ids))
+	for i, id := range ids {
+		emb, err := serial.embedID(id)
+		if err != nil {
+			t.Fatalf("embedID(%d): %v", id, err)
+		}
+		embeddings[i] = append([]byte(nil), emb...)
+	}
+	replacement, err := serial.embedID(7)
+	if err != nil {
+		t.Fatalf("replacement embedID: %v", err)
+	}
+	embeddings[1] = append([]byte(nil), replacement...)
+
+	var serialHidden []byte
+	for i, id := range ids {
+		serialHidden, err = serial.StepWithID(id, embeddings[i])
+		if err != nil {
+			t.Fatalf("serial StepWithID(%d): %v", id, err)
+		}
+	}
+	if err := batched.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+		t.Fatalf("PrefillTokenEmbeddings: %v", err)
+	}
+	if batched.Pos() != len(ids) {
+		t.Fatalf("batched pos = %d, want %d", batched.Pos(), len(ids))
+	}
+	if !idsEqual(batched.cachedIDs, ids) {
+		t.Fatalf("cached ids = %v, want %v", batched.cachedIDs, ids)
+	}
+	if batched.state.denseBatch.lastRows == nil {
+		t.Fatal("PrefillTokenEmbeddings did not use dense batched final-row output")
+	}
+	if !bytes.Equal(batched.retainedHidden, serialHidden) {
+		t.Fatal("batched explicit-embedding hidden differs from serial")
+	}
+	var serialNext, batchedNext []byte
+	nextSerialEmb, err := serial.embedID(4)
+	if err != nil {
+		t.Fatalf("serial next embedID: %v", err)
+	}
+	nextBatchedEmb, err := batched.embedID(4)
+	if err != nil {
+		t.Fatalf("batched next embedID: %v", err)
+	}
+	serialNext, err = serial.StepWithID(4, nextSerialEmb)
+	if err != nil {
+		t.Fatalf("serial next StepWithID: %v", err)
+	}
+	batchedNext, err = batched.StepWithID(4, nextBatchedEmb)
+	if err != nil {
+		t.Fatalf("batched next StepWithID: %v", err)
+	}
+	if !bytes.Equal(batchedNext, serialNext) {
+		t.Fatal("batched explicit-embedding cache differs from serial on next token")
+	}
+}
+
 func TestArchSessionPrefillRetainedTokensBatchedDenseUsesEmbedInto(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -592,6 +668,71 @@ func TestArchSessionPrefillRetainedTokensBatchedDenseChunksSlidingRingWrap(t *te
 	}
 	if !bytes.Equal(chunkedNext, serialNext) {
 		t.Fatal("chunked sliding dense prefill cache differs from serial on next token")
+	}
+}
+
+func TestArchSessionPrefillTokenEmbeddingsBatchedDenseChunksSlidingRingWrap(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 64
+	const maxLen = 16
+	g, arch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
+	arch.SlidingWindow = 4
+	arch.Layer[0].Attention = model.SlidingAttention
+	serial, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession serial: %v", err)
+	}
+	chunked, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession chunked: %v", err)
+	}
+	serial.state.icb = nil
+	chunked.state.icb = nil
+	ids := []int32{1, 5, 3, 9, 4}
+	embeddings := make([][]byte, len(ids))
+	for i, id := range ids {
+		emb, err := serial.embedID(id)
+		if err != nil {
+			t.Fatalf("embedID(%d): %v", id, err)
+		}
+		embeddings[i] = append([]byte(nil), emb...)
+	}
+	var serialHidden []byte
+	for i, id := range ids {
+		serialHidden, err = serial.StepWithID(id, embeddings[i])
+		if err != nil {
+			t.Fatalf("serial StepWithID(%d): %v", id, err)
+		}
+	}
+	if err := chunked.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+		t.Fatalf("PrefillTokenEmbeddings sliding: %v", err)
+	}
+	if chunked.Pos() != len(ids) {
+		t.Fatalf("chunked pos = %d, want %d", chunked.Pos(), len(ids))
+	}
+	if !bytes.Equal(chunked.retainedHidden, serialHidden) {
+		t.Fatal("chunked explicit-embedding retained hidden differs from serial")
+	}
+	nextSerialEmb, err := serial.embedID(2)
+	if err != nil {
+		t.Fatalf("serial next embedID: %v", err)
+	}
+	nextChunkedEmb, err := chunked.embedID(2)
+	if err != nil {
+		t.Fatalf("chunked next embedID: %v", err)
+	}
+	serialNext, err := serial.StepWithID(2, nextSerialEmb)
+	if err != nil {
+		t.Fatalf("serial next StepWithID: %v", err)
+	}
+	chunkedNext, err := chunked.StepWithID(2, nextChunkedEmb)
+	if err != nil {
+		t.Fatalf("chunked next StepWithID: %v", err)
+	}
+	if !bytes.Equal(chunkedNext, serialNext) {
+		t.Fatal("chunked explicit-embedding cache differs from serial on next token")
 	}
 }
 
@@ -2076,7 +2217,6 @@ func TestArchSessionGenerateSampledTopKOneAvoidsTopKScratch(t *testing.T) {
 
 	sampler := model.NewSampler(123)
 	wantSampler := model.NewSampler(123)
-	wantSampler.Draw()
 	wantSampler.Draw()
 	got, err := sess.GenerateSampledEach([]int32{1, 5, 3}, 1, nil, sampler, params, nil, nil)
 	if err != nil {

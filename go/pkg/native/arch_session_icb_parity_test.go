@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -82,6 +84,216 @@ func TestArchQuantSessionICBParity(t *testing.T) {
 		if genICB[i] != genHost[i] {
 			t.Fatalf("token %d: ICB %d != host %d — the incremental ICB replay is NOT byte-identical to stepToken", i, genICB[i], genHost[i])
 		}
+	}
+}
+
+func TestArchQuantSessionICBPrefillTokenEmbeddingsMatchesSerial(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 256
+	const numLayers, gs, bits = 2, 64, 4
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	lm, err := model.Assemble(quantGemma4Tensors(t, arch, gs, bits), arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	ids := []int32{1, 5, 3, 9}
+	serial, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession serial: %v", err)
+	}
+	serial.state.icb = nil
+	icb, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession ICB: %v", err)
+	}
+	if icb.state.icb == nil {
+		t.Fatal("expected quant session to record an ICB replay")
+	}
+	embeddings := make([][]byte, len(ids))
+	for i, id := range ids {
+		emb, err := serial.embedID(id)
+		if err != nil {
+			t.Fatalf("embedID(%d): %v", id, err)
+		}
+		embeddings[i] = append([]byte(nil), emb...)
+	}
+	replacement, err := serial.embedID(17)
+	if err != nil {
+		t.Fatalf("replacement embedID: %v", err)
+	}
+	embeddings[1] = append([]byte(nil), replacement...)
+
+	var serialHidden []byte
+	for i, id := range ids {
+		serialHidden, err = serial.StepWithID(id, embeddings[i])
+		if err != nil {
+			t.Fatalf("serial StepWithID(%d): %v", id, err)
+		}
+	}
+	if err := icb.PrefillTokenEmbeddings(ids, embeddings); err != nil {
+		t.Fatalf("ICB PrefillTokenEmbeddings: %v", err)
+	}
+	if icb.Pos() != len(ids) {
+		t.Fatalf("ICB pos = %d, want %d", icb.Pos(), len(ids))
+	}
+	if !bytes.Equal(icb.retainedHidden, serialHidden) {
+		t.Fatal("ICB explicit-embedding hidden differs from serial StepWithID")
+	}
+	if icb.retainedHiddenPinned == nil || icb.retainedHiddenPinned.buf == nil {
+		t.Fatal("ICB explicit-embedding prefill did not retain a pinned hidden")
+	}
+	if unsafe.Pointer(&icb.retainedHidden[0]) != unsafe.Pointer(&icb.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("ICB explicit-embedding retained hidden does not alias pinned backing")
+	}
+	if icb.retainedHiddenBufferFor(icb.retainedHidden) == nil {
+		t.Fatal("ICB explicit-embedding retained hidden is not exposed as a no-copy buffer")
+	}
+	nextSerialEmb, err := serial.embedID(4)
+	if err != nil {
+		t.Fatalf("serial next embedID: %v", err)
+	}
+	nextICBEmb, err := icb.embedID(4)
+	if err != nil {
+		t.Fatalf("ICB next embedID: %v", err)
+	}
+	serialNext, err := serial.StepWithID(4, nextSerialEmb)
+	if err != nil {
+		t.Fatalf("serial next StepWithID: %v", err)
+	}
+	icbNext, err := icb.StepWithID(4, nextICBEmb)
+	if err != nil {
+		t.Fatalf("ICB next StepWithID: %v", err)
+	}
+	if !bytes.Equal(icbNext, serialNext) {
+		t.Fatal("ICB explicit-embedding cache differs from serial on next token")
+	}
+}
+
+func TestArchQuantSessionICBPLEPrefillTokenEmbeddingsBatchMatchesSerial(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 256
+	const numLayers, pliDim, gs, bits = 2, 64, 64, 4
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	if !g.HasPLE() {
+		t.Fatal("assembled model should have the per-layer-input tower")
+	}
+	ids := []int32{1, 5, 3, 9}
+	serial, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession serial: %v", err)
+	}
+	serial.state.icb = nil
+	icb, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession ICB: %v", err)
+	}
+	if icb.state.icb == nil {
+		t.Fatal("expected quant PLE session to record an ICB replay")
+	}
+	if !icb.state.icb.hasPLE {
+		t.Fatal("expected recorded ICB replay to carry PLE inputs")
+	}
+	embeddings := make([][]byte, len(ids))
+	for i, id := range ids {
+		emb, err := serial.embedID(id)
+		if err != nil {
+			t.Fatalf("embedID(%d): %v", id, err)
+		}
+		embeddings[i] = append([]byte(nil), emb...)
+	}
+	replacement, err := serial.embedID(17)
+	if err != nil {
+		t.Fatalf("replacement embedID: %v", err)
+	}
+	embeddings[1] = append([]byte(nil), replacement...)
+
+	var serialHidden []byte
+	for i, id := range ids {
+		serialHidden, err = serial.StepWithID(id, embeddings[i])
+		if err != nil {
+			t.Fatalf("serial StepWithID(%d): %v", id, err)
+		}
+	}
+	hidden, ok, err := icb.prefillRetainedEmbeddingsICB(ids, embeddings, "native.test.PLEICBPrefill")
+	if err != nil {
+		t.Fatalf("ICB PLE prefillRetainedEmbeddingsICB: %v", err)
+	}
+	if !ok {
+		t.Fatal("ICB PLE prefillRetainedEmbeddingsICB ok = false")
+	}
+	if icb.Pos() != len(ids) {
+		t.Fatalf("ICB pos = %d, want %d", icb.Pos(), len(ids))
+	}
+	if !bytes.Equal(hidden, serialHidden) {
+		t.Fatal("ICB PLE explicit-embedding hidden differs from serial StepWithID")
+	}
+	if icb.retainedHiddenPinned == nil || icb.retainedHiddenPinned.buf == nil {
+		t.Fatal("ICB PLE explicit-embedding batch prefill did not retain a pinned hidden")
+	}
+	if len(icb.retainedHiddenPinned.bytes) != len(hidden) {
+		t.Fatalf("ICB PLE retained hidden backing len = %d, want %d", len(icb.retainedHiddenPinned.bytes), len(hidden))
+	}
+	if unsafe.Pointer(&hidden[0]) != unsafe.Pointer(&icb.retainedHiddenPinned.bytes[0]) {
+		t.Fatal("ICB PLE explicit-embedding hidden does not alias retained pinned backing")
+	}
+	if icb.retainedHiddenBufferFor(hidden) == nil {
+		t.Fatal("ICB PLE explicit-embedding hidden is not exposed as a no-copy buffer")
+	}
+	nextSerialEmb, err := serial.embedID(4)
+	if err != nil {
+		t.Fatalf("serial next embedID: %v", err)
+	}
+	nextICBEmb, err := icb.embedID(4)
+	if err != nil {
+		t.Fatalf("ICB next embedID: %v", err)
+	}
+	serialNext, err := serial.StepWithID(4, nextSerialEmb)
+	if err != nil {
+		t.Fatalf("serial next StepWithID: %v", err)
+	}
+	icbNext, err := icb.StepWithID(4, nextICBEmb)
+	if err != nil {
+		t.Fatalf("ICB next StepWithID: %v", err)
+	}
+	if !bytes.Equal(icbNext, serialNext) {
+		t.Fatal("ICB PLE explicit-embedding cache differs from serial on next token")
 	}
 }
 

@@ -17,6 +17,7 @@ type denseBatchScratch struct {
 	outRowsStack       [16]metal.MTLBuffer
 	readRowsStack      [16]metal.MTLBuffer
 	directOutRowsStack [16]metal.MTLBuffer
+	lastRowBufStack    [16]metal.MTLBuffer
 	offBufStack        [16]metal.MTLBuffer
 	offPtrStack        [16]*int32
 	offOffStack        [16]uint
@@ -29,6 +30,7 @@ type denseBatchScratch struct {
 	outRows            []metal.MTLBuffer
 	readRows           []metal.MTLBuffer
 	directOutRows      []metal.MTLBuffer
+	lastRowBuf         []metal.MTLBuffer
 	offBuf             []metal.MTLBuffer
 	offPtr             []*int32
 	offOff             []uint
@@ -174,6 +176,27 @@ func (s *denseBatchScratch) directOutputRowsFor(k int) ([]metal.MTLBuffer, []uin
 	return s.directOutRows, s.directOutOff
 }
 
+func (s *denseBatchScratch) setLastRows(rows []metal.MTLBuffer, rowOff []uint, k int) {
+	if k <= 0 || len(rows) < k || len(rowOff) < k {
+		s.lastRows = nil
+		s.lastRowBuf = nil
+		s.lastRowOff = nil
+		s.lastK = 0
+		return
+	}
+	if k <= len(s.lastRowBufStack) {
+		s.lastRowBuf = s.lastRowBufStack[:k]
+	} else if cap(s.lastRowBuf) < k {
+		s.lastRowBuf = make([]metal.MTLBuffer, k)
+	} else {
+		s.lastRowBuf = s.lastRowBuf[:k]
+	}
+	copy(s.lastRowBuf, rows[:k])
+	s.lastRows = rows[0]
+	s.lastRowOff = rowOff[:k]
+	s.lastK = k
+}
+
 func (s *denseBatchScratch) lastOutputView(out []byte) (metal.MTLBuffer, bool) {
 	if s == nil || len(out) == 0 {
 		return nil, false
@@ -220,11 +243,26 @@ func (s *archDecodeState) stepTokensBatchedDenseLastInto(embs [][]byte, basePos 
 	return out[0], true, nil
 }
 
+func (s *archDecodeState) stepTokensBatchedDenseLastIntoCopyInputs(embs [][]byte, basePos int, dst []byte) (last []byte, ok bool, err error) {
+	out, ok, err := s.stepTokensBatchedDenseResultWithInputViews(embs, basePos, true, true, dst, nil, false)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if len(out) != 1 {
+		return nil, true, core.NewError("native.stepTokensBatchedDenseLast: hidden result count mismatch")
+	}
+	return out[0], true, nil
+}
+
 func (s *archDecodeState) stepTokensBatchedDenseInto(embs [][]byte, basePos int, dstRows [][]byte) (out [][]byte, ok bool, err error) {
 	return s.stepTokensBatchedDenseResult(embs, basePos, true, false, nil, dstRows)
 }
 
 func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos int, readResult, readLastOnly bool, lastDst []byte, dstRows [][]byte) (out [][]byte, ok bool, err error) {
+	return s.stepTokensBatchedDenseResultWithInputViews(embs, basePos, readResult, readLastOnly, lastDst, dstRows, true)
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseResultWithInputViews(embs [][]byte, basePos int, readResult, readLastOnly bool, lastDst []byte, dstRows [][]byte, directInputs bool) (out [][]byte, ok bool, err error) {
 	K := len(embs)
 	if K == 0 {
 		return nil, false, core.NewError("native.stepTokensBatchedDense: empty batch")
@@ -280,15 +318,20 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 	inRows, outRows, offBuf, offPtr, offOff, rowOff := s.denseBatch.rows(K, s.dModel)
 	readRows, readOff := inRows, rowOff
 	directInputRows, directInputOff := s.denseBatch.readRowsFor(K)
-	inputViews := s.denseBatch.inputViewsFor(K)
+	var inputViews []cachedNoCopyBytesView
+	if directInputs {
+		inputViews = s.denseBatch.inputViewsFor(K)
+	}
 	usingDirectInputRows := false
 	for i := 0; i < K; i++ {
 		*offPtr[i] = int32(basePos + i)
-		if buf, direct := inputViews[i].buffer(embs[i]); direct {
-			directInputRows[i] = buf
-			directInputOff[i] = 0
-			usingDirectInputRows = true
-			continue
+		if directInputs {
+			if buf, direct := inputViews[i].buffer(embs[i]); direct {
+				directInputRows[i] = buf
+				directInputOff[i] = 0
+				usingDirectInputRows = true
+				continue
+			}
 		}
 		directInputRows[i] = inRows[i]
 		directInputOff[i] = rowOff[i]
@@ -368,18 +411,13 @@ func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos in
 	waitUntilCompletedFast(cb)
 	if K > 0 {
 		if usingDirectOutputRows {
-			s.denseBatch.lastRows = directOutputRows[0]
-			s.denseBatch.lastRowOff = directOutputOff[:K]
-			s.denseBatch.lastK = K
+			s.denseBatch.setLastRows(directOutputRows, directOutputOff, K)
 		} else if directLastOut && readLastOnly {
 			s.denseBatch.readOffStack[0] = 0
-			s.denseBatch.lastRows = lastOutBuf
-			s.denseBatch.lastRowOff = s.denseBatch.readOffStack[:1]
-			s.denseBatch.lastK = 1
+			s.denseBatch.lastRowBufStack[0] = lastOutBuf
+			s.denseBatch.setLastRows(s.denseBatch.lastRowBufStack[:1], s.denseBatch.readOffStack[:1], 1)
 		} else {
-			s.denseBatch.lastRows = readRows[0]
-			s.denseBatch.lastRowOff = readOff[:K]
-			s.denseBatch.lastK = K
+			s.denseBatch.setLastRows(readRows, readOff, K)
 		}
 	}
 	if err := s.reloadDevicePagedKVFromLinear(basePos + K); err != nil {
@@ -600,17 +638,36 @@ func (s *ArchSession) verifyBatchedCrossesSlidingRingWrap(n int) bool {
 }
 
 func (s *ArchSession) rememberDenseBatchRetainedHidden(row int) error {
-	if s == nil || row < 0 || row >= len(s.state.denseBatch.lastRowOff) || s.state.denseBatch.lastRows == nil {
+	rowBuf, off, ok, err := s.denseBatchHiddenRowBuffer(row)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return core.NewError("native.verifyBatched: retained hidden row is unavailable")
 	}
-	rowBytes := s.arch.Hidden * bf16Size
-	off := int(s.state.denseBatch.lastRowOff[row])
-	if off < 0 || off+rowBytes > int(bufferLengthFast(s.state.denseBatch.lastRows)) {
-		return core.NewError("native.verifyBatched: retained hidden row is out of range")
-	}
-	base := unsafe.Pointer((*byte)(s.state.denseBatch.lastRows.Contents()))
-	s.rememberRetainedHiddenFrom((*byte)(unsafe.Add(base, off)))
+	base := unsafe.Pointer((*byte)(rowBuf.Contents()))
+	s.rememberRetainedHiddenFrom((*byte)(unsafe.Add(base, int(off))))
 	return nil
+}
+
+func (s *ArchSession) denseBatchHiddenRowBuffer(row int) (metal.MTLBuffer, uint, bool, error) {
+	if s == nil || row < 0 || row >= s.state.denseBatch.lastK || row >= len(s.state.denseBatch.lastRowOff) {
+		return nil, 0, false, nil
+	}
+	rowBuf := s.state.denseBatch.lastRows
+	if row < len(s.state.denseBatch.lastRowBuf) && s.state.denseBatch.lastRowBuf[row] != nil {
+		rowBuf = s.state.denseBatch.lastRowBuf[row]
+	}
+	if rowBuf == nil {
+		return nil, 0, false, nil
+	}
+	off := s.state.denseBatch.lastRowOff[row]
+	rowBytes := uint(s.arch.Hidden * bf16Size)
+	n := bufferLengthFast(rowBuf)
+	if off > n || rowBytes > n-off {
+		return nil, 0, true, core.NewError("native.verifyBatched: hidden row is out of range")
+	}
+	return rowBuf, off, true, nil
 }
 
 func (s *ArchSession) encodePackedGreedyRowsInto(rows metal.MTLBuffer, rowOff []uint, n int, greedys []int32) error {

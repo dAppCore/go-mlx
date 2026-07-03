@@ -503,9 +503,13 @@ func bufferContentsFast(buf metal.MTLBuffer) unsafe.Pointer {
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
 		ptr := objcMsgSendRaw0(objcMsgSendAddr, uintptr(buf.GetID()), uintptr(selContents))
 		runtime.KeepAlive(buf)
-		return unsafe.Pointer(ptr)
+		return unsafePointerFromObjCReturn(ptr)
 	}
 	return buf.Contents()
+}
+
+func unsafePointerFromObjCReturn(ptr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&ptr))
 }
 
 func useResourcesIDsFast(enc metal.MTLComputeCommandEncoder, resources []metal.MTLResource, ids []objc.ID, usage metal.MTLResourceUsage) {

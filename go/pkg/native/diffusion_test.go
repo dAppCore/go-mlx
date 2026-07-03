@@ -447,6 +447,71 @@ func TestArchSessionDiffusionLayerKVPrefixCarriesSlidingWindowOffset_Good(t *tes
 	}
 }
 
+func TestDiffusionSessionDenoiseMasksUseResidentPrefixSpans_Good(t *testing.T) {
+	const (
+		kvDim         = 2
+		globalPrefix  = 6
+		slidingPrefix = 3
+		canvasLen     = 2
+	)
+	arch := model.Arch{
+		KVHeads:       1,
+		HeadDim:       kvDim,
+		SlidingWindow: 2,
+		Layer: []model.LayerSpec{
+			{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0},
+			{Attention: model.SlidingAttention, KVShareFrom: 1, CacheIndex: 1},
+		},
+	}
+	layerKV := []DiffusionLayerKV{
+		{
+			K:        make([]byte, globalPrefix*kvDim*bf16Size),
+			V:        make([]byte, globalPrefix*kvDim*bf16Size),
+			Position: globalPrefix,
+		},
+		{
+			K:           make([]byte, slidingPrefix*kvDim*bf16Size),
+			V:           make([]byte, slidingPrefix*kvDim*bf16Size),
+			PrefixStart: globalPrefix - slidingPrefix,
+			Position:    globalPrefix,
+		},
+	}
+	req := DiffusionDenoiseRequest{
+		Prefix: 99,
+		Canvas: []int32{4, 5},
+	}
+
+	globalMask, localMask, err := diffusionSessionDenoiseMasks(arch, layerKV, req)
+	if err != nil {
+		t.Fatalf("diffusionSessionDenoiseMasks: %v", err)
+	}
+	if len(globalMask) != canvasLen*(globalPrefix+canvasLen) {
+		t.Fatalf("global mask length = %d, want %d", len(globalMask), canvasLen*(globalPrefix+canvasLen))
+	}
+	for i, v := range globalMask {
+		if v != 0 {
+			t.Fatalf("global mask[%d] = %f, want unmasked", i, v)
+		}
+	}
+	wantLocalLen := canvasLen * (slidingPrefix + canvasLen)
+	if len(localMask) != wantLocalLen {
+		t.Fatalf("local mask length = %d, want %d", len(localMask), wantLocalLen)
+	}
+	negInf := float32(math.Inf(-1))
+	for row := 0; row < canvasLen; row++ {
+		for col := 0; col < slidingPrefix+canvasLen; col++ {
+			got := localMask[row*(slidingPrefix+canvasLen)+col]
+			want := float32(0)
+			if col == 0 {
+				want = negInf
+			}
+			if got != want {
+				t.Fatalf("local mask[%d][%d] = %f, want %f", row, col, got, want)
+			}
+		}
+	}
+}
+
 func TestNativeTokenModelGenerateBlockDiffusionTokensBF16_Good(t *testing.T) {
 	requireNativeRuntime(t)
 	g, arch, maxLen := sessionStateFixture(t)

@@ -23,7 +23,31 @@ const (
 	mtpFixtureVocab  = 64
 	mtpFixtureLayers = 3
 	mtpFixtureMaxLen = 96
+
+	mtpWordedPromptText  = "speculative decoding works with a few words"
+	mtpWordedPromptWords = 7
 )
+
+var mtpWordedPromptTokens = [...]int32{2, 18, 7, 41, 13, 5, 29}
+
+func mtpWordedPromptIDs() []int32 {
+	return mtpWordedPromptTokens[:]
+}
+
+func TestMTPWordedPromptFixtureUsesAFewWords(t *testing.T) {
+	prompt := mtpWordedPromptIDs()
+	if mtpWordedPromptWords < 5 {
+		t.Fatalf("MTP worded prompt %q has %d words, want a few words", mtpWordedPromptText, mtpWordedPromptWords)
+	}
+	if len(prompt) != mtpWordedPromptWords {
+		t.Fatalf("MTP worded prompt token count = %d, want one stable token id per word", len(prompt))
+	}
+	for i, id := range prompt {
+		if id <= 0 || int(id) >= mtpFixtureVocab {
+			t.Fatalf("MTP worded prompt token %d = %d outside fixture vocab %d", i, id, mtpFixtureVocab)
+		}
+	}
+}
 
 func newMTPDecodeFixture(t testing.TB) func() *ArchSession {
 	t.Helper()
@@ -85,7 +109,7 @@ func newMTPDecodeFixtureWithArch(t testing.TB, configure func(*model.Arch)) func
 
 func TestMTPDecodeInputGuards(t *testing.T) {
 	session := func(maxLen int) *ArchSession { return &ArchSession{maxLen: maxLen} }
-	prompt := []int32{1}
+	prompt := mtpWordedPromptIDs()
 	tests := []struct {
 		name   string
 		target *ArchSession
@@ -113,7 +137,7 @@ func TestMTPDecodeInputGuards(t *testing.T) {
 
 func TestMTPDecodeSampledInputGuards(t *testing.T) {
 	session := func(maxLen int) *ArchSession { return &ArchSession{maxLen: maxLen} }
-	prompt := []int32{1}
+	prompt := mtpWordedPromptIDs()
 	targetSampler := model.NewSampler(1)
 	draftSampler := model.NewSampler(2)
 	sharedSampler := model.NewSampler(3)
@@ -158,7 +182,7 @@ func TestMTPDecodeBatchedTokenIdentity(t *testing.T) {
 	const K, maxNew = 4, 16
 	mk := newMTPDecodeFixture(t)
 
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 
 	// reference: plain greedy Generate on a fresh session.
 	ref, err := mk().Generate(prompt, maxNew, -1)
@@ -195,7 +219,7 @@ func TestMTPDecodeBatchedTokenIdentity(t *testing.T) {
 func TestMTPDecodeEachYieldsCommittedTokens(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 10
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 	ref, err := mk().Generate(prompt, maxNew, -1)
 	if err != nil {
@@ -220,7 +244,7 @@ func TestMTPDecodeEachYieldsCommittedTokens(t *testing.T) {
 func TestMTPDecodeUsesExactContextTailHeadroom(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 2
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 	maxLen := len(prompt) + maxNew
 	mk := newMTPDecodeFixture(t)
 	limit := func(s *ArchSession) *ArchSession {
@@ -241,11 +265,46 @@ func TestMTPDecodeUsesExactContextTailHeadroom(t *testing.T) {
 	}
 }
 
+func TestMTPDensePromptPrefillWordedHiddenMatchesSequential(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := mtpWordedPromptIDs()
+	mk := newMTPDecodeFixture(t)
+	ref := mk()
+	sess := mk()
+
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	got, ok, err := sess.prefillMTPPrompt(prompt, true)
+	if err != nil {
+		t.Fatalf("prefillMTPPrompt: %v", err)
+	}
+	if !ok {
+		t.Fatal("prefillMTPPrompt ok = false")
+	}
+	if !bytes.Equal(got, ref.retainedHidden) {
+		t.Fatal("prefillMTPPrompt hidden differs from sequential prompt prefill")
+	}
+	for _, id := range []int32{13, 37, 41} {
+		wantHidden, err := ref.stepID(id)
+		if err != nil {
+			t.Fatalf("reference stepID(%d): %v", id, err)
+		}
+		gotHidden, err := sess.stepID(id)
+		if err != nil {
+			t.Fatalf("dense-prefill stepID(%d): %v", id, err)
+		}
+		if !bytes.Equal(gotHidden, wantHidden) {
+			t.Fatalf("hidden after stepping %d differs after dense prompt prefill", id)
+		}
+	}
+}
+
 func TestMTPDecodeSampledMatchesGenerateSampled(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 12
 	const seed uint64 = 53
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	params := model.SampleParams{
 		Temperature:   0.8,
 		TopK:          7,
@@ -268,7 +327,7 @@ func TestMTPDecodeSampledMatchesGenerateSampled(t *testing.T) {
 		t.Fatalf("MTPDecodeSampled: %v", err)
 	}
 	if !mtpIDsEqual(res.Tokens, ref) {
-		t.Fatalf("sampled MTP tokens %v != GenerateSampledEach %v", res.Tokens, ref)
+		t.Fatalf("sampled MTP tokens %v != GenerateSampledEach %v (accepted=%d drafted=%d rounds=%d)", res.Tokens, ref, res.Accepted, res.Drafted, res.Rounds)
 	}
 	if res.Drafted == 0 {
 		t.Fatal("sampled MTP proposed no draft tokens")
@@ -279,7 +338,7 @@ func TestMTPDecodeSampledEachYieldsCommittedTokens(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 10
 	const seed uint64 = 53
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	params := model.SampleParams{
 		Temperature:   0.8,
 		TopK:          7,
@@ -305,10 +364,63 @@ func TestMTPDecodeSampledEachYieldsCommittedTokens(t *testing.T) {
 		t.Fatalf("MTPDecodeSampledEach: %v", err)
 	}
 	if !mtpIDsEqual(res.Tokens, ref) {
-		t.Fatalf("MTPDecodeSampledEach tokens %v != GenerateSampledEach %v", res.Tokens, ref)
+		t.Fatalf("MTPDecodeSampledEach tokens %v != GenerateSampledEach %v (accepted=%d drafted=%d rounds=%d)", res.Tokens, ref, res.Accepted, res.Drafted, res.Rounds)
 	}
 	if !mtpIDsEqual(yielded, res.Tokens) {
 		t.Fatalf("MTPDecodeSampledEach yielded %v != result tokens %v", yielded, res.Tokens)
+	}
+}
+
+func TestMTPSampledPickerMatchesGenerateSampledOnWordedPrompt(t *testing.T) {
+	requireNativeRuntime(t)
+	const maxNew = 12
+	const seed uint64 = 53
+	prompt := mtpWordedPromptIDs()
+	params := model.SampleParams{
+		Temperature:   0.8,
+		TopK:          7,
+		TopP:          0.75,
+		MinP:          0.01,
+		RepeatPenalty: 1.2,
+		SuppressTokens: []int32{
+			2,
+			7,
+		},
+	}
+	mk := newMTPDecodeFixture(t)
+
+	ref, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledEach: %v", err)
+	}
+	sess := mk()
+	hidden, ok, err := sess.prefillMTPPrompt(prompt, true)
+	if err != nil {
+		t.Fatalf("prefillMTPPrompt: %v", err)
+	}
+	if !ok {
+		t.Fatal("prefillMTPPrompt ok = false")
+	}
+	history := sess.sampleHistoryScratchFor(params, maxNew)
+	var got []int32
+	sampler := model.NewSampler(seed)
+	for len(got) < maxNew {
+		pickParams := sess.mtpSamplePickParams(params, nil, len(got))
+		next, err := sess.sampleMTPTokenFromHidden(hidden, sampler, pickParams, history)
+		if err != nil {
+			t.Fatalf("sampleMTPTokenFromHidden token %d: %v", len(got), err)
+		}
+		got = append(got, next)
+		if params.RepeatPenalty > 1 {
+			history = append(history, next)
+		}
+		hidden, err = sess.stepID(next)
+		if err != nil {
+			t.Fatalf("stepID(%d): %v", next, err)
+		}
+	}
+	if !mtpIDsEqual(got, ref) {
+		t.Fatalf("MTP sampled picker tokens %v != GenerateSampledEach %v", got, ref)
 	}
 }
 
@@ -319,7 +431,7 @@ func TestMTPDecodeSlidingRingWrapMatchesGenerate(t *testing.T) {
 		arch.SlidingWindow = 4
 		arch.Layer[0].Attention = model.SlidingAttention
 	})
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 
 	ref, err := mk().Generate(prompt, maxNew, -1)
 	if err != nil {
@@ -340,7 +452,7 @@ func TestMTPDecodeSlidingRingWrapMatchesGenerate(t *testing.T) {
 func TestMTPDecodeDraftEqualsTargetAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 16
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 	target := mk()
 	draft := mk()
@@ -405,7 +517,7 @@ func mtpIDsEqual(a, b []int32) bool {
 func TestMTPDecodeSequentialFallbackTokenIdentity(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 12
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 
 	ref, err := mk().Generate(prompt, maxNew, -1)
@@ -471,15 +583,15 @@ func TestMTPVerifyBatchedSlidingRingWrapMatchesSequential(t *testing.T) {
 	})
 	ref := mk()
 	sess := mk()
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 	if err := ref.PrefillTokens(prompt); err != nil {
 		t.Fatalf("reference PrefillTokens: %v", err)
 	}
 	if err := sess.PrefillTokens(prompt); err != nil {
 		t.Fatalf("candidate PrefillTokens: %v", err)
 	}
-	if sess.Pos() != 3 {
-		t.Fatalf("prefill pos = %d, want 3", sess.Pos())
+	if sess.Pos() != len(prompt) {
+		t.Fatalf("prefill pos = %d, want %d", sess.Pos(), len(prompt))
 	}
 	ids := []int32{4, 5}
 	want := make([]int32, len(ids))
@@ -503,8 +615,8 @@ func TestMTPVerifyBatchedSlidingRingWrapMatchesSequential(t *testing.T) {
 	if !mtpIDsEqual(greedys, want) {
 		t.Fatalf("verifyBatchedInto sliding wrap greedys = %v, want sequential %v", greedys, want)
 	}
-	if sess.Pos() != 3 {
-		t.Fatalf("verifyBatchedInto sliding wrap changed pos = %d, want 3", sess.Pos())
+	if sess.Pos() != len(prompt) {
+		t.Fatalf("verifyBatchedInto sliding wrap changed pos = %d, want %d", sess.Pos(), len(prompt))
 	}
 }
 
@@ -513,7 +625,7 @@ func TestMTPVerifyBatchedHiddensMatchesSequential(t *testing.T) {
 	mk := newMTPDecodeFixture(t)
 	ref := mk()
 	sess := mk()
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 	if err := ref.PrefillTokens(prompt); err != nil {
 		t.Fatalf("reference PrefillTokens: %v", err)
 	}
@@ -547,13 +659,55 @@ func TestMTPVerifyBatchedHiddensMatchesSequential(t *testing.T) {
 	}
 }
 
+func TestMTPSampledDenseBatchRowPickerMatchesHiddenOnWordedPrompt(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	sess := mk()
+	prompt := mtpWordedPromptIDs()
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(%q): %v", mtpWordedPromptText, err)
+	}
+	ids := []int32{4, 5, 6}
+	hiddens, ok, err := sess.verifyBatchedHiddens(ids)
+	if err != nil {
+		t.Fatalf("verifyBatchedHiddens: %v", err)
+	}
+	if !ok {
+		t.Fatal("verifyBatchedHiddens ok = false")
+	}
+	params := model.SampleParams{
+		Temperature:    0.8,
+		TopK:           7,
+		TopP:           0.75,
+		MinP:           0.01,
+		RepeatPenalty:  1.2,
+		SuppressTokens: []int32{2, 7},
+	}
+	history := []int32{3, 5, 8}
+	const row = 1
+	want, err := sess.sampleMTPTokenFromHidden(hiddens[row], model.NewSampler(83), params, history)
+	if err != nil {
+		t.Fatalf("sampleMTPTokenFromHidden: %v", err)
+	}
+	got, direct, err := sess.sampleMTPTokenFromDenseBatchRow(row, model.NewSampler(83), params, history)
+	if err != nil {
+		t.Fatalf("sampleMTPTokenFromDenseBatchRow: %v", err)
+	}
+	if !direct {
+		t.Fatal("sampleMTPTokenFromDenseBatchRow declined the worded prompt batch row")
+	}
+	if got != want {
+		t.Fatalf("sampleMTPTokenFromDenseBatchRow = %d, want hidden sample %d", got, want)
+	}
+}
+
 func TestMTPVerifyBatchedUsesEmbedInto(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
 	control := mk()
 	candidate := mk()
 	for _, sess := range []*ArchSession{control, candidate} {
-		for _, id := range []int32{1, 2, 3} {
+		for _, id := range mtpWordedPromptIDs() {
 			if _, err := sess.stepID(id); err != nil {
 				t.Fatalf("prefill stepID(%d): %v", id, err)
 			}
@@ -587,7 +741,7 @@ func TestMTPPrefillPromptUsesEmbedInto(t *testing.T) {
 	mk := newMTPDecodeFixture(t)
 	control := mk()
 	candidate := mk()
-	ids := []int32{1, 2, 3, 4, 5}
+	ids := mtpWordedPromptIDs()
 	want, ok, err := control.prefillMTPPrompt(ids, true)
 	if err != nil {
 		t.Fatalf("control prefillMTPPrompt: %v", err)
@@ -616,7 +770,7 @@ func TestMTPPrefillPromptRetainsLastHiddenNoCopy(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
 	sess := mk()
-	ids := []int32{1, 2, 3, 4, 5}
+	ids := mtpWordedPromptIDs()
 
 	hidden, ok, err := sess.prefillMTPPrompt(ids, true)
 	if err != nil {
@@ -693,7 +847,7 @@ func TestMTPVerifyBatchedDirectHeadAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
 	dense := mk()
-	for _, id := range []int32{1, 2, 3} {
+	for _, id := range mtpWordedPromptIDs() {
 		if _, err := dense.stepID(id); err != nil {
 			t.Fatalf("prefill dense stepID(%d): %v", id, err)
 		}
@@ -726,7 +880,7 @@ func TestMTPVerifyBatchedFallbackReusesPinnedHiddenRows(t *testing.T) {
 	requireNativeRuntime(t)
 	mk := newMTPDecodeFixture(t)
 	dense := mk()
-	for _, id := range []int32{1, 2, 3} {
+	for _, id := range mtpWordedPromptIDs() {
 		if _, err := dense.stepID(id); err != nil {
 			t.Fatalf("prefill dense stepID(%d): %v", id, err)
 		}
@@ -762,10 +916,10 @@ func TestMTPVerifyBatchedFallbackReusesPinnedHiddenRows(t *testing.T) {
 	}
 }
 
-func TestMTPDecodeSinglePromptEOSMatchesGenerate(t *testing.T) {
+func TestMTPDecodeWordedPromptEOSMatchesGenerate(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 8
-	prompt := []int32{7}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 
 	first, err := mk().Generate(prompt, 1, -1)
@@ -787,7 +941,7 @@ func TestMTPDecodeSinglePromptEOSMatchesGenerate(t *testing.T) {
 func TestMTPDecodeEOSRollsBackTargetPosition(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 8
-	prompt := []int32{7}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 
 	first, err := mk().Generate(prompt, 1, -1)
@@ -812,7 +966,7 @@ func TestMTPDecodeEOSRollsBackTargetPosition(t *testing.T) {
 func TestMTPDecodeEOSRetainsDraftBoundaryForContinuation(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 8
-	prompt := []int32{7}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 
 	want, err := mk().Generate(prompt, 2, -1)
@@ -844,7 +998,7 @@ func TestMTPDecodeEOSRetainsDraftBoundaryForContinuation(t *testing.T) {
 func TestMTPDecodePopulatesTargetKVSnapshotTokens(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 3, 4
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 	target := mk()
 	draft := mk()
@@ -869,7 +1023,7 @@ func TestMTPDecodePopulatesTargetKVSnapshotTokens(t *testing.T) {
 func TestMTPDecodeMaxNewRetainsBoundaryForContinuation(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 2
-	prompt := []int32{1, 2, 3}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 
 	want, err := mk().Generate(prompt, maxNew+1, -1)
@@ -897,7 +1051,7 @@ func TestMTPDecodeMaxNewRetainsBoundaryForContinuation(t *testing.T) {
 func TestMTPDecodeDensePromptPrefillAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
 	const K, maxNew = 4, 1
-	prompt := []int32{1, 2, 3, 4, 5}
+	prompt := mtpWordedPromptIDs()
 	mk := newMTPDecodeFixture(t)
 	target := mk()
 	draft := mk()

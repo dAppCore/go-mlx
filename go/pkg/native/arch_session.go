@@ -112,8 +112,23 @@ type ArchSession struct {
 	sampleOrder           []int32
 	sampleSuppressTokens  []int32
 	embedScratch          []byte
+	mtpBoundaryNormed     []byte
+	mtpProjected          []byte
+	mtpDraftNormed        []byte
+	mtpDraftHidden        []byte
+	mtpDraftLogits        []byte
+	mtpDraftTokens        []int32
+	mtpDraftVerifyBlock   []int32
+	mtpDraftLogitScores   []float32
+	mtpDraftLogitSelected []int
+	mtpDraftLayerScratch  gemma4AssistantDraftLayerScratch
+	mtpTargetKVScratch    []Gemma4AssistantTargetKV
+	mtpTargetKVByType     []Gemma4AssistantKVEntry
+	mtpTargetKVKeySlabs   [][]byte
+	mtpTargetKVValueSlabs [][]byte
 	mtpVerifyHiddenPinned *pinnedNoCopyBytes
 	mtpVerifyHiddenRows   [][]byte
+	mtpVerifyRows         []int32
 	nextInputToken        metal.MTLBuffer
 	nextInputTokenPtr     *int32
 	nextInputTokenPinned  *pinnedNoCopyBytes
@@ -161,11 +176,27 @@ func (s *ArchSession) closeSessionOwnedScratch() {
 	s.sampleOrder = nil
 	s.sampleSuppressTokens = nil
 	s.embedScratch = nil
+	s.mtpBoundaryNormed = nil
+	s.mtpProjected = nil
+	s.mtpDraftNormed = nil
+	s.mtpDraftHidden = nil
+	s.mtpDraftLogits = nil
+	s.mtpDraftTokens = nil
+	s.mtpDraftVerifyBlock = nil
+	s.mtpDraftLogitScores = nil
+	s.mtpDraftLogitSelected = nil
+	s.mtpDraftLayerScratch.close()
+	s.mtpDraftLayerScratch = gemma4AssistantDraftLayerScratch{}
+	s.mtpTargetKVScratch = nil
+	s.mtpTargetKVByType = nil
+	s.mtpTargetKVKeySlabs = nil
+	s.mtpTargetKVValueSlabs = nil
 	if s.mtpVerifyHiddenPinned != nil {
 		s.mtpVerifyHiddenPinned.Close()
 		s.mtpVerifyHiddenPinned = nil
 	}
 	s.mtpVerifyHiddenRows = nil
+	s.mtpVerifyRows = nil
 
 	s.nextInputToken = nil
 	s.nextInputTokenPtr = nil
@@ -1021,16 +1052,12 @@ func (s *ArchSession) PrefillTokenEmbeddings(ids []int32, embeddings [][]byte) e
 	s.resetRetainedHidden()
 	resident := s.cachedIDs[:0]
 	s.cachedIDs = resident
-	var hidden []byte
-	for i, id := range ids {
-		h, err := s.StepWithID(id, embeddings[i])
-		if err != nil {
-			s.pos = 0
-			s.cachedIDs = resident[:0]
-			s.resetRetainedHidden()
-			return err
-		}
-		hidden = h
+	hidden, err := s.prefillRetainedTokenEmbeddings(ids, embeddings, "native.ArchSession.PrefillTokenEmbeddings")
+	if err != nil {
+		s.pos = 0
+		s.cachedIDs = resident[:0]
+		s.resetRetainedHidden()
+		return err
 	}
 	s.cachedIDs = append(resident, ids...)
 	s.rememberRetainedHidden(hidden)
@@ -1111,6 +1138,117 @@ func (s *ArchSession) GenerateSampledFromCacheEach(maxNew int, stopTokens []int3
 // retained session boundary. Gemma 4 assistant drafting seeds from this target
 // feature, matching the vector the target LM head consumes.
 func (s *ArchSession) BoundaryNormedHidden() ([]byte, error) {
+	return s.boundaryNormedHiddenInto(nil)
+}
+
+func (s *ArchSession) boundaryNormedHiddenScratch() ([]byte, error) {
+	n := s.arch.Hidden * bf16Size
+	if cap(s.mtpBoundaryNormed) < n {
+		s.mtpBoundaryNormed = make([]byte, n)
+	}
+	return s.boundaryNormedHiddenInto(s.mtpBoundaryNormed[:n])
+}
+
+func (s *ArchSession) mtpProjectionScratch(byteLen int) []byte {
+	if cap(s.mtpProjected) < byteLen {
+		s.mtpProjected = make([]byte, byteLen)
+	}
+	return s.mtpProjected[:byteLen]
+}
+
+func (s *ArchSession) mtpDraftScratch(slot *[]byte, byteLen int) []byte {
+	if cap(*slot) < byteLen {
+		*slot = make([]byte, byteLen)
+	}
+	return (*slot)[:byteLen]
+}
+
+func (s *ArchSession) mtpDraftTokenScratch(n int) []int32 {
+	if cap(s.mtpDraftTokens) < n {
+		s.mtpDraftTokens = make([]int32, 0, n)
+	} else {
+		s.mtpDraftTokens = s.mtpDraftTokens[:0]
+	}
+	return s.mtpDraftTokens
+}
+
+func (s *ArchSession) mtpDraftVerifyBlockScratch(carry int32, draft []int32) []int32 {
+	n := len(draft) + 1
+	if cap(s.mtpDraftVerifyBlock) < n {
+		s.mtpDraftVerifyBlock = make([]int32, n)
+	} else {
+		s.mtpDraftVerifyBlock = s.mtpDraftVerifyBlock[:n]
+	}
+	s.mtpDraftVerifyBlock[0] = carry
+	copy(s.mtpDraftVerifyBlock[1:], draft)
+	return s.mtpDraftVerifyBlock
+}
+
+func (s *ArchSession) mtpDraftLogitScoreScratch(n int) []float32 {
+	if cap(s.mtpDraftLogitScores) < n {
+		s.mtpDraftLogitScores = make([]float32, n)
+	} else {
+		s.mtpDraftLogitScores = s.mtpDraftLogitScores[:n]
+	}
+	return s.mtpDraftLogitScores
+}
+
+func (s *ArchSession) mtpDraftLogitSelectedScratch(n int) []int {
+	if cap(s.mtpDraftLogitSelected) < n {
+		s.mtpDraftLogitSelected = make([]int, 0, n)
+	} else {
+		s.mtpDraftLogitSelected = s.mtpDraftLogitSelected[:0]
+	}
+	return s.mtpDraftLogitSelected
+}
+
+func (s *ArchSession) mtpTargetKVScratchEntries(n int) []Gemma4AssistantTargetKV {
+	if cap(s.mtpTargetKVScratch) < n {
+		s.mtpTargetKVScratch = make([]Gemma4AssistantTargetKV, n)
+	} else {
+		s.mtpTargetKVScratch = s.mtpTargetKVScratch[:n]
+		for i := range s.mtpTargetKVScratch {
+			s.mtpTargetKVScratch[i] = Gemma4AssistantTargetKV{}
+		}
+	}
+	return s.mtpTargetKVScratch
+}
+
+func (s *ArchSession) mtpTargetKVByTypeEntries(capacity int) []Gemma4AssistantKVEntry {
+	if cap(s.mtpTargetKVByType) < capacity {
+		s.mtpTargetKVByType = make([]Gemma4AssistantKVEntry, 0, capacity)
+	} else {
+		s.mtpTargetKVByType = s.mtpTargetKVByType[:cap(s.mtpTargetKVByType)]
+		for i := range s.mtpTargetKVByType {
+			s.mtpTargetKVByType[i] = Gemma4AssistantKVEntry{}
+		}
+		s.mtpTargetKVByType = s.mtpTargetKVByType[:0]
+	}
+	return s.mtpTargetKVByType
+}
+
+func (s *ArchSession) mtpTargetKVSlabs(cacheIndex, keyBytes, valueBytes int) ([]byte, []byte) {
+	for len(s.mtpTargetKVKeySlabs) <= cacheIndex {
+		s.mtpTargetKVKeySlabs = append(s.mtpTargetKVKeySlabs, nil)
+		s.mtpTargetKVValueSlabs = append(s.mtpTargetKVValueSlabs, nil)
+	}
+	key := s.mtpTargetKVKeySlabs[cacheIndex]
+	if cap(key) < keyBytes {
+		key = make([]byte, keyBytes)
+	}
+	key = key[:keyBytes]
+	s.mtpTargetKVKeySlabs[cacheIndex] = key
+
+	value := s.mtpTargetKVValueSlabs[cacheIndex]
+	if cap(value) < valueBytes {
+		value = make([]byte, valueBytes)
+	}
+	value = value[:valueBytes]
+	s.mtpTargetKVValueSlabs[cacheIndex] = value
+	return key, value
+}
+
+func (s *ArchSession) boundaryNormedHiddenInto(out []byte) ([]byte, error) {
 	if s == nil {
 		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: nil session")
 	}
@@ -1120,7 +1258,7 @@ func (s *ArchSession) BoundaryNormedHidden() ([]byte, error) {
 	if len(s.finalNorm) != s.arch.Hidden*bf16Size {
 		return nil, core.NewError("native.ArchSession.BoundaryNormedHidden: final norm is unavailable")
 	}
-	return RMSNormBF16(s.retainedHidden, s.finalNorm, 1, s.arch.Hidden, s.arch.Eps)
+	return RMSNormBF16Into(out, s.retainedHidden, s.finalNorm, 1, s.arch.Hidden, s.arch.Eps)
 }
 
 // BoundaryLogits returns the bf16 logits at the retained session boundary.
@@ -1295,6 +1433,30 @@ func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, 
 	return hidden, err
 }
 
+func (s *ArchSession) prefillRetainedTokenEmbeddings(ids []int32, embeddings [][]byte, scope string) ([]byte, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) != len(embeddings) {
+		return nil, core.NewError(scope + ": token and embedding counts differ")
+	}
+	if s.pos+len(ids) > s.maxLen {
+		return nil, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if hidden, ok, err := s.prefillRetainedEmbeddingsBatchedDense(ids, embeddings, scope); ok || err != nil {
+		return hidden, err
+	}
+	var hidden []byte
+	var err error
+	for i, id := range ids {
+		hidden, err = s.StepWithID(id, embeddings[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return hidden, nil
+}
+
 func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -1309,6 +1471,145 @@ func (s *ArchSession) prefillPromptRetainedInPool(ids []int32) ([]byte, error) {
 		}
 	}
 	return s.stepIDRetainedInPool(ids[len(ids)-1])
+}
+
+func (s *ArchSession) prefillRetainedEmbeddingsBatchedDense(ids []int32, embeddings [][]byte, scope string) ([]byte, bool, error) {
+	if len(ids) == 0 {
+		return nil, false, nil
+	}
+	if len(ids) != len(embeddings) {
+		return nil, false, core.NewError(scope + ": token and embedding counts differ")
+	}
+	if s.pos+len(ids) > s.maxLen {
+		return nil, false, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if s.verifyBatchedCrossesSlidingRingWrap(len(ids)) {
+		return s.prefillRetainedEmbeddingsBatchedDenseChunks(ids, embeddings, scope)
+	}
+	return s.prefillRetainedEmbeddingsBatchedDenseOne(ids, embeddings, scope)
+}
+
+func (s *ArchSession) prefillRetainedEmbeddingsBatchedDenseChunks(ids []int32, embeddings [][]byte, scope string) ([]byte, bool, error) {
+	var hidden []byte
+	for len(ids) > 0 {
+		n := s.batchedDensePrefillChunkLen(len(ids))
+		if n <= 0 {
+			return nil, false, core.NewError("native.prefillRetainedEmbeddingsBatchedDense: invalid sliding chunk")
+		}
+		nextHidden, ok, err := s.prefillRetainedEmbeddingsBatchedDenseOne(ids[:n], embeddings[:n], scope)
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		hidden = nextHidden
+		ids = ids[n:]
+		embeddings = embeddings[n:]
+	}
+	return hidden, true, nil
+}
+
+func (s *ArchSession) prefillRetainedEmbeddingsBatchedDenseOne(ids []int32, embeddings [][]byte, scope string) ([]byte, bool, error) {
+	if len(embeddings) == 0 {
+		return nil, false, nil
+	}
+	if len(ids) != len(embeddings) {
+		return nil, false, core.NewError(scope + ": token and embedding counts differ")
+	}
+	if s.pos+len(embeddings) > s.maxLen {
+		return nil, false, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if s.verifyBatchedCrossesSlidingRingWrap(len(embeddings)) {
+		return nil, false, nil
+	}
+	if hidden, ok, err := s.prefillRetainedEmbeddingsICB(ids, embeddings, scope); ok || err != nil {
+		return hidden, ok, err
+	}
+	if s.perLayerInput != nil || s.state.icb != nil {
+		return nil, false, nil
+	}
+	var (
+		hidden []byte
+		ok     bool
+		err    error
+	)
+	dst := s.sampleHidden
+	retained := false
+	if pinned, pinnedOK := s.ensureRetainedHiddenPinned(s.arch.Hidden * bf16Size); pinnedOK {
+		s.resetRetainedLogits()
+		dst = pinned.bytes[:s.arch.Hidden*bf16Size]
+		retained = true
+	}
+	withAutoreleasePool(func() {
+		hidden, ok, err = s.state.stepTokensBatchedDenseLastIntoCopyInputs(embeddings, s.pos, dst)
+	})
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if retained {
+		s.sampleHidden = nil
+		s.retainedHidden = hidden
+	} else {
+		s.sampleHidden = hidden
+	}
+	s.pos += len(embeddings)
+	return hidden, true, nil
+}
+
+func (s *ArchSession) prefillRetainedEmbeddingsICB(ids []int32, embeddings [][]byte, scope string) ([]byte, bool, error) {
+	if len(embeddings) == 0 {
+		return nil, false, nil
+	}
+	if len(ids) != len(embeddings) {
+		return nil, false, core.NewError(scope + ": token and embedding counts differ")
+	}
+	icb := s.state.icb
+	if icb == nil || icbDisabledForTest || s.pos != 0 {
+		return nil, false, nil
+	}
+	if icb.hasPLE {
+		if icb.pleRuntime == nil || icb.pleRuntime.compute == nil {
+			return nil, true, core.NewError(scope + ": ICB PLE runtime is unavailable")
+		}
+		prevTokenIDs := icb.pleRuntime.tokenIDs
+		icb.pleRuntime.tokenIDs = ids
+		defer func() {
+			icb.pleRuntime.tokenIDs = prevTokenIDs
+		}()
+	} else if s.perLayerInput != nil {
+		return nil, false, nil
+	}
+	rowBytes := s.arch.Hidden * bf16Size
+	for i := range embeddings {
+		if len(embeddings[i]) != rowBytes {
+			return nil, false, core.NewError(scope + ": emb must be hidden bf16 bytes")
+		}
+	}
+	var dst []byte
+	if pinned, pinnedOK := s.ensureRetainedHiddenPinned(rowBytes); pinnedOK {
+		s.resetRetainedLogits()
+		dst = pinned.bytes[:rowBytes]
+	}
+	if dst == nil {
+		if cap(s.sampleHidden) < rowBytes {
+			s.sampleHidden = make([]byte, rowBytes)
+		}
+		dst = s.sampleHidden[:rowBytes]
+	}
+	hidden, err := icb.runBatchLastInto(dst, embeddings)
+	if err != nil {
+		return nil, true, err
+	}
+	if len(hidden) != rowBytes {
+		return nil, true, core.NewError(scope + ": ICB hidden result width mismatch")
+	}
+	if s.retainedHiddenPinned != nil && len(s.retainedHiddenPinned.bytes) == len(hidden) && len(hidden) != 0 &&
+		unsafe.Pointer(&hidden[0]) == unsafe.Pointer(&s.retainedHiddenPinned.bytes[0]) {
+		s.sampleHidden = nil
+		s.retainedHidden = hidden
+	} else {
+		s.sampleHidden = hidden
+	}
+	s.pos += len(embeddings)
+	return hidden, true, nil
 }
 
 func (s *ArchSession) prefillPromptRetainedGPUInputsInPool(ids []int32) ([]byte, bool, error) {
@@ -1688,6 +1989,18 @@ func (s *ArchSession) mtpVerifyHiddenRowsScratch(k, rowBytes int) ([][]byte, boo
 		s.mtpVerifyHiddenRows[i] = s.mtpVerifyHiddenPinned.bytes[i*rowBytes : (i+1)*rowBytes]
 	}
 	return s.mtpVerifyHiddenRows, true
+}
+
+func (s *ArchSession) mtpVerifyRowScratch(k int) []int32 {
+	if s == nil || k <= 0 {
+		return nil
+	}
+	if cap(s.mtpVerifyRows) < k {
+		s.mtpVerifyRows = make([]int32, k)
+	} else {
+		s.mtpVerifyRows = s.mtpVerifyRows[:k]
+	}
+	return s.mtpVerifyRows
 }
 
 // Step decodes one token's embedding at the current cache position over the
@@ -4400,7 +4713,7 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 					readyLogits, readyIDs = nil, nil
 					stepped = true
 				}
-			} else if s.sampleTopKTokenParamsEligible(nextPickParams) {
+			} else if s.state.icb != nil && !icbDisabledForTest && s.sampleTopKTokenParamsEligible(nextPickParams) {
 				draw := sampler.Draw()
 				if chainedHidden, chainedToken, ok, chainErr := s.stepSampleTopKTokenInPool(next, nextPickParams, draw, history); chainErr != nil {
 					return nil, history, chainErr
@@ -4409,7 +4722,7 @@ func (s *ArchSession) generateSampledFromHiddenInPoolWithHistory(hidden []byte, 
 					readyLogits, readyIDs = nil, nil
 					stepped = true
 				}
-			} else if s.sampleLogitsTokenParamsEligible(nextPickParams) {
+			} else if s.state.icb != nil && !icbDisabledForTest && s.sampleLogitsTokenParamsEligible(nextPickParams) {
 				draw := sampler.Draw()
 				if chainedHidden, chainedToken, ok, chainErr := s.stepSampleLogitsTokenInPool(next, nextPickParams, draw, history); chainErr != nil {
 					return nil, history, chainErr

@@ -737,6 +737,38 @@ func TestBoundaryLogitsUsesRetainedHiddenNoCopyHeadPath(t *testing.T) {
 	}
 }
 
+func TestBoundaryNormedHiddenIntoReusesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	hidden := toBF16Bytes(syntheticFloat32(sess.arch.Hidden, 39))
+	sess.rememberRetainedHidden(hidden)
+	want, err := sess.BoundaryNormedHidden()
+	if err != nil {
+		t.Fatalf("BoundaryNormedHidden: %v", err)
+	}
+	out := make([]byte, sess.arch.Hidden*bf16Size)
+
+	got, err := sess.boundaryNormedHiddenInto(out)
+	if err != nil {
+		t.Fatalf("boundaryNormedHiddenInto: %v", err)
+	}
+
+	if len(got) == 0 || unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("boundaryNormedHiddenInto did not reuse caller output backing")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("boundaryNormedHiddenInto output differs from BoundaryNormedHidden")
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		if _, err := sess.boundaryNormedHiddenInto(out); err != nil {
+			t.Fatalf("boundaryNormedHiddenInto allocation run: %v", err)
+		}
+	})
+	if allocs > 1 {
+		t.Fatalf("boundaryNormedHiddenInto allocations = %.0f, want <= 1", allocs)
+	}
+}
+
 func TestArchSessionRetainedLogitsUsesPinnedNoCopyBuffer(t *testing.T) {
 	requireNativeRuntime(t)
 	sess := newSessionStateFixture(t)

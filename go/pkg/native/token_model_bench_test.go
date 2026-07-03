@@ -43,6 +43,61 @@ func BenchmarkNativeTokenModelEmbedInto(b *testing.B) {
 	}
 }
 
+func BenchmarkNativeTokenModelTokenEmbeddingsWithFeatures(b *testing.B) {
+	const hidden = 128
+	const imageTok = int32(88)
+	const audioTok = int32(77)
+	const videoTok = int32(99)
+	ids := make([]int32, 256)
+	imageSlots, audioSlots, videoSlots := 0, 0, 0
+	for i := range ids {
+		switch {
+		case i%29 == 0:
+			ids[i] = imageTok
+			imageSlots++
+		case i%31 == 0:
+			ids[i] = audioTok
+			audioSlots++
+		case i%37 == 0:
+			ids[i] = videoTok
+			videoSlots++
+		default:
+			ids[i] = int32(i % 64)
+		}
+	}
+	tm := &NativeTokenModel{
+		NativeBackend: &NativeBackend{arch: model.Arch{Hidden: hidden}},
+		vision: &model.LoadedVision{Cfg: model.LoadedVisionConfig{
+			ImageTokenID: imageTok,
+			VideoTokenID: videoTok,
+		}},
+		audio: &model.LoadedAudio{Cfg: model.LoadedAudioConfig{AudioTokenID: int(audioTok)}},
+		embedInto: func(dst []byte, id int32) ([]byte, error) {
+			for off := 0; off < len(dst); off += bf16Size {
+				dst[off] = byte(id)
+				dst[off+1] = byte(id >> 8)
+			}
+			return dst, nil
+		},
+	}
+	imageFeatures := make([]byte, imageSlots*hidden*bf16Size)
+	audioFeatures := make([]byte, audioSlots*hidden*bf16Size)
+	videoFeatures := make([]byte, videoSlots*hidden*bf16Size)
+
+	b.SetBytes(int64(len(ids) * hidden * bf16Size))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := tm.TokenEmbeddingsWithFeatures(ids, imageFeatures, audioFeatures, videoFeatures)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(rows) != len(ids) {
+			b.Fatalf("rows = %d, want %d", len(rows), len(ids))
+		}
+	}
+}
+
 type nativeTokenModelNoDirectGenerate struct {
 	*NativeTokenModel
 }

@@ -905,6 +905,65 @@ func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCalle
 	return outputs, nil
 }
 
+func (r *archICBReplay) runBatchLastInto(out []byte, inputs [][]byte) ([]byte, error) {
+	if len(inputs) == 0 {
+		return nil, core.NewError("native.archICBReplay.runBatchLastInto: empty batch")
+	}
+	if r.hasPLE && len(r.pleRuntime.tokenIDs) != len(inputs) {
+		return nil, core.NewError("native.archICBReplay.runBatchLastInto: PLE token id count must equal inputs")
+	}
+	outLen := r.dModel * bf16Size
+	if len(out) != outLen {
+		return nil, core.NewError("native.archICBReplay.runBatchLastInto: output must be hidden bf16 bytes")
+	}
+	var directOutputView metal.MTLBuffer
+	directOutput := false
+	residentRes, residentIDs := r.residentRes, r.residentResIDs
+	if views, resources, ids, ok := r.directOutputResources([][]byte{out}, outLen); ok {
+		directOutputView = views[0]
+		directOutput = true
+		residentRes, residentIDs = resources, ids
+	} else if r.scratch != nil {
+		r.scratch.closeOutputViews()
+	}
+	var coreErr error
+	withAutoreleasePool(func() {
+		var directOutputCmd metal.MTLIndirectComputeCommand
+		if directOutput {
+			directOutputCmd = indirectComputeCommandAtIndexFast(r.icb, uint(r.finalOutIdx))
+		}
+		last := len(inputs) - 1
+		for t := range inputs {
+			var pli []byte
+			if r.hasPLE {
+				p, err := r.pleRuntime.compute(r.pleRuntime.tokenIDs[t], inputs[t])
+				if err != nil {
+					coreErr = err
+					return
+				}
+				if len(p) != r.nLayers*r.plePliDim*bf16Size {
+					coreErr = core.NewError("native.archICBReplay.runBatchLastInto: PLE tensor size mismatch")
+					return
+				}
+				pli = p
+			}
+			if t == last {
+				if directOutput {
+					r.stepBodyDirectOutput(inputs[t], t, pli, out, directOutputCmd, directOutputView, residentRes, residentIDs)
+					continue
+				}
+				r.stepBodyInto(inputs[t], t, pli, out)
+				continue
+			}
+			r.stepBodyNoResult(inputs[t], t, pli)
+		}
+	})
+	if coreErr != nil {
+		return nil, coreErr
+	}
+	return out, nil
+}
+
 // runBatchPipelinedInto replays the sequence DOUBLE-BUFFERED across r and r2 — two ICBs recorded over the
 // SAME KV caches. Token t's host prep+submit on rs[t%2] overlaps token t-1's GPU compute on rs[(t-1)%2],
 // reclaiming the per-token WaitUntilCompleted/submit/read idle (~40% of the wall — the GPU sits stalled

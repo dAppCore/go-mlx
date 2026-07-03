@@ -16,6 +16,43 @@ import (
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
+const (
+	nativeAssistantWordedPromptText  = "native assistant sampled drafting uses words"
+	nativeAssistantWordedPromptWords = 6
+)
+
+var nativeAssistantWordedPromptTokens = [...]int32{1, 5, 3, 2, 6, 4}
+
+func nativeAssistantWordedPromptIDs() []int32 {
+	return nativeAssistantWordedPromptTokens[:]
+}
+
+func nativeAssistantWordedPromptCandidates() [][]int32 {
+	return [][]int32{
+		nativeAssistantWordedPromptIDs(),
+		{2, 4, 6, 1, 5},
+		{3, 1, 7, 5, 2},
+		{4, 2, 5, 6, 3},
+		{5, 3, 1, 7, 4},
+		{6, 7, 2, 4, 1},
+	}
+}
+
+func TestNativeAssistantWordedPromptFixtureUsesAFewWords(t *testing.T) {
+	prompt := nativeAssistantWordedPromptIDs()
+	if nativeAssistantWordedPromptWords < 5 {
+		t.Fatalf("native assistant worded prompt %q has %d words, want a few words", nativeAssistantWordedPromptText, nativeAssistantWordedPromptWords)
+	}
+	if len(prompt) != nativeAssistantWordedPromptWords {
+		t.Fatalf("native assistant worded prompt token count = %d, want one stable token id per word", len(prompt))
+	}
+	for i, id := range prompt {
+		if id <= 0 || id >= 8 {
+			t.Fatalf("native assistant worded prompt token %d = %d outside fixture vocab", i, id)
+		}
+	}
+}
+
 func TestLoadGemma4AssistantDirLoadsMetadataAndTensors(t *testing.T) {
 	dir := writeNativeAssistantDir(t, nativeAssistantTinyTensors(true))
 
@@ -293,6 +330,76 @@ func TestGemma4AssistantPairTargetKVByLayerTypeFromSessionTransposesResidentRows
 	}
 }
 
+func TestGemma4AssistantPairTargetKVByLayerTypeFromSessionScratchReusesSlabs(t *testing.T) {
+	assistant := nativeAssistantTinyLoaded(t, true)
+	defer assistant.Close()
+
+	arch := nativeAssistantSessionTargetArchForTest()
+	rowBytes := 2 * 2 * bf16Size
+	session := &ArchSession{
+		arch: arch,
+		state: archDecodeState{
+			specs: arch.Layer,
+		},
+		stateBlockViews: []sessionStateLayerView{
+			{
+				layer: 0, kvHeads: 2, headDim: 2, rowBytes: rowBytes, cacheIndex: 0,
+				cacheMode: nativeStateCacheModeFixed, cacheRows: 4,
+				keyBytes:   nativeAssistantSessionKVRowsForTest(4, 2, 2, 0x10),
+				valueBytes: nativeAssistantSessionKVRowsForTest(4, 2, 2, 0x20),
+			},
+			{
+				layer: 1, kvHeads: 2, headDim: 2, rowBytes: rowBytes, cacheIndex: 1,
+				cacheMode: nativeStateCacheModeFixed, cacheRows: 4,
+				keyBytes:   nativeAssistantSessionKVRowsForTest(4, 2, 2, 0x30),
+				valueBytes: nativeAssistantSessionKVRowsForTest(4, 2, 2, 0x40),
+			},
+		},
+		pos:    3,
+		maxLen: 4,
+	}
+	pair := &Gemma4AssistantPair{TargetArch: arch, Assistant: assistant}
+
+	first, err := pair.targetKVByLayerTypeFromSessionScratch(session)
+	if err != nil {
+		t.Fatalf("targetKVByLayerTypeFromSessionScratch first: %v", err)
+	}
+	sliding1, ok := first.Get("sliding_attention")
+	if !ok {
+		t.Fatal("sliding_attention stream missing")
+	}
+	full1, ok := first.Get("full_attention")
+	if !ok {
+		t.Fatal("full_attention stream missing")
+	}
+	if len(first.entries) == 0 {
+		t.Fatal("first scratch target KV mapping has no layer-type entries")
+	}
+	entryPtr := &first.entries[0]
+	slidingKeyPtr := byteDataPointer(sliding1.Key)
+	slidingValuePtr := byteDataPointer(sliding1.Value)
+	fullKeyPtr := byteDataPointer(full1.Key)
+	fullValuePtr := byteDataPointer(full1.Value)
+
+	second, err := pair.targetKVByLayerTypeFromSessionScratch(session)
+	if err != nil {
+		t.Fatalf("targetKVByLayerTypeFromSessionScratch second: %v", err)
+	}
+	sliding2, _ := second.Get("sliding_attention")
+	full2, _ := second.Get("full_attention")
+
+	if len(second.entries) == 0 || &second.entries[0] != entryPtr {
+		t.Fatal("scratch target KV mapping did not reuse layer-type entry backing")
+	}
+	if byteDataPointer(sliding2.Key) != slidingKeyPtr || byteDataPointer(sliding2.Value) != slidingValuePtr ||
+		byteDataPointer(full2.Key) != fullKeyPtr || byteDataPointer(full2.Value) != fullValuePtr {
+		t.Fatal("scratch target KV mapping did not reuse K/V slab backing")
+	}
+	if sliding2.Key[0] != 0x10 || sliding2.Value[0] != 0x20 || full2.Key[0] != 0x30 || full2.Value[0] != 0x40 {
+		t.Fatalf("scratch target KV bytes changed: sliding %#x/%#x full %#x/%#x", sliding2.Key[0], sliding2.Value[0], full2.Key[0], full2.Value[0])
+	}
+}
+
 func TestGemma4AssistantPairTargetKVByLayerTypeFromSessionUsesSlidingWindowOffset(t *testing.T) {
 	assistant := nativeAssistantTinyLoaded(t, true)
 	defer assistant.Close()
@@ -375,6 +482,37 @@ func TestGemma4AssistantDraftInputProjectionMatchesReference(t *testing.T) {
 	assertFloat32Near(t, "draft input projection", bf16Floats(got), want, 0.02)
 }
 
+func TestGemma4AssistantDraftInputProjectionIntoAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	tensors := nativeAssistantTinyTensors(true)
+	preW := nativeAssistantProjectionFixture(4, 16)
+	tensors["pre_projection.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{4, 16}, Data: toBF16Bytes(preW)}
+	dir := writeNativeAssistantDir(t, tensors)
+
+	assistant, err := LoadGemma4AssistantDir(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4AssistantDir: %v", err)
+	}
+	defer assistant.Close()
+
+	tokenEmbedding := toBF16Bytes([]float32{1, 2, -1, 0.5, 0.25, -0.5, 1.5, -2})
+	previousHidden := toBF16Bytes([]float32{0.5, -1.5, 2, 1, -0.25, 0.75, -1, 0.125})
+	out := make([]byte, assistant.Arch.Hidden*bf16Size)
+	if _, err := assistant.DraftInputProjectionInto(out, tokenEmbedding, previousHidden); err != nil {
+		t.Fatalf("warm DraftInputProjectionInto: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(20, func() {
+		if _, err := assistant.DraftInputProjectionInto(out, tokenEmbedding, previousHidden); err != nil {
+			t.Fatalf("DraftInputProjectionInto: %v", err)
+		}
+	})
+	if allocs > 30 {
+		t.Fatalf("DraftInputProjectionInto allocations/run = %.0f, want <= 30 with caller output and warm scratch", allocs)
+	}
+}
+
 func TestGemma4AssistantPairDraftInputProjectionForTokenUsesScaledTargetEmbedding(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -416,6 +554,51 @@ func TestGemma4AssistantPairDraftInputProjectionForTokenUsesScaledTargetEmbeddin
 	assertFloat32Near(t, "pair draft input projection for token", bf16Floats(got), want, 0.02)
 }
 
+func TestGemma4AssistantPairDraftInputProjectionForTokenIntoLargeEmbeddingMatchesDirectAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const targetHidden, assistantHidden, vocab = 2048, 4, 8
+	preWeight := toBF16Bytes(nativeAssistantProjectionFixture(assistantHidden, targetHidden*2))
+	pair := &Gemma4AssistantPair{
+		TargetArch: model.Arch{Hidden: targetHidden, Vocab: vocab},
+		Assistant: &Gemma4AssistantModel{
+			Arch:               model.Arch{Hidden: assistantHidden},
+			BackboneHiddenSize: targetHidden,
+			Tensors: map[string]safetensors.Tensor{
+				"pre_projection.weight": {Dtype: "BF16", Shape: []int{assistantHidden, targetHidden * 2}, Data: preWeight},
+			},
+		},
+	}
+	targetEmbed := toBF16Bytes(syntheticFloat32(vocab*targetHidden, 811))
+	previousHidden := toBF16Bytes(syntheticFloat32(targetHidden, 823))
+	tokenEmbedding := make([]byte, targetHidden*bf16Size)
+	if _, err := embedTokenBF16Into(tokenEmbedding, targetEmbed, 3, vocab, targetHidden, nativeGemma4EmbeddingScale(pair.TargetArch)); err != nil {
+		t.Fatalf("embedTokenBF16Into: %v", err)
+	}
+	directOut := make([]byte, assistantHidden*bf16Size)
+	tokenOut := make([]byte, assistantHidden*bf16Size)
+	if _, err := pair.Assistant.DraftInputProjectionInto(directOut, tokenEmbedding, previousHidden); err != nil {
+		t.Fatalf("warm DraftInputProjectionInto: %v", err)
+	}
+	if _, err := pair.DraftInputProjectionForTokenInto(tokenOut, targetEmbed, 3, previousHidden); err != nil {
+		t.Fatalf("warm DraftInputProjectionForTokenInto: %v", err)
+	}
+
+	directAllocs := testing.AllocsPerRun(10, func() {
+		if _, err := pair.Assistant.DraftInputProjectionInto(directOut, tokenEmbedding, previousHidden); err != nil {
+			t.Fatalf("DraftInputProjectionInto: %v", err)
+		}
+	})
+	tokenAllocs := testing.AllocsPerRun(10, func() {
+		if _, err := pair.DraftInputProjectionForTokenInto(tokenOut, targetEmbed, 3, previousHidden); err != nil {
+			t.Fatalf("DraftInputProjectionForTokenInto: %v", err)
+		}
+	})
+	if tokenAllocs > directAllocs+0.5 {
+		t.Fatalf("DraftInputProjectionForTokenInto allocations/run = %.0f, want direct budget %.0f", tokenAllocs, directAllocs)
+	}
+}
+
 func TestGemma4AssistantPairDraftInputProjectionForQuantTokenUsesScaledTargetEmbedding(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -447,6 +630,51 @@ func TestGemma4AssistantPairDraftInputProjectionForQuantTokenUsesScaledTargetEmb
 	combined := append(append([]byte{}, embedding[0]...), previousHidden...)
 	want := nativeAssistantMatMulBF16NTReference(combined, toBF16Bytes(preW), 1, 16, 4)
 	assertFloat32Near(t, "pair draft input projection for quant token", bf16Floats(got), want, 0.02)
+}
+
+func TestGemma4AssistantPairDraftInputProjectionForQuantTokenIntoLargeEmbeddingMatchesDirectAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const targetHidden, assistantHidden, vocab, groupSize, bits = 2048, 4, 8, 32, 4
+	preWeight := toBF16Bytes(nativeAssistantProjectionFixture(assistantHidden, targetHidden*2))
+	pair := &Gemma4AssistantPair{
+		TargetArch: model.Arch{Hidden: targetHidden, Vocab: vocab},
+		Assistant: &Gemma4AssistantModel{
+			Arch:               model.Arch{Hidden: assistantHidden},
+			BackboneHiddenSize: targetHidden,
+			Tensors: map[string]safetensors.Tensor{
+				"pre_projection.weight": {Dtype: "BF16", Shape: []int{assistantHidden, targetHidden * 2}, Data: preWeight},
+			},
+		},
+	}
+	packed, scales, biases := nativeAssistantQuantEmbeddingFixture(vocab, targetHidden, groupSize)
+	previousHidden := toBF16Bytes(syntheticFloat32(targetHidden, 829))
+	tokenEmbedding := make([]byte, targetHidden*bf16Size)
+	if _, err := embedTokenQuantInto(tokenEmbedding, packed, scales, biases, 3, vocab, targetHidden, groupSize, bits, nativeGemma4EmbeddingScale(pair.TargetArch)); err != nil {
+		t.Fatalf("embedTokenQuantInto: %v", err)
+	}
+	directOut := make([]byte, assistantHidden*bf16Size)
+	tokenOut := make([]byte, assistantHidden*bf16Size)
+	if _, err := pair.Assistant.DraftInputProjectionInto(directOut, tokenEmbedding, previousHidden); err != nil {
+		t.Fatalf("warm DraftInputProjectionInto: %v", err)
+	}
+	if _, err := pair.DraftInputProjectionForTokenQuantInto(tokenOut, packed, scales, biases, groupSize, bits, 3, previousHidden); err != nil {
+		t.Fatalf("warm DraftInputProjectionForTokenQuantInto: %v", err)
+	}
+
+	directAllocs := testing.AllocsPerRun(10, func() {
+		if _, err := pair.Assistant.DraftInputProjectionInto(directOut, tokenEmbedding, previousHidden); err != nil {
+			t.Fatalf("DraftInputProjectionInto: %v", err)
+		}
+	})
+	tokenAllocs := testing.AllocsPerRun(10, func() {
+		if _, err := pair.DraftInputProjectionForTokenQuantInto(tokenOut, packed, scales, biases, groupSize, bits, 3, previousHidden); err != nil {
+			t.Fatalf("DraftInputProjectionForTokenQuantInto: %v", err)
+		}
+	})
+	if tokenAllocs > directAllocs+0.5 {
+		t.Fatalf("DraftInputProjectionForTokenQuantInto allocations/run = %.0f, want direct budget %.0f", tokenAllocs, directAllocs)
+	}
 }
 
 func TestGemma4AssistantDraftOutputProjectionMatchesReference(t *testing.T) {
@@ -941,6 +1169,63 @@ func TestGemma4AssistantPairDraftStepFromSessionMatchesExplicitPath(t *testing.T
 	eqBytes(t, "DraftStepFromSession hidden", got.Hidden, want.Hidden)
 }
 
+func TestGemma4AssistantPairDraftStepFromSessionKeepsProjectionScratch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	session := mk()
+	prompt := []int32{1, 5, 3}
+	if err := session.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+
+	first, err := pair.DraftStepFromSession(session, prompt[len(prompt)-1])
+	if err != nil {
+		t.Fatalf("DraftStepFromSession: %v", err)
+	}
+	if len(first.Logits) == 0 || len(first.Hidden) == 0 {
+		t.Fatal("DraftStepFromSession returned empty logits or hidden state")
+	}
+	logitsPtr := byteDataPointer(first.Logits)
+	hiddenPtr := byteDataPointer(first.Hidden)
+	if len(session.mtpDraftLayerScratch.inputNorm) == 0 ||
+		len(session.mtpDraftLayerScratch.attnQ) == 0 ||
+		len(session.mtpDraftLayerScratch.gate) == 0 {
+		t.Fatal("DraftStepFromSession did not warm layer temporary scratch")
+	}
+	inputNormPtr := byteDataPointer(session.mtpDraftLayerScratch.inputNorm)
+	attnQPtr := byteDataPointer(session.mtpDraftLayerScratch.attnQ)
+	gatePtr := byteDataPointer(session.mtpDraftLayerScratch.gate)
+	if _, ok := registeredPinnedNoCopyBytes(session.mtpDraftLayerScratch.inputNorm); !ok {
+		t.Fatal("DraftStepFromSession layer input norm scratch is not registered pinned backing")
+	}
+	if _, ok := registeredPinnedNoCopyBytes(session.mtpDraftLayerScratch.attnQ); !ok {
+		t.Fatal("DraftStepFromSession layer attention query scratch is not registered pinned backing")
+	}
+	if _, ok := registeredPinnedNoCopyBytes(session.mtpDraftLayerScratch.gate); !ok {
+		t.Fatal("DraftStepFromSession layer gate scratch is not registered pinned backing")
+	}
+
+	second, err := pair.DraftStepFromSession(session, prompt[len(prompt)-1])
+	if err != nil {
+		t.Fatalf("second DraftStepFromSession: %v", err)
+	}
+	if byteDataPointer(second.Logits) != logitsPtr || byteDataPointer(second.Hidden) != hiddenPtr {
+		t.Fatal("DraftStepFromSession did not reuse session-owned output scratch")
+	}
+	if byteDataPointer(session.mtpDraftLayerScratch.inputNorm) != inputNormPtr ||
+		byteDataPointer(session.mtpDraftLayerScratch.attnQ) != attnQPtr ||
+		byteDataPointer(session.mtpDraftLayerScratch.gate) != gatePtr {
+		t.Fatal("DraftStepFromSession did not reuse session-owned layer temporary scratch")
+	}
+
+	want := pair.Assistant.Arch.Hidden * bf16Size
+	if cap(session.mtpProjected) < want {
+		t.Fatalf("MTP projection scratch cap = %d, want at least %d", cap(session.mtpProjected), want)
+	}
+}
+
 func TestGemma4AssistantPairDraftBlockFromSessionMatchesRepeatedSteps(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -1029,7 +1314,196 @@ func TestGemma4AssistantPairDraftBlockFromSessionMatchesRepeatedSteps(t *testing
 	eqBytes(t, "DraftBlockFromSession hidden", got.Hidden, currentHidden)
 }
 
-func TestGemma4AssistantPairVerifyDraftBlockFromSessionAcceptsFullBlock(t *testing.T) {
+func TestGemma4AssistantPairDraftBlockFromSessionCanUseTokenScratch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	session := mk()
+	prompt := []int32{1, 5, 3}
+	if err := session.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+
+	first, err := pair.draftBlockFromSession(session, prompt[len(prompt)-1], 2, false)
+	if err != nil {
+		t.Fatalf("draftBlockFromSession scratch first: %v", err)
+	}
+	if len(first.Tokens) != 2 || len(session.mtpDraftTokens) != 2 {
+		t.Fatalf("scratch draft tokens len = %d/session %d, want 2", len(first.Tokens), len(session.mtpDraftTokens))
+	}
+	tokenPtr := &session.mtpDraftTokens[0]
+	if &first.Tokens[0] != tokenPtr {
+		t.Fatal("scratch draft block did not return session-owned token backing")
+	}
+
+	second, err := pair.draftBlockFromSession(session, prompt[len(prompt)-1], 2, false)
+	if err != nil {
+		t.Fatalf("draftBlockFromSession scratch second: %v", err)
+	}
+	if len(second.Tokens) != 2 || &second.Tokens[0] != tokenPtr {
+		t.Fatal("scratch draft block did not reuse session-owned token backing")
+	}
+
+	public, err := pair.DraftBlockFromSession(session, prompt[len(prompt)-1], 2)
+	if err != nil {
+		t.Fatalf("DraftBlockFromSession public: %v", err)
+	}
+	if len(public.Tokens) != 2 {
+		t.Fatalf("public draft tokens len = %d, want 2", len(public.Tokens))
+	}
+	if &public.Tokens[0] == tokenPtr {
+		t.Fatal("public DraftBlockFromSession returned session-owned token scratch")
+	}
+}
+
+func TestGemma4AssistantPairDraftBlockSampledFromSessionUsesSamplerOnWordedPrompt(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	prompt := nativeAssistantWordedPromptIDs()
+	const draftTokens = 3
+	params := model.SampleParams{
+		Temperature:    1.3,
+		TopK:           4,
+		TopP:           0.85,
+		MinP:           0.01,
+		SuppressTokens: []int32{0},
+	}
+	greedyTarget := mk()
+	if err := greedyTarget.prepareGemma4AssistantPrompt(prompt); err != nil {
+		t.Fatalf("prepareGemma4AssistantPrompt(%q): %v", nativeAssistantWordedPromptText, err)
+	}
+	pickParams := greedyTarget.mtpSamplePickParams(params, nil, 0)
+	greedy, err := pair.draftBlockFromSessionWithSuppress(greedyTarget, prompt[len(prompt)-1], draftTokens, true, pickParams.SuppressTokens)
+	if err != nil {
+		t.Fatalf("draftBlockFromSessionWithSuppress(%q): %v", nativeAssistantWordedPromptText, err)
+	}
+
+	var seed uint64
+	var want []int32
+	for candidateSeed := uint64(1); candidateSeed <= 256; candidateSeed++ {
+		candidate := nativeAssistantReferenceSampledDraftBlock(t, pair, mk(), prompt, draftTokens, pickParams, model.NewSampler(candidateSeed))
+		if !idsEqual(candidate, greedy.Tokens) {
+			seed = candidateSeed
+			want = candidate
+			break
+		}
+	}
+	if seed == 0 {
+		t.Fatalf("no private sampler seed changed sampled assistant draft for %q from greedy %v", nativeAssistantWordedPromptText, greedy.Tokens)
+	}
+
+	target := mk()
+	if err := target.prepareGemma4AssistantPrompt(prompt); err != nil {
+		t.Fatalf("prepareGemma4AssistantPrompt(sampled %q): %v", nativeAssistantWordedPromptText, err)
+	}
+	got, err := pair.draftBlockSampledFromSessionWithSuppress(target, prompt[len(prompt)-1], draftTokens, true, pickParams, model.NewSampler(seed))
+	if err != nil {
+		t.Fatalf("draftBlockSampledFromSessionWithSuppress(%q): %v", nativeAssistantWordedPromptText, err)
+	}
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("sampled assistant draft tokens = %v, want %v for private seed %d", got.Tokens, want, seed)
+	}
+	if idsEqual(got.Tokens, greedy.Tokens) {
+		t.Fatalf("sampled assistant draft tokens = greedy tokens %v; want sampler-controlled proposals", got.Tokens)
+	}
+}
+
+func TestArchSessionGemma4AssistantCarryBlockUsesScratch(t *testing.T) {
+	session := &ArchSession{}
+	draft := []int32{2, 3}
+
+	first := session.mtpDraftVerifyBlockScratch(1, draft)
+	if !idsEqual(first, []int32{1, 2, 3}) {
+		t.Fatalf("first carry block = %v, want [1 2 3]", first)
+	}
+	firstPtr := &first[0]
+
+	second := session.mtpDraftVerifyBlockScratch(4, draft[:1])
+	if !idsEqual(second, []int32{4, 2}) {
+		t.Fatalf("second carry block = %v, want [4 2]", second)
+	}
+	if &second[0] != firstPtr {
+		t.Fatal("carry block did not reuse session-owned scratch")
+	}
+}
+
+func TestArchSessionGemma4AssistantSequentialVerifyHiddensUsePinnedScratch(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	session := mtpSequentialFallbackSession(mk())
+	for _, id := range []int32{1, 2, 3} {
+		if _, err := session.stepID(id); err != nil {
+			t.Fatalf("prefill stepID(%d): %v", id, err)
+		}
+	}
+
+	ids := []int32{4, 5, 6}
+	hiddens, err := session.verifyGemma4AssistantDraftHiddens(ids)
+	if err != nil {
+		t.Fatalf("verifyGemma4AssistantDraftHiddens: %v", err)
+	}
+	if len(hiddens) != len(ids) {
+		t.Fatalf("hidden rows = %d, want %d", len(hiddens), len(ids))
+	}
+	if session.mtpVerifyHiddenPinned == nil || session.mtpVerifyHiddenPinned.buf == nil {
+		t.Fatal("sequential verify did not retain pinned hidden rows")
+	}
+	rowBytes := session.arch.Hidden * bf16Size
+	for i, hidden := range hiddens {
+		if len(hidden) != rowBytes {
+			t.Fatalf("hidden row %d bytes = %d, want %d", i, len(hidden), rowBytes)
+		}
+		if byteDataPointer(hidden) != byteDataPointer(session.mtpVerifyHiddenRows[i]) {
+			t.Fatalf("hidden row %d does not reuse session hidden-row scratch", i)
+		}
+	}
+	firstPtr := byteDataPointer(hiddens[0])
+
+	hiddens, err = session.verifyGemma4AssistantDraftHiddens(ids)
+	if err != nil {
+		t.Fatalf("second verifyGemma4AssistantDraftHiddens: %v", err)
+	}
+	if len(hiddens) != len(ids) || byteDataPointer(hiddens[0]) != firstPtr {
+		t.Fatal("sequential verify hidden rows did not reuse pinned backing")
+	}
+}
+
+func TestArchSessionGemma4AssistantVerifyRowsUseScratch(t *testing.T) {
+	requireNativeRuntime(t)
+	mk := newMTPDecodeFixture(t)
+	session := mtpSequentialFallbackSession(mk())
+	for _, id := range []int32{1, 2, 3} {
+		if _, err := session.stepID(id); err != nil {
+			t.Fatalf("prefill stepID(%d): %v", id, err)
+		}
+	}
+
+	ids := []int32{4, 5}
+	rows, _, err := session.verifyGemma4AssistantDraftRows(ids, nil)
+	if err != nil {
+		t.Fatalf("verifyGemma4AssistantDraftRows: %v", err)
+	}
+	if len(rows) != len(ids) || len(session.mtpVerifyRows) != len(ids) {
+		t.Fatalf("verify rows len = %d/session %d, want %d", len(rows), len(session.mtpVerifyRows), len(ids))
+	}
+	rowPtr := &rows[0]
+	if rowPtr != &session.mtpVerifyRows[0] {
+		t.Fatal("verify rows did not use session-owned scratch")
+	}
+
+	rows, _, err = session.verifyGemma4AssistantDraftRows(ids, nil)
+	if err != nil {
+		t.Fatalf("second verifyGemma4AssistantDraftRows: %v", err)
+	}
+	if len(rows) != len(ids) || &rows[0] != rowPtr {
+		t.Fatal("verify rows did not reuse session-owned scratch")
+	}
+}
+
+func TestGemma4AssistantPairVerifyDraftBlockFromSessionAcceptsFullBlockWithPlainBoundary(t *testing.T) {
 	requireNativeRuntime(t)
 
 	mk := newMTPDecodeFixture(t)
@@ -1070,6 +1544,23 @@ func TestGemma4AssistantPairVerifyDraftBlockFromSessionAcceptsFullBlock(t *testi
 	if len(got.Logits) != target.arch.Vocab*bf16Size {
 		t.Fatalf("Logits bytes = %d, want %d", len(got.Logits), target.arch.Vocab*bf16Size)
 	}
+	ref := mk()
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("reference PrefillTokens: %v", err)
+	}
+	var wantBoundaryHidden []byte
+	for i, id := range want[:2] {
+		wantBoundaryHidden, err = ref.stepID(id)
+		if err != nil {
+			t.Fatalf("reference boundary stepID(%d): %v", i, err)
+		}
+	}
+	wantBoundaryLogits, err := ref.BoundaryLogits()
+	if err != nil {
+		t.Fatalf("reference boundary logits: %v", err)
+	}
+	eqBytes(t, "strict greedy boundary hidden", got.Hidden, wantBoundaryHidden)
+	eqBytes(t, "strict greedy boundary logits", got.Logits, wantBoundaryLogits)
 }
 
 func TestGemma4AssistantPairVerifyDraftBlockFromSessionRejectsSuffixAndRestoresAcceptedBoundary(t *testing.T) {
@@ -1108,6 +1599,20 @@ func TestGemma4AssistantPairVerifyDraftBlockFromSessionRejectsSuffixAndRestoresA
 	if len(got.Hidden) != target.arch.Hidden*bf16Size {
 		t.Fatalf("Hidden bytes = %d, want %d", len(got.Hidden), target.arch.Hidden*bf16Size)
 	}
+	ref := mk()
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("reference PrefillTokens: %v", err)
+	}
+	wantBoundaryHidden, err := ref.stepID(want[0])
+	if err != nil {
+		t.Fatalf("reference boundary stepID: %v", err)
+	}
+	wantBoundaryLogits, err := ref.BoundaryLogits()
+	if err != nil {
+		t.Fatalf("reference boundary logits: %v", err)
+	}
+	eqBytes(t, "reforged greedy boundary hidden", got.Hidden, wantBoundaryHidden)
+	eqBytes(t, "reforged greedy boundary logits", got.Logits, wantBoundaryLogits)
 	continued, err := target.GenerateFromCache(2, -1)
 	if err != nil {
 		t.Fatalf("GenerateFromCache after verify: %v", err)
@@ -1167,6 +1672,97 @@ func TestGemma4AssistantPairVerifyDraftBlockFromSessionRejectsFirstTokenAndResto
 	}
 	if !idsEqual(continued, wantContinued) {
 		t.Fatalf("continuation after full rollback = %v, want %v", continued, wantContinued)
+	}
+}
+
+func TestGemma4AssistantPairVerifyDraftBlockFromSessionRejectsFirstTokenWithoutDraftForward(t *testing.T) {
+	arch := model.Arch{
+		Hidden: 4,
+		Vocab:  4,
+		Layer:  []model.LayerSpec{{Attention: model.SlidingAttention, CacheIndex: 0}},
+	}
+	target := &ArchSession{
+		arch:           arch,
+		pos:            3,
+		maxLen:         3,
+		retainedLogits: toBF16Bytes([]float32{-1, 0, 3, 1}),
+	}
+	pair := &Gemma4AssistantPair{TargetArch: target.arch}
+
+	got, err := pair.VerifyDraftBlockFromSession(target, []int32{1})
+	if err != nil {
+		t.Fatalf("VerifyDraftBlockFromSession: %v", err)
+	}
+
+	if got.AcceptedCount != 0 || got.ReplacementToken != 2 {
+		t.Fatalf("verify accepted=%d replacement=%d, want 0/2", got.AcceptedCount, got.ReplacementToken)
+	}
+	if target.Pos() != 3 {
+		t.Fatalf("target Pos after first-token reject = %d, want 3", target.Pos())
+	}
+}
+
+func TestGemma4AssistantPairVerifyDraftBlockNoCopyModeAliasesDraftSlices(t *testing.T) {
+	arch := model.Arch{
+		Hidden: 4,
+		Vocab:  4,
+		Layer:  []model.LayerSpec{{Attention: model.SlidingAttention, CacheIndex: 0}},
+	}
+	target := &ArchSession{
+		arch:           arch,
+		pos:            3,
+		maxLen:         3,
+		retainedLogits: toBF16Bytes([]float32{-1, 0, 3, 1}),
+	}
+	pair := &Gemma4AssistantPair{TargetArch: target.arch}
+	draft := []int32{1, 3}
+
+	got, err := pair.verifyDraftBlockFromSession(target, draft, false)
+	if err != nil {
+		t.Fatalf("verifyDraftBlockFromSession(no-copy): %v", err)
+	}
+
+	if got.AcceptedCount != 0 || got.RejectedCount != len(draft) || got.ReplacementToken != 2 {
+		t.Fatalf("verify accepted/rejected/replacement = %d/%d/%d, want 0/%d/2",
+			got.AcceptedCount, got.RejectedCount, got.ReplacementToken, len(draft))
+	}
+	if len(got.Logits) != 0 || len(got.Hidden) != 0 {
+		t.Fatalf("no-copy verifier returned hidden/logits bytes = %d/%d, want 0/0", len(got.Hidden), len(got.Logits))
+	}
+	draft[0] = 7
+	if got.DraftedTokens[0] != 7 || got.RejectedTokens[0] != 7 {
+		t.Fatalf("no-copy verifier did not alias draft slices: drafted=%v rejected=%v", got.DraftedTokens, got.RejectedTokens)
+	}
+}
+
+func TestGemma4AssistantPairVerifyDraftBlockSampledNoCopyModeAliasesDraftSlices(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5}
+	prompt, seed, sampled, badDraft := nativeAssistantSampledVerifierRejectFixture(t, mk, params)
+	target := mk()
+	if err := target.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	draft := []int32{badDraft, nativeAssistantWrongToken(badDraft)}
+
+	got, err := pair.verifyDraftBlockSampledFromSession(target, draft, model.NewSampler(seed), params, false, false, nil)
+	if err != nil {
+		t.Fatalf("verifyDraftBlockSampledFromSession(no-copy): %v", err)
+	}
+
+	if got.AcceptedCount != 0 || got.RejectedCount != len(draft) || got.ReplacementToken != sampled {
+		t.Fatalf("sampled no-copy accepted/rejected/replacement = %d/%d/%d, want 0/%d/%d",
+			got.AcceptedCount, got.RejectedCount, got.ReplacementToken, len(draft), sampled)
+	}
+	if len(got.Logits) != 0 || len(got.Hidden) != 0 {
+		t.Fatalf("sampled no-copy returned hidden/logits bytes = %d/%d, want 0/0", len(got.Hidden), len(got.Logits))
+	}
+	draft[0] = 7
+	if got.DraftedTokens[0] != 7 || got.RejectedTokens[0] != 7 {
+		t.Fatalf("sampled no-copy did not alias draft slices: drafted=%v rejected=%v", got.DraftedTokens, got.RejectedTokens)
 	}
 }
 
@@ -1244,6 +1840,204 @@ func TestGemma4AssistantPairGenerateFromSessionMatchesTargetGenerate(t *testing.
 	}
 }
 
+func TestGemma4AssistantGenerateResultPreallocatesOutputBuffers(t *testing.T) {
+	got := newGemma4AssistantGenerateResult(6, 7, 3)
+
+	if got.PromptTokens != 6 {
+		t.Fatalf("PromptTokens = %d, want 6", got.PromptTokens)
+	}
+	if len(got.Tokens) != 0 || cap(got.Tokens) != 7 {
+		t.Fatalf("Tokens len/cap = %d/%d, want 0/7", len(got.Tokens), cap(got.Tokens))
+	}
+	if len(got.DraftTokenSchedule) != 0 || cap(got.DraftTokenSchedule) != 3 {
+		t.Fatalf("DraftTokenSchedule len/cap = %d/%d, want 0/3", len(got.DraftTokenSchedule), cap(got.DraftTokenSchedule))
+	}
+}
+
+func TestGemma4AssistantPairGenerateFromSessionStandsDownAfterZeroAcceptBlock(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	maxNew := 6
+	draftTokens := 2
+	prompt := nativeAssistantPromptWhoseTargetTokensAvoid(t, mk, 0, maxNew)
+	want, err := mk().Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("reference Generate: %v", err)
+	}
+	target := mk()
+
+	got, err := pair.GenerateFromSession(target, prompt, maxNew, -1, draftTokens, nil)
+	if err != nil {
+		t.Fatalf("GenerateFromSession: %v", err)
+	}
+
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("GenerateFromSession tokens = %v, want %v", got.Tokens, want)
+	}
+	if target.Pos() != len(prompt)+len(want) {
+		t.Fatalf("target Pos after stand-down = %d, want %d", target.Pos(), len(prompt)+len(want))
+	}
+	if got.AcceptedTokens != 0 {
+		t.Fatalf("accepted draft tokens = %d, want 0 for zero-accept stand-down fixture", got.AcceptedTokens)
+	}
+	if got.DraftCalls != 1 || got.TargetVerifyCalls != 1 {
+		t.Fatalf("draft/verify calls = %d/%d, want one zero-accept block before stand-down", got.DraftCalls, got.TargetVerifyCalls)
+	}
+	if got.TargetCalls != 2 {
+		t.Fatalf("target calls = %d, want verify + boundary-logits target-cache finish", got.TargetCalls)
+	}
+	if got.DraftTokens != 1 || got.RejectedTokens != 1 {
+		t.Fatalf("draft/reject tokens = %d/%d, want one-token probe before stand-down", got.DraftTokens, got.RejectedTokens)
+	}
+	if got.TargetTokens != len(want) {
+		t.Fatalf("target tokens = %d, want %d", got.TargetTokens, len(want))
+	}
+	if len(got.DraftTokenSchedule) != 1 || got.DraftTokenSchedule[0] != 1 {
+		t.Fatalf("draft schedule = %v, want [1] probe", got.DraftTokenSchedule)
+	}
+}
+
+func TestGemma4AssistantPairGenerateFromSessionRequiresRepeatedAcceptedProbesBeforeRamping(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	maxNew := 6
+	draftTokens := 4
+	prompt := nativeAssistantPromptWhoseTargetTokensStartThenAvoid(t, mk, 0, 0, maxNew)
+	want, err := mk().Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("reference Generate: %v", err)
+	}
+	target := mk()
+
+	got, err := pair.GenerateFromSession(target, prompt, maxNew, -1, draftTokens, nil)
+	if err != nil {
+		t.Fatalf("GenerateFromSession: %v", err)
+	}
+
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("GenerateFromSession tokens = %v, want %v", got.Tokens, want)
+	}
+	if got.AcceptedTokens != 1 {
+		t.Fatalf("accepted draft tokens = %d, want only the first probe accepted", got.AcceptedTokens)
+	}
+	if got.DraftTokens != 2 || got.RejectedTokens != 1 {
+		t.Fatalf("draft/reject tokens = %d/%d, want conservative second probe 2/1", got.DraftTokens, got.RejectedTokens)
+	}
+	if len(got.DraftTokenSchedule) != 2 || got.DraftTokenSchedule[0] != 1 || got.DraftTokenSchedule[1] != 1 {
+		t.Fatalf("draft schedule = %v, want [1 1]", got.DraftTokenSchedule)
+	}
+	if got.TargetCalls != 3 {
+		t.Fatalf("target calls = %d, want accepted-probe verify + reject verify + boundary-logits finish", got.TargetCalls)
+	}
+	if target.Pos() != len(prompt)+len(want) {
+		t.Fatalf("target Pos after conservative stand-down = %d, want %d", target.Pos(), len(prompt)+len(want))
+	}
+}
+
+func TestGemma4AssistantCommitReplacementKeepsPlainBoundary(t *testing.T) {
+	requireNativeRuntime(t)
+
+	mk := newMTPDecodeFixture(t)
+	prompt := []int32{1, 5, 3}
+	want, err := mk().Generate(prompt, 4, -1)
+	if err != nil {
+		t.Fatalf("reference Generate: %v", err)
+	}
+	target := mk()
+	if err := target.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	pair := &Gemma4AssistantPair{TargetArch: target.arch}
+	wrongSecond := (want[1] + 1) % int32(target.arch.Vocab)
+	verify, err := pair.VerifyDraftBlockFromSession(target, []int32{want[0], wrongSecond})
+	if err != nil {
+		t.Fatalf("VerifyDraftBlockFromSession: %v", err)
+	}
+	if verify.AcceptedCount != 1 || verify.ReplacementToken != want[1] {
+		t.Fatalf("verify accepted=%d replacement=%d, want 1/%d", verify.AcceptedCount, verify.ReplacementToken, want[1])
+	}
+
+	if err := target.commitGemma4AssistantReplacement(verify.ReplacementToken); err != nil {
+		t.Fatalf("commit replacement: %v", err)
+	}
+
+	if target.Pos() != len(prompt)+2 {
+		t.Fatalf("target Pos after replacement commit = %d, want %d", target.Pos(), len(prompt)+2)
+	}
+	wantIDs := append(append([]int32{}, prompt...), want[:2]...)
+	if !idsEqual(target.cachedIDs, wantIDs) {
+		t.Fatalf("cached IDs after replacement commit = %v, want %v", target.cachedIDs, wantIDs)
+	}
+	ref := mk()
+	if err := ref.PrefillTokens(prompt); err != nil {
+		t.Fatalf("reference PrefillTokens: %v", err)
+	}
+	if _, err := ref.stepID(want[0]); err != nil {
+		t.Fatalf("reference first stepID: %v", err)
+	}
+	wantHidden, err := ref.stepID(want[1])
+	if err != nil {
+		t.Fatalf("reference replacement stepID: %v", err)
+	}
+	wantLogits, err := ref.BoundaryLogits()
+	if err != nil {
+		t.Fatalf("reference replacement logits: %v", err)
+	}
+	eqBytes(t, "replacement commit hidden", target.retainedHidden, wantHidden)
+	gotLogits, err := target.BoundaryLogits()
+	if err != nil {
+		t.Fatalf("replacement boundary logits: %v", err)
+	}
+	eqBytes(t, "replacement commit logits", gotLogits, wantLogits)
+}
+
+func TestGemma4AssistantPairVerifyDraftBlockCarriesReplacementIntoNextBlock(t *testing.T) {
+	requireNativeRuntime(t)
+
+	mk := newMTPDecodeFixture(t)
+	prompt := []int32{1, 5, 3}
+	want, err := mk().Generate(prompt, 4, -1)
+	if err != nil {
+		t.Fatalf("reference Generate: %v", err)
+	}
+	target := mk()
+	if err := target.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	pair := &Gemma4AssistantPair{TargetArch: target.arch}
+	wrongSecond := (want[1] + 1) % int32(target.arch.Vocab)
+	first, err := pair.VerifyDraftBlockFromSession(target, []int32{want[0], wrongSecond})
+	if err != nil {
+		t.Fatalf("first VerifyDraftBlockFromSession: %v", err)
+	}
+	if first.AcceptedCount != 1 || first.ReplacementToken != want[1] {
+		t.Fatalf("first verify accepted=%d replacement=%d, want 1/%d", first.AcceptedCount, first.ReplacementToken, want[1])
+	}
+	if target.Pos() != len(prompt)+1 {
+		t.Fatalf("target Pos after partial verify = %d, want accepted-prefix boundary %d", target.Pos(), len(prompt)+1)
+	}
+
+	carried := []int32{first.ReplacementToken, want[2]}
+	second, err := pair.VerifyDraftBlockFromSession(target, carried)
+	if err != nil {
+		t.Fatalf("carried VerifyDraftBlockFromSession: %v", err)
+	}
+
+	if !second.AllAccepted || second.AcceptedCount != len(carried) {
+		t.Fatalf("carried verify allAccepted=%v accepted=%d, want true/%d", second.AllAccepted, second.AcceptedCount, len(carried))
+	}
+	if !idsEqual(second.AcceptedTokens, carried) {
+		t.Fatalf("carried accepted tokens = %v, want %v", second.AcceptedTokens, carried)
+	}
+	if target.Pos() != len(prompt)+3 {
+		t.Fatalf("target Pos after carried verify = %d, want %d", target.Pos(), len(prompt)+3)
+	}
+}
+
 func TestGemma4AssistantPairGenerateFromSessionUsesExactWarmPromptCache(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -1274,6 +2068,40 @@ func TestGemma4AssistantPairGenerateFromSessionUsesExactWarmPromptCache(t *testi
 	if hit := target.CachedPrefixLen(prompt); hit != len(prompt) {
 		t.Fatalf("CachedPrefixLen after assistant generate = %d, want exact prompt hit %d retained", hit, len(prompt))
 	}
+}
+
+func TestGemma4AssistantPreparePromptExactCacheHitSkipsPagedKVTruncateUnderICB(t *testing.T) {
+	requireNativeRuntime(t)
+
+	prompt := []int32{1, 5, 3}
+	arch := model.Arch{Hidden: 4, Vocab: 4}
+	sess := &ArchSession{
+		arch:   arch,
+		maxLen: 16,
+		state: archDecodeState{
+			icb: &archICBReplay{},
+			pagedKV: []*devicePagedKVCache{
+				{length: 0, maxSize: 16, pageSize: 4, pageLens: make([]int, 4)},
+			},
+		},
+		cachedIDs: append(append([]int32{}, prompt...), 7, 8),
+	}
+	hidden := toBF16Bytes(syntheticFloat32(arch.Hidden, 307))
+	logits := toBF16Bytes(syntheticFloat32(arch.Vocab, 311))
+	sess.rememberCachedPromptEntry(prompt, hidden, logits)
+
+	if err := sess.prepareGemma4AssistantPrompt(prompt); err != nil {
+		t.Fatalf("prepareGemma4AssistantPrompt exact cache hit: %v", err)
+	}
+
+	if sess.Pos() != len(prompt) {
+		t.Fatalf("prepared Pos = %d, want %d", sess.Pos(), len(prompt))
+	}
+	if !idsEqual(sess.cachedIDs, prompt) {
+		t.Fatalf("prepared cached IDs = %v, want %v", sess.cachedIDs, prompt)
+	}
+	eqBytes(t, "prepared retained hidden", sess.retainedHidden, hidden)
+	eqBytes(t, "prepared retained logits", sess.retainedLogits, logits)
 }
 
 func TestGemma4AssistantPairGenerateFromSessionUsesWarmPromptPrefix(t *testing.T) {
@@ -1334,6 +2162,34 @@ func TestGemma4AssistantPairGenerateFromSessionStopsWhenYieldReturnsFalse(t *tes
 	}
 }
 
+func TestGemma4AssistantPairGenerateFromSessionCountsAcceptedYieldStop(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	prompt := nativeAssistantPromptWithAcceptedFirstDraft(t, pair, mk)
+	target := mk()
+	var yielded []int32
+
+	got, err := pair.GenerateFromSessionEach(target, prompt, 4, -1, 2, nil, func(id int32) bool {
+		yielded = append(yielded, id)
+		return false
+	})
+	if err != nil {
+		t.Fatalf("GenerateFromSessionEach: %v", err)
+	}
+
+	if len(got.Tokens) != 1 || len(yielded) != 1 || got.Tokens[0] != yielded[0] {
+		t.Fatalf("accepted yield stop tokens got=%v yielded=%v, want one matching token", got.Tokens, yielded)
+	}
+	if got.AcceptedTokens != 1 || got.TargetTokens != 1 {
+		t.Fatalf("accepted yield stop counts accepted=%d target=%d, want 1/1", got.AcceptedTokens, got.TargetTokens)
+	}
+	if target.Pos() != len(prompt)+1 {
+		t.Fatalf("target Pos after accepted yield stop = %d, want %d", target.Pos(), len(prompt)+1)
+	}
+}
+
 func TestGemma4AssistantPairGenerateSampledFromSessionMatchesTargetGenerateSampled(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -1361,6 +2217,35 @@ func TestGemma4AssistantPairGenerateSampledFromSessionMatchesTargetGenerateSampl
 	}
 	if got.DraftCalls == 0 || got.TargetVerifyCalls == 0 || got.DraftTokens == 0 {
 		t.Fatalf("sampled counters draftCalls=%d verifyCalls=%d draftTokens=%d, want non-zero speculative path", got.DraftCalls, got.TargetVerifyCalls, got.DraftTokens)
+	}
+}
+
+func TestGemma4AssistantPairGenerateSampledFromSessionRepeatPenaltyMatchesTarget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{
+		Temperature:   1.2,
+		TopK:          4,
+		TopP:          0.9,
+		RepeatPenalty: 1.4,
+	}
+	prompt := []int32{1, 5, 3, 2, 6}
+	const maxNew = 6
+	for seed := uint64(1); seed <= 32; seed++ {
+		want, err := mk().GenerateSampledEach(prompt, maxNew, nil, model.NewSampler(seed), params, nil, nil)
+		if err != nil {
+			t.Fatalf("reference GenerateSampledEach(seed=%d): %v", seed, err)
+		}
+		target := mk()
+		got, err := pair.GenerateSampledFromSession(target, prompt, maxNew, nil, model.NewSampler(seed), params, 2)
+		if err != nil {
+			t.Fatalf("GenerateSampledFromSession(seed=%d): %v", seed, err)
+		}
+		if !idsEqual(got.Tokens, want) {
+			t.Fatalf("GenerateSampledFromSession(seed=%d) tokens = %v, want %v", seed, got.Tokens, want)
+		}
 	}
 }
 
@@ -1402,6 +2287,70 @@ func TestGemma4AssistantPairGenerateSampledFromSessionEachKeepsDraftBlockWhileSt
 	}
 	if !hasBlock {
 		t.Fatalf("streaming sampled assistant draft schedule = %v, want a multi-token verify block", got.DraftTokenSchedule)
+	}
+}
+
+func TestGemma4AssistantPairGenerateSampledFromSessionCountsAcceptedYieldStop(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5, SuppressTokens: []int32{0, 1, 2, 3, 4, 5, 6}}
+	prompt := nativeAssistantWordedPromptIDs()
+	const seed = uint64(1)
+	target := mk()
+	var yielded []int32
+
+	got, err := pair.GenerateSampledFromSessionEach(target, prompt, 4, nil, model.NewSampler(seed), params, 2, func(id int32) bool {
+		yielded = append(yielded, id)
+		return false
+	})
+	if err != nil {
+		t.Fatalf("GenerateSampledFromSessionEach: %v", err)
+	}
+
+	if len(got.Tokens) != 1 || len(yielded) != 1 || got.Tokens[0] != yielded[0] {
+		t.Fatalf("sampled accepted yield stop tokens got=%v yielded=%v, want one matching token", got.Tokens, yielded)
+	}
+	if got.AcceptedTokens != 1 || got.TargetTokens != 1 {
+		t.Fatalf("sampled accepted yield stop counts accepted=%d target=%d, want 1/1", got.AcceptedTokens, got.TargetTokens)
+	}
+	if target.Pos() != len(prompt)+1 {
+		t.Fatalf("target Pos after sampled accepted yield stop = %d, want %d", target.Pos(), len(prompt)+1)
+	}
+}
+
+func TestGemma4AssistantPairGenerateSampledFromSessionCommitsReplacementStop(t *testing.T) {
+	requireNativeRuntime(t)
+
+	pair, mk := newNativeAssistantGenerateFixture(t)
+	defer pair.Close()
+	params := model.SampleParams{Temperature: 1.5}
+	prompt, seed, stopToken := nativeAssistantSampledPromptWithRejectedFirstDraft(t, pair, mk, params)
+	stopTokens := []int32{stopToken}
+	const maxNew = 4
+	ref := mk()
+	want, err := ref.GenerateSampledEach(prompt, maxNew, stopTokens, model.NewSampler(seed), params, nil, nil)
+	if err != nil {
+		t.Fatalf("reference GenerateSampledEach: %v", err)
+	}
+	if !idsEqual(want, []int32{stopToken}) {
+		t.Fatalf("reference sampled stop tokens = %v, want [%d]", want, stopToken)
+	}
+	if ref.Pos() != len(prompt)+len(want) {
+		t.Fatalf("reference Pos after sampled stop = %d, want %d", ref.Pos(), len(prompt)+len(want))
+	}
+
+	target := mk()
+	got, err := pair.GenerateSampledFromSession(target, prompt, maxNew, stopTokens, model.NewSampler(seed), params, 2)
+	if err != nil {
+		t.Fatalf("GenerateSampledFromSession: %v", err)
+	}
+	if !idsEqual(got.Tokens, want) {
+		t.Fatalf("sampled assistant replacement stop tokens = %v, want %v", got.Tokens, want)
+	}
+	if target.Pos() != ref.Pos() {
+		t.Fatalf("target Pos after sampled replacement stop = %d, want reference %d", target.Pos(), ref.Pos())
 	}
 }
 
@@ -1503,6 +2452,43 @@ func TestGemma4AssistantDraftLogitsOrderedMasksNonCandidates(t *testing.T) {
 	floor := nativeAssistantBF16Float(nativeAssistantLogitsFloorForTest)
 	want := []float32{1, 0.5, -0.25, 2, floor, floor, floor, floor}
 	assertFloat32Near(t, "ordered draft logits", bf16Floats(got), want, 0.02)
+}
+
+func TestGemma4AssistantDraftLogitsOrderedReusesScratch(t *testing.T) {
+	tensors := nativeAssistantTinyTensors(true)
+	tensors["model.embed_tokens.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{8, 4}, Data: toBF16Bytes(syntheticFloat32(8*4, 313))}
+	tensors["masked_embedding.centroids.weight"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{2, 4}, Data: toBF16Bytes(syntheticFloat32(2*4, 317))}
+	tensors["masked_embedding.token_ordering"] = safetensors.Tensor{Dtype: "I64", Shape: []int{2, 4}, Data: nativeAssistantI64Tensor(0, 1, 2, 3, 4, 5, 6, 7)}
+	dir := writeNativeAssistantDir(t, tensors)
+
+	assistant, err := LoadGemma4AssistantDir(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4AssistantDir: %v", err)
+	}
+	defer assistant.Close()
+
+	hidden := toBF16Bytes([]float32{1, 0.5, -0.25, 2})
+	out := make([]byte, assistant.Arch.Vocab*bf16Size)
+	scores := make([]float32, assistant.NumCentroids)
+	selected := make([]int, assistant.CentroidIntermediateTopK)
+	scorePtr := &scores[0]
+	selectedPtr := &selected[0]
+
+	for i := range scores {
+		scores[i] = -123
+	}
+	for i := range selected {
+		selected[i] = -1
+	}
+	if _, err := assistant.draftLogitsIntoScratch(out, hidden, scores, selected); err != nil {
+		t.Fatalf("draftLogitsIntoScratch: %v", err)
+	}
+	if &scores[0] != scorePtr || scores[0] == -123 {
+		t.Fatal("ordered logits did not reuse score scratch")
+	}
+	if &selected[0] != selectedPtr || selected[0] == -1 {
+		t.Fatal("ordered logits did not reuse selected-index scratch")
+	}
 }
 
 func TestGemma4AssistantDraftGreedyTokenSelectsArgmax(t *testing.T) {
@@ -2178,6 +3164,175 @@ func nativeAssistantPromptWhoseFirstTargetTokenIsNot(t testing.TB, mk func() *Ar
 		}
 	}
 	t.Fatalf("no prompt produced a first target token outside %d", excluded)
+	return nil
+}
+
+func nativeAssistantPromptWithAcceptedFirstDraft(t testing.TB, pair *Gemma4AssistantPair, mk func() *ArchSession) []int32 {
+	t.Helper()
+	const fixtureVocab = 8
+	for a := int32(0); a < fixtureVocab; a++ {
+		for b := int32(0); b < fixtureVocab; b++ {
+			for c := int32(0); c < fixtureVocab; c++ {
+				prompt := []int32{a, b, c}
+				target := mk()
+				if err := target.prepareGemma4AssistantPrompt(prompt); err != nil {
+					t.Fatalf("prepareGemma4AssistantPrompt(%v): %v", prompt, err)
+				}
+				logits, err := target.BoundaryLogits()
+				if err != nil {
+					t.Fatalf("BoundaryLogits(%v): %v", prompt, err)
+				}
+				first, err := greedyBF16Suppressed(logits, target.arch.Vocab, nil)
+				if err != nil {
+					t.Fatalf("greedyBF16Suppressed(%v): %v", prompt, err)
+				}
+				draft, err := pair.DraftBlockFromSession(target, prompt[len(prompt)-1], 1)
+				if err != nil {
+					t.Fatalf("DraftBlockFromSession(%v): %v", prompt, err)
+				}
+				if len(draft.Tokens) == 1 && draft.Tokens[0] == first {
+					return prompt
+				}
+			}
+		}
+	}
+	t.Fatal("no prompt produced an accepted first assistant draft")
+	return nil
+}
+
+func nativeAssistantReferenceSampledDraftBlock(t testing.TB, pair *Gemma4AssistantPair, target *ArchSession, prompt []int32, maxDraftTokens int, params model.SampleParams, sampler *model.Sampler) []int32 {
+	t.Helper()
+	if err := target.prepareGemma4AssistantPrompt(prompt); err != nil {
+		t.Fatalf("prepareGemma4AssistantPrompt(reference %v): %v", prompt, err)
+	}
+	targetKVs, err := pair.targetKVByLayerTypeFromSessionScratch(target)
+	if err != nil {
+		t.Fatalf("targetKVByLayerTypeFromSessionScratch(reference): %v", err)
+	}
+	currentHidden, err := target.boundaryNormedHiddenScratch()
+	if err != nil {
+		t.Fatalf("boundaryNormedHiddenScratch(reference): %v", err)
+	}
+	currentToken := prompt[len(prompt)-1]
+	tokens := make([]int32, 0, maxDraftTokens)
+	for len(tokens) < maxDraftTokens {
+		tokenEmbedding, err := target.embedID(currentToken)
+		if err != nil {
+			t.Fatalf("embedID(reference %d): %v", currentToken, err)
+		}
+		projectedOut := target.mtpProjectionScratch(pair.Assistant.Arch.Hidden * bf16Size)
+		projected, err := pair.Assistant.DraftInputProjectionInto(projectedOut, tokenEmbedding, currentHidden)
+		if err != nil {
+			t.Fatalf("DraftInputProjectionInto(reference): %v", err)
+		}
+		normedOut := target.mtpDraftScratch(&target.mtpDraftNormed, pair.Assistant.Arch.Hidden*bf16Size)
+		hiddenOut := target.mtpDraftScratch(&target.mtpDraftHidden, pair.TargetArch.Hidden*bf16Size)
+		logitsOut := target.mtpDraftScratch(&target.mtpDraftLogits, pair.Assistant.Arch.Vocab*bf16Size)
+		logitScores := target.mtpDraftLogitScoreScratch(pair.Assistant.NumCentroids)
+		logitSelected := target.mtpDraftLogitSelectedScratch(pair.Assistant.CentroidIntermediateTopK)
+		target.mtpDraftLayerScratch.usePinnedBacking()
+		step, err := pair.draftStepFromProjectedIntoWithSuppress(projected, targetKVs, normedOut, hiddenOut, logitsOut, logitScores, logitSelected, &target.mtpDraftLayerScratch, params.SuppressTokens)
+		if err != nil {
+			t.Fatalf("draftStepFromProjectedIntoWithSuppress(reference): %v", err)
+		}
+		currentToken, err = sampler.Sample(step.Logits, pair.Assistant.Arch.Vocab, params)
+		if err != nil {
+			t.Fatalf("Sample(reference): %v", err)
+		}
+		tokens = append(tokens, currentToken)
+		currentHidden = step.Hidden
+	}
+	return tokens
+}
+
+func nativeAssistantSampledPromptWithRejectedFirstDraft(t testing.TB, pair *Gemma4AssistantPair, mk func() *ArchSession, params model.SampleParams) ([]int32, uint64, int32) {
+	t.Helper()
+	for _, prompt := range nativeAssistantWordedPromptCandidates() {
+		for seed := uint64(1); seed <= 512; seed++ {
+			target := mk()
+			if err := target.prepareGemma4AssistantPrompt(prompt); err != nil {
+				t.Fatalf("prepareGemma4AssistantPrompt(%v): %v", prompt, err)
+			}
+			pickParams := target.mtpSamplePickParams(params, nil, 0)
+			draft, err := pair.draftBlockSampledFromSessionWithSuppress(target, prompt[len(prompt)-1], 1, false, pickParams, model.NewSampler(0))
+			if err != nil {
+				t.Fatalf("draftBlockSampledFromSessionWithSuppress(%v): %v", prompt, err)
+			}
+			sampled, err := target.sampleMTPTokenFromHidden(target.retainedHidden, model.NewSampler(seed), pickParams, nil)
+			if err != nil {
+				t.Fatalf("sampleMTPTokenFromHidden(%v, seed=%d): %v", prompt, seed, err)
+			}
+			if len(draft.Tokens) == 1 && draft.Tokens[0] != sampled {
+				return prompt, seed, sampled
+			}
+		}
+	}
+	t.Fatal("no five-token prompt and sampler seed produced a rejected first assistant draft")
+	return nil, 0, 0
+}
+
+func nativeAssistantPromptWhoseTargetTokensAvoid(t testing.TB, mk func() *ArchSession, excluded int32, maxNew int) []int32 {
+	t.Helper()
+	candidates := [][]int32{
+		{1, 5, 3},
+		{2, 4, 6},
+		{3, 1, 7},
+		{4, 2, 5},
+		{5, 3, 1},
+		{6, 7, 2},
+		{7, 6, 4},
+		{1, 2, 7, 3},
+		{3, 5, 2, 6},
+		{6, 4, 1, 7},
+	}
+	for _, prompt := range candidates {
+		got, err := mk().Generate(prompt, maxNew, -1)
+		if err != nil {
+			t.Fatalf("reference Generate(%v): %v", prompt, err)
+		}
+		avoids := true
+		for _, id := range got {
+			if id == excluded {
+				avoids = false
+				break
+			}
+		}
+		if avoids {
+			return prompt
+		}
+	}
+	t.Fatalf("no prompt produced %d target tokens avoiding %d", maxNew, excluded)
+	return nil
+}
+
+func nativeAssistantPromptWhoseTargetTokensStartThenAvoid(t testing.TB, mk func() *ArchSession, first, excluded int32, maxNew int) []int32 {
+	t.Helper()
+	const fixtureVocab = 8
+	for a := int32(0); a < fixtureVocab; a++ {
+		for b := int32(0); b < fixtureVocab; b++ {
+			for c := int32(0); c < fixtureVocab; c++ {
+				prompt := []int32{a, b, c}
+				got, err := mk().Generate(prompt, maxNew, -1)
+				if err != nil {
+					t.Fatalf("reference Generate(%v): %v", prompt, err)
+				}
+				if len(got) == 0 || got[0] != first {
+					continue
+				}
+				avoids := true
+				for _, id := range got[1:] {
+					if id == excluded {
+						avoids = false
+						break
+					}
+				}
+				if avoids {
+					return prompt
+				}
+			}
+		}
+	}
+	t.Fatalf("no prompt produced first target token %d followed by %d tokens avoiding %d", first, maxNew-1, excluded)
 	return nil
 }
 

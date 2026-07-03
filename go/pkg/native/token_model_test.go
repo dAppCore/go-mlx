@@ -323,6 +323,121 @@ func TestNativeTokenModelInjectAudioFeatures_Good(t *testing.T) {
 	}
 }
 
+func TestNativeTokenModelInjectImageFeatures_Good(t *testing.T) {
+	const H = 8
+	const imageTok = int32(88)
+	tm := &NativeTokenModel{
+		NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}},
+		vision:        &model.LoadedVision{Cfg: model.LoadedVisionConfig{ImageTokenID: imageTok}},
+	}
+	tokenIDs := []int32{10, imageTok, 11, imageTok}
+	emb := toBF16Bytes(syntheticFloat32(4*H, 3))
+	feat := toBF16Bytes(syntheticFloat32(2*H, 17))
+	got, err := tm.InjectImageFeatures(emb, tokenIDs, feat)
+	if err != nil {
+		t.Fatalf("InjectImageFeatures: %v", err)
+	}
+	g, e, f := bf16Floats(got), bf16Floats(emb), bf16Floats(feat)
+	if !slices.Equal(g[1*H:2*H], f[0:H]) || !slices.Equal(g[3*H:4*H], f[1*H:2*H]) {
+		t.Fatalf("image rows were not spliced into placeholder slots: got=%v features=%v", g, f)
+	}
+	if !slices.Equal(g[0:H], e[0:H]) || !slices.Equal(g[2*H:3*H], e[2*H:3*H]) {
+		t.Fatalf("ordinary token rows changed: got=%v embeddings=%v", g, e)
+	}
+
+	noVision := &NativeTokenModel{NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}}}
+	if _, err := noVision.InjectImageFeatures(emb, tokenIDs, feat); err == nil {
+		t.Fatal("InjectImageFeatures without vision payload error = nil")
+	}
+}
+
+func TestNativeTokenModelInjectVideoFeatures_Good(t *testing.T) {
+	const H = 8
+	const videoTok = int32(99)
+	tm := &NativeTokenModel{
+		NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}},
+		vision:        &model.LoadedVision{Cfg: model.LoadedVisionConfig{VideoTokenID: videoTok}},
+	}
+	tokenIDs := []int32{10, videoTok, 11, videoTok}
+	emb := toBF16Bytes(syntheticFloat32(4*H, 5))
+	feat := toBF16Bytes(syntheticFloat32(2*H, 23))
+	got, err := tm.InjectVideoFeatures(emb, tokenIDs, feat)
+	if err != nil {
+		t.Fatalf("InjectVideoFeatures: %v", err)
+	}
+	g, e, f := bf16Floats(got), bf16Floats(emb), bf16Floats(feat)
+	if !slices.Equal(g[1*H:2*H], f[0:H]) || !slices.Equal(g[3*H:4*H], f[1*H:2*H]) {
+		t.Fatalf("video rows were not spliced into placeholder slots: got=%v features=%v", g, f)
+	}
+	if !slices.Equal(g[0:H], e[0:H]) || !slices.Equal(g[2*H:3*H], e[2*H:3*H]) {
+		t.Fatalf("ordinary token rows changed: got=%v embeddings=%v", g, e)
+	}
+
+	noVision := &NativeTokenModel{NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}}}
+	if _, err := noVision.InjectVideoFeatures(emb, tokenIDs, feat); err == nil {
+		t.Fatal("InjectVideoFeatures without vision payload error = nil")
+	}
+}
+
+func TestNativeTokenModelTokenEmbeddingsWithFeatures_Good(t *testing.T) {
+	const H = 4
+	const imageTok = int32(88)
+	const audioTok = int32(77)
+	const videoTok = int32(99)
+	tokenIDs := []int32{12, imageTok, 13, audioTok, videoTok, 14}
+	tm := &NativeTokenModel{
+		NativeBackend: &NativeBackend{arch: model.Arch{Hidden: H}},
+		vision: &model.LoadedVision{Cfg: model.LoadedVisionConfig{
+			ImageTokenID: imageTok,
+			VideoTokenID: videoTok,
+		}},
+		audio: &model.LoadedAudio{Cfg: model.LoadedAudioConfig{AudioTokenID: int(audioTok)}},
+		embedInto: func(dst []byte, id int32) ([]byte, error) {
+			row := make([]float32, H)
+			for i := range row {
+				row[i] = float32(id) + float32(i)/10
+			}
+			copy(dst, toBF16Bytes(row))
+			return dst, nil
+		},
+	}
+	imageFeatures := toBF16Bytes([]float32{101, 102, 103, 104})
+	audioFeatures := toBF16Bytes([]float32{201, 202, 203, 204})
+	videoFeatures := toBF16Bytes([]float32{301, 302, 303, 304})
+
+	rows, err := tm.TokenEmbeddingsWithFeatures(tokenIDs, imageFeatures, audioFeatures, videoFeatures)
+	if err != nil {
+		t.Fatalf("TokenEmbeddingsWithFeatures: %v", err)
+	}
+	if len(rows) != len(tokenIDs) {
+		t.Fatalf("row count = %d, want %d", len(rows), len(tokenIDs))
+	}
+	for i, row := range rows {
+		if len(row) != H*bf16Size {
+			t.Fatalf("row %d bytes = %d, want %d", i, len(row), H*bf16Size)
+		}
+	}
+	if got, want := bf16Floats(rows[1]), bf16Floats(imageFeatures); !slices.Equal(got, want) {
+		t.Fatalf("image row = %v, want %v", got, want)
+	}
+	if got, want := bf16Floats(rows[3]), bf16Floats(audioFeatures); !slices.Equal(got, want) {
+		t.Fatalf("audio row = %v, want %v", got, want)
+	}
+	if got, want := bf16Floats(rows[4]), bf16Floats(videoFeatures); !slices.Equal(got, want) {
+		t.Fatalf("video row = %v, want %v", got, want)
+	}
+	ordinaryWant := bf16Floats(toBF16Bytes([]float32{12, 12.1, 12.2, 12.3}))
+	if got, want := bf16Floats(rows[0]), ordinaryWant; !slices.Equal(got, want) {
+		t.Fatalf("ordinary row = %v, want %v", got, want)
+	}
+
+	noEmbedding := *tm
+	noEmbedding.embedInto = nil
+	if _, err := noEmbedding.TokenEmbeddingsWithFeatures(tokenIDs, nil, nil, nil); err == nil {
+		t.Fatal("TokenEmbeddingsWithFeatures without embedding bookend error = nil")
+	}
+}
+
 func TestNativeTokenModelProjectImageFeatures_Good(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")

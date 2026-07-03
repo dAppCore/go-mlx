@@ -473,7 +473,7 @@ func MTPDecodeSampledEach(target, draft *ArchSession, promptIDs []int32, maxNew 
 			}
 			if !stopped {
 				expectedParams := target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
-				expected, sampleErr := target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+				expected, sampleErr := target.sampleMTPTokenFromDenseBatchRowOrHidden(0, hidden, targetSampler, expectedParams, history)
 				if sampleErr != nil {
 					return nil, sampleErr
 				}
@@ -499,7 +499,7 @@ func MTPDecodeSampledEach(target, draft *ArchSession, promptIDs []int32, maxNew 
 						break
 					}
 					expectedParams = target.mtpSamplePickParams(params, stopTokens, len(res.Tokens))
-					expected, sampleErr = target.sampleMTPTokenFromHidden(hidden, targetSampler, expectedParams, history)
+					expected, sampleErr = target.sampleMTPTokenFromDenseBatchRowOrHidden(d+1, hidden, targetSampler, expectedParams, history)
 					if sampleErr != nil {
 						return nil, sampleErr
 					}
@@ -654,11 +654,105 @@ func (s *ArchSession) sampleMTPTokenFromHiddenInPool(hidden []byte, sampler *mod
 	if sampledGreedyParamsEligible(params) {
 		return s.headGreedyOrLogits(hidden, params.SuppressTokens, nil, nil, false)
 	}
+	if sampledTopOneGreedyParamsEligible(params, history) {
+		sampler.Draw()
+		return s.headGreedyOrLogits(hidden, params.SuppressTokens, nil, nil, false)
+	}
+	if s.sampleTopKTokenParamsEligible(params) {
+		token, ok, err := s.sampleTopKTokenFromHiddenInPool(hidden, params, sampler.Draw(), history)
+		if err != nil || ok {
+			return token, err
+		}
+		return 0, core.NewError("native.MTPDecodeSampled: TopK token path declined after eligibility check")
+	}
+	if s.sampleLogitsTokenParamsEligible(params) && !sampleLogitsTokenCPUPreferred(params, s.arch.Vocab) {
+		token, ok, err := s.sampleLogitsTokenFromHiddenInPool(hidden, params, sampler.Draw(), history)
+		if err != nil || ok {
+			return token, err
+		}
+		return 0, core.NewError("native.MTPDecodeSampled: logits token path declined after eligibility check")
+	}
+	if candidateLogits, candidateIDs, ok, err := s.sampleTopKCandidatesFromHiddenWithHistoryInPool(hidden, params, history); err != nil {
+		return 0, err
+	} else if ok {
+		return sampler.SampleCandidates(candidateLogits, candidateIDs, params)
+	}
 	logits, err := s.headLogitsScratch(hidden, false)
 	if err != nil {
 		return 0, err
 	}
-	return s.sampleTokenFromLogits(logits, sampler, params, history)
+	pickLogits := logits
+	if params.RepeatPenalty > 1 {
+		pickLogits, err = s.repeatPenaltyLogitsScratch(logits, s.arch.Vocab, history, params.RepeatPenalty)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if sampleLogitsTokenCPUPreferred(params, s.arch.Vocab) {
+		return sampleSmallVocabBF16(pickLogits, s.arch.Vocab, sampler, params)
+	}
+	return s.sampleVocabBF16(pickLogits, s.arch.Vocab, sampler, params)
+}
+
+func (s *ArchSession) sampleMTPTokenFromDenseBatchRowOrHidden(row int, hidden []byte, sampler *model.Sampler, params model.SampleParams, history []int32) (int32, error) {
+	token, ok, err := s.sampleMTPTokenFromDenseBatchRow(row, sampler, params, history)
+	if err != nil || ok {
+		return token, err
+	}
+	return s.sampleMTPTokenFromHidden(hidden, sampler, params, history)
+}
+
+func (s *ArchSession) sampleMTPTokenFromDenseBatchRow(row int, sampler *model.Sampler, params model.SampleParams, history []int32) (token int32, ok bool, err error) {
+	withAutoreleasePool(func() {
+		token, ok, err = s.sampleMTPTokenFromDenseBatchRowInPool(row, sampler, params, history)
+	})
+	return token, ok, err
+}
+
+func (s *ArchSession) sampleMTPTokenFromDenseBatchRowInPool(row int, sampler *model.Sampler, params model.SampleParams, history []int32) (int32, bool, error) {
+	if sampler == nil {
+		return 0, true, core.NewError("native.MTPDecodeSampled: nil sampler")
+	}
+	rowBuf, rowOff, ok, err := s.denseBatchHiddenRowBuffer(row)
+	if err != nil || !ok {
+		return 0, ok, err
+	}
+	if sampledGreedyParamsEligible(params) {
+		if !s.canUseDirectHeadGreedy() {
+			return 0, false, nil
+		}
+		token, ok, err := s.headEnc.greedyBufferAtInPool(rowBuf, rowOff, params.SuppressTokens)
+		if err != nil || ok {
+			return token, ok, err
+		}
+		return 0, true, core.NewError("native.MTPDecodeSampled: dense-row greedy path declined after eligibility check")
+	}
+	if sampledTopOneGreedyParamsEligible(params, history) {
+		if !s.canUseDirectHeadGreedy() {
+			return 0, false, nil
+		}
+		sampler.Draw()
+		token, ok, err := s.headEnc.greedyBufferAtInPool(rowBuf, rowOff, params.SuppressTokens)
+		if err != nil || ok {
+			return token, ok, err
+		}
+		return 0, true, core.NewError("native.MTPDecodeSampled: dense-row TopK=1 greedy path declined after eligibility check")
+	}
+	if s.sampleTopKTokenParamsEligible(params) {
+		token, ok, err := s.headEnc.sampleTopKTokenBufferAtInPool(rowBuf, rowOff, params, sampler.Draw(), history)
+		if err != nil || ok {
+			return token, ok, err
+		}
+		return 0, true, core.NewError("native.MTPDecodeSampled: dense-row TopK token path declined after eligibility check")
+	}
+	if s.sampleLogitsTokenParamsEligible(params) && !sampleLogitsTokenCPUPreferred(params, s.arch.Vocab) {
+		token, ok, err := s.headEnc.sampleLogitsTokenBufferAtInPool(rowBuf, rowOff, params, sampler.Draw(), history)
+		if err != nil || ok {
+			return token, ok, err
+		}
+		return 0, true, core.NewError("native.MTPDecodeSampled: dense-row logits token path declined after eligibility check")
+	}
+	return 0, false, nil
 }
 
 func (s *ArchSession) retainMTPCommittedBoundary(start int, ids []int32) error {
