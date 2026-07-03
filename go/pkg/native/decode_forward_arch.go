@@ -1316,6 +1316,14 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 				return nil, err
 			}
 		}
+		if layerSpanProbeForTest != nil { // probe-only per-layer GPU spans (test hook, nil in production)
+			endEncodingFast(enc)
+			commitCommandBufferFast(cb)
+			waitUntilCompletedFast(cb)
+			layerSpanProbeForTest[li] += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+			cb = commandBufferFast(queue)
+			enc = computeCommandEncoderFast(cb)
+		}
 		if s.trace { // per-layer diagnostic: flush, read this layer's output hidden, accumulate
 			endEncodingFast(enc)
 			commitCommandBufferFast(cb)
@@ -1350,6 +1358,9 @@ func (s *archDecodeState) stepTokenResultWithInputInto(inputEmb []byte, pos int,
 	endEncodingFast(enc)
 	commitCommandBufferFast(cb)
 	waitUntilCompletedFast(cb)
+	if pieceTimingOn { // diagnostic: the step CB's true GPU execution span vs its wall
+		chainedGPUSpanNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+	}
 	var res []byte
 	if readResult {
 		n := s.dModel * bf16Size

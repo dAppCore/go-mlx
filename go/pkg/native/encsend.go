@@ -607,9 +607,16 @@ func optimizeIndirectCommandBufferWithRangeFast(enc metal.MTLBlitCommandEncoderO
 	objc.Send[struct{}](enc.GetID(), selOptimizeICBWithRange, icb, rng)
 }
 
+// dispatchCountForTest counts encoder dispatches while pieceTimingOn — the decode-piece
+// diagnostic's "how many kernels per token" companion. Zero cost in production (one bool).
+var dispatchCountForTest int64
+
 // dispatchThreads binds the same dispatchThreads:threadsPerThreadgroup: call as
 // the generated wrapper without routing MTLSize through objc.Send's reflect path.
 func dispatchThreads(enc metal.MTLComputeCommandEncoder, grid, group metal.MTLSize) {
+	if pieceTimingOn {
+		dispatchCountForTest++
+	}
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
 		objcMsgSendRawSize2(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selDispatchThreads), grid, group)
@@ -632,6 +639,9 @@ func dispatchThreadsObject(enc metal.MTLComputeCommandEncoderObject, grid, group
 // dispatchThreadgroups binds the same dispatchThreadgroups:threadsPerThreadgroup:
 // call as the generated wrapper without routing MTLSize through objc.Send's reflect path.
 func dispatchThreadgroups(enc metal.MTLComputeCommandEncoder, grid, group metal.MTLSize) {
+	if pieceTimingOn {
+		dispatchCountForTest++
+	}
 	objcMsgSendOnce.Do(initObjCMsgSendStubs)
 	if objcMsgSendAddr != 0 && puregoSyscall15XABI0 != 0 {
 		objcMsgSendRawSize2(objcMsgSendAddr, uintptr(enc.GetID()), uintptr(selDispatchThreadgroups), grid, group)

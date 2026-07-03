@@ -58,3 +58,7 @@ func ptEnd(idx int, t time.Time) {
 		pieceNs[idx] += int64(time.Since(t))
 	}
 }
+
+// layerSpanProbeForTest, when non-nil (test-only), makes stepToken commit per layer and
+// accumulate each layer's GPU span — the decode-piece diagnostic at layer grain.
+var layerSpanProbeForTest []int64
