@@ -99,6 +99,46 @@ func TestArchitecture_BuiltinArchitectureProfiles_Ugly(t *testing.T) {
 	}
 }
 
+// TestArchitecture_BuiltinArchitectureProfiles_BatchArenaMatchesSingleClone is a
+// regression lock on BuiltinArchitectureProfiles' batch clone: every returned
+// profile packs its ~11 clone-managed []string fields into ONE shared arena
+// (profileStringFieldLen sizes it, cloneArchitectureProfileInto/sliceFromArena
+// carve each profile's slice out of it in field order). Those two functions'
+// field lists must stay in exact sync — a field added to one but not the other
+// silently under- or over-sizes the shared arena, and because sliceFromArena
+// truncates on a short arena instead of panicking, the corruption is SILENT and
+// lands on whichever profiles happen to be built after the deficit compounds
+// (verified by injecting exactly this bug during audit: profileStringFieldLen
+// omitting one field kept the entire suite green). LookupArchitectureProfile
+// is a genuinely independent code path for this purpose — it clones a single
+// profile into its own exactly-sized arena, never sharing capacity with any
+// other profile — so cross-checking every batch-cloned profile against its
+// single-clone sibling catches an arena-sizing drift that no per-call-isolation
+// or scalar-field test (the Bad/Ugly siblings above) would ever observe.
+func TestArchitecture_BuiltinArchitectureProfiles_BatchArenaMatchesSingleClone(t *testing.T) {
+	batch := prof.BuiltinArchitectureProfiles()
+	if len(batch) < 12 {
+		t.Fatalf("BuiltinArchitectureProfiles len = %d, want the full registry", len(batch))
+	}
+	for _, got := range batch {
+		want, ok := prof.LookupArchitectureProfile(got.ID)
+		if !ok {
+			t.Fatalf("LookupArchitectureProfile(%q) ok = false, want the same profile the batch returned", got.ID)
+		}
+		requireExactLoRATargets(t, got.LoRATargets, want.LoRATargets)
+		requireExactLoRATargets(t, got.LoRADefaultTargets, want.LoRADefaultTargets)
+		requireExactLoRATargets(t, got.LoRAExtendedTargets, want.LoRAExtendedTargets)
+		requireExactLoRATargets(t, got.WeightWrapperPrefixes, want.WeightWrapperPrefixes)
+		requireExactLoRATargets(t, got.WeightSkipPrefixes, want.WeightSkipPrefixes)
+		requireExactLoRATargets(t, got.WeightSkipSubstrings, want.WeightSkipSubstrings)
+		requireExactLoRATargets(t, got.WeightModelPrefixes, want.WeightModelPrefixes)
+		requireExactLoRATargets(t, got.QuantizationHints, want.QuantizationHints)
+		requireExactLoRATargets(t, got.CacheHints, want.CacheHints)
+		requireExactLoRATargets(t, got.Notes, want.Notes)
+		requireExactLoRATargets(t, got.Aliases, want.Aliases)
+	}
+}
+
 // --- LookupArchitectureProfile --------------------------------------------
 
 // TestArchitecture_LookupArchitectureProfile_Good pins the config-name →

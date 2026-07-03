@@ -129,7 +129,7 @@ func TestProbe_SinkFunc_EmitProbe_Bad(t *testing.T) {
 // is per-value, not a permanently poisoned type.
 func TestProbe_SinkFunc_EmitProbe_Ugly(t *testing.T) {
 	var f SinkFunc
-	f.EmitProbe(Event{Kind: KindToken}) // zero value — must not panic
+	f.EmitProbe(Event{Kind: KindToken})             // zero value — must not panic
 	SinkFunc(nil).EmitProbe(Event{Kind: KindToken}) // explicit nil — must not panic
 	dispatched := false
 	live := SinkFunc(func(Event) { dispatched = true })
@@ -379,7 +379,7 @@ func TestProbe_NewRecorder_Bad(t *testing.T) {
 // NewRecorder records normally — the constructor is what makes the receiver
 // live, and the nil path degrades silently instead of corrupting it.
 func TestProbe_NewRecorder_Ugly(t *testing.T) {
-	var r *Recorder // never went through NewRecorder
+	var r *Recorder                                           // never went through NewRecorder
 	r.EmitProbe(Event{Kind: KindToken, Token: &Token{ID: 1}}) // must not panic
 	if got := r.Events(); got != nil {
 		t.Fatalf("nil Recorder.Events() = %v, want nil", got)
@@ -477,6 +477,49 @@ func TestProbe_Recorder_Events_Good(t *testing.T) {
 		t.Fatalf("Events() len = %d, want 1", len(events))
 	}
 	assertFullPayloadDetached(t, src, events[0])
+}
+
+// TestProbe_Recorder_Events_BatchScratchIsPerEvent proves Events' batch-clone
+// path (cloneEventInto against a pre-allocated []cloneScratch — see the doc
+// comment on Events) gives EACH event in the batch its own scratch slot: a
+// recorder holding N distinct rich events must clone each into independent
+// storage, not share one slot across the batch. A shared/aliased scratch (for
+// example, a stray index bug that always wrote into scratches[0]) would make
+// every returned event's payload pointers alias the LAST event cloned into
+// that slot — invisible to a length-1-batch test, so this drives a batch of
+// three distinct events and cross-checks every pair.
+func TestProbe_Recorder_Events_BatchScratchIsPerEvent(t *testing.T) {
+	rec := NewRecorder()
+	rec.EmitProbe(Event{Kind: KindToken, Token: &Token{ID: 1, Text: "first"}, Meta: map[string]string{"k": "1"}})
+	rec.EmitProbe(Event{Kind: KindToken, Token: &Token{ID: 2, Text: "second"}, Meta: map[string]string{"k": "2"}})
+	rec.EmitProbe(Event{Kind: KindToken, Token: &Token{ID: 3, Text: "third"}, Meta: map[string]string{"k": "3"}})
+
+	events := rec.Events()
+	if len(events) != 3 {
+		t.Fatalf("Events() len = %d, want 3", len(events))
+	}
+	// Each event must still carry its OWN values — a shared scratch slot
+	// would collapse them all to the last-cloned event's values.
+	wantText := []string{"first", "second", "third"}
+	wantMeta := []string{"1", "2", "3"}
+	for i, e := range events {
+		if e.Token.ID != int32(i+1) || e.Token.Text != wantText[i] {
+			t.Fatalf("events[%d].Token = %+v, want ID %d / text %q", i, e.Token, i+1, wantText[i])
+		}
+		if e.Meta["k"] != wantMeta[i] {
+			t.Fatalf("events[%d].Meta[k] = %q, want %q", i, e.Meta["k"], wantMeta[i])
+		}
+	}
+	// Mutating one event's clone must not alter any sibling's clone — proves
+	// the payload pointers do not alias a shared backing scratch.
+	events[0].Token.Text = "mutated"
+	events[0].Meta["k"] = "mutated"
+	if events[1].Token.Text != "second" || events[1].Meta["k"] != "2" {
+		t.Fatalf("events[1] changed after mutating events[0]: token=%+v meta=%+v — scratch slots are aliased", events[1].Token, events[1].Meta)
+	}
+	if events[2].Token.Text != "third" || events[2].Meta["k"] != "3" {
+		t.Fatalf("events[2] changed after mutating events[0]: token=%+v meta=%+v — scratch slots are aliased", events[2].Token, events[2].Meta)
+	}
 }
 
 // Bad: Events is a read-only snapshot — mutating the returned slice's

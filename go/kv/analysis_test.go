@@ -574,11 +574,7 @@ func TestAnalysis_DegenerateShapesPath(t *testing.T) {
 	// kvAnalysisLayerState count==0: every head diverges from the shape the
 	// first contributor sets, so none are summed and the result is nil
 	// (analysis.go:506-508).
-	allDiverge := []HeadSnapshot{
-		{Key: []float32{1, 2}, Value: []float32{3, 4}}, // size 4 anchors
-		{Key: []float32{1}, Value: []float32{2, 3, 4}}, // size 4 too — matches, so use a clearer set below
-	}
-	_ = allDiverge
+	//
 	// A single contributor whose own key+value length is the anchor, then a
 	// second head of a genuinely different total size → skipped.
 	state := kvAnalysisLayerState([]HeadSnapshot{

@@ -309,24 +309,47 @@ func TestBlocksAssembleCover_PreSizeBoundsGuards(t *testing.T) {
 	second.NumLayers = 2 // keep geometry checks happy in append (won't be reached)
 	second.Layers = []LayerSnapshot{{Layer: 0, CacheIndex: 0}}
 
-	// AssembleBlocks will fail at the append validation (layer count), but
-	// preSizeAssembledRawBytes runs first and that is the code under test.
-	_, _ = AssembleBlocks([]Block{
+	// AssembleBlocks fails at the append validation (layer count), but
+	// preSizeAssembledRawBytes runs first and must skip the second block's
+	// out-of-bounds layer without panicking — assert the specific error so a
+	// regression that silently swallowed the mismatch (or panicked before
+	// reaching it) would be caught.
+	if _, err := AssembleBlocks([]Block{
 		{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: first},
 		{Index: 1, TokenStart: 1, TokenCount: 1, Snapshot: second},
-	})
+	}); !errors.Is(err, errBlockLayerCountMismatch) {
+		t.Fatalf("AssembleBlocks(narrower second block) error = %v, want errBlockLayerCountMismatch", err)
+	}
 
-	// Also drive the head-level skip: both blocks have two layers, but the
-	// second block's first layer carries zero heads while the skeleton's does.
+	// Also drive the head-level skip: both blocks have one layer, but the
+	// second block's layer carries zero heads while the skeleton's does. This
+	// combination does NOT error — appendKVSnapshotBlock's `len(layer.Heads)
+	// == 0` guard just skips head-level folding for that block — so assert the
+	// resulting shape: the layer-level raw slab grows to cover both blocks'
+	// tokens (preSizeAssembledRawBytes summed both), but the per-head raw
+	// bytes stay at the first block's contribution only (second block never
+	// reached the head loop).
 	firstHeads := nativeRawBlock(0, 0, 1).Snapshot
 	firstHeads.NumLayers = 1
 	secondHeads := nativeRawBlock(1, 1, 2).Snapshot
 	secondHeads.NumLayers = 1
 	secondHeads.Layers[0].Heads = nil // narrower head count than the skeleton
-	_, _ = AssembleBlocks([]Block{
+	assembled, err := AssembleBlocks([]Block{
 		{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: firstHeads},
 		{Index: 1, TokenStart: 1, TokenCount: 1, Snapshot: secondHeads},
 	})
+	if err != nil {
+		t.Fatalf("AssembleBlocks(head-level skip) error = %v, want success", err)
+	}
+	if len(assembled.Tokens) != 2 || assembled.TokenOffset != 2 {
+		t.Fatalf("assembled = tokens %v offset %d, want [1 2] / offset 2", assembled.Tokens, assembled.TokenOffset)
+	}
+	if len(assembled.Layers[0].KeyShape) != 4 || assembled.Layers[0].KeyShape[2] != 2 {
+		t.Fatalf("assembled layer KeyShape = %v, want L=2 (layer slab folds both blocks)", assembled.Layers[0].KeyShape)
+	}
+	if got := len(assembled.Layers[0].Heads[0].KeyBytes); got != 4 {
+		t.Fatalf("assembled head KeyBytes = %d bytes, want 4 (only the first block's single f16 token; the headless second block never reached the head loop)", got)
+	}
 }
 
 // cloneNativeRawLayer deep-copies a native-raw layer so two skeleton layers do
