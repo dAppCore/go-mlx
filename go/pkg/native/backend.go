@@ -49,7 +49,7 @@ func NewBF16Backend(arch model.Arch, layers []DecodeLayerWeights, maxLen int, op
 	if len(layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewBF16Backend: layers length must equal arch.Layer count")
 	}
-	if err := resolveGemma4Schemes(); err != nil {
+	if err := resolveSequenceSchemes(); err != nil {
 		return nil, err
 	}
 	b := &NativeBackend{arch: arch, bf16: layers, maxLen: maxLen}
@@ -65,7 +65,7 @@ func NewQuantBackend(arch model.Arch, qlayers []QuantizedLayerWeights, maxLen in
 	if len(qlayers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewQuantBackend: layers length must equal arch.Layer count")
 	}
-	if err := resolveGemma4Schemes(); err != nil {
+	if err := resolveSequenceSchemes(); err != nil {
 		return nil, err
 	}
 	b := &NativeBackend{arch: arch, quant: qlayers, isQuant: true, maxLen: maxLen}

@@ -6,9 +6,9 @@ package native
 
 import "testing"
 
-func BenchmarkResolveGemma4Schemes(b *testing.B) {
+func BenchmarkResolveSequenceSchemes(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		if err := resolveGemma4Schemes(); err != nil {
+		if err := resolveSequenceSchemes(); err != nil {
 			b.Fatal(err)
 		}
 	}

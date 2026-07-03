@@ -11,79 +11,14 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
-// quantizeProj quantises a synthetic [outDim × inDim] bf16 weight via metal (the real affine
-// packing the checkpoint stores) → (packed, scales, biases) bytes.
-func quantizeProj(t testing.TB, outDim, inDim, gs, bits, salt int) (packed, scales, biases []byte) {
-	t.Helper()
-	f := make([]float32, outDim*inDim)
-	for i := range f {
-		f[i] = float32((i*salt+7)%101-50) * 0.02
-	}
-	arr := metal.FromRawBytes(toBF16Bytes(f), []int{outDim, inDim}, metal.DTypeBFloat16)
-	wq, sc, bi, err := metal.Quantize(arr, gs, bits, "affine")
-	if err != nil {
-		metal.Free(arr)
-		t.Fatalf("Quantize: %v", err)
-	}
-	metal.Materialize(wq, sc, bi)
-	packed = append([]byte(nil), wq.RawBytes()...)
-	scales = append([]byte(nil), sc.RawBytes()...)
-	biases = append([]byte(nil), bi.RawBytes()...)
-	metal.Free(arr, wq, sc, bi)
-	return
-}
-
-// quantGemma4Tensors builds a full 4-bit gemma4 checkpoint's tensors with REAL quant weights
-// (every projection + the embedding affine-packed via metal.Quantize, the norms bf16).
-func quantGemma4Tensors(t testing.TB, arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
-	t.Helper()
-	ts := map[string]safetensors.Tensor{}
-	salt := 1
-	mkNorm := func(name string, elems int) {
-		f := make([]float32, elems)
-		for i := range f {
-			f[i] = float32((i*salt+13)%97-48) * 0.02
-		}
-		ts[name] = safetensors.Tensor{Dtype: "BF16", Shape: []int{elems}, Data: toBF16Bytes(f)}
-		salt++
-	}
-	mkQuant := func(prefix string, outDim, inDim int) {
-		p, s, b := quantizeProj(t, outDim, inDim, gs, bits, salt)
-		salt++
-		ts[prefix+".weight"] = safetensors.Tensor{Dtype: "U32", Shape: []int{outDim, inDim * bits / 32}, Data: p}
-		ts[prefix+".scales"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{outDim, inDim / gs}, Data: s}
-		ts[prefix+".biases"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{outDim, inDim / gs}, Data: b}
-	}
-	dModel, headDim, dFF, vocab := arch.Hidden, arch.HeadDim, arch.FF, arch.Vocab
-	mkQuant("model.embed_tokens", vocab, dModel)
-	mkNorm("model.norm.weight", dModel)
-	for i := range arch.Layer {
-		p := core.Sprintf("model.layers.%d", i)
-		mkNorm(p+".input_layernorm.weight", dModel)
-		mkNorm(p+".pre_feedforward_layernorm.weight", dModel)
-		lhd := headDimOf(arch.Layer[i], headDim)      // per-layer head dim (gemma4 full_attention > sliding)
-		lkv := kvHeadsOf(arch.Layer[i], arch.KVHeads) // per-layer kv heads (gemma4 global MQA < sliding GQA)
-		lqDim, lkvDim := arch.Heads*lhd, lkv*lhd
-		mkNorm(p+".self_attn.q_norm.weight", lhd)
-		mkNorm(p+".self_attn.k_norm.weight", lhd)
-		mkNorm(p+".post_attention_layernorm.weight", dModel)
-		mkNorm(p+".post_feedforward_layernorm.weight", dModel)
-		mkQuant(p+".self_attn.q_proj", lqDim, dModel)
-		mkQuant(p+".self_attn.k_proj", lkvDim, dModel)
-		mkQuant(p+".self_attn.v_proj", lkvDim, dModel)
-		mkQuant(p+".self_attn.o_proj", dModel, lqDim)
-		mkQuant(p+".mlp.gate_proj", dFF, dModel)
-		mkQuant(p+".mlp.up_proj", dFF, dModel)
-		mkQuant(p+".mlp.down_proj", dModel, dFF)
-	}
-	return ts
-}
+// quantizeProj and quantGemma4Tensors (this file's synthetic 4-bit gemma4 checkpoint builders) now
+// live in test_helpers_test.go, reimplemented in pure Go (no cgo/metal) — they are shared by many
+// other untagged test files across the package, so they can't depend on the metal_runtime lane.
 
 // TestLoadGemma4TokenModelDir gates the contract loader: a synthetic 4-bit gemma4 on
 // disk loads via LoadTokenModelDir into a model.TokenModel that model.Generate

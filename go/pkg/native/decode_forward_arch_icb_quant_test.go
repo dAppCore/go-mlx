@@ -396,7 +396,11 @@ func TestDecodeForwardArchICBQuantPLE(t *testing.T) {
 		_, _ = h.Write(got[tok])
 	}
 	gotHash := core.Sprintf("%x", h.Sum(nil))
-	const wantHash = "f83918ed05160ddf4533f1253c6498889d9ba3736e66539902f98176edc637cb"
+	// Golden over the SYNTHETIC fixture's output — the real invariant is the
+	// eqBytes above (ICB replay ≡ DecodeForwardArchQuant byte-for-byte); the hash
+	// only pins fixture drift. Minted for the pure-Go packAffineQuant fixture
+	// (test_helpers_test.go); re-mint deliberately if the fixture changes again.
+	const wantHash = "54fa4bbb358da8ab8f922352e0b23335e384752dd68914495c84ae28e8e44298"
 	if gotHash != wantHash {
 		t.Fatalf("quant PLE ICB hash = %s, want %s", gotHash, wantHash)
 	}

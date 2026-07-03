@@ -9,8 +9,6 @@ import (
 	"math"
 	"testing"
 	"unsafe"
-
-	mc "dappco.re/go/mlx/pkg/metal"
 )
 
 func layerNormBF16Fixture(rows, axisSize int) ([]byte, []byte, []byte) {
@@ -62,23 +60,8 @@ func TestLayerNormF32AllocationBudget(t *testing.T) {
 	}
 }
 
-// TestLayerNormBF16 asserts native.LayerNormBF16 is BYTE-IDENTICAL to pkg/metal.LayerNorm over the
-// last axis (parity_test.go pattern, eqBytes — not a tolerance). The gemma4 audio subsampler's
-// scale-only LayerNorm (after each strided conv) goes through this.
-func TestLayerNormBF16(t *testing.T) {
-	requireNativeRuntime(t)
-	const rows, ax = 20, 64
-	eps := float32(1e-5)
-	x, w, b := layerNormBF16Fixture(rows, ax)
-
-	got, err := LayerNormBF16(x, w, b, rows, ax, eps)
-	if err != nil {
-		t.Fatalf("LayerNormBF16: %v", err)
-	}
-	r := mc.AsType(mc.LayerNorm(marr(x, rows, ax), marr(w, ax), marr(b, ax), eps), mc.DTypeBFloat16)
-	mc.Materialize(r)
-	eqBytes(t, "LayerNormBF16 vs metal.LayerNorm", got, append([]byte(nil), r.RawBytes()...))
-}
+// TestLayerNormBF16 (BYTE-IDENTICAL to pkg/metal.LayerNorm) lives in layernorm_metal_test.go — it
+// needs the real cgo metal package as its oracle, so it's gated behind metal_runtime.
 
 func TestLayerNormBF16IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
 	requireNativeRuntime(t)
@@ -120,21 +103,8 @@ func TestLayerNormBF16IntoReusesOutputBackingAndBypassesScratchOutput(t *testing
 	}
 }
 
-func TestLayerNormF32(t *testing.T) {
-	requireNativeRuntime(t)
-	const rows, ax = 7, 16
-	eps := float32(1e-5)
-	x := syntheticFloat32(rows*ax, 3)
-	w := syntheticFloat32(ax, 5)
-	b := syntheticFloat32(ax, 7)
-
-	got, err := LayerNormF32(x, w, b, rows, ax, eps)
-	if err != nil {
-		t.Fatalf("LayerNormF32: %v", err)
-	}
-	r := mc.LayerNorm(mc.FromValues(x, rows, ax), mc.FromValues(w, ax), mc.FromValues(b, ax), eps)
-	eqF32(t, "LayerNormF32 vs metal.LayerNorm", got, r)
-}
+// TestLayerNormF32 (BYTE-IDENTICAL to pkg/metal.LayerNorm) lives in layernorm_metal_test.go — same
+// reason as TestLayerNormBF16 above.
 
 func TestLayerNormF32IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
 	requireNativeRuntime(t)

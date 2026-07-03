@@ -11,13 +11,13 @@ import (
 )
 
 // TestNativeSchemeConsumption gates R4/R5: native registers the gemma4 sequence-mixer + KV-cache
-// identities and resolveGemma4Schemes resolves them from the shared registries + enforces the
+// identities and resolveSequenceSchemes resolves them from the shared registries + enforces the
 // mixer-owns-state contract. The negative case proves the gate actually refuses a mismatched
 // pairing (a recurrent-state mixer cannot use a KV cache) rather than rubber-stamping. No model
 // load — pure scheme logic.
 func TestNativeSchemeConsumption(t *testing.T) {
-	if err := resolveGemma4Schemes(); err != nil {
-		t.Fatalf("resolveGemma4Schemes: %v", err)
+	if err := resolveSequenceSchemes(); err != nil {
+		t.Fatalf("resolveSequenceSchemes: %v", err)
 	}
 	m, ok := scheme.MixerFor(mixerSoftmaxHybrid)
 	if !ok {

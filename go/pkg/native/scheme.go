@@ -50,11 +50,14 @@ func init() {
 	}
 }
 
-// resolveGemma4Schemes consumes the registries at backend construction (R4/R5): it resolves the
-// gemma4 sequence mixer + the KV-cache scheme and enforces scheme.Compatible (the mixer-owns-state
-// contract), refusing a mismatched pairing at load rather than miscomputing. The resolved schemes are
-// identity + state-kind; native's decode owns the matching compute.
-func resolveGemma4Schemes() error {
+// resolveSequenceSchemes consumes the registries at backend construction (R4/R5): it resolves the
+// registered sequence mixer + the KV-cache scheme and enforces scheme.Compatible (the mixer-owns-
+// state contract), refusing a mismatched pairing at load rather than miscomputing. It is called
+// unconditionally by NewBF16Backend/NewQuantBackend for any model.Arch — currently gemma4 is the
+// only registered mixer kind (softmax-hybrid), but this function itself is arch-agnostic (it never
+// names a model); the FLA/SSM/gated-delta families register + resolve through the same seam. The
+// resolved schemes are identity + state-kind; native's decode owns the matching compute.
+func resolveSequenceSchemes() error {
 	m, ok := scheme.MixerFor(mixerSoftmaxHybrid)
 	if !ok {
 		return core.NewError("native: no sequence mixer registered for " + mixerSoftmaxHybrid)
