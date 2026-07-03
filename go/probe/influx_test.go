@@ -280,8 +280,8 @@ func TestInflux_LineProtocolSink_EmitProbe_Bad(t *testing.T) {
 func TestInflux_LineProtocolSink_EmitProbe_Ugly(t *testing.T) {
 	s := NewLineProtocolSink(LineProtocolConfig{Model: "m", RunID: "r"})
 	s.EmitProbe(Event{Kind: KindToken, Token: &Token{ID: 1}})
-	s.EmitProbe(Event{Kind: KindTraining})              // nil payload
-	s.EmitProbe(Event{Kind: KindScore})                 // nil payload
+	s.EmitProbe(Event{Kind: KindTraining})               // nil payload
+	s.EmitProbe(Event{Kind: KindScore})                  // nil payload
 	s.EmitProbe(Event{Kind: KindScore, Score: &Score{}}) // empty values
 	if s.Lines() != 0 {
 		t.Fatalf("lines = %d, want 0", s.Lines())
