@@ -61,6 +61,7 @@ func TestQMVMatchesMetalQuantizedMatmul(t *testing.T) {
 	}{
 		{name: "regular", outDim: 16, inDim: 64, gs: 32, b: 4},
 		{name: "fast", outDim: 8, inDim: 512, gs: 64, b: 4},
+		{name: "12B non-fast", outDim: 16, inDim: 3840, gs: 64, b: 4}, // dModel 3840 %512 != 0 — the slow-variant lane E2B never runs
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
