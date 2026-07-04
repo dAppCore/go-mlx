@@ -1058,7 +1058,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 		}
 	}
 	if globalHeadDim > 0 && rotaryDim > 0 && rotaryDim < globalHeadDim {
-		periods := proportionalRopePeriods(globalHeadDim, rotaryDim, base)
+		periods := globalRopePeriodsFromFolded(globalHeadDim, rotaryDim, base)
 		globalRopeFreqs = cachedRawRopePeriodsBuffer(periods)
 	}
 	coreScratch := getArchDecodeCoreScratch(dModel, maxQDim, maxKvDim, nHeads, maxLen, maxDFF)

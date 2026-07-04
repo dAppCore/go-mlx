@@ -170,3 +170,36 @@ func TestRoPEFreqsBF16_NonPlainDiffers_Good(t *testing.T) {
 		t.Fatal("non-plain freqs produced the same output as base rope — freqs buffer not consumed")
 	}
 }
+
+// TestGlobalRopePeriodsFromFolded_MatchesRawSpectrum_Good pins the folded-base seam at the real
+// 12B global geometry (headDim 512, rotaryDim 128, raw theta 1e6): the arch-derived base is
+// pre-folded to raw^(rotaryDim/headDim), and the unfolding wrapper must reproduce metal's
+// gemma4ProportionalFreqs spectrum raw^(2i/headDim) exactly. Feeding the folded base straight
+// into proportionalRopePeriods instead lands every period at the 4th root of the true one — the
+// position-growing 12B cross-engine drift this seam exists to prevent.
+func TestGlobalRopePeriodsFromFolded_MatchesRawSpectrum_Good(t *testing.T) {
+	const headDim, rotaryDim = 512, 128
+	const rawBase = 1e6
+	foldedBase := float32(math.Pow(rawBase, float64(rotaryDim)/float64(headDim))) // 31.6227766 — what arch.RopeBase carries
+
+	got := globalRopePeriodsFromFolded(headDim, rotaryDim, foldedBase)
+	want := proportionalRopePeriods(headDim, rotaryDim, rawBase)
+
+	if len(got) != headDim/2 || len(want) != headDim/2 {
+		t.Fatalf("period length = %d/%d, want %d", len(got), len(want), headDim/2)
+	}
+	for i := 0; i < rotaryDim/2; i++ {
+		exact := float32(math.Pow(rawBase, float64(2*i)/float64(headDim)))
+		if rel := math.Abs(float64(got[i]-exact)) / float64(exact); rel > 1e-5 {
+			t.Fatalf("period[%d] = %g, want %g (rel %.2e) — folded base leaked into the raw spectrum", i, got[i], exact, rel)
+		}
+		if rel := math.Abs(float64(got[i]-want[i])) / float64(want[i]); rel > 1e-6 {
+			t.Fatalf("wrapper period[%d] = %g diverges from raw-base periods %g", i, got[i], want[i])
+		}
+	}
+	for i := rotaryDim / 2; i < headDim/2; i++ {
+		if !math.IsInf(float64(got[i]), 1) {
+			t.Fatalf("period[%d] = %g, want +Inf (unrotated tail)", i, got[i])
+		}
+	}
+}

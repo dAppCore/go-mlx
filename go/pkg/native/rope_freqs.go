@@ -336,11 +336,11 @@ func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
 // layer (the global / full_attention layers), MATCHING metal's gemma4ProportionalFreqs: the first
 // rotaryDim/2 entries are base^(2i/headDim) — the rope_type "proportional" scaling divides the
 // exponent by the FULL head dim, NOT the rotated subset; the rest are +Inf (period → inv_freq 0 →
-// no rotation); length headDim/2. base is the RAW global rope_theta. Native previously divided by
-// rotaryDim here (the standard-rope denominator), which only equals ÷headDim when the base is
-// pre-folded by rotaryDim/headDim — but the call site passes the raw base, so the global layers
-// over-rotated ~4× at 0.25 partial-rotary. That error is tiny at prompt positions (the cross-engine
-// passes) but grows linearly with position, collapsing 12B's generation into a channel-token loop.
+// no rotation); length headDim/2. base MUST be the RAW global rope_theta (1e6 on gemma4) — an
+// arch-derived base is pre-folded to raw^(rotaryDim/headDim) for the base-derived kernel path and
+// goes through globalRopePeriodsFromFolded instead. Feeding the folded base here lands every
+// period at the 4th root of metal's (at 0.25 partial-rotary): exact at position 0, then an angle
+// error growing linearly with position — the 12B cross-engine drift signature.
 func proportionalRopePeriods(headDim, rotaryDim int, base float32) []float32 {
 	half, rot := headDim/2, rotaryDim/2
 	p := make([]float32, half)
@@ -352,4 +352,14 @@ func proportionalRopePeriods(headDim, rotaryDim int, base float32) []float32 {
 		}
 	}
 	return p
+}
+
+// globalRopePeriodsFromFolded is proportionalRopePeriods for callers holding the ARCH-DERIVED
+// base: arch.RopeBase is pre-folded to raw^(rotaryDim/headDim) (config.go folds it so the
+// base-derived ÷rotaryDim rope kernels reproduce proportional rope), so the raw global theta is
+// recovered by the inverse power before building the spectrum. The two bases coincide only at
+// full rotary, where the fold is the identity.
+func globalRopePeriodsFromFolded(headDim, rotaryDim int, foldedBase float32) []float32 {
+	rawBase := float32(math.Pow(float64(foldedBase), float64(headDim)/float64(rotaryDim)))
+	return proportionalRopePeriods(headDim, rotaryDim, rawBase)
 }
