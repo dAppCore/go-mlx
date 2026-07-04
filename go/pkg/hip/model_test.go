@@ -164,14 +164,14 @@ func TestModel_Model_Err_Good(t *testing.T) {
 	core.AssertNotEmpty(t, variant)
 	m := testModel()
 	m.setLastFailure(core.NewError("x"))
-	core.AssertError(t, m.Err())
+	core.AssertError(t, resultError(m.Err()))
 }
 func TestModel_Model_Err_Bad(t *testing.T) {
 	variant := "Bad"
 	core.AssertNotEmpty(t, variant)
 	m := testModel()
 	m.clearLastError()
-	core.AssertNil(t, m.Err())
+	core.AssertNil(t, resultError(m.Err()))
 }
 func TestModel_Model_Err_Ugly(t *testing.T) {
 	variant := "Ugly"
@@ -179,14 +179,14 @@ func TestModel_Model_Err_Ugly(t *testing.T) {
 	m := testModel()
 	m.setLastFailure(core.NewError("x"))
 	m.clearLastError()
-	core.AssertNil(t, m.Err())
+	core.AssertNil(t, resultError(m.Err()))
 }
 
 func TestModel_Model_Close_Good(t *testing.T) {
 	variant := "Good"
 	core.AssertNotEmpty(t, variant)
 	m := testModel()
-	core.AssertNoError(t, m.Close())
+	core.AssertNoError(t, resultError(m.Close()))
 	core.AssertNotNil(t, t)
 	core.AssertEqual(t, t.Name(), t.Name())
 }
@@ -194,7 +194,7 @@ func TestModel_Model_Close_Bad(t *testing.T) {
 	variant := "Bad"
 	core.AssertNotEmpty(t, variant)
 	m := &rocmModel{}
-	core.AssertNoError(t, m.Close())
+	core.AssertNoError(t, resultError(m.Close()))
 	core.AssertNotNil(t, t)
 	core.AssertEqual(t, t.Name(), t.Name())
 }
@@ -202,7 +202,7 @@ func TestModel_Model_Close_Ugly(t *testing.T) {
 	variant := "Ugly"
 	core.AssertNotEmpty(t, variant)
 	m := testModel()
-	core.AssertNoError(t, m.Close())
+	core.AssertNoError(t, resultError(m.Close()))
 	core.AssertNotNil(t, t)
 	core.AssertEqual(t, t.Name(), t.Name())
 }

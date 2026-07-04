@@ -9,6 +9,6 @@ func ExampleBackend_Available() {
 	core.Println((&rocmBackend{}).Available() || !(&rocmBackend{}).Available()) /* Output: true */
 }
 func ExampleBackend_LoadModel() {
-	model, err := (&rocmBackend{}).LoadModel("missing.gguf")
-	core.Println(model == nil, err != nil) /* Output: true true */
+	r := (&rocmBackend{}).LoadModel("missing.gguf")
+	core.Println(!r.OK, !r.OK) /* Output: true true */
 }

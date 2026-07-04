@@ -278,14 +278,14 @@ func TestCoverage_RocmModelAccessorsAndTokenCounts_GoodBad(t *testing.T) {
 	core.AssertEqual(t, inference.ModelInfo{}, nilModel.Info())
 	core.AssertFalse(t, nilModel.Capabilities().Available)
 	core.AssertEqual(t, inference.GenerateMetrics{}, nilModel.Metrics())
-	core.AssertNil(t, nilModel.Err())
+	core.AssertNil(t, resultError(nilModel.Err()))
 	core.AssertEqual(t, []int32{1, 2}, nilModel.Encode("alpha beta"))
 	core.AssertEqual(t, "", nilModel.Decode([]int32{1, 2}))
 	core.AssertEqual(t, 2, nilModel.promptTokenCount("alpha beta"))
 	core.AssertEqual(t, 3, nilModel.promptsTokenCount([]string{"alpha beta", "gamma"}))
 	core.AssertEqual(t, 2, nilModel.chatPromptTokenCount([]inference.Message{{Role: "user", Content: "alpha beta"}}))
 	core.AssertEqual(t, 2, nilModel.evalSampleTokenCount(inference.DatasetSample{Text: "alpha beta"}))
-	core.AssertNoError(t, nilModel.Close())
+	core.AssertNoError(t, resultError(nilModel.Close()))
 
 	native := &fakeNativeModel{
 		encodeByText: map[string][]int32{
@@ -348,7 +348,7 @@ func TestCoverage_ScheduledModelAccessors_Good(t *testing.T) {
 	core.AssertEqual(t, "", nilModel.ModelType())
 	core.AssertEqual(t, inference.ModelInfo{}, nilModel.Info())
 	core.AssertEqual(t, inference.GenerateMetrics{}, nilModel.Metrics())
-	core.AssertNil(t, nilModel.Err())
+	core.AssertNil(t, resultError(nilModel.Err()))
 
 	fake := &schedulerFakeTextModel{}
 	fake.lastMetrics = inference.GenerateMetrics{GeneratedTokens: 7, DecodeDuration: time.Millisecond}
@@ -670,12 +670,12 @@ func (model *coverageFailingTextModel) stream(ctx context.Context) iter.Seq[infe
 	}
 }
 
-func (model *coverageFailingTextModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, model.err
+func (model *coverageFailingTextModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.ResultOf(nil, model.err)
 }
 
-func (model *coverageFailingTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, model.err
+func (model *coverageFailingTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.ResultOf(nil, model.err)
 }
 
 func (model *coverageFailingTextModel) ModelType() string { return "coverage" }
@@ -685,8 +685,8 @@ func (model *coverageFailingTextModel) Info() inference.ModelInfo {
 func (model *coverageFailingTextModel) Metrics() inference.GenerateMetrics {
 	return inference.GenerateMetrics{GeneratedTokens: len(model.tokens)}
 }
-func (model *coverageFailingTextModel) Err() error   { return model.err }
-func (model *coverageFailingTextModel) Close() error { return nil }
+func (model *coverageFailingTextModel) Err() core.Result   { return core.ResultOf(nil, model.err) }
+func (model *coverageFailingTextModel) Close() core.Result { return core.Ok(nil) }
 
 type coverageEmbeddingNative struct {
 	fakeNativeModel

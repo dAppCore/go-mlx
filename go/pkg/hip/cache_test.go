@@ -1079,13 +1079,13 @@ func TestCacheService_Bad_RocmModelWarmCacheRecordsErr(t *testing.T) {
 	if err == nil {
 		t.Fatal("WarmCache missing input error = nil")
 	}
-	core.AssertContains(t, model.Err().Error(), "prompt or tokens are required")
+	core.AssertContains(t, resultError(model.Err()).Error(), "prompt or tokens are required")
 
 	_, err = model.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3}})
 
 	core.RequireNoError(t, err)
-	if model.Err() != nil {
-		t.Fatalf("WarmCache success Err() = %v, want nil", model.Err())
+	if resultError(model.Err()) != nil {
+		t.Fatalf("WarmCache success Err() = %v, want nil", resultError(model.Err()))
 	}
 }
 
@@ -1162,7 +1162,7 @@ func TestCacheService_Good_RocmModelCloseClosesMirroredCache(t *testing.T) {
 		cache:     cache,
 	}
 
-	err = model.Close()
+	err = resultError(model.Close())
 
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, 1, native.closeCalls)
@@ -1241,7 +1241,7 @@ func TestCacheService_Bad_RocmModelCloseStopsOnCacheCloseFailure(t *testing.T) {
 		cache:     cache,
 	}
 
-	err = model.Close()
+	err = resultError(model.Close())
 
 	core.AssertError(t, err)
 	core.AssertContains(t, err.Error(), "free failed")
