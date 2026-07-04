@@ -444,7 +444,11 @@ func (m *rocmModel) hipGemma4Q4GenerateTokenSeq(ctx context.Context, session *St
 	})
 }
 
-func (m *rocmModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (m *rocmModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
+	return core.ResultOf(m.classifyResults(ctx, prompts, opts...))
+}
+
+func (m *rocmModel) classifyResults(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	m.clearLastError()
 	if err := rocmContextErr(ctx); err != nil {
 		m.setLastFailure(err)
@@ -543,7 +547,11 @@ func rocmLogitProbeTopK(vocabularySize int) int {
 	return 5
 }
 
-func (m *rocmModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (m *rocmModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
+	return core.ResultOf(m.batchGenerateResults(ctx, prompts, opts...))
+}
+
+func (m *rocmModel) batchGenerateResults(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	m.clearLastError()
 	if err := rocmContextErr(ctx); err != nil {
 		m.setLastFailure(err)
@@ -673,7 +681,7 @@ func (m *rocmModel) Capabilities() inference.CapabilityReport {
 		ClassifyLinked:         m.classifyLinked(),
 		Gemma4Q4GenerateLinked: m.gemma4Q4GenerateLinked(),
 	})
-	lastErr := m.Err()
+	lastErr := m.currentError()
 	report = rocmCapabilityReportWithReactiveProfile(report, m)
 	m.setLastFailure(lastErr)
 	return report
@@ -719,7 +727,11 @@ func (m *rocmModel) Metrics() inference.GenerateMetrics {
 	return m.lastMetrics
 }
 
-func (m *rocmModel) Err() error {
+func (m *rocmModel) Err() core.Result {
+	return core.ResultOf(nil, m.currentError())
+}
+
+func (m *rocmModel) currentError() error {
 	if m == nil {
 		return nil
 	}
@@ -728,7 +740,11 @@ func (m *rocmModel) Err() error {
 	return m.lastError
 }
 
-func (m *rocmModel) Close() (err error) {
+func (m *rocmModel) Close() core.Result {
+	return core.ResultOf(nil, m.closeModel())
+}
+
+func (m *rocmModel) closeModel() (err error) {
 	if m == nil {
 		return nil
 	}
@@ -1198,7 +1214,7 @@ func (m *rocmModel) benchmarkWarmupRuns(ctx context.Context, prompts []string, m
 		for _, prompt := range prompts {
 			for range m.Generate(ctx, m.generatedPrompt(prompt), opts...) {
 			}
-			if err := m.Err(); err != nil {
+			if err := m.currentError(); err != nil {
 				return err
 			}
 		}
@@ -1213,7 +1229,7 @@ func (m *rocmModel) benchmarkMeasuredRuns(ctx context.Context, prompts []string,
 		for _, prompt := range prompts {
 			for range m.Generate(ctx, m.generatedPrompt(prompt), opts...) {
 			}
-			if err := m.Err(); err != nil {
+			if err := m.currentError(); err != nil {
 				return inference.GenerateMetrics{}, err
 			}
 			metrics := m.Metrics()
@@ -1534,7 +1550,7 @@ func (m *rocmModel) observeEvalLossBatch(ctx context.Context, candidates []rocmE
 	for i, candidate := range candidates {
 		prompts[i] = candidate.prompt
 	}
-	results, err := m.Classify(ctx, prompts, inference.WithLogits())
+	results, err := m.classifyResults(ctx, prompts, inference.WithLogits())
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -1754,7 +1770,7 @@ func (m *rocmModel) evaluateQualityProbes(ctx context.Context, probes []inferenc
 		}
 		text := builder.String()
 		result := inference.QualityProbeResult{Name: name, Text: text}
-		if err := m.Err(); err != nil {
+		if err := m.currentError(); err != nil {
 			failures++
 			if firstFailure == "" {
 				firstFailure = err.Error()

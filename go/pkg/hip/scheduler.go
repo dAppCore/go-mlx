@@ -252,48 +252,52 @@ func (m *ScheduledModel) Chat(ctx context.Context, messages []inference.Message,
 	}
 }
 
-func (m *ScheduledModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (m *ScheduledModel) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	if m == nil || m.model == nil {
 		err := core.E("rocm.Classify", "scheduled model is nil", nil)
 		if m != nil {
 			m.setErr(err)
 		}
-		return nil, err
+		return core.Fail(err)
 	}
 	m.setErr(nil)
 	if err := rocmContextErr(ctx); err != nil {
 		m.setErr(err)
-		return nil, err
+		return core.Fail(err)
 	}
-	results, err := m.model.Classify(ctx, append([]string(nil), prompts...), opts...)
-	results = cloneClassifyResults(results)
-	if err != nil {
+	result := m.model.Classify(ctx, append([]string(nil), prompts...), opts...)
+	if !result.OK {
+		err, _ := result.Value.(error)
 		m.setErr(err)
+		return result
 	}
-	return results, err
+	return core.Ok(cloneClassifyResults(result.Value.([]inference.ClassifyResult)))
 }
 
-func (m *ScheduledModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (m *ScheduledModel) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	if m == nil || m.model == nil {
 		err := core.E("rocm.BatchGenerate", "scheduled model is nil", nil)
 		if m != nil {
 			m.setErr(err)
 		}
-		return nil, err
+		return core.Fail(err)
 	}
 	m.setErr(nil)
 	if err := rocmContextErr(ctx); err != nil {
 		m.setErr(err)
-		return nil, err
+		return core.Fail(err)
 	}
-	results, err := m.model.BatchGenerate(ctx, append([]string(nil), prompts...), opts...)
-	results = cloneBatchResults(results)
-	if err != nil {
+	result := m.model.BatchGenerate(ctx, append([]string(nil), prompts...), opts...)
+	if !result.OK {
+		err, _ := result.Value.(error)
 		m.setErr(err)
-	} else if resultErr := firstBatchResultError(results); resultErr != nil {
+		return result
+	}
+	results := cloneBatchResults(result.Value.([]inference.BatchResult))
+	if resultErr := firstBatchResultError(results); resultErr != nil {
 		m.setErr(resultErr)
 	}
-	return results, err
+	return core.Ok(results)
 }
 
 func (m *ScheduledModel) ModelType() string {
@@ -386,25 +390,25 @@ func (m *ScheduledModel) Metrics() inference.GenerateMetrics {
 	return m.model.Metrics()
 }
 
-func (m *ScheduledModel) Err() error {
+func (m *ScheduledModel) Err() core.Result {
 	if m == nil {
-		return nil
+		return core.Ok(nil)
 	}
 	m.mu.Lock()
 	err := m.lastErr
 	m.mu.Unlock()
 	if err != nil {
-		return err
+		return core.Fail(err)
 	}
 	if m.model == nil {
-		return nil
+		return core.Ok(nil)
 	}
 	return m.model.Err()
 }
 
-func (m *ScheduledModel) Close() error {
+func (m *ScheduledModel) Close() core.Result {
 	if m == nil {
-		return nil
+		return core.Ok(nil)
 	}
 	m.closeOne.Do(func() {
 		m.mu.Lock()
@@ -419,10 +423,12 @@ func (m *ScheduledModel) Close() error {
 			close(queue)
 		}
 		if model != nil {
-			m.closeErr = model.Close()
+			if r := model.Close(); !r.OK {
+				m.closeErr, _ = r.Value.(error)
+			}
 		}
 	})
-	return m.closeErr
+	return core.ResultOf(nil, m.closeErr)
 }
 
 func (m *ScheduledModel) run() {
