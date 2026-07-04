@@ -647,11 +647,13 @@ func recordArchICBQuant(
 			}
 		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
-		vProjIdx := projV
-		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
-			vProjIdx = projK
+		vProjIdxOf := func(li int) projIndex { // gemma4 K==V is PER-LAYER (12B: sliding layers carry V, global layers don't)
+			if len(qlayers[li].V.Packed) == 0 {
+				return projK // V rides the k-proj
+			}
+			return projV
 		}
-		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, recordFusedRMSProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, rope, scale, eps)
+		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, recordFusedRMSProj, 4, valueNormOnes, vProjIdxOf, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, rope, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

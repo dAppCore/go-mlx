@@ -558,3 +558,49 @@ func TestDecodeForwardArchICBHeteroDFF(t *testing.T) {
 
 	t.Logf("hetero-dFF ICB: replay ≡ re-encode byte-for-byte (bf16 + 4-bit) with two layers at dFF=%d and dFF=%d — the cache-grow ICB recorder handles per-layer-varying FFN width", dffNarrow, dffWide)
 }
+
+// TestDecodeForwardArchICBMixedKEqV gates the PER-LAYER K==V projection choice — the 12B-unified
+// shape: sliding layers carry their own V weight, global layers don't (V rides the k-proj). The
+// layer-0-derived choice this replaced picked ONE projection index for every layer, so a mixed
+// model (layer 0 sliding WITH V) projected the global layers' V from an EMPTY weight slot —
+// garbage V rows, the #254 real-12B garbage decode. Uniform head dim keeps the whole-seq ICB on
+// the recorded path (no mixed-hd fallback), so the recorded per-layer choice is exactly what runs,
+// gated byte-for-byte against the per-layer-correct re-encode oracle.
+func TestDecodeForwardArchICBMixedKEqV(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF = 512, 8, 4, 64, 1024
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	const maxLen = 8
+	const T, slidingWindow = 5, 3
+
+	inputs := make([][]byte, T)
+	for i := range inputs {
+		f := make([]float32, dModel)
+		for j := range f {
+			f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+		}
+		inputs[i] = toBF16Bytes(f)
+	}
+	layers := []DecodeLayerWeights{
+		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100),
+		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 200),
+		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 300),
+	}
+	layers[1].WV = nil // the global K==V layer: V must ride the k-proj, NOT an empty V slot
+	specs := model.DeriveLayers([]string{"sliding_attention", "full_attention", "sliding_attention"}, 0)
+
+	got, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICB mixed K==V: %v", err)
+	}
+	want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch mixed K==V: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("mixed-keqv tok%d", tok), got[tok], want[tok])
+	}
+	t.Logf("arch ICB mixed K==V (sliding-with-V + global-without-V) ≡ re-encode oracle byte-for-byte over %d tokens", T)
+}

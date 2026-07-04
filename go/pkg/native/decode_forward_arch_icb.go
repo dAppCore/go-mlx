@@ -1127,7 +1127,7 @@ func recordArchICB(
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex),
-	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
+	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdxOf func(li int) projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
 	rope icbRope, scale, eps float32,
@@ -1715,7 +1715,7 @@ func recordArchICB(
 					kRopeIdx[li] = opIdx - 1
 				}
 				cv := emitNB()                                                             // 2nd consumer of `normed` (q barriered it) — overlap
-				recInputProj(cv, li, inBuf, anwBufs[li], normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
+				recInputProj(cv, li, inBuf, anwBufs[li], normed, vCaches[li], 0, vProjIdxOf(li)) // -> vCache @ row pos (rebound/token); K==V layers project via wK
 				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
 					cvn := emit()
@@ -1731,7 +1731,7 @@ func recordArchICB(
 					}
 					setRope(emit(), kProj, kThrow, kvOf(li), li) // discarded
 				}
-				recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
+				recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, vThrow, 0, vProjIdxOf(li)) // discarded; 2nd consumer of `normed` — overlap
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, kvOf(li), hdOf(li)) // discarded (keeps the op layout uniform)
 				}
@@ -1918,13 +1918,13 @@ func decodeForwardArchICBCore(
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex),
-	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
+	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdxOf func(li int) projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
 	base, scale, eps float32,
 	useCallerOut bool,
 ) ([][]byte, error) {
-	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, recordFusedRMSProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
+	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, recordFusedRMSProj, vOutBind, valueNormOnes, vProjIdxOf, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
 	if err != nil {
 		return nil, err
 	}
@@ -2230,11 +2230,13 @@ func decodeForwardArchICBInto(
 			}
 		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
-		vProjIdx := projV
-		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
-			vProjIdx = projK
+		vProjIdxOf := func(li int) projIndex { // gemma4 K==V is PER-LAYER (12B: sliding layers carry V, global layers don't)
+			if len(layers[li].WV) == 0 {
+				return projK // V rides the k-proj
+			}
+			return projV
 		}
-		outputs, coreErr = decodeForwardArchICBCore(outputs, inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, nil, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps, useCallerOut)
+		outputs, coreErr = decodeForwardArchICBCore(outputs, inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, nil, 3, valueNormOnes, vProjIdxOf, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps, useCallerOut)
 	})
 	if coreErr != nil {
 		return nil, coreErr
