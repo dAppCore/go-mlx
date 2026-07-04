@@ -46,11 +46,23 @@ func TestImportBoundary_SharedContractsDoNotImportRuntimeOrWorkflowPackages_Good
 	// Quarantine landing note: rebased for pkg/hip's new home — see the
 	// landing commit body and the sibling TestImportBoundary_HigherLevel...
 	// note above.
+	//
+	// The go-inference walk enforces only the engine-import boundary (a lib
+	// never imports its consumers): go-rocm and go-mlx spellings. The
+	// workflow list (rag, ratelimit, …) is go-rocm-era policy from when
+	// go-inference was a thin contract surface; go-inference's ai/ package
+	// now legitimately builds on dappco.re/go/rag, and its internal layering
+	// is guarded by its own suite, not by this consumer.
 	root := "../../../external/go-inference/go"
 	if _, err := os.Stat(root); err != nil {
 		t.Fatalf("stat %s: %v", root, err)
 	}
-	forbidden := append(forbiddenWorkflowRuntimeImports(), forbiddenROCmRuntimeImports()...)
+	forbidden := append(forbiddenROCmRuntimeImports(),
+		"dappco.re/go/mlx",
+		"forge.lthn.ai/core/go-mlx",
+		"forge.lthn.sh/core/go-mlx",
+		"github.com/dappcore/go-mlx",
+	)
 	scanImportBoundary(t, root, forbidden, map[string]bool{
 		"external": true,
 		"vendor":   true,
