@@ -37,7 +37,7 @@ type fakeNativeModel struct {
 	modelType                      string
 	attention                      *metal.AttentionResult
 	kvSnapshot                     *metal.KVSnapshot
-	session                        metal.SessionHandle
+	session                        inference.SessionHandle
 	probeEvents                    []metal.ProbeEvent
 	gemma4AssistantPair            *gemma4.Gemma4AssistantPair
 	gemma4AssistantResult          gemma4.Gemma4AssistantGenerateResult
@@ -221,7 +221,7 @@ func (m *fakeNativeModel) RestorePromptCacheFromKVBlocks(ctx context.Context, so
 	}
 	return m.restoreBlockErr
 }
-func (m *fakeNativeModel) NewSession() metal.SessionHandle {
+func (m *fakeNativeModel) NewSession() inference.SessionHandle {
 	return m.session
 }
 

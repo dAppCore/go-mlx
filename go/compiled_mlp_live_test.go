@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/pkg/metal"
 )
@@ -46,7 +47,7 @@ func TestCompiledMLPDecode_LiveModel(t *testing.T) {
 		text := core.NewBuilder()
 		tokens := 0
 		start := time.Now()
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 			tokens++
 		}

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package session
+package mlx
 
 import (
 	"bytes"
@@ -8,16 +8,11 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
+	infspine "dappco.re/go/inference/spine"
+	session "dappco.re/go/inference/state/session"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/pkg/metal"
-	// Blank-imported for its init() side effect: RegisterModelLoader("gemma4_text", ...).
-	// pkg/metal itself carries no model-family registrations (they are a plugin
-	// registry filled by each pkg/metal/model/* package's own init()) — root-package
-	// production code (speculative.go) and cmd/mlx (diffuse.go) pull this in for
-	// free via their own imports, but go/session does not, so this lane's first
-	// real-model test needs the same wiring explicitly.
-	_ "dappco.re/go/mlx/pkg/metal/model/gemma4"
-	"dappco.re/go/mlx/spine"
 )
 
 // TestSessionReserialize_CaptureRestoreCapture_Eval is the HOT LEAD instrument
@@ -40,18 +35,22 @@ import (
 //     session and resumes generation, but likewise never re-captures to
 //     compare against the original snapshot before perturbing state.
 //
-// This test closes that gap from go/session's own public surface
+// This test closes that gap from the session package's public surface
 // (Session.CaptureKV / Session.RestoreKV), against the real metal engine (no
 // fakes — internal/sessionfake.Handle decouples CaptureKV from RestoreKV by
 // construction, so a fake-backed test is structurally incapable of catching
-// this class of bug). Two session shapes reachable through the public
-// LoadConfig surface are exercised: plain and paged KV cache. Pipelined
-// (FixedKVCache pending-commit) and compiled/ICB-replay shapes are internal
-// pkg/metal mechanisms gated behind experimental flags with no LoadConfig
-// surface — not reachable from this lane; see the audit report.
+// this class of bug). It lived beside the session package before the lift to
+// dappco.re/go/inference/state/session; it re-homes to the go-mlx root because
+// it is a METAL-engine integration test — the wrapped handle now crosses
+// metalSessionAdapter, so the kvconv snapshot bridge is inside the loop being
+// proven. Two session shapes reachable through the public LoadConfig surface
+// are exercised: plain and paged KV cache. Pipelined (FixedKVCache
+// pending-commit) and compiled/ICB-replay shapes are internal pkg/metal
+// mechanisms gated behind experimental flags with no LoadConfig surface —
+// not reachable from this lane; see the audit report.
 //
 //	GO_MLX_BENCH_MODEL=google/gemma-4-e2b-it go test \
-//	  -tags 'metal_runtime model_eval' -run TestSessionReserialize -v ./session/
+//	  -tags 'metal_runtime model_eval' -run TestSessionReserialize -v ./go/
 func TestSessionReserialize_CaptureRestoreCapture_Eval(t *testing.T) {
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval test; build with -tags model_eval")
@@ -84,12 +83,12 @@ func TestSessionReserialize_CaptureRestoreCapture_Eval(t *testing.T) {
 			// carries both prefilled and generated history — the exact
 			// shape the native bug's "continuations decoded against empty
 			// history" symptom depended on.
-			source := New(model.NewSession(), spine.ModelInfo{}, nil)
+			source := session.New(newMetalSessionAdapter(model.NewSession()), infspine.ModelInfo{}, nil)
 			defer source.Close()
 			if err := source.PrefillTokens(ctx, []int32{2, 100, 200, 300, 400}); err != nil {
 				t.Fatalf("[%s] PrefillTokens: %v", tc.name, err)
 			}
-			if _, err := source.Generate(optMaxTokens(4)); err != nil {
+			if _, err := source.Generate(inference.WithMaxTokens(4)); err != nil {
 				t.Fatalf("[%s] Generate: %v", tc.name, err)
 			}
 
@@ -111,7 +110,7 @@ func TestSessionReserialize_CaptureRestoreCapture_Eval(t *testing.T) {
 			// Restore into a FRESH session (not the same one) — the fresh
 			// session starts with zero state, so the second capture can only
 			// carry the restored content, not leftover state from source.
-			target := New(model.NewSession(), spine.ModelInfo{}, nil)
+			target := session.New(newMetalSessionAdapter(model.NewSession()), infspine.ModelInfo{}, nil)
 			defer target.Close()
 			if err := target.RestoreKV(snap1); err != nil {
 				t.Fatalf("[%s] RestoreKV: %v", tc.name, err)

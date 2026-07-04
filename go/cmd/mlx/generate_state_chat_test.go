@@ -20,11 +20,10 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
+	session "dappco.re/go/inference/state/session"
+	infspine "dappco.re/go/inference/spine"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/internal/sessionfake"
-	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/session"
-	"dappco.re/go/mlx/spine"
 )
 
 // chatArchFormatter drives the real chat.Format pipeline for a fixed
@@ -53,9 +52,9 @@ func TestRunGenerateStateSession_FreshTurn_ChatFramed_Good(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	handle := &sessionfake.Handle{
 		KV:     sessionfake.TestKVSnapshot(),
-		Tokens: []metal.Token{{ID: 9, Text: "hi"}},
+		Tokens: []inference.Token{{ID: 9, Text: "hi"}},
 	}
-	sess := session.New(handle, spine.ModelInfo{Architecture: "gemma4_text"}, nil)
+	sess := session.New(handle, infspine.ModelInfo{Architecture: "gemma4_text"}, nil)
 	formatter := chatArchFormatter{architecture: "gemma4_text"}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
@@ -88,10 +87,10 @@ func TestRunGenerateStateSession_WokenTurn_ChatFramed_Good(t *testing.T) {
 	ctx := context.Background()
 	store := state.NewInMemoryStore(nil)
 	formatter := chatArchFormatter{architecture: "gemma4_text"}
-	info := spine.ModelInfo{Architecture: "gemma4_text"}
+	info := infspine.ModelInfo{Architecture: "gemma4_text"}
 
 	// Turn 1 — fresh. Seeds the store so turn 2 wakes.
-	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 1, Text: "hi"}}}
 	sess1 := session.New(handle1, info, nil)
 	out1, err1 := core.NewBuffer(), core.NewBuffer()
 	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-woken", "mem", 4, 0, store, sess1, formatter, nil, out1, err1); code != 0 {
@@ -101,7 +100,7 @@ func TestRunGenerateStateSession_WokenTurn_ChatFramed_Good(t *testing.T) {
 	// Turn 2 — wake. A fresh handle simulates a new process picking up the
 	// same named state (the -state contract: "lthn-mlx generate -state
 	// chat1 ..." run twice).
-	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 2, Text: "Marker"}}}
+	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 2, Text: "Marker"}}}
 	sess2 := session.New(handle2, info, nil)
 	out2, err2 := core.NewBuffer(), core.NewBuffer()
 	code := runGenerateStateSession(ctx, "What is my name?", "chat-woken", "mem", 4, 0, store, sess2, formatter, nil, out2, err2)
@@ -133,10 +132,10 @@ func TestRunGenerateStateSession_WokenTurn_ChatFramed_Good(t *testing.T) {
 func TestRunGenerateStateSession_Raw_BypassesChatTemplate_Good(t *testing.T) {
 	ctx := context.Background()
 	store := state.NewInMemoryStore(nil)
-	info := spine.ModelInfo{Architecture: "gemma4_text"}
+	info := infspine.ModelInfo{Architecture: "gemma4_text"}
 
 	// Turn 1 — fresh, raw.
-	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	handle1 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 1, Text: "hi"}}}
 	sess1 := session.New(handle1, info, nil)
 	out1, err1 := core.NewBuffer(), core.NewBuffer()
 	if code := runGenerateStateSession(ctx, "My name is Marker.", "chat-raw", "mem", 4, 0, store, sess1, nil, nil, out1, err1); code != 0 {
@@ -147,7 +146,7 @@ func TestRunGenerateStateSession_Raw_BypassesChatTemplate_Good(t *testing.T) {
 	}
 
 	// Turn 2 — woken, raw: the historic "\n"+prompt append, byte for byte.
-	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 2, Text: "?"}}}
+	handle2 := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 2, Text: "?"}}}
 	sess2 := session.New(handle2, info, nil)
 	out2, err2 := core.NewBuffer(), core.NewBuffer()
 	if code := runGenerateStateSession(ctx, "What is my name?", "chat-raw", "mem", 4, 0, store, sess2, nil, nil, out2, err2); code != 0 {
@@ -183,10 +182,10 @@ func (f chatArchFormatter) FormatChatContinuationThinking(messages []inference.M
 func TestRunGenerateStateSession_ThinkingOverride_Good(t *testing.T) {
 	ctx := context.Background()
 	formatter := chatArchFormatter{architecture: "gemma4_text"}
-	info := spine.ModelInfo{Architecture: "gemma4_text"}
+	info := infspine.ModelInfo{Architecture: "gemma4_text"}
 
 	on := true
-	handleOn := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	handleOn := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 1, Text: "hi"}}}
 	sessOn := session.New(handleOn, info, nil)
 	if code := runGenerateStateSession(ctx, "Hello", "think-on", "mem", 4, 0, state.NewInMemoryStore(nil), sessOn, formatter, &on, core.NewBuffer(), core.NewBuffer()); code != 0 {
 		t.Fatalf("thinking-on exit = %d, want 0", code)
@@ -196,7 +195,7 @@ func TestRunGenerateStateSession_ThinkingOverride_Good(t *testing.T) {
 	}
 
 	off := false
-	handleOff := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []metal.Token{{ID: 1, Text: "hi"}}}
+	handleOff := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot(), Tokens: []inference.Token{{ID: 1, Text: "hi"}}}
 	sessOff := session.New(handleOff, info, nil)
 	if code := runGenerateStateSession(ctx, "Hello", "think-off", "mem", 4, 0, state.NewInMemoryStore(nil), sessOff, formatter, &off, core.NewBuffer(), core.NewBuffer()); code != 0 {
 		t.Fatalf("thinking-off exit = %d, want 0", code)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal"
@@ -54,7 +55,7 @@ func TestCompiledLayerDecode_LiveModel(t *testing.T) {
 		text := core.NewBuilder()
 		tokens := 0
 		start := time.Now()
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 			tokens++
 		}
@@ -151,7 +152,7 @@ func TestPipelinedDecode_LiveModel(t *testing.T) {
 		gen := func(slot int, maxTokens int) int {
 			text := core.NewBuilder()
 			tokens := 0
-			for tok := range sess.GenerateStream(ctx, WithMaxTokens(maxTokens), WithTemperature(0)) {
+			for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(maxTokens), inference.WithTemperature(0)) {
 				text.WriteString(tok.Text)
 				tokens++
 			}
@@ -225,7 +226,7 @@ func TestCompiledLayerDecode_WideHead_LiveModel(t *testing.T) {
 		text := core.NewBuilder()
 		tokens := 0
 		start := time.Now()
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 			tokens++
 		}
@@ -297,7 +298,7 @@ func TestCompiledLayerDecode_SlidingWindowCrossing_LiveModel(t *testing.T) {
 		}
 		text := core.NewBuilder()
 		tokens := 0
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(maxTokens), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(maxTokens), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 			tokens++
 		}

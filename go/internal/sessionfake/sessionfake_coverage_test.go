@@ -8,7 +8,9 @@ import (
 	"iter"
 	"testing"
 
-	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/inference"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/probe"
 )
 
 // Coverage tests for the recording fake. Every method here is exercised
@@ -115,10 +117,10 @@ func TestCollectChunks_NilReturnsEmpty(t *testing.T) {
 
 func TestGenerate_DrainsTokensAndRecordsCfg(t *testing.T) {
 	h := &Handle{
-		Tokens: []metal.Token{{ID: 1, Text: "a"}, {ID: 2, Text: "b"}},
+		Tokens: []inference.Token{{ID: 1, Text: "a"}, {ID: 2, Text: "b"}},
 	}
-	cfg := metal.GenerateConfig{MaxTokens: 5}
-	var got []metal.Token
+	cfg := inference.GenerateConfig{MaxTokens: 5}
+	var got []inference.Token
 	for tok := range h.Generate(context.Background(), cfg) {
 		got = append(got, tok)
 	}
@@ -135,10 +137,10 @@ func TestGenerate_DrainsTokensAndRecordsCfg(t *testing.T) {
 
 func TestGenerate_EarlyStopHonoursYieldFalse(t *testing.T) {
 	h := &Handle{
-		Tokens: []metal.Token{{ID: 1}, {ID: 2}, {ID: 3}},
+		Tokens: []inference.Token{{ID: 1}, {ID: 2}, {ID: 3}},
 	}
 	count := 0
-	for range h.Generate(context.Background(), metal.GenerateConfig{}) {
+	for range h.Generate(context.Background(), inference.GenerateConfig{}) {
 		count++
 		break // yield returns false after the first token -> hits the return.
 	}
@@ -148,18 +150,18 @@ func TestGenerate_EarlyStopHonoursYieldFalse(t *testing.T) {
 }
 
 func TestGenerate_EmitsProbeEventsAndRunsAfterGenerate(t *testing.T) {
-	var emitted []metal.ProbeEvent
-	sink := metal.ProbeSinkFunc(func(e metal.ProbeEvent) { emitted = append(emitted, e) })
+	var emitted []probe.Event
+	sink := probe.SinkFunc(func(e probe.Event) { emitted = append(emitted, e) })
 
 	afterRan := false
 	h := &Handle{
-		ProbeEvents:   []metal.ProbeEvent{{Step: 0}, {Step: 1}},
-		Tokens:        []metal.Token{{ID: 9}},
+		ProbeEvents:   []probe.Event{{Step: 0}, {Step: 1}},
+		Tokens:        []inference.Token{{ID: 9}},
 		AfterGenerate: func(_ *Handle) { afterRan = true },
 	}
-	cfg := metal.GenerateConfig{ProbeSink: sink}
+	cfg := inference.GenerateConfig{ProbeSink: sink}
 
-	var got []metal.Token
+	var got []inference.Token
 	for tok := range h.Generate(context.Background(), cfg) {
 		got = append(got, tok)
 	}
@@ -179,11 +181,11 @@ func TestGenerate_NilProbeSinkSkipsEmit(t *testing.T) {
 	// ProbeSink nil with seeded events: the EmitProbe branch is skipped but
 	// the loop still runs over the events without panicking.
 	h := &Handle{
-		ProbeEvents: []metal.ProbeEvent{{Step: 0}},
-		Tokens:      []metal.Token{{ID: 1}},
+		ProbeEvents: []probe.Event{{Step: 0}},
+		Tokens:      []inference.Token{{ID: 1}},
 	}
 	got := 0
-	for range h.Generate(context.Background(), metal.GenerateConfig{}) {
+	for range h.Generate(context.Background(), inference.GenerateConfig{}) {
 		got++
 	}
 	if got != 1 {
@@ -207,9 +209,9 @@ func TestCaptureKV_ReturnsSeededSnapshotAndErr(t *testing.T) {
 func TestRangeKVBlocks_SynthesisesWholeKVWhenNoBlocks(t *testing.T) {
 	snap := TestKVSnapshot()
 	h := &Handle{KV: snap}
-	var seen []metal.KVSnapshotBlock
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(b metal.KVSnapshotBlock) (bool, error) {
+	var seen []kv.Block
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(b kv.Block) (bool, error) {
 			seen = append(seen, b)
 			return true, nil
 		})
@@ -227,22 +229,22 @@ func TestRangeKVBlocks_SynthesisesWholeKVWhenNoBlocks(t *testing.T) {
 func TestRangeKVBlocks_SynthYieldPropagatesError(t *testing.T) {
 	sentinel := errors.New("synth yield boom")
 	h := &Handle{KV: TestKVSnapshot()}
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(metal.KVSnapshotBlock) (bool, error) { return false, sentinel })
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(kv.Block) (bool, error) { return false, sentinel })
 	if err != sentinel {
 		t.Fatalf("RangeKVBlocks err = %v, want %v", err, sentinel)
 	}
 }
 
 func TestRangeKVBlocks_IteratesSeededBlocks(t *testing.T) {
-	blocks := []metal.KVSnapshotBlock{
+	blocks := []kv.Block{
 		{Index: 0, TokenStart: 0, TokenCount: 2},
 		{Index: 1, TokenStart: 2, TokenCount: 2},
 	}
 	h := &Handle{KVBlocks: blocks}
 	var seen []int
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(b metal.KVSnapshotBlock) (bool, error) {
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(b kv.Block) (bool, error) {
 			seen = append(seen, b.Index)
 			return true, nil
 		})
@@ -255,11 +257,11 @@ func TestRangeKVBlocks_IteratesSeededBlocks(t *testing.T) {
 }
 
 func TestRangeKVBlocks_StopsWhenYieldReturnsFalse(t *testing.T) {
-	blocks := []metal.KVSnapshotBlock{{Index: 0}, {Index: 1}, {Index: 2}}
+	blocks := []kv.Block{{Index: 0}, {Index: 1}, {Index: 2}}
 	h := &Handle{KVBlocks: blocks}
 	seen := 0
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(metal.KVSnapshotBlock) (bool, error) {
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(kv.Block) (bool, error) {
 			seen++
 			return false, nil // stop after the first block.
 		})
@@ -273,9 +275,9 @@ func TestRangeKVBlocks_StopsWhenYieldReturnsFalse(t *testing.T) {
 
 func TestRangeKVBlocks_PropagatesIterError(t *testing.T) {
 	sentinel := errors.New("iter boom")
-	h := &Handle{KVBlocks: []metal.KVSnapshotBlock{{Index: 0}, {Index: 1}}}
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(metal.KVSnapshotBlock) (bool, error) { return true, sentinel })
+	h := &Handle{KVBlocks: []kv.Block{{Index: 0}, {Index: 1}}}
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(kv.Block) (bool, error) { return true, sentinel })
 	if err != sentinel {
 		t.Fatalf("RangeKVBlocks err = %v, want %v", err, sentinel)
 	}
@@ -284,8 +286,8 @@ func TestRangeKVBlocks_PropagatesIterError(t *testing.T) {
 func TestRangeKVBlocks_NoBlocksNoKVReturnsNil(t *testing.T) {
 	h := &Handle{} // KVBlocks empty, KV nil -> falls through to return nil.
 	called := false
-	err := h.RangeKVBlocks(context.Background(), 0, metal.KVSnapshotCaptureOptions{},
-		func(metal.KVSnapshotBlock) (bool, error) {
+	err := h.RangeKVBlocks(context.Background(), 0, kv.CaptureOptions{},
+		func(kv.Block) (bool, error) {
 			called = true
 			return true, nil
 		})
@@ -312,11 +314,11 @@ func TestRestoreKV_RecordsSnapshotAndReturnsErr(t *testing.T) {
 func TestRestoreKVBlocks_EarlyErrorReturns(t *testing.T) {
 	sentinel := errors.New("blocks boom")
 	h := &Handle{RestoreBlocksErr: sentinel}
-	src := metal.KVSnapshotBlockSource{
+	src := kv.BlockSource{
 		BlockCount: 1,
-		Load: func(context.Context, int) (metal.KVSnapshotBlock, error) {
+		Load: func(context.Context, int) (kv.Block, error) {
 			t.Fatal("Load must not be called when RestoreBlocksErr is set")
-			return metal.KVSnapshotBlock{}, nil
+			return kv.Block{}, nil
 		},
 	}
 	if err := h.RestoreKVBlocks(context.Background(), src); err != sentinel {
@@ -327,11 +329,11 @@ func TestRestoreKVBlocks_EarlyErrorReturns(t *testing.T) {
 func TestRestoreKVBlocks_LoadErrorPropagates(t *testing.T) {
 	sentinel := errors.New("load boom")
 	h := &Handle{}
-	src := metal.KVSnapshotBlockSource{
+	src := kv.BlockSource{
 		BlockCount:   2,
 		PrefixTokens: 4,
-		Load: func(_ context.Context, i int) (metal.KVSnapshotBlock, error) {
-			return metal.KVSnapshotBlock{}, sentinel
+		Load: func(_ context.Context, i int) (kv.Block, error) {
+			return kv.Block{}, sentinel
 		},
 	}
 	if err := h.RestoreKVBlocks(context.Background(), src); err != sentinel {
@@ -345,11 +347,11 @@ func TestRestoreKVBlocks_LoadErrorPropagates(t *testing.T) {
 func TestRestoreKVBlocks_SingleBlockSetsRestoredKV(t *testing.T) {
 	snap := TestKVSnapshot()
 	h := &Handle{}
-	src := metal.KVSnapshotBlockSource{
+	src := kv.BlockSource{
 		BlockCount:   1,
 		PrefixTokens: 2,
-		Load: func(_ context.Context, i int) (metal.KVSnapshotBlock, error) {
-			return metal.KVSnapshotBlock{Index: i, TokenStart: 0, TokenCount: 2, Snapshot: snap}, nil
+		Load: func(_ context.Context, i int) (kv.Block, error) {
+			return kv.Block{Index: i, TokenStart: 0, TokenCount: 2, Snapshot: snap}, nil
 		},
 	}
 	if err := h.RestoreKVBlocks(context.Background(), src); err != nil {
@@ -367,11 +369,11 @@ func TestRestoreKVBlocks_BreaksAtPrefixBoundary(t *testing.T) {
 	// First block does not reach PrefixTokens (no break); second one does
 	// (break). Two blocks load => no single-block RestoredKV shortcut.
 	h := &Handle{}
-	src := metal.KVSnapshotBlockSource{
+	src := kv.BlockSource{
 		BlockCount:   5, // would loop 5x, but the boundary break stops it at 2.
 		PrefixTokens: 4,
-		Load: func(_ context.Context, i int) (metal.KVSnapshotBlock, error) {
-			return metal.KVSnapshotBlock{Index: i, TokenStart: i * 2, TokenCount: 2}, nil
+		Load: func(_ context.Context, i int) (kv.Block, error) {
+			return kv.Block{Index: i, TokenStart: i * 2, TokenCount: 2}, nil
 		},
 	}
 	if err := h.RestoreKVBlocks(context.Background(), src); err != nil {
@@ -390,7 +392,7 @@ func TestFork_ReturnsSeededHandleAndErr(t *testing.T) {
 	sentinel := errors.New("fork boom")
 	h := &Handle{Forked: child, ForkErr: sentinel}
 	got, err := h.Fork(context.Background())
-	if got != metal.SessionHandle(child) {
+	if got != inference.SessionHandle(child) {
 		t.Fatalf("Fork handle = %v, want seeded child", got)
 	}
 	if err != sentinel {
@@ -437,8 +439,8 @@ func TestKVSnapshot_BuildsCanonicalTwoTokenSnapshot(t *testing.T) {
 	if snap == nil {
 		t.Fatal("TestKVSnapshot returned nil")
 	}
-	if snap.Version != metal.KVSnapshotVersion {
-		t.Fatalf("Version = %d, want %d", snap.Version, metal.KVSnapshotVersion)
+	if snap.Version != kv.SnapshotVersion {
+		t.Fatalf("Version = %d, want %d", snap.Version, kv.SnapshotVersion)
 	}
 	if snap.Architecture != "gemma4_text" {
 		t.Fatalf("Architecture = %q, want gemma4_text", snap.Architecture)

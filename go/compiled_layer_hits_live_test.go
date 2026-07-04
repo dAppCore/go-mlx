@@ -8,6 +8,7 @@ import (
 	"context"
 	"testing"
 
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/inference/kv"
 	"dappco.re/go/inference/memory"
@@ -50,7 +51,7 @@ func TestCompiledLayerHits_LiveModel(t *testing.T) {
 	hitsBefore := gemma4.CompiledLayerDecodeHits()
 	tokens := 0
 	ctx := context.Background()
-	for range sess.GenerateStream(ctx, WithMaxTokens(decodeTokens), WithTemperature(0)) {
+	for range sess.GenerateStream(ctx, inference.WithMaxTokens(decodeTokens), inference.WithTemperature(0)) {
 		tokens++
 	}
 	if err := sess.Err(); err != nil {

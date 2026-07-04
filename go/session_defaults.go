@@ -2,7 +2,7 @@
 
 package mlx
 
-import "dappco.re/go/mlx/session"
+import session "dappco.re/go/inference/state/session"
 
 // DefaultLemmaNewSessionText is the Lemma-family seed text frameworks can use
 // when opening a model session before the first real user prompt has arrived.

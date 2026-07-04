@@ -15,8 +15,12 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/decode"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/inference/scheduler"
+	infspine "dappco.re/go/inference/spine"
+	session "dappco.re/go/inference/state/session"
 	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
 	_ "dappco.re/go/mlx/pkg/model/gemma4/chat"
@@ -27,7 +31,6 @@ import (
 	_ "dappco.re/go/mlx/pkg/model/mistral"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
-	"dappco.re/go/mlx/session"
 )
 
 // nativeTextModel exposes the no-cgo native token-loop contract (a model.TokenModel
@@ -212,7 +215,7 @@ type nativeTextSession struct {
 	closed          bool
 }
 
-var _ metal.SessionHandle = (*nativeTextSession)(nil)
+var _ inference.SessionHandle = (*nativeTextSession)(nil)
 
 type nativeTextImageChatModel interface {
 	AcceptsImageInput() bool
@@ -1102,13 +1105,6 @@ func nativeSamplerSeed(cfg inference.GenerateConfig) uint64 {
 	return uint64(time.Now().UnixNano())
 }
 
-func nativeMetalSamplerSeed(cfg metal.GenerateConfig) uint64 {
-	if cfg.SeedSet {
-		return cfg.Seed
-	}
-	return uint64(time.Now().UnixNano())
-}
-
 func (m *nativeTextModel) streamGreedySession(ids []int32, maxNew, eos int, suppress []int32, transform native.TokenTransform, yield func(int32) bool) ([]int32, error, bool) {
 	sm, ok := m.tm.(model.SessionModel)
 	if !ok {
@@ -1638,7 +1634,11 @@ func (m *nativeTextModel) CaptureKVWithOptions(ctx context.Context, prompt strin
 	if err := handle.Prefill(ctx, prompt); err != nil {
 		return nil, err
 	}
-	return handle.CaptureKVWithOptions(ctx, opts)
+	snapshot, err := handle.CaptureKVWithOptions(ctx, kv.CaptureOptions{RawKVOnly: opts.RawKVOnly, BlockStartToken: opts.BlockStartToken})
+	if err != nil {
+		return nil, err
+	}
+	return kvconv.ToMetalKVSnapshot(snapshot), nil
 }
 
 func (m *nativeTextModel) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*metal.KVSnapshot, error) {
@@ -1657,7 +1657,11 @@ func (m *nativeTextModel) CaptureKVChunksWithOptions(ctx context.Context, chunks
 	if err := handle.PrefillChunks(ctx, chunks); err != nil {
 		return nil, err
 	}
-	return handle.CaptureKVWithOptions(ctx, opts)
+	snapshot, err := handle.CaptureKVWithOptions(ctx, kv.CaptureOptions{RawKVOnly: opts.RawKVOnly, BlockStartToken: opts.BlockStartToken})
+	if err != nil {
+		return nil, err
+	}
+	return kvconv.ToMetalKVSnapshot(snapshot), nil
 }
 
 func (m *nativeTextModel) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
@@ -1986,7 +1990,7 @@ func (m *nativeTextModel) promptCacheSessionLocked() (nativeTextPromptCacheSessi
 	return cacheSess, nil
 }
 
-func (m *nativeTextModel) NewSession() metal.SessionHandle {
+func (m *nativeTextModel) NewSession() inference.SessionHandle {
 	sess, err := m.openNativeRootSession()
 	if err != nil {
 		return nil
@@ -2018,7 +2022,7 @@ func (t nativeTextContinuityTarget) NewContinuitySession() (*ModelSession, error
 	if handle == nil {
 		return nil, errNativeNilSession
 	}
-	return session.New(handle, nativeTextContinuityModelInfo(t.model), NewTokenizer(t.model.tok)), nil
+	return session.New(handle, inferenceSpineModelInfo(nativeTextContinuityModelInfo(t.model)), infspine.NewTokenizer(t.model.tok)), nil
 }
 
 func (t nativeTextContinuityTarget) FormatContinuityChat(messages []inference.Message, thinking *bool, continuation bool) string {
@@ -2261,8 +2265,8 @@ func (s *nativeTextSession) appendTokensLocked(ctx context.Context, tokens []int
 	return ctx.Err()
 }
 
-func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
-	return func(yield func(metal.Token) bool) {
+func (s *nativeTextSession) Generate(ctx context.Context, cfg inference.GenerateConfig) iter.Seq[inference.Token] {
+	return func(yield func(inference.Token) bool) {
 		totalStart := time.Now()
 		if ctx == nil {
 			ctx = context.Background()
@@ -2295,7 +2299,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 				s.err = err
 				return false
 			}
-			if yield != nil && !yield(metal.Token{ID: id, Text: s.decodeToken(id)}) {
+			if yield != nil && !yield(inference.Token{ID: id, Text: s.decodeToken(id)}) {
 				return false
 			}
 			return !tokenInSet(id, stopTokens)
@@ -2313,7 +2317,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 				textDuration := time.Since(textStart)
 				yieldStart := time.Now()
 				yieldOK := true
-				if yield != nil && !yield(metal.Token{ID: id, Text: text}) {
+				if yield != nil && !yield(inference.Token{ID: id, Text: text}) {
 					yieldOK = false
 				}
 				yieldDuration := time.Since(yieldStart)
@@ -2358,7 +2362,7 @@ func (s *nativeTextSession) Generate(ctx context.Context, cfg metal.GenerateConf
 				MinTokensBeforeStop: cfg.MinTokensBeforeStop,
 				RepeatPenalty:       cfg.RepeatPenalty,
 			}
-			out, err = s.sess.GenerateSampledFromCacheEach(maxNew, stopTokens, model.NewSampler(nativeMetalSamplerSeed(cfg)), params, nil, emit)
+			out, err = s.sess.GenerateSampledFromCacheEach(maxNew, stopTokens, model.NewSampler(nativeSamplerSeed(cfg)), params, nil, emit)
 		} else if cfg.MinTokensBeforeStop > 0 && len(stopTokens) > 0 {
 			prefix := cfg.MinTokensBeforeStop
 			if prefix > maxNew {
@@ -2416,11 +2420,11 @@ func (s *nativeTextSession) LastTokenPhases() []metal.TokenPhaseTrace {
 	return append([]metal.TokenPhaseTrace(nil), s.tokenPhases...)
 }
 
-func (s *nativeTextSession) CaptureKV(ctx context.Context) (*metal.KVSnapshot, error) {
-	return s.CaptureKVWithOptions(ctx, metal.KVSnapshotCaptureOptions{})
+func (s *nativeTextSession) CaptureKV(ctx context.Context) (*kv.Snapshot, error) {
+	return s.CaptureKVWithOptions(ctx, kv.CaptureOptions{})
 }
 
-func (s *nativeTextSession) CaptureKVWithOptions(ctx context.Context, opts metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error) {
+func (s *nativeTextSession) CaptureKVWithOptions(ctx context.Context, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2451,13 +2455,13 @@ func (s *nativeTextSession) CaptureKVWithOptions(ctx context.Context, opts metal
 	}
 	snapshot := s.snapshotFromNativeBlock(source, block, true, true)
 	if opts.RawKVOnly {
-		nativeTextDropFloat32KV(snapshot)
+		kv.DropFloat32(snapshot)
 	}
 	s.err = nil
 	return snapshot, ctx.Err()
 }
 
-func (s *nativeTextSession) RangeKVBlocks(ctx context.Context, blockSize int, opts metal.KVSnapshotCaptureOptions, yield func(metal.KVSnapshotBlock) (bool, error)) error {
+func (s *nativeTextSession) RangeKVBlocks(ctx context.Context, blockSize int, opts kv.CaptureOptions, yield func(kv.Block) (bool, error)) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2488,9 +2492,9 @@ func (s *nativeTextSession) RangeKVBlocks(ctx context.Context, blockSize int, op
 		final := block.TokenStart+block.TokenCount == source.Position
 		snapshot := s.snapshotFromNativeBlock(source, block, final, false)
 		if opts.RawKVOnly {
-			nativeTextDropFloat32KV(snapshot)
+			kv.DropFloat32(snapshot)
 		}
-		ok, err := yield(metal.KVSnapshotBlock{
+		ok, err := yield(kv.Block{
 			Index:      block.Index,
 			TokenStart: block.TokenStart,
 			TokenCount: block.TokenCount,
@@ -2505,7 +2509,7 @@ func (s *nativeTextSession) RangeKVBlocks(ctx context.Context, blockSize int, op
 	return nil
 }
 
-func (s *nativeTextSession) RestoreKV(ctx context.Context, snapshot *metal.KVSnapshot) error {
+func (s *nativeTextSession) RestoreKV(ctx context.Context, snapshot *kv.Snapshot) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2522,7 +2526,7 @@ func (s *nativeTextSession) RestoreKV(ctx context.Context, snapshot *metal.KVSna
 		s.err = err
 		return err
 	}
-	source, tokens, generated, logits, err := nativeTextStateSourceFromSnapshot(snapshot)
+	source, tokens, generated, logits, err := nativeTextStateSourceFromSnapshot(kvconv.ToMetalKVSnapshot(snapshot))
 	if err != nil {
 		s.err = err
 		return err
@@ -2539,7 +2543,7 @@ func (s *nativeTextSession) RestoreKV(ctx context.Context, snapshot *metal.KVSna
 	return ctx.Err()
 }
 
-func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source metal.KVSnapshotBlockSource) error {
+func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source kv.BlockSource) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2549,7 +2553,7 @@ func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source metal.KV
 		s.err = err
 		return err
 	}
-	restored, tokens, logits, err := nativeTextStateSourceFromBlockSource(ctx, source, s.tokens)
+	restored, tokens, logits, err := nativeTextStateSourceFromBlockSource(ctx, metalKVBlockSourceFromRoot(source), s.tokens)
 	if err != nil {
 		s.err = err
 		return err
@@ -2566,7 +2570,7 @@ func (s *nativeTextSession) RestoreKVBlocks(ctx context.Context, source metal.KV
 	return ctx.Err()
 }
 
-func (s *nativeTextSession) Fork(ctx context.Context) (metal.SessionHandle, error) {
+func (s *nativeTextSession) Fork(ctx context.Context) (inference.SessionHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2579,7 +2583,7 @@ func (s *nativeTextSession) Fork(ctx context.Context) (metal.SessionHandle, erro
 		return nil, core.NewError("mlx.nativeTextSession.Fork: native model returned nil session")
 	}
 	restorer, ok := fork.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	})
 	if !ok {
 		_ = fork.Close()
@@ -2676,7 +2680,7 @@ func (s *nativeTextSession) readyForGenerateLocked(scope string) error {
 	return nil
 }
 
-func (s *nativeTextSession) stopTokens(cfg metal.GenerateConfig) []int32 {
+func (s *nativeTextSession) stopTokens(cfg inference.GenerateConfig) []int32 {
 	if len(cfg.StopTokens) > 0 {
 		return cfg.StopTokens
 	}
@@ -2693,8 +2697,8 @@ func (s *nativeTextSession) decodeToken(id int32) string {
 	return s.model.tok.DecodeToken(id)
 }
 
-func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBlockSource, block native.SessionStateBlock, final, includeGenerated bool) *metal.KVSnapshot {
-	layers := make([]metal.KVLayerSnapshot, len(block.Layers))
+func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBlockSource, block native.SessionStateBlock, final, includeGenerated bool) *kv.Snapshot {
+	layers := make([]kv.LayerSnapshot, len(block.Layers))
 	numHeads, headDim := 0, 0
 	for i, layer := range block.Layers {
 		kvHeads := nativeTextSnapshotLayerKVHeads(layer)
@@ -2704,19 +2708,19 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 		if headDim == 0 {
 			headDim = layer.HeadDim
 		}
-		cacheMode := metal.KVCacheModeFixed
+		cacheMode := string(metal.KVCacheModeFixed)
 		if layer.CacheMode != "" {
-			cacheMode = metal.KVCacheMode(layer.CacheMode)
+			cacheMode = layer.CacheMode
 		}
-		layers[i] = metal.KVLayerSnapshot{
+		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			CacheMode:  cacheMode,
 			MaxSize:    layer.MaxSize,
-			KeyDType:   metal.DTypeBFloat16,
+			KeyDType:   kvconv.RootKVHeadDType(metal.DTypeBFloat16, layer.KeyBytes),
 			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
 			KeyShape:   []int32{int32(block.TokenCount), int32(kvHeads), int32(layer.HeadDim)},
-			ValueDType: metal.DTypeBFloat16,
+			ValueDType: kvconv.RootKVHeadDType(metal.DTypeBFloat16, layer.ValueBytes),
 			ValueBytes: append([]byte(nil), layer.ValueBytes...),
 			ValueShape: []int32{int32(block.TokenCount), int32(kvHeads), int32(layer.HeadDim)},
 		}
@@ -2734,8 +2738,8 @@ func (s *nativeTextSession) snapshotFromNativeBlock(source native.SessionStateBl
 		logitShape = []int32{1, 1, int32(s.modelVocab())}
 		logits = nativeTextBF16ToF32(s.logits)
 	}
-	return &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  s.modelArchitecture(),
 		Tokens:        tokens,
 		Generated:     generated,
@@ -2816,7 +2820,7 @@ func (s *nativeTextSession) modelVocab() int {
 	return 0
 }
 
-func nativeTextSnapshotLayerCount(layers []metal.KVLayerSnapshot, fallback int) int {
+func nativeTextSnapshotLayerCount(layers []kv.LayerSnapshot, fallback int) int {
 	if fallback > 0 {
 		return fallback
 	}
@@ -3344,18 +3348,6 @@ func nativeTextF32ToBF16(values []float32) []byte {
 		out[i*2+1] = byte(h >> 8)
 	}
 	return out
-}
-
-func nativeTextDropFloat32KV(snapshot *metal.KVSnapshot) {
-	if snapshot == nil {
-		return
-	}
-	for i := range snapshot.Layers {
-		for j := range snapshot.Layers[i].Heads {
-			snapshot.Layers[i].Heads[j].Key = nil
-			snapshot.Layers[i].Heads[j].Value = nil
-		}
-	}
 }
 
 func (m *nativeTextModel) setErr(err error) {

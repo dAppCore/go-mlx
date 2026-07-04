@@ -370,26 +370,26 @@ func (c *ConversationContinuity) removeOrderLocked(key string) {
 
 // rootGenerateOptions translates the inference-level request knobs onto the
 // session generate options. EnableThinking is honoured at format time.
-func rootGenerateOptions(cfg inference.GenerateConfig) []GenerateOption {
-	opts := make([]GenerateOption, 0, 6)
+func rootGenerateOptions(cfg inference.GenerateConfig) []inference.GenerateOption {
+	opts := make([]inference.GenerateOption, 0, 6)
 	if cfg.MaxTokens > 0 {
-		opts = append(opts, WithMaxTokens(cfg.MaxTokens))
+		opts = append(opts, inference.WithMaxTokens(cfg.MaxTokens))
 	}
-	opts = append(opts, WithTemperature(cfg.Temperature))
+	opts = append(opts, inference.WithTemperature(cfg.Temperature))
 	if cfg.TopK > 0 {
-		opts = append(opts, WithTopK(cfg.TopK))
+		opts = append(opts, inference.WithTopK(cfg.TopK))
 	}
 	if cfg.TopP > 0 {
-		opts = append(opts, WithTopP(cfg.TopP))
+		opts = append(opts, inference.WithTopP(cfg.TopP))
 	}
 	if len(cfg.StopTokens) > 0 {
-		opts = append(opts, WithStopTokens(cfg.StopTokens...))
+		opts = append(opts, inference.WithStopTokens(cfg.StopTokens...))
 	}
 	if cfg.RepeatPenalty > 0 && cfg.RepeatPenalty != 1 {
-		opts = append(opts, WithRepeatPenalty(cfg.RepeatPenalty))
+		opts = append(opts, inference.WithRepeatPenalty(cfg.RepeatPenalty))
 	}
 	if cfg.ThinkingBudget > 0 {
-		opts = append(opts, WithThinkingBudget(cfg.ThinkingBudget))
+		opts = append(opts, inference.WithThinkingBudget(cfg.ThinkingBudget))
 	}
 	return opts
 }

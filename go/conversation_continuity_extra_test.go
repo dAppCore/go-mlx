@@ -82,7 +82,7 @@ func TestConversationContinuity_RootGenerateOptions_Good(t *testing.T) {
 		MaxTokens: 64, Temperature: 0.7, TopK: 40, TopP: 0.9,
 		StopTokens: []int32{1, 2}, RepeatPenalty: 1.1, ThinkingBudget: 32,
 	}
-	applied := DefaultGenerateConfig()
+	applied := inference.DefaultGenerateConfig()
 	for _, opt := range rootGenerateOptions(cfg) {
 		opt(&applied)
 	}
@@ -101,7 +101,7 @@ func TestConversationContinuity_RootGenerateOptions_OmitsUnset_Ugly(t *testing.T
 	// RepeatPenalty == 1 is the no-op identity and must NOT emit an option;
 	// zero topK/topP/stops likewise stay unset.
 	cfg := inference.GenerateConfig{Temperature: 0.5, RepeatPenalty: 1}
-	applied := GenerateConfig{}
+	applied := inference.GenerateConfig{}
 	for _, opt := range rootGenerateOptions(cfg) {
 		opt(&applied)
 	}

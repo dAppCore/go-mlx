@@ -66,7 +66,7 @@ func decodeDeterminismProbeModel(t *testing.T, model string, pairs int, gates ma
 			t.Fatalf("Prefill: %v", err)
 		}
 		text := core.NewBuilder()
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(256), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(256), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 		}
 		if err := sess.Err(); err != nil {
@@ -292,7 +292,7 @@ func TestDecodeDeterminism_LogitsFingerprint_LiveModel(t *testing.T) {
 		if err := sess.Prefill("Write a long, detailed story about a clockmaker who repairs time itself."); err != nil {
 			t.Fatalf("Prefill: %v", err)
 		}
-		for range sess.GenerateStream(ctx, WithMaxTokens(48), WithTemperature(0), WithProbeSink(sink)) {
+		for range sess.GenerateStream(ctx, inference.WithMaxTokens(48), inference.WithTemperature(0), func(c *inference.GenerateConfig) { c.ProbeSink = sink }) {
 		}
 		if err := sess.Err(); err != nil {
 			t.Fatalf("generate: %v", err)
@@ -344,7 +344,7 @@ func TestDecodeDeterminism_CacheHash_LiveModel(t *testing.T) {
 			t.Fatalf("Prefill: %v", err)
 		}
 		if decodeTokens > 0 {
-			for range sess.GenerateStream(ctx, WithMaxTokens(decodeTokens), WithTemperature(0)) {
+			for range sess.GenerateStream(ctx, inference.WithMaxTokens(decodeTokens), inference.WithTemperature(0)) {
 			}
 			if err := sess.Err(); err != nil {
 				t.Fatalf("generate: %v", err)
@@ -433,7 +433,7 @@ func TestDecodeDeterminism_PhaseHash_LiveModel(t *testing.T) {
 		if err := sess.Prefill("Write a long, detailed story about a clockmaker who repairs time itself."); err != nil {
 			t.Fatalf("Prefill: %v", err)
 		}
-		for range sess.GenerateStream(ctx, WithMaxTokens(1), WithTemperature(0)) {
+		for range sess.GenerateStream(ctx, inference.WithMaxTokens(1), inference.WithTemperature(0)) {
 		}
 		if err := sess.Err(); err != nil {
 			t.Fatalf("generate: %v", err)
@@ -516,11 +516,11 @@ func mlpStageRate(t *testing.T, gateUp, down bool) {
 		t.Fatalf("Prefill: %v", err)
 	}
 	// Warm: first tokens build the traces.
-	for range sess.GenerateStream(ctx, WithMaxTokens(8), WithTemperature(0)) {
+	for range sess.GenerateStream(ctx, inference.WithMaxTokens(8), inference.WithTemperature(0)) {
 	}
 	start := time.Now()
 	tokens := 0
-	for range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+	for range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 		tokens++
 	}
 	if err := sess.Err(); err != nil {
@@ -592,7 +592,7 @@ func TestCompiledMoEDecode_26B_LiveModel(t *testing.T) {
 		text := core.NewBuilder()
 		tokens := 0
 		start := time.Now()
-		for tok := range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+		for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 			text.WriteString(tok.Text)
 			tokens++
 		}

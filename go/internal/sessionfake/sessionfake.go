@@ -1,21 +1,24 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Package sessionfake provides the shared in-memory metal.SessionHandle
-// fixture used by the root mlx tests (Model.NewSession / agent-memory
-// entry points) and the session package tests. It records every call so
-// assertions can inspect what reached the native layer, and implements
-// the optional capability interfaces (chunk/token prefill+append, KV
-// block capture/restore) the session machinery probes for.
+// Package sessionfake provides the shared in-memory inference.SessionHandle
+// fixture used by the root mlx tests (Model.NewSession + agent-memory entry
+// points). It records every call so assertions can inspect what reached the
+// engine layer, and implements the optional capability interfaces (chunk/token
+// prefill+append, KV block capture/restore) the session machinery probes for —
+// all in engine-neutral inference/kv terms, after the session package lifted to
+// dappco.re/go/inference/state/session.
 package sessionfake
 
 import (
 	"context"
 	"iter"
 
-	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/inference"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/probe"
 )
 
-// Handle is a recording fake metal.SessionHandle. Zero value is usable;
+// Handle is a recording fake inference.SessionHandle. Zero value is usable;
 // seed the exported fields to steer behaviour (KV for capture results,
 // Tokens for generation output, *Err to force failures).
 type Handle struct {
@@ -27,25 +30,27 @@ type Handle struct {
 	AppendTokensSeen  []int32
 	PrefillErr        error
 	AppendErr         error
-	Tokens            []metal.Token
-	Cfg               metal.GenerateConfig
+	Tokens            []inference.Token
+	Cfg               inference.GenerateConfig
 	GenerateCalls     int
-	ProbeEvents       []metal.ProbeEvent
+	ProbeEvents       []probe.Event
 	AfterGenerate     func(*Handle)
-	KV                *metal.KVSnapshot
-	KVBlocks          []metal.KVSnapshotBlock
+	KV                *kv.Snapshot
+	KVBlocks          []kv.Block
 	CaptureErr        error
-	RestoredKV        *metal.KVSnapshot
-	RestoredBlocks    []metal.KVSnapshotBlock
+	RestoredKV        *kv.Snapshot
+	RestoredBlocks    []kv.Block
 	RestoreErr        error
 	RestoreBlocksErr  error
-	Forked            metal.SessionHandle
+	Forked            inference.SessionHandle
 	ForkErr           error
 	ErrValue          error
 	ResetCalls        int
 	CloseCalls        int
 	CloseErr          error
 }
+
+var _ inference.SessionHandle = (*Handle)(nil)
 
 // Prefill records the prompt.
 func (s *Handle) Prefill(_ context.Context, prompt string) error {
@@ -95,10 +100,10 @@ func collectChunks(chunks iter.Seq[string]) []string {
 }
 
 // Generate replays the seeded ProbeEvents then yields the seeded Tokens.
-func (s *Handle) Generate(_ context.Context, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+func (s *Handle) Generate(_ context.Context, cfg inference.GenerateConfig) iter.Seq[inference.Token] {
 	s.Cfg = cfg
 	s.GenerateCalls++
-	return func(yield func(metal.Token) bool) {
+	return func(yield func(inference.Token) bool) {
 		defer func() {
 			if s.AfterGenerate != nil {
 				s.AfterGenerate(s)
@@ -118,14 +123,14 @@ func (s *Handle) Generate(_ context.Context, cfg metal.GenerateConfig) iter.Seq[
 }
 
 // CaptureKV returns the seeded snapshot.
-func (s *Handle) CaptureKV(_ context.Context) (*metal.KVSnapshot, error) {
+func (s *Handle) CaptureKV(_ context.Context) (*kv.Snapshot, error) {
 	return s.KV, s.CaptureErr
 }
 
 // RangeKVBlocks yields the seeded blocks, or the whole KV as one block.
-func (s *Handle) RangeKVBlocks(_ context.Context, _ int, _ metal.KVSnapshotCaptureOptions, yield func(metal.KVSnapshotBlock) (bool, error)) error {
+func (s *Handle) RangeKVBlocks(_ context.Context, _ int, _ kv.CaptureOptions, yield func(kv.Block) (bool, error)) error {
 	if len(s.KVBlocks) == 0 && s.KV != nil {
-		_, err := yield(metal.KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: len(s.KV.Tokens), Snapshot: s.KV})
+		_, err := yield(kv.Block{Index: 0, TokenStart: 0, TokenCount: len(s.KV.Tokens), Snapshot: s.KV})
 		return err
 	}
 	for _, block := range s.KVBlocks {
@@ -138,13 +143,13 @@ func (s *Handle) RangeKVBlocks(_ context.Context, _ int, _ metal.KVSnapshotCaptu
 }
 
 // RestoreKV records the restored snapshot.
-func (s *Handle) RestoreKV(_ context.Context, snapshot *metal.KVSnapshot) error {
+func (s *Handle) RestoreKV(_ context.Context, snapshot *kv.Snapshot) error {
 	s.RestoredKV = snapshot
 	return s.RestoreErr
 }
 
 // RestoreKVBlocks loads blocks from source up to the prefix boundary.
-func (s *Handle) RestoreKVBlocks(ctx context.Context, source metal.KVSnapshotBlockSource) error {
+func (s *Handle) RestoreKVBlocks(ctx context.Context, source kv.BlockSource) error {
 	if s.RestoreBlocksErr != nil {
 		return s.RestoreBlocksErr
 	}
@@ -165,7 +170,7 @@ func (s *Handle) RestoreKVBlocks(ctx context.Context, source metal.KVSnapshotBlo
 }
 
 // Fork returns the seeded fork handle.
-func (s *Handle) Fork(_ context.Context) (metal.SessionHandle, error) {
+func (s *Handle) Fork(_ context.Context) (inference.SessionHandle, error) {
 	return s.Forked, s.ForkErr
 }
 
@@ -186,10 +191,10 @@ func (s *Handle) Err() error {
 }
 
 // TestKVSnapshot builds the canonical two-token gemma4 KV snapshot the
-// session and root agent-memory tests sleep/wake against.
-func TestKVSnapshot() *metal.KVSnapshot {
-	return &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+// session and agent-memory tests sleep/wake against.
+func TestKVSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		Generated:     []int32{2},
@@ -201,15 +206,15 @@ func TestKVSnapshot() *metal.KVSnapshot {
 		NumQueryHeads: 8,
 		LogitShape:    []int32{1, 1, 3},
 		Logits:        []float32{0.1, 0.2, 0.7},
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []metal.KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:        []float32{1, 0, 0, 1},
-				KeyDType:   metal.DTypeFloat32,
+				KeyDType:   "float32",
 				KeyBytes:   []byte{0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63},
 				Value:      []float32{0, 1, 1, 0},
-				ValueDType: metal.DTypeFloat32,
+				ValueDType: "float32",
 				ValueBytes: []byte{0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 128, 63, 0, 0, 0, 0},
 			}},
 		}},

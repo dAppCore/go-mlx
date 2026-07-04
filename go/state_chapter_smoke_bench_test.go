@@ -14,9 +14,9 @@ package mlx
 import (
 	"testing"
 
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/chaptersmoke"
 	"dappco.re/go/inference/probe"
-	"dappco.re/go/mlx/spine"
 )
 
 var chapterSmokeConfigSnapshot = chaptersmoke.Config{
@@ -26,8 +26,9 @@ var chapterSmokeConfigSnapshot = chaptersmoke.Config{
 
 // Sinks defeat compiler DCE.
 var (
-	stateChapterSmokeBenchSinkOpts   []GenerateOption
+	stateChapterSmokeBenchSinkOpts   []inference.GenerateOption
 	stateChapterSmokeBenchSinkCfg    GenerateConfig
+	stateChapterSmokeBenchSinkInfCfg inference.GenerateConfig
 	stateChapterSmokeBenchSinkRunner chaptersmoke.Runner
 )
 
@@ -102,7 +103,7 @@ func BenchmarkStateChapterSmoke_Apply_Typical(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		stateChapterSmokeBenchSinkCfg = spine.ApplyGenerateOptions(opts)
+		stateChapterSmokeBenchSinkInfCfg = inference.ApplyGenerateOpts(opts)
 	}
 }
 

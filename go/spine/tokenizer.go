@@ -36,6 +36,21 @@ func NewTokenizer(impl TokenizerImpl) *Tokenizer {
 	return &Tokenizer{tok: impl}
 }
 
+// Impl returns the wrapped TokenizerImpl — the reverse of the NewTokenizer
+// seam. It lets a caller that must rebuild the tokenizer under a different
+// spine package's Tokenizer (the engine-merge lift wraps the same raw impl in
+// inference/spine.Tokenizer) reach the implementation without the unexported
+// field. The TokenizerImpl method set is engine-neutral, so the returned value
+// satisfies the sibling spine package's identical TokenizerImpl too.
+//
+//	impl := tok.Impl()
+func (t *Tokenizer) Impl() TokenizerImpl {
+	if t == nil {
+		return nil
+	}
+	return t.tok
+}
+
 func stripImplicitBOS(tok TokenizerImpl, tokens []int32) []int32 {
 	if tok == nil || len(tokens) == 0 {
 		return tokens

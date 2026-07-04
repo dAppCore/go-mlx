@@ -40,6 +40,7 @@ import (
 	"runtime/debug"
 	"testing"
 
+	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/inference/bundle"
@@ -326,7 +327,7 @@ func BenchmarkSession_GenerateAndSleep_LiveE2B(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		text, report, err := src.GenerateAndSleepAgentMemory(ctx, store, opts, WithMaxTokens(8), WithTemperature(0))
+		text, report, err := src.GenerateAndSleepAgentMemory(ctx, store, opts, inference.WithMaxTokens(8), inference.WithTemperature(0))
 		if err != nil {
 			b.Fatalf("GenerateAndSleepAgentMemory (op %d): %v", i, err)
 		}

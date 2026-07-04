@@ -7,9 +7,10 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
+	"dappco.re/go/inference/kv"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/chaptersmoke"
-	"dappco.re/go/inference/kv"
 )
 
 // NewModelStateKVChapterRunner builds a chaptersmoke.Runner from a loaded
@@ -94,7 +95,7 @@ func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
 	}
 }
 
-func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
+func stateKVChapterGenerateOptions(cfg GenerateConfig) []inference.GenerateOption {
 	// Collapse the per-field With{MaxTokens,Temperature,TopK,…} closures
 	// into one closure that captures the relevant cfg fields as scalar
 	// locals and writes them in a single pass against the target. The
@@ -132,7 +133,7 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 	minTokensBeforeStop := cfg.MinTokensBeforeStop
 	repeatPenalty := cfg.RepeatPenalty
 	probeSink := cfg.ProbeSink
-	apply := func(c *GenerateConfig) {
+	apply := func(c *inference.GenerateConfig) {
 		c.MaxTokens = maxTokens
 		c.Temperature = temperature
 		if topK > 0 {
@@ -161,5 +162,5 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 			c.ProbeSink = probeSink
 		}
 	}
-	return []GenerateOption{apply}
+	return []inference.GenerateOption{apply}
 }

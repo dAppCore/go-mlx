@@ -11,7 +11,7 @@ import (
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/inference/state/agent"
-	"dappco.re/go/mlx/session"
+	session "dappco.re/go/inference/state/session"
 )
 
 // AgentMemoryFoldOptions controls how an exhausted live context is checkpointed

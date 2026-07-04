@@ -10,13 +10,14 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	infspine "dappco.re/go/inference/spine"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx"
 	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/inference/memory"
+	mlxsession "dappco.re/go/inference/state/session"
 	"dappco.re/go/mlx/pkg/metal"
-	mlxsession "dappco.re/go/mlx/session"
 	"dappco.re/go/mlx/spine"
 )
 
@@ -294,7 +295,7 @@ func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath st
 type nativeGenerateStateModel interface {
 	inference.TextModel
 	Info() inference.ModelInfo
-	NewSession() metal.SessionHandle
+	NewSession() inference.SessionHandle
 	FormatChatPrompt(messages []inference.Message) string
 	FormatChatContinuation(messages []inference.Message) string
 }
@@ -337,7 +338,7 @@ func runGenerateNativeState(ctx context.Context, modelPath, prompt, name, storeP
 		return 1
 	}
 	info := nativeGenerateStateModelInfo(nativeState.Info(), contextLen)
-	sess := mlxsession.New(handle, info, nil)
+	sess := mlxsession.New(handle, infspine.ModelInfo(info), nil)
 	defer sess.Close()
 	var formatter stateChatFormatter
 	if !raw {
@@ -433,7 +434,7 @@ func runGenerateStateSession(ctx context.Context, prompt, name, storePath string
 	var out []byte
 	tokens := 0
 	start := time.Now()
-	for tok := range sess.GenerateStream(ctx, mlx.WithMaxTokens(maxTokens), mlx.WithTemperature(temp)) {
+	for tok := range sess.GenerateStream(ctx, inference.WithMaxTokens(maxTokens), inference.WithTemperature(temp)) {
 		out = append(out, tok.Text...)
 		tokens++
 	}
@@ -517,9 +518,9 @@ func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens i
 			core.Print(stderr, "%s generate: prefill: %v", cliName(), err)
 			return false
 		}
-		opts := []mlx.GenerateOption{mlx.WithMaxTokens(limit), mlx.WithTemperature(temp)}
+		opts := []inference.GenerateOption{inference.WithMaxTokens(limit), inference.WithTemperature(temp)}
 		if trace {
-			opts = append(opts, mlx.WithTokenPhaseTrace())
+			opts = append(opts, func(c *inference.GenerateConfig) { c.TraceTokenPhases = true })
 		}
 		for range sess.GenerateStream(ctx, opts...) {
 		}
@@ -559,7 +560,7 @@ func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens i
 
 type nativeGenerateTraceModel interface {
 	inference.TextModel
-	NewSession() metal.SessionHandle
+	NewSession() inference.SessionHandle
 }
 
 type nativeGenerateTraceSession interface {
@@ -590,15 +591,15 @@ func runGenerateNativeTrace(ctx context.Context, modelPath, prompt string, maxTo
 			core.Print(stderr, "%s generate: native trace session: nil session", cliName())
 			return nil, false
 		}
-		sess := mlxsession.New(handle, nativeGenerateTraceModelInfo(nativeModel.Info()), nil)
+		sess := mlxsession.New(handle, infspine.ModelInfo(nativeGenerateTraceModelInfo(nativeModel.Info())), nil)
 		defer sess.Close()
 		if err := sess.Prefill(chatPrompt); err != nil {
 			core.Print(stderr, "%s generate: native trace prefill: %v", cliName(), err)
 			return nil, false
 		}
-		opts := []mlx.GenerateOption{mlx.WithMaxTokens(limit), mlx.WithTemperature(temp)}
+		opts := []inference.GenerateOption{inference.WithMaxTokens(limit), inference.WithTemperature(temp)}
 		if trace {
-			opts = append(opts, mlx.WithTokenPhaseTrace())
+			opts = append(opts, func(c *inference.GenerateConfig) { c.TraceTokenPhases = true })
 		}
 		for range sess.GenerateStream(ctx, opts...) {
 		}

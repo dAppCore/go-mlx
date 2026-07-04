@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/mlx/internal/metaltest"
@@ -55,7 +56,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 
 	gen := func(label string, s *ModelSession) string {
 		t.Helper()
-		text, err := s.Generate(WithMaxTokens(8), WithTemperature(0))
+		text, err := s.Generate(inference.WithMaxTokens(8), inference.WithTemperature(0))
 		if err != nil {
 			t.Fatalf("%s: Generate: %v", label, err)
 		}

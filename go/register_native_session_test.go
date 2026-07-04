@@ -19,7 +19,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/kv"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/native"
@@ -978,7 +980,7 @@ func TestNativeTextModelNewSessionAcceptsRetainedBoundaryOnlySession_Good(t *tes
 		t.Fatal("NewSession() = nil, want retained-boundary-only native session handle")
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, nativeSessionTextBlockSource()); err != nil {
 		t.Fatalf("RestoreKVBlocks: %v", err)
 	}
@@ -987,7 +989,7 @@ func TestNativeTextModelNewSessionAcceptsRetainedBoundaryOnlySession_Good(t *tes
 		t.Fatalf("restored retained logits = %v, want %v", session.restored.RetainedLogits, wantLogits)
 	}
 	var greedy []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 1}) {
 		greedy = append(greedy, tok.ID)
 	}
 	if err := handle.Err(); err != nil {
@@ -1007,12 +1009,12 @@ func TestNativeTextModelNewSessionAcceptsRetainedBoundaryOnlySession_Good(t *tes
 		t.Fatal("sampled NewSession() = nil, want retained-boundary-only native session handle")
 	}
 	if err := sampledHandle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, nativeSessionTextBlockSource()); err != nil {
 		t.Fatalf("sampled RestoreKVBlocks: %v", err)
 	}
 	var sampled []int32
-	for tok := range sampledHandle.Generate(ctx, metal.GenerateConfig{
+	for tok := range sampledHandle.Generate(ctx, inference.GenerateConfig{
 		MaxTokens:           1,
 		Temperature:         0.8,
 		TopK:                2,
@@ -1043,13 +1045,13 @@ func TestNativeTextSessionGenerateSuppressTokensUsesGreedyCachePath(t *testing.T
 		t.Fatal("NewSession() = nil, want retained-boundary-only native session handle")
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, nativeSessionTextBlockSource()); err != nil {
 		t.Fatalf("RestoreKVBlocks: %v", err)
 	}
 
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1, SuppressTokens: []int32{3}}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 1, SuppressTokens: []int32{3}}) {
 		generated = append(generated, tok.ID)
 	}
 	if err := handle.Err(); err != nil {
@@ -1081,7 +1083,7 @@ func TestNativeTextSessionGenerateTraceTokenPhases_Good(t *testing.T) {
 	}
 
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 2, TraceTokenPhases: true, TraceTokenText: true}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 2, TraceTokenPhases: true, TraceTokenText: true}) {
 		generated = append(generated, tok.ID)
 	}
 	if err := handle.Err(); err != nil {
@@ -1113,7 +1115,7 @@ func TestNativeTextSessionGenerateTraceTokenPhases_Good(t *testing.T) {
 		t.Fatal("LastTokenPhases returned aliased storage")
 	}
 
-	for range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+	for range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 1}) {
 	}
 	if err := handle.Err(); err != nil {
 		t.Fatalf("second Generate Err: %v", err)
@@ -1132,13 +1134,13 @@ func TestNativeTextSessionGenerateMinTokensBeforeStopUsesStagedGreedyCachePath(t
 		t.Fatal("NewSession() = nil, want retained-boundary-only native session handle")
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, nativeSessionTextBlockSource()); err != nil {
 		t.Fatalf("RestoreKVBlocks: %v", err)
 	}
 
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{
 		MaxTokens:           2,
 		StopTokens:          []int32{3},
 		MinTokensBeforeStop: 1,
@@ -1181,19 +1183,19 @@ func TestNativeTextModelNewSession_CaptureRangeRestore_Good(t *testing.T) {
 		t.Fatalf("PrefillTokens: %v", err)
 	}
 	snapshot, err := handle.(interface {
-		CaptureKVWithOptions(context.Context, metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error)
-	}).CaptureKVWithOptions(ctx, metal.KVSnapshotCaptureOptions{RawKVOnly: true})
+		CaptureKVWithOptions(context.Context, kv.CaptureOptions) (*kv.Snapshot, error)
+	}).CaptureKVWithOptions(ctx, kv.CaptureOptions{RawKVOnly: true})
 	if err != nil {
 		t.Fatalf("CaptureKVWithOptions: %v", err)
 	}
 	if snapshot.SeqLen != 3 || snapshot.TokenOffset != 3 || !reflect.DeepEqual(snapshot.Tokens, []int32{1, 2, 3}) {
 		t.Fatalf("snapshot timeline = seq %d offset %d tokens %v", snapshot.SeqLen, snapshot.TokenOffset, snapshot.Tokens)
 	}
-	if len(snapshot.Layers) != 1 || len(snapshot.Layers[0].KeyBytes) != 12 || snapshot.Layers[0].KeyDType != metal.DTypeBFloat16 {
+	if len(snapshot.Layers) != 1 || len(snapshot.Layers[0].KeyBytes) != 12 || snapshot.Layers[0].KeyDType != "bfloat16" {
 		t.Fatalf("snapshot layer = %+v", snapshot.Layers)
 	}
-	var ranged []metal.KVSnapshotBlock
-	if err := handle.RangeKVBlocks(ctx, 2, metal.KVSnapshotCaptureOptions{BlockStartToken: 2}, func(block metal.KVSnapshotBlock) (bool, error) {
+	var ranged []kv.Block
+	if err := handle.RangeKVBlocks(ctx, 2, kv.CaptureOptions{BlockStartToken: 2}, func(block kv.Block) (bool, error) {
 		ranged = append(ranged, block)
 		return true, nil
 	}); err != nil {
@@ -1207,7 +1209,7 @@ func TestNativeTextModelNewSession_CaptureRangeRestore_Good(t *testing.T) {
 		t.Fatal("second NewSession() = nil")
 	}
 	restorer := restored.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	})
 	if err := restorer.RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV: %v", err)
@@ -1242,7 +1244,7 @@ func TestNativeTextSessionGenerateUpdatesModelMetrics_Good(t *testing.T) {
 		t.Fatalf("PrefillTokens: %v", err)
 	}
 	var out []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 2}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 2}) {
 		out = append(out, tok.ID)
 	}
 	if !reflect.DeepEqual(out, []int32{3, 2}) {
@@ -1415,7 +1417,7 @@ func TestNativeTextModelRestorePromptCacheFromKV_Good(t *testing.T) {
 	ctx := context.Background()
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
-	snapshot := nativeSessionTextMetalBlock(0, 0, []int32{1, 2, 3}, true).Snapshot
+	snapshot := nativeSessionTextMetalKVBlock(0, 0, []int32{1, 2, 3}, true).Snapshot
 
 	if err := model.RestorePromptCacheFromKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestorePromptCacheFromKV: %v", err)
@@ -1440,7 +1442,7 @@ func TestNativeTextModelRestorePromptCacheFromKVBlocks_Good(t *testing.T) {
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
 
-	if err := model.RestorePromptCacheFromKVBlocks(ctx, nativeSessionTextBlockSource()); err != nil {
+	if err := model.RestorePromptCacheFromKVBlocks(ctx, nativeSessionTextMetalBlockSource()); err != nil {
 		t.Fatalf("RestorePromptCacheFromKVBlocks: %v", err)
 	}
 	if !reflect.DeepEqual(session.tokens, []int32{1, 2, 3}) {
@@ -1463,8 +1465,8 @@ func TestNativeTextSession_RestoreKVConvertsHeadSnapshots_Good(t *testing.T) {
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
 	handle := model.NewSession()
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -1473,19 +1475,19 @@ func TestNativeTextSession_RestoreKVConvertsHeadSnapshots_Good(t *testing.T) {
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 4,
-			CacheMode:  metal.KVCacheModeFixed,
+			CacheMode:  "fixed",
 			MaxSize:    8,
-			Heads: []metal.KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1, 2, 3, 4},
 				Value: []float32{5, 6, 7, 8},
 			}},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV head snapshot: %v", err)
 	}
@@ -1493,7 +1495,7 @@ func TestNativeTextSession_RestoreKVConvertsHeadSnapshots_Good(t *testing.T) {
 		t.Fatalf("restored blocks = %+v, want one converted head layer", session.restoredBlocks)
 	}
 	layer := session.restoredBlocks[0].Layers[0]
-	if layer.CacheIndex != 4 || layer.CacheMode != string(metal.KVCacheModeFixed) || layer.MaxSize != 8 {
+	if layer.CacheIndex != 4 || layer.CacheMode != string("fixed") || layer.MaxSize != 8 {
 		t.Fatalf("converted layer metadata = %d/%q/%d, want 4/fixed/8", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
 	}
 	if layer.KVHeads != 1 || layer.HeadDim != 2 || layer.RowBytes != 4 {
@@ -1516,8 +1518,8 @@ func TestNativeTextSession_RestoreKVConvertsRawHeadSnapshots_Good(t *testing.T) 
 	head1Key := nativeTextF32ToBF16([]float32{3, 4, 7, 8})
 	head0Value := nativeTextF32ToBF16([]float32{11, 12, 15, 16})
 	head1Value := nativeTextF32ToBF16([]float32{13, 14, 17, 18})
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -1526,18 +1528,18 @@ func TestNativeTextSession_RestoreKVConvertsRawHeadSnapshots_Good(t *testing.T) 
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 2,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 1,
-			CacheMode:  metal.KVCacheModeFixed,
-			Heads: []metal.KVHeadSnapshot{
-				{KeyDType: metal.DTypeBFloat16, KeyBytes: head0Key, ValueDType: metal.DTypeBFloat16, ValueBytes: head0Value},
-				{KeyDType: metal.DTypeBFloat16, KeyBytes: head1Key, ValueDType: metal.DTypeBFloat16, ValueBytes: head1Value},
+			CacheMode:  "fixed",
+			Heads: []kv.HeadSnapshot{
+				{KeyDType: "bfloat16", KeyBytes: head0Key, ValueDType: "bfloat16", ValueBytes: head0Value},
+				{KeyDType: "bfloat16", KeyBytes: head1Key, ValueDType: "bfloat16", ValueBytes: head1Value},
 			},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV raw head snapshot: %v", err)
 	}
@@ -1565,8 +1567,8 @@ func TestNativeTextSession_RestoreKVConvertsRawLayerSlabSnapshots_Good(t *testin
 	handle := model.NewSession()
 	headMajorKey := nativeTextF32ToBF16([]float32{1, 2, 5, 6, 3, 4, 7, 8})
 	headMajorValue := nativeTextF32ToBF16([]float32{11, 12, 15, 16, 13, 14, 17, 18})
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -1575,21 +1577,21 @@ func TestNativeTextSession_RestoreKVConvertsRawLayerSlabSnapshots_Good(t *testin
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 2,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 3,
-			CacheMode:  metal.KVCacheModeFixed,
+			CacheMode:  "fixed",
 			MaxSize:    8,
-			KeyDType:   metal.DTypeBFloat16,
+			KeyDType:   "bfloat16",
 			KeyBytes:   headMajorKey,
 			KeyShape:   []int32{1, 2, 2, 2},
-			ValueDType: metal.DTypeBFloat16,
+			ValueDType: "bfloat16",
 			ValueBytes: headMajorValue,
 			ValueShape: []int32{1, 2, 2, 2},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV raw layer slab: %v", err)
 	}
@@ -1617,8 +1619,8 @@ func TestNativeTextSession_RestoreKVInfersUnderreportedRawLayerHeads_Good(t *tes
 	handle := model.NewSession()
 	key := nativeTextF32ToBF16([]float32{1, 2, 3, 4, 5, 6, 7, 8})
 	value := nativeTextF32ToBF16([]float32{11, 12, 13, 14, 15, 16, 17, 18})
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -1627,20 +1629,20 @@ func TestNativeTextSession_RestoreKVInfersUnderreportedRawLayerHeads_Good(t *tes
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 3,
-			CacheMode:  metal.KVCacheModeFixed,
-			KeyDType:   metal.DTypeBFloat16,
+			CacheMode:  "fixed",
+			KeyDType:   "bfloat16",
 			KeyBytes:   key,
 			KeyShape:   []int32{2, 1, 2},
-			ValueDType: metal.DTypeBFloat16,
+			ValueDType: "bfloat16",
 			ValueBytes: value,
 			ValueShape: []int32{2, 1, 2},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV underreported raw layer slab: %v", err)
 	}
@@ -1663,8 +1665,8 @@ func TestNativeTextSession_RestoreKVConvertsFloat32LayerSlabSnapshots_Good(t *te
 	handle := model.NewSession()
 	headMajorKey := nativeTextF32RawBytes([]float32{1, 2, 5, 6, 3, 4, 7, 8})
 	headMajorValue := nativeTextF32RawBytes([]float32{11, 12, 15, 16, 13, 14, 17, 18})
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -1673,21 +1675,21 @@ func TestNativeTextSession_RestoreKVConvertsFloat32LayerSlabSnapshots_Good(t *te
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 2,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 3,
-			CacheMode:  metal.KVCacheModePaged,
+			CacheMode:  string(metal.KVCacheModePaged),
 			MaxSize:    8,
-			KeyDType:   metal.DTypeFloat32,
+			KeyDType:   "float32",
 			KeyBytes:   headMajorKey,
 			KeyShape:   []int32{1, 2, 2, 2},
-			ValueDType: metal.DTypeFloat32,
+			ValueDType: "float32",
 			ValueBytes: headMajorValue,
 			ValueShape: []int32{1, 2, 2, 2},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV float32 raw layer slab: %v", err)
 	}
@@ -1716,8 +1718,8 @@ func TestNativeTextSession_RestoreKVPreservesSlidingTailTokenOffset_Good(t *test
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
 	handle := model.NewSession()
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        []int32{5, 6},
 		TokenOffset:   6,
@@ -1726,21 +1728,21 @@ func TestNativeTextSession_RestoreKVPreservesSlidingTailTokenOffset_Good(t *test
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			CacheMode:  metal.KVCacheModeFixed,
+			CacheMode:  "fixed",
 			MaxSize:    2,
-			KeyDType:   metal.DTypeBFloat16,
+			KeyDType:   "bfloat16",
 			KeyBytes:   nativeTextF32ToBF16([]float32{5, 6, 7, 8}),
 			KeyShape:   []int32{1, 1, 2, 2},
-			ValueDType: metal.DTypeBFloat16,
+			ValueDType: "bfloat16",
 			ValueBytes: nativeTextF32ToBF16([]float32{15, 16, 17, 18}),
 			ValueShape: []int32{1, 1, 2, 2},
 		}},
 	}
 	if err := handle.(interface {
-		RestoreKV(context.Context, *metal.KVSnapshot) error
+		RestoreKV(context.Context, *kv.Snapshot) error
 	}).RestoreKV(ctx, snapshot); err != nil {
 		t.Fatalf("RestoreKV sliding tail: %v", err)
 	}
@@ -1776,19 +1778,19 @@ func TestNativeTextSession_RestoreKVBlocksPreservesSlidingTailTokenOffset_Good(t
 	tail := nativeSessionTextMetalBlock(1, 4, []int32{5, 6}, true)
 	tail.Snapshot.TokenOffset = 6
 	tail.Snapshot.Layers[0].MaxSize = 2
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   6,
 		PrefixTokens: 6,
 		BlockCount:   1,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			if index != 0 {
-				return metal.KVSnapshotBlock{}, core.NewError("test: block index out of range")
+				return kv.Block{}, core.NewError("test: block index out of range")
 			}
 			return tail, nil
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks sliding tail: %v", err)
 	}
@@ -1822,25 +1824,25 @@ func TestNativeTextSession_RestoreKVBlocksConvertsFloat32LayerSlabSnapshots_Good
 	model := testNativeTextSessionModel(session)
 	handle := model.NewSession()
 	block := nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, true)
-	block.Snapshot.Layers[0].CacheMode = metal.KVCacheModePaged
+	block.Snapshot.Layers[0].CacheMode = string(metal.KVCacheModePaged)
 	block.Snapshot.Layers[0].MaxSize = 8
-	block.Snapshot.Layers[0].KeyDType = metal.DTypeFloat32
+	block.Snapshot.Layers[0].KeyDType = "float32"
 	block.Snapshot.Layers[0].KeyBytes = nativeTextF32RawBytes([]float32{1, 2, 3, 4})
-	block.Snapshot.Layers[0].ValueDType = metal.DTypeFloat32
+	block.Snapshot.Layers[0].ValueDType = "float32"
 	block.Snapshot.Layers[0].ValueBytes = nativeTextF32RawBytes([]float32{11, 12, 13, 14})
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   2,
 		PrefixTokens: 2,
 		BlockCount:   1,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			if index != 0 {
-				return metal.KVSnapshotBlock{}, core.NewError("test: block index out of range")
+				return kv.Block{}, core.NewError("test: block index out of range")
 			}
 			return block, nil
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks float32 raw layer slab: %v", err)
 	}
@@ -1864,23 +1866,23 @@ func TestNativeTextSession_RestoreKVBlocksGenerateUsesRetainedBoundaryMetadata_G
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
 	handle := model.NewSession()
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   3,
 		PrefixTokens: 3,
 		BlockCount:   2,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			switch index {
 			case 0:
 				return nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, false), nil
 			case 1:
 				return nativeSessionTextMetalBlock(1, 2, []int32{3}, true), nil
 			default:
-				return metal.KVSnapshotBlock{}, nil
+				return kv.Block{}, nil
 			}
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks: %v", err)
 	}
@@ -1892,7 +1894,7 @@ func TestNativeTextSession_RestoreKVBlocksGenerateUsesRetainedBoundaryMetadata_G
 		t.Fatalf("restored retained logits = %v, want %v", session.restored.RetainedLogits, wantLogits)
 	}
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 1}) {
 		generated = append(generated, tok.ID)
 	}
 	if err := handle.Err(); err != nil {
@@ -1920,19 +1922,19 @@ func TestNativeTextSession_RestoreKVBlocksGraftsResidentTrustedPrefix_Good(t *te
 	if err := prefiller.PrefillTokens(ctx, []int32{1, 2}); err != nil {
 		t.Fatalf("PrefillTokens trusted prefix: %v", err)
 	}
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   3,
 		PrefixTokens: 3,
 		BlockCount:   1,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			if index != 0 {
-				return metal.KVSnapshotBlock{}, nil
+				return kv.Block{}, nil
 			}
 			return nativeSessionTextMetalBlock(1, 2, []int32{3}, true), nil
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks suffix-only trusted prefix: %v", err)
 	}
@@ -1946,7 +1948,7 @@ func TestNativeTextSession_RestoreKVBlocksGraftsResidentTrustedPrefix_Good(t *te
 		t.Fatalf("restored suffix blocks = %+v, want only absolute block 1 at token 2", session.restoredBlocks)
 	}
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{MaxTokens: 1}) {
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{MaxTokens: 1}) {
 		generated = append(generated, tok.ID)
 	}
 	if err := handle.Err(); err != nil {
@@ -1967,7 +1969,7 @@ func TestNativeTextSession_RestoreKVBlocksKeepsNonUniformTrustedPrefix_Good(t *t
 			if index != 0 {
 				return metal.KVSnapshotBlock{}, nil
 			}
-			return nativeSessionTextMetalBlock(2, 3, []int32{4}, true), nil
+			return nativeSessionTextMetalKVBlock(2, 3, []int32{4}, true), nil
 		},
 	}
 	restored, tokens, _, err := nativeTextStateSourceFromBlockSource(ctx, source, []int32{1, 2, 3})
@@ -1991,21 +1993,21 @@ func TestNativeTextSession_RestoreKVBlocksCarriesCacheModeMetadata_Good(t *testi
 	handle := model.NewSession()
 	block := nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, true)
 	block.Snapshot.Layers[0].CacheIndex = 3
-	block.Snapshot.Layers[0].CacheMode = metal.KVCacheModePaged
+	block.Snapshot.Layers[0].CacheMode = string(metal.KVCacheModePaged)
 	block.Snapshot.Layers[0].MaxSize = 64
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   2,
 		PrefixTokens: 2,
 		BlockCount:   1,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			if index != 0 {
-				return metal.KVSnapshotBlock{}, nil
+				return kv.Block{}, nil
 			}
 			return block, nil
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks paged metadata: %v", err)
 	}
@@ -2047,7 +2049,7 @@ func TestNativeTextSession_SnapshotFromNativeBlockCarriesCacheModeMetadata_Good(
 		t.Fatalf("snapshot layers = %d, want 1", len(snapshot.Layers))
 	}
 	layer := snapshot.Layers[0]
-	if layer.CacheIndex != 3 || layer.CacheMode != metal.KVCacheModePaged || layer.MaxSize != 64 {
+	if layer.CacheIndex != 3 || layer.CacheMode != string(metal.KVCacheModePaged) || layer.MaxSize != 64 {
 		t.Fatalf("snapshot layer cache metadata = %d/%q/%d, want 3/paged/64", layer.CacheIndex, layer.CacheMode, layer.MaxSize)
 	}
 }
@@ -2124,23 +2126,23 @@ func TestNativeTextSession_RestoreKVBlocksGenerateSampledUsesRetainedBoundaryMet
 	session := newNativeSessionTextSession()
 	model := testNativeTextSessionModel(session)
 	handle := model.NewSession()
-	source := metal.KVSnapshotBlockSource{
+	source := kv.BlockSource{
 		TokenCount:   3,
 		PrefixTokens: 3,
 		BlockCount:   2,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			switch index {
 			case 0:
 				return nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, false), nil
 			case 1:
 				return nativeSessionTextMetalBlock(1, 2, []int32{3}, true), nil
 			default:
-				return metal.KVSnapshotBlock{}, nil
+				return kv.Block{}, nil
 			}
 		},
 	}
 	if err := handle.(interface {
-		RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+		RestoreKVBlocks(context.Context, kv.BlockSource) error
 	}).RestoreKVBlocks(ctx, source); err != nil {
 		t.Fatalf("RestoreKVBlocks: %v", err)
 	}
@@ -2149,7 +2151,7 @@ func TestNativeTextSession_RestoreKVBlocksGenerateSampledUsesRetainedBoundaryMet
 		t.Fatalf("restored retained logits = %v, want %v", session.restored.RetainedLogits, wantLogits)
 	}
 	var generated []int32
-	for tok := range handle.Generate(ctx, metal.GenerateConfig{
+	for tok := range handle.Generate(ctx, inference.GenerateConfig{
 		MaxTokens:           1,
 		Temperature:         0.8,
 		TopK:                2,
@@ -2822,29 +2824,29 @@ func nativeSessionTextTokenText(tokens []inference.Token) string {
 	return out.String()
 }
 
-func nativeSessionTextBlockSource() metal.KVSnapshotBlockSource {
-	return metal.KVSnapshotBlockSource{
+func nativeSessionTextBlockSource() kv.BlockSource {
+	return kv.BlockSource{
 		TokenCount:   3,
 		PrefixTokens: 3,
 		BlockCount:   2,
-		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+		Load: func(_ context.Context, index int) (kv.Block, error) {
 			switch index {
 			case 0:
 				return nativeSessionTextMetalBlock(0, 0, []int32{1, 2}, false), nil
 			case 1:
 				return nativeSessionTextMetalBlock(1, 2, []int32{3}, true), nil
 			default:
-				return metal.KVSnapshotBlock{}, nil
+				return kv.Block{}, nil
 			}
 		},
 	}
 }
 
-func nativeSessionTextMetalBlock(index, start int, tokens []int32, final bool) metal.KVSnapshotBlock {
+func nativeSessionTextMetalBlock(index, start int, tokens []int32, final bool) kv.Block {
 	keyBytes := nativeSessionTextKVBytes(tokens, 0x10)
 	valueBytes := nativeSessionTextKVBytes(tokens, 0x20)
-	snapshot := &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4",
 		Tokens:        append([]int32(nil), tokens...),
 		TokenOffset:   start + len(tokens),
@@ -2853,14 +2855,14 @@ func nativeSessionTextMetalBlock(index, start int, tokens []int32, final bool) m
 		SeqLen:        len(tokens),
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []metal.KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			CacheMode:  metal.KVCacheModeFixed,
-			KeyDType:   metal.DTypeBFloat16,
+			CacheMode:  "fixed",
+			KeyDType:   "bfloat16",
 			KeyBytes:   keyBytes,
 			KeyShape:   []int32{int32(len(tokens)), 1, 2},
-			ValueDType: metal.DTypeBFloat16,
+			ValueDType: "bfloat16",
 			ValueBytes: valueBytes,
 			ValueShape: []int32{int32(len(tokens)), 1, 2},
 		}},
@@ -2869,10 +2871,44 @@ func nativeSessionTextMetalBlock(index, start int, tokens []int32, final bool) m
 		snapshot.LogitShape = []int32{1, 1, 4}
 		snapshot.Logits = []float32{0.1, 0.2, 0.3, 0.4}
 	}
-	return metal.KVSnapshotBlock{
+	return kv.Block{
 		Index:      index,
 		TokenStart: start,
 		TokenCount: len(tokens),
 		Snapshot:   snapshot,
+	}
+}
+
+// nativeSessionTextMetalKVBlock bridges the kv.Block fixture to the pkg/metal
+// block type the model-level prompt-cache + trusted-prefix APIs still take
+// (RestorePromptCacheFromKV/Blocks, nativeTextStateSourceFromBlockSource): the
+// session lift moved the session handle to kv types but left those on metal.
+func nativeSessionTextMetalKVBlock(index, start int, tokens []int32, final bool) metal.KVSnapshotBlock {
+	b := nativeSessionTextMetalBlock(index, start, tokens, final)
+	return metal.KVSnapshotBlock{
+		Index:      b.Index,
+		TokenStart: b.TokenStart,
+		TokenCount: b.TokenCount,
+		Snapshot:   kvconv.ToMetalKVSnapshot(b.Snapshot),
+	}
+}
+
+// nativeSessionTextMetalBlockSource mirrors nativeSessionTextBlockSource for the
+// metal-typed model prompt-cache block API (RestorePromptCacheFromKVBlocks).
+func nativeSessionTextMetalBlockSource() metal.KVSnapshotBlockSource {
+	return metal.KVSnapshotBlockSource{
+		TokenCount:   3,
+		PrefixTokens: 3,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (metal.KVSnapshotBlock, error) {
+			switch index {
+			case 0:
+				return nativeSessionTextMetalKVBlock(0, 0, []int32{1, 2}, false), nil
+			case 1:
+				return nativeSessionTextMetalKVBlock(1, 2, []int32{3}, true), nil
+			default:
+				return metal.KVSnapshotBlock{}, nil
+			}
+		},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal"
@@ -93,7 +94,7 @@ func TestMTPPair_Baseline_LiveModel(t *testing.T) {
 				}
 				tokens := 0
 				start := time.Now()
-				for range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+				for range sess.GenerateStream(ctx, inference.WithMaxTokens(200), inference.WithTemperature(0)) {
 					tokens++
 				}
 				if err := sess.Err(); err != nil {
