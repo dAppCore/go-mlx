@@ -12,7 +12,7 @@
 package distill
 
 import (
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // distillBenchProbeSink is a no-clone probe sink that captures the

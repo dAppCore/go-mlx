@@ -7,7 +7,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // miniMaxM2IndexFromFileForCover builds a real safetensors index (refs carry

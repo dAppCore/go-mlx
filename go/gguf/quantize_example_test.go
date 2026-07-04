@@ -8,7 +8,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // ExampleValidationSummary renders a one-line summary of GGUF validation

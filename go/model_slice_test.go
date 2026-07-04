@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func TestModelSlice_SliceModel_GoodClientPresetMaterialisesPack(t *testing.T) {

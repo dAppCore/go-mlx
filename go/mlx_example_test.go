@@ -5,7 +5,7 @@ package mlx
 import (
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/spine"
 )
 

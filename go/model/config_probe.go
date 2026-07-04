@@ -4,7 +4,7 @@ package model
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // modelConfigProbe is the loose JSON shape used to inspect HuggingFace

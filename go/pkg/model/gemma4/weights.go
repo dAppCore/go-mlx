@@ -4,7 +4,7 @@ package gemma4
 
 import (
 	"dappco.re/go/mlx/pkg/safetensors"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 func canonicalTextWeights(architecture string, raw map[string]safetensors.Tensor) map[string]safetensors.Tensor {

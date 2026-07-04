@@ -14,7 +14,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func TestSelectModelSliceTensorRefs_ExtractLevelAll(t *testing.T) {

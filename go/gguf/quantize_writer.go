@@ -10,8 +10,8 @@ import (
 
 	core "dappco.re/go"
 	sharedgguf "dappco.re/go/inference/gguf"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/safetensors"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/safetensors"
 )
 
 func ggufQuantizeMetadata(source mp.ModelPack, format QuantizeFormat, labels map[string]string) []ggufMetadataEntry {

@@ -10,7 +10,7 @@ import (
 
 	core "dappco.re/go"
 	sharedgguf "dappco.re/go/inference/gguf"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // This file is the payload-level guard for the K-quant encoders

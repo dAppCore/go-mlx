@@ -14,7 +14,7 @@ import (
 	"dappco.re/go"
 
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 const maxMiniMaxM2SafetensorHeaderBytes = 256 << 20

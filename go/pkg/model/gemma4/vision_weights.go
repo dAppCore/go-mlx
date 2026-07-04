@@ -6,7 +6,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // vision_weights.go is the neutral front of the gemma4 vision-tower loader: it canonicalises the vision

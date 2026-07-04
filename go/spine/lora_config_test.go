@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // Tests for the LoRAConfig <-> metal.LoRAConfig shufflers. Field copy is

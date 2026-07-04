@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/quant/autoround"
+	"dappco.re/go/inference/quant/autoround"
 )
 
 func TestAutoRoundDequant_DequantizePackedW4MatchesCPUReference_Good(t *testing.T) {

@@ -16,8 +16,8 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/mlx/memory"
-	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/inference/memory"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // Sinks defeat compiler DCE.

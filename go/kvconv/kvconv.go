@@ -4,7 +4,7 @@ package kvconv
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/pkg/metal"
 )
 

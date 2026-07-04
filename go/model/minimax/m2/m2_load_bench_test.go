@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // BenchmarkPackedWeightCandidates covers the per-spec weight-name fan-out

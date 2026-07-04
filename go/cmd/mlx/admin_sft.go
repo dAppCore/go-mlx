@@ -36,7 +36,7 @@ import (
 	core "dappco.re/go"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 const (

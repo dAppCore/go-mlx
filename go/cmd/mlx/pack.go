@@ -9,7 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/model"
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 )
 
 func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) int {

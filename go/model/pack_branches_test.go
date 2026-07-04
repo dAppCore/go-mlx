@@ -19,7 +19,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // TestInspect_MissingPath drives the `!stat.OK` return at the top of

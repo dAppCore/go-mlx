@@ -16,8 +16,8 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/spine"
 )
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // TestDeriveAffineBits_Good derives the bit-width of an MLX affine-quantised

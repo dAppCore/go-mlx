@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	state "dappco.re/go/inference/state"
-	pkgbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
-	"dappco.re/go/mlx/memory"
+	pkgbundle "dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/memory"
 )
 
 // exampleIndexBundle builds a small two-block durable bundle used by the

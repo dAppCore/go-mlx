@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 func TestSpineProbeConversion_AllFields_Good(t *testing.T) {

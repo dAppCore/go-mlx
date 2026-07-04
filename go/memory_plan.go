@@ -3,10 +3,10 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/model/minimax/m2"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // MemoryPlanInput supplies measured hardware and optional model metadata.

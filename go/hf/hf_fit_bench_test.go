@@ -17,7 +17,7 @@ import (
 
 	core "dappco.re/go"
 	sharedhf "dappco.re/go/inference/hf"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 func BenchmarkHF_WeightFormatAndBytes_Safetensors(b *testing.B) {

@@ -5,7 +5,7 @@ package session
 import (
 	"fmt"
 
-	"dappco.re/go/mlx/artifact"
+	"dappco.re/go/inference/artifact"
 	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/mlx/spine"
 )

@@ -15,7 +15,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 type nativeSpeculativeTextModel struct {

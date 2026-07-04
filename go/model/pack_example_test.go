@@ -7,7 +7,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/model"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // ExampleSupportsArchitecture screens architecture names against the registered

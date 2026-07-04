@@ -17,7 +17,7 @@ import (
 	"context"
 	"fmt"
 
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 )
 
 // ExampleFuseIntoPack_validation shows the option-validation contract callers

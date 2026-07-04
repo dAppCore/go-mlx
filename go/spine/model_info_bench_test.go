@@ -15,9 +15,9 @@ import (
 	"testing"
 
 	"dappco.re/go/inference/parser"
-	"dappco.re/go/mlx/bundle"
+	"dappco.re/go/inference/bundle"
 	"dappco.re/go/mlx/lora"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // Sinks defeat compiler DCE.

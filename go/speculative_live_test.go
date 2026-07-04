@@ -11,7 +11,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // TestSpeculativeServeStreaming_LiveModel proves the serve-shaped MTP lane

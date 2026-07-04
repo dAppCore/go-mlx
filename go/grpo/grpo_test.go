@@ -11,7 +11,7 @@ import (
 	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // TestGrpo_RunGRPOReasoningTraining_Good covers the successful training

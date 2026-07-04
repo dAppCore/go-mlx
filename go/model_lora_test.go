@@ -9,11 +9,11 @@ package mlx
 import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	mlxbundle "dappco.re/go/mlx/bundle"
+	mlxbundle "dappco.re/go/inference/bundle"
 	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 	"reflect"
 	"testing"

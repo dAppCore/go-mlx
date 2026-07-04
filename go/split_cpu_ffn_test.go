@@ -13,7 +13,7 @@ import (
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/model/minimax/m2"
 	mlxjang "dappco.re/go/mlx/quant/jang"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func TestCPUSplitFFNExecutor_QwenDenseGood(t *testing.T) {

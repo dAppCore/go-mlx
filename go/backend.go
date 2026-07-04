@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/adapter"
 	"dappco.re/go/mlx/gguf"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"

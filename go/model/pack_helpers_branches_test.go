@@ -17,7 +17,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/gguf"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // --- pack_chattemplate.go ----------------------------------------------

@@ -11,7 +11,7 @@ package chat
 import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // Message is the chat message envelope, aliased from the inference

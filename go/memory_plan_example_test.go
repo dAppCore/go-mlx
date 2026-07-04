@@ -4,7 +4,7 @@ package mlx
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 func ExamplePlanMemory() {

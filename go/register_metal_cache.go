@@ -5,7 +5,7 @@ package mlx
 import (
 	"context"
 
-	"dappco.re/go/mlx/blockcache"
+	"dappco.re/go/inference/blockcache"
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/spine"

@@ -6,7 +6,7 @@ package qwen3
 
 import (
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // Qwen 3.6 family detection — the model owns it. These were defined in package

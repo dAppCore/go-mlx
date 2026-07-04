@@ -8,9 +8,9 @@ import (
 
 	core "dappco.re/go"
 	sharedhf "dappco.re/go/inference/hf"
-	"dappco.re/go/mlx/memory"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/memory"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/profile"
 )
 
 // TestFirstNonEmpty_AllEmpty_Bad covers firstNonEmpty's exhausted-loop return:

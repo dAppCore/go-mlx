@@ -5,8 +5,8 @@ package m2
 import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/inference/safetensors"
 )
 
 // LoadPackedExpertsForDecisions reads only the routed

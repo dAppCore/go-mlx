@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/kv"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 

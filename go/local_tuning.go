@@ -8,10 +8,10 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/model"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/profile"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/profile"
 )
 
 // LocalDiscoveryConfig controls the cheap machine/model discovery path used by

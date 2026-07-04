@@ -19,8 +19,8 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/memory"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/memory"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 )
 

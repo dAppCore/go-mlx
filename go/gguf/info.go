@@ -9,7 +9,7 @@ import (
 
 	core "dappco.re/go"
 	sharedgguf "dappco.re/go/inference/gguf"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 const maxGGUFCollectionEntries uint64 = 1 << 20

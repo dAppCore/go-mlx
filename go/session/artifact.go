@@ -5,7 +5,7 @@ package session
 import (
 	"context"
 
-	"dappco.re/go/mlx/artifact"
+	"dappco.re/go/inference/artifact"
 )
 
 // ExportArtifacts captures the session state and exports it as local

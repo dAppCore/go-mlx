@@ -4,7 +4,7 @@ package model
 
 import (
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {

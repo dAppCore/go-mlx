@@ -12,7 +12,7 @@ import (
 	coreio "dappco.re/go/io"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // runSSDCommand drives native self-distillation sampling (#50/#97) — the

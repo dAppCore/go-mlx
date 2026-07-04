@@ -2,7 +2,7 @@
 
 package agent
 
-import "dappco.re/go/mlx/kv"
+import "dappco.re/go/inference/kv"
 
 func kvSnapshotBlocksTestSnapshot() *kv.Snapshot {
 	return &kv.Snapshot{

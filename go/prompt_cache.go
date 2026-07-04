@@ -7,7 +7,7 @@ import (
 	"iter"
 
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/spine"
 )

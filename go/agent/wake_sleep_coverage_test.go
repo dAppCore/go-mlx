@@ -8,9 +8,9 @@ import (
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
-	pkgbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
-	"dappco.re/go/mlx/memory"
+	pkgbundle "dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/memory"
 )
 
 // --- LoadWakeSnapshot: block-load error after a successful plan ------------

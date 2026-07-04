@@ -9,7 +9,7 @@ import (
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/chaptersmoke"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 // NewModelStateKVChapterRunner builds a chaptersmoke.Runner from a loaded

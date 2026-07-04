@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/safetensors"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/safetensors"
 )
 
 // writeTypedSafetensors writes a single-tensor safetensors file with an

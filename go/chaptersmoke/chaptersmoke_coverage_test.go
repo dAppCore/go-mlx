@@ -11,7 +11,7 @@ import (
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 // TestRun_Ugly_EmptyFileStoreAfterUnlink drives the StoreBytes<=0 fault

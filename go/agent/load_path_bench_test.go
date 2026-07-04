@@ -40,9 +40,9 @@ import (
 	"testing"
 
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/memory"
 )
 
 // Sinks defeat compiler DCE for the load-path results.

@@ -16,12 +16,12 @@ import (
 	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/gguf"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/kvconv"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 )
 

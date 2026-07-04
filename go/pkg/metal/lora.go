@@ -21,7 +21,7 @@ import (
 
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/internal/loraadapter"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.

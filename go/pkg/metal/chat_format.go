@@ -14,7 +14,7 @@ import (
 	"iter"
 
 	"dappco.re/go/mlx/chat"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // resolveThinkingEnabled resolves the Gemma 4 reasoning toggle: an explicit

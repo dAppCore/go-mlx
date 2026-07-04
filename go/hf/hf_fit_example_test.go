@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // ExamplePlanFits estimates local Apple fit for a model whose metadata comes

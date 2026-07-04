@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // exampleResidencyExpert is a tiny fixed packed expert payload used by the

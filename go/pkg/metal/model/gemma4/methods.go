@@ -7,7 +7,7 @@ package gemma4
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 func (m *Gemma4Model) NewCache() []metal.Cache {

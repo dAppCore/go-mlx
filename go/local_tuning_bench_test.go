@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // Sinks defeat compiler DCE. Distinct from other bench files in this package.

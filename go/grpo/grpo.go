@@ -11,7 +11,7 @@ import (
 
 	core "dappco.re/go"
 	grpoinf "dappco.re/go/inference/grpo"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 const GRPOCheckpointMetadataVersion = 1

@@ -4,7 +4,7 @@ package mlx
 
 import (
 	"context"
-	"dappco.re/go/mlx/blockcache"
+	"dappco.re/go/inference/blockcache"
 	"iter"
 	"sync"
 

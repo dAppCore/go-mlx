@@ -16,7 +16,7 @@ package agent
 import (
 	"testing"
 
-	"dappco.re/go/mlx/bundle"
+	"dappco.re/go/inference/bundle"
 )
 
 // Sinks defeat compiler DCE.

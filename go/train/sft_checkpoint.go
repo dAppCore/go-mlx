@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/inference/checkpoint"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 	"dappco.re/go/mlx/spine"
 )
 

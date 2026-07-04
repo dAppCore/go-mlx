@@ -7,8 +7,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/inference/profile"
 )
 
 // Config captures the config fields needed before the native sparse

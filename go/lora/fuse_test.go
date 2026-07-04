@@ -6,7 +6,7 @@ import (
 	"context"
 	core "dappco.re/go"
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
 	"math"
 	"testing"

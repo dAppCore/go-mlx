@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/artifact"
+	"dappco.re/go/inference/artifact"
 	"dappco.re/go/mlx/internal/sessionfake"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 // TestArtifact_ExportArtifacts_Good captures the retained KV state and

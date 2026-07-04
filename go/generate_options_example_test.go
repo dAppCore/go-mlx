@@ -4,7 +4,7 @@ package mlx
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 func ExampleWithSuppressTokens() {

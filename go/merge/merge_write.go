@@ -11,7 +11,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func writeMergedSafetensors(ctx context.Context, path string, indexes []safetensors.Index, method Method, t float64, sources []Source, allowMismatch bool) (int, int, []string, error) {

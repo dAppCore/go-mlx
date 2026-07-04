@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/model"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/spine"
 )

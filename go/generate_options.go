@@ -5,7 +5,7 @@ package mlx
 import (
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 )
 

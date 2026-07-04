@@ -6,15 +6,15 @@ import (
 	"context"
 	"iter"
 
-	"dappco.re/go/mlx/blockcache"
+	"dappco.re/go/inference/blockcache"
 	"dappco.re/go/mlx/kvconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
-	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/spine"
 )

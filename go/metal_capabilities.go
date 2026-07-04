@@ -7,11 +7,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // metal_capabilities.go: the backend capability report plus the device/runtime

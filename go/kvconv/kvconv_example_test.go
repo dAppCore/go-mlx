@@ -5,7 +5,7 @@ package kvconv_test
 import (
 	"fmt"
 
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 )

@@ -7,9 +7,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/model/minimax/m2"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {

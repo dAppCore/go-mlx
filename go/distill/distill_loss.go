@@ -9,7 +9,7 @@ import (
 
 	core "dappco.re/go"
 	distillinf "dappco.re/go/inference/distill"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // distillTempStringCache holds the most recently formatted

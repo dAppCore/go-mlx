@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // Sinks defeat compiler DCE.

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 func TestM2Route_RouteTokens_Good(t *testing.T) {

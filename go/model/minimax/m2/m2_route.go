@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // RouteTokens computes deterministic top-k router decisions for a

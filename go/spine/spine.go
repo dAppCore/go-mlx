@@ -13,7 +13,7 @@ package spine
 
 import (
 	"dappco.re/go/inference/parser"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // GenerateConfig holds generation parameters for the RFC-style root API.

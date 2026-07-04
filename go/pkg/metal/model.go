@@ -8,7 +8,7 @@ import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 // InternalModel is the common interface for all transformer model architectures.

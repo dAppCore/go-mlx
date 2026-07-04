@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // TestMerge_Packs_Good is the canonical AX-7 happy-path triplet leg for the

@@ -14,7 +14,7 @@ import (
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/spine"

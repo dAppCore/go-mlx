@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func TestMarshalMergedHeaderParity(t *testing.T) {

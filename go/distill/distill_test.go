@@ -12,7 +12,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // --- test fixtures shared across the distill.go-prefix tests -----------------

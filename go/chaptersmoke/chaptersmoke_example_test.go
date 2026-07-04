@@ -9,7 +9,7 @@ import (
 
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/chaptersmoke"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 // exampleSnapshot is a tiny single-layer KV snapshot — enough to write real

@@ -8,7 +8,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // load_options.go: LoadConfig and its WithX LoadOption functional options —

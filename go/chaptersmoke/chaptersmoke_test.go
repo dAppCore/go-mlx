@@ -11,8 +11,8 @@ import (
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
-	"dappco.re/go/mlx/blockcache"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/blockcache"
+	"dappco.re/go/inference/kv"
 )
 
 func TestRun_Good_FileBackedChapterRestart(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal"
 	mlxsession "dappco.re/go/mlx/session"
 	"dappco.re/go/mlx/spine"

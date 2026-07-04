@@ -12,7 +12,7 @@ import (
 	core "dappco.re/go"
 	distillinf "dappco.re/go/inference/distill"
 	"dappco.re/go/inference/eval"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 const DistillCheckpointMetadataVersion = 1

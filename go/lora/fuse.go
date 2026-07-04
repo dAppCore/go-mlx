@@ -5,9 +5,9 @@ package lora
 import (
 	"context"
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 	"slices"
 	"strings"
 )

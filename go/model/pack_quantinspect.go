@@ -7,8 +7,8 @@ import (
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/gguf"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/quant/autoround"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/quant/autoround"
 )
 
 func inspectModelPackJANG(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {

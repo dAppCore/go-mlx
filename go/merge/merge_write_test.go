@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func TestModelMerge_WriteLinearMergedTensorChunksGood(t *testing.T) {

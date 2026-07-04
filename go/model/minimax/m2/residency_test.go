@@ -8,8 +8,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/memory"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/memory"
+	"dappco.re/go/inference/probe"
 )
 
 func TestResidency_PlanResidency_Good(t *testing.T) {

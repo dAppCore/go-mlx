@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // TestDeriveAffineBits_CleanButOutOfRange pins the `bits < 1 || bits > 8`

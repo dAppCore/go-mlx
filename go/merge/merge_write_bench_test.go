@@ -21,7 +21,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 func BenchmarkLinearMerge_1024Elements(b *testing.B) {

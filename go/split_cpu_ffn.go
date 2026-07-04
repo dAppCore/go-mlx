@@ -10,8 +10,8 @@ import (
 	core "dappco.re/go"
 	infjang "dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/model"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/safetensors"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/safetensors"
 )
 
 // CPUSplitFFNConfig configures the CPU-side FFN executor.

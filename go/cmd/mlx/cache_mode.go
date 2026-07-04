@@ -4,7 +4,7 @@ package main
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 const cacheModeFlagUsage = "override KV cache mode: fp16, q8, k-q8-v-q4, paged, or turboquant"

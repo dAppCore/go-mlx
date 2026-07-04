@@ -9,8 +9,8 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/profile"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/profile"
 )
 
 // Inspect validates a local model directory or GGUF file without loading weights.

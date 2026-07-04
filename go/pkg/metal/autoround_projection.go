@@ -6,7 +6,7 @@ package metal
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/quant/autoround"
+	"dappco.re/go/inference/quant/autoround"
 )
 
 // AutoRoundPackedProjectionLinearFused executes a loaded AutoRound packed

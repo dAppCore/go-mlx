@@ -5,7 +5,7 @@ package main
 import (
 	"testing"
 
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // TestCacheMode_ParseRuntimeCacheMode_Good — a recognised mode parses,

@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
-	"dappco.re/go/mlx/bundle"
+	"dappco.re/go/inference/bundle"
 	"dappco.re/go/mlx/chat"
 )
 

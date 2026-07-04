@@ -8,7 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/model"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // ExampleResolveQuant detects a model's quantisation from its own bytes — the

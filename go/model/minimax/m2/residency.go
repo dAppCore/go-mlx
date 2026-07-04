@@ -8,8 +8,8 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/memory"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/memory"
+	"dappco.re/go/inference/probe"
 )
 
 // ResidencyLoader loads one packed routed expert for a layer.

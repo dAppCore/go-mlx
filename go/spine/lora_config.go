@@ -5,7 +5,7 @@ package spine
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.

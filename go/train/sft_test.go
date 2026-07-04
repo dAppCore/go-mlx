@@ -11,8 +11,8 @@ import (
 	coreio "dappco.re/go/io"
 
 	"dappco.re/go/mlx/chat"
-	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/inference/profile"
 	"dappco.re/go/mlx/spine"
 )
 

@@ -5,7 +5,7 @@ package m2
 import (
 	"testing"
 
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // BenchmarkDecisionExpertIDs covers the flatten + pre-size path used when

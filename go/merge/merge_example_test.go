@@ -7,7 +7,7 @@ import (
 
 	core "dappco.re/go"
 	sharedsafetensors "dappco.re/go/inference/safetensors"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // ExamplePacks merges two single-tensor safetensors model packs with a linear

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/profile"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/profile"
 )
 
 type fakeHFModelSource struct {

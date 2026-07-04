@@ -8,7 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 func TestM2Metal_DispatchPackedExpertsMetal_Good(t *testing.T) {

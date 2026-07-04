@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // Sinks defeat compiler DCE.

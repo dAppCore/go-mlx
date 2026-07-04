@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/internal/sessionfake"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 func TestModelNewSession_Good(t *testing.T) {

@@ -4,7 +4,7 @@ package model
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 // QuantFormat names a model's quantisation scheme, loader-neutral — the same

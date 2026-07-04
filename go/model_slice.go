@@ -9,8 +9,8 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/model"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/safetensors"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/safetensors"
 )
 
 const modelSliceManifestVersion = "go-mlx.model-slice.v1"

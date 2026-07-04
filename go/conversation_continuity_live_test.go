@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/kv"
 )
 
 // TestConversationContinuity_LiveModel proves the no-prompt-replay loop on a

@@ -14,11 +14,11 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
-	"dappco.re/go/mlx/kv"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/inference/memory"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 )
 
 // Determinism probes for the bf16 activation stream. Greedy decode must be

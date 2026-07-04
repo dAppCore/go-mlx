@@ -10,7 +10,7 @@ import (
 	"dappco.re/go/inference/decode"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/internal/metaltest"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	gemma4chat "dappco.re/go/mlx/pkg/model/gemma4/chat"

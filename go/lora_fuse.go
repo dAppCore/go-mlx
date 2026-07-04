@@ -8,7 +8,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/lora"
 	modelinspect "dappco.re/go/mlx/model"
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 )
 
 // ModelPack summarises whether a local model directory is natively loadable.

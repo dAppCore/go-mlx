@@ -17,7 +17,7 @@ package train
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 )
 

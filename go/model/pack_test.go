@@ -12,9 +12,9 @@ import (
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/profile"
-	"dappco.re/go/mlx/quant/autoround"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/profile"
+	"dappco.re/go/inference/quant/autoround"
 )
 
 const modelPackTokenizerJSON = `{

@@ -10,8 +10,8 @@ import (
 
 	core "dappco.re/go"
 	sharedmerge "dappco.re/go/inference/merge"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/safetensors"
+	mp "dappco.re/go/inference/modelpack"
+	"dappco.re/go/inference/safetensors"
 )
 
 // indexSinglePackTensor is a small local helper that writes a one-tensor F32

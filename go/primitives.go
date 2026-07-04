@@ -7,7 +7,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"dappco.re/go/mlx/spine"
 )
 

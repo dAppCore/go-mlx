@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
-	"dappco.re/go/mlx/safetensors"
+	"dappco.re/go/inference/safetensors"
 )
 
 const cliTokenizerJSON = `{

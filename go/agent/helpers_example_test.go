@@ -5,7 +5,7 @@ package agent
 import (
 	"fmt"
 
-	"dappco.re/go/mlx/bundle"
+	"dappco.re/go/inference/bundle"
 )
 
 // Example_stateHash shows the canonical state-bundle hashing helper —

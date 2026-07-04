@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 func TestMetalBackend_ImplementsDiscoveryPlanner_Good(t *testing.T) {

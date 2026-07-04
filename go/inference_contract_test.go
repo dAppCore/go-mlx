@@ -6,7 +6,7 @@ import (
 	"context"
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 	"slices"
 	"testing"
 
@@ -16,8 +16,8 @@ import (
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/inference/profile"
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {

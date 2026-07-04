@@ -4,7 +4,7 @@ package agent
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/bundle"
+	"dappco.re/go/inference/bundle"
 )
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.

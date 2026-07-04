@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pack"
+	pack "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
 )
 

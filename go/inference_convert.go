@@ -6,14 +6,14 @@ import (
 	"strconv"
 
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/inference/probe"
 	"reflect"
 )
 

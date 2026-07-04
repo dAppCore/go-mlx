@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/memory"
+	"dappco.re/go/inference/memory"
 )
 
 // TestHfFit_PlanFits_Good is the canonical happy-path triplet entry: a single

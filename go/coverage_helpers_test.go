@@ -18,7 +18,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
-	mp "dappco.re/go/mlx/pack"
+	mp "dappco.re/go/inference/modelpack"
 	"dappco.re/go/mlx/pkg/metal"
 )
 

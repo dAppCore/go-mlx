@@ -21,7 +21,7 @@ import (
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/native"
 	pkgtokenizer "dappco.re/go/mlx/pkg/tokenizer"
-	"dappco.re/go/mlx/profile"
+	"dappco.re/go/inference/profile"
 )
 
 func TestNativeTextModel_FormatGemmaChat_Good(t *testing.T) {

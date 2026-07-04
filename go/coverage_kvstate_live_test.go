@@ -8,8 +8,8 @@ import (
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/inference/bundle"
+	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/spine"
 )
 
