@@ -1,0 +1,108 @@
+---
+version: '3'
+vars:
+  GO_BUILD_CACHE: '{{default "/private/tmp/codex-go-mlx-cache" .GOCACHE}}'
+  GO_DARWIN_LDFLAGS: '-extldflags=-mmacosx-version-min=26.0'
+env:
+  MLX_METALLIB_PATH: '{{.ROOT_DIR}}/dist/lib/mlx.metallib'
+  GO_MLX_BENCH_MODEL: 'google/gemma-4-e2b-it'
+tasks:
+  build:
+    desc: Build core-mlx CLI to bin/
+    dir: go
+    cmds:
+      - mkdir -p ../bin {{.GO_BUILD_CACHE}}
+      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/core-mlx ./cmd/mlx/
+  build:lthn:
+    desc: "Build lthn-mlx to bin/ — self-contained (embeds gzipped metallib) when dist/lib/mlx.metallib is present, else lean (external metallib resolution)"
+    dir: go
+    cmds:
+      - mkdir -p ../bin {{.GO_BUILD_CACHE}}
+      - |-
+        set -e
+        if [ -f ../dist/lib/mlx.metallib ]; then
+          if [ ! -f cmd/mlx/mlx.metallib.gz ] || [ ../dist/lib/mlx.metallib -nt cmd/mlx/mlx.metallib.gz ]; then
+            gzip -9 -c ../dist/lib/mlx.metallib > cmd/mlx/mlx.metallib.gz
+          fi
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -tags embed_metallib -o ../bin/lthn-mlx ./cmd/mlx/
+          echo "  lthn-mlx: self-contained ($(du -h cmd/mlx/mlx.metallib.gz | cut -f1) metallib embedded)"
+        else
+          echo "  lthn-mlx: no metallib at dist/lib/mlx.metallib — building lean (external resolution)"
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
+        fi
+  build:lthn:lean:
+    desc: "Build lthn-mlx to bin/ WITHOUT the embedded metallib — for .app bundles shipping Contents/Resources/mlx.metallib (NSBundle resolution; verify: discover -probe-device → kernel=ok)"
+    dir: go
+    cmds:
+      - mkdir -p ../bin {{.GO_BUILD_CACHE}}
+      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
+      - 'echo "  lthn-mlx: lean (bundle ships Resources/mlx.metallib; nothing extracts at launch)"'
+  build:kernels:
+    desc: "Compile go-mlx's own Metal kernels (pkg/native/kernels/*.metal) into dist/lib/lthn_kernels.metallib — the fused gelu etc. the native engine loads beside mlx.metallib (external/dev resolution; embedded binaries need the metallib embedded separately)"
+    dir: go
+    cmds:
+      - mkdir -p ../dist/lib
+      - |-
+        set -e
+        airs=""
+        for m in pkg/native/kernels/*.metal; do
+          air="/tmp/$(basename "${m%.metal}").air"
+          xcrun -sdk macosx metal -std=metal4.0 -I ../lib/mlx -c "$m" -o "$air"
+          airs="$airs $air"
+        done
+        xcrun -sdk macosx metallib $airs -o ../dist/lib/lthn_kernels.metallib
+        echo "  lthn_kernels.metallib: $(ls -1 pkg/native/kernels/*.metal | wc -l | tr -d ' ') kernel(s) -> dist/lib/lthn_kernels.metallib"
+  build:bundle:
+    desc: Build binaries for the LTHN app/CLI/server bundle
+    cmds:
+      - task: build:lthn
+      - task: build:violet
+  test:
+    dir: go
+    cmds:
+      - env GOCACHE={{.GO_BUILD_CACHE}} go test -tags metal_runtime -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./...
+  qa:
+    dir: go
+    cmds:
+      - go fmt ./...
+      - env GOCACHE={{.GO_BUILD_CACHE}} go vet ./...
+      - task: test
+  cov:
+    desc: "Go coverage with the metal_runtime engine included — the real figure (~80%). Writes /tmp/go-mlx-coverage.out and prints the total."
+    dir: go
+    cmds:
+      - env GOCACHE={{.GO_BUILD_CACHE}} go test -tags 'metal_runtime model_eval' -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./... -coverprofile=/tmp/go-mlx-coverage.out -covermode=atomic
+      - go tool cover -func=/tmp/go-mlx-coverage.out | tail -1
+  test:cpp:
+    desc: "Native MLX C++ test suite — builds the PATCHED lib/mlx STANDALONE. The main build can't reach these: mlx-c force-disables MLX_BUILD_TESTS (lib/mlx-c/CMakeLists.txt), so the only way to exercise the patched kernels at C++ level is to build lib/mlx as its own top project. First run cold-builds MLX (~15 min); then incremental. 7 known reds as of 588f627d — see docs/cpp-test-status.md."
+    cmds:
+      - cmake -S lib/mlx -B build/cpptest -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+      - cmake --build build/cpptest --parallel $(sysctl -n hw.ncpu)
+      - ctest --test-dir build/cpptest --output-on-failure
+  bench:cpp:
+    desc: "Native MLX C++ benchmarks (single_ops, irregular_strides, autograd, compare_devices) — op-level GPU/CPU timings for the patched kernels. Shares the build/cpptest dir with test:cpp."
+    cmds:
+      - cmake -S lib/mlx -B build/cpptest -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+      - cmake --build build/cpptest --parallel $(sysctl -n hw.ncpu)
+      - for b in single_ops irregular_strides autograd compare_devices; do echo "=== $b ==="; ./build/cpptest/benchmarks/cpp/$b; done
+  cov:cpp:
+    desc: "Native MLX C++ coverage (clang source-based) — configures the STANDALONE lib/mlx (same flags as test:cpp) with -fprofile-instr-generate -fcoverage-mapping in CMAKE_CXX_FLAGS so every mlx-library TU the `tests` binary links is instrumented, then scripts/cpp-coverage.sh runs the test binary directly under LLVM_PROFILE_FILE (excluding scheduler_tests.cpp — the 3 stream-in-threads reds that SIGABRT before clang flushes), merges (llvm-profdata --failure-mode=warn) and prints overall regions/functions/lines/branches % + the biggest-uncovered native sources under lib/mlx/mlx/. Uses build/cppcov (separate from test:cpp's build/cpptest so the instrumented build never poisons the plain test/bench cache). First run cold-builds MLX (~15 min); then incremental. See docs/cpp-test-status.md for the reds."
+    cmds:
+      - cmake -S lib/mlx -B build/cppcov -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate -fcoverage-mapping"
+      - cmake --build build/cppcov --parallel $(sysctl -n hw.ncpu)
+      - sh scripts/cpp-coverage.sh build/cppcov
+  test:cpp:kernels:
+    desc: "C++ tests for go-mlx's OWN Metal kernels (go/pkg/metal/*_bridge.cpp — the fused single-token decode #65/#90/#91/#93 and fused q4 lm-head+top-k #95), NOT the vendored MLX. A SEPARATE doctest target (tests/cpp) that compiles the bridge sources and links the libmlx.a + metallib that `task cov:cpp` (or test:cpp) already built — needs build/cppcov present. Asserts each fused kernel == its unfused reference (dequant→matmul→argsort for top-k; rms_norm→matmul→softcap/argmax/suppress for the decode tail). Uses build/cppkernels."
+    cmds:
+      - cmake -S tests/cpp -B build/cppkernels -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build/cppkernels --parallel $(sysctl -n hw.ncpu)
+      - ctest --test-dir build/cppkernels --output-on-failure
+  cov:cpp:kernels:
+    desc: "Coverage for go-mlx's OWN Metal-kernel bridges (go/pkg/metal/*_bridge.cpp). The vendored-MLX cov:cpp CANNOT see these — it reports against the lib/mlx `tests` binary (never links go/pkg/metal) and is scoped to lib/mlx/mlx/, so the custom kernels showed 0%. This builds the tests/cpp target with the bridge sources instrumented, runs them, and reports llvm-cov FILTERED to the bridge files only. Needs build/cppcov present (libmlx.a + metallib). See scripts/cpp-kernel-coverage.sh."
+    cmds:
+      - cmake -S tests/cpp -B build/cppkernels -DCMAKE_BUILD_TYPE=Release -DGOMLX_KERNEL_COVERAGE=ON
+      - cmake --build build/cppkernels --parallel $(sysctl -n hw.ncpu)
+      - sh scripts/cpp-kernel-coverage.sh build/cppkernels build/cppcov
+  clean:
+    cmds:
+      - rm -rf bin/ build/cpptest build/cppcov build/cppkernels

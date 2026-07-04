@@ -38,7 +38,7 @@ When loading a directory, it must contain:
 
 ```go
 m, err := inference.LoadModel("/path/to/model/",
-    inference.WithContextLen(262144),         // larger Qwen-class context; default is 131072
+    inference.WithContextLen(262144),         // larger Qwen-class context; default is 131072 (128Ki)
     inference.WithParallelSlots(1),           // default: one foreground native request
     inference.WithAdapterPath("/path/to/lora/"), // load LoRA adapter at init
 )
@@ -46,7 +46,7 @@ m, err := inference.LoadModel("/path/to/model/",
 
 | Option | Effect |
 |--------|--------|
-| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)`; Metal defaults to 131072 |
+| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)`; Metal defaults to `131072` (`128Ki` tokens) |
 | `WithParallelSlots(n)` | Caps concurrent native inference calls per loaded model; Metal defaults to 1 |
 | `WithAdapterPath(dir)` | Loads a trained LoRA adapter from the given directory |
 | `WithGPULayers(n)` | Ignored with a warning -- Metal always uses full GPU offload |
@@ -97,7 +97,7 @@ Gemma 4 chat formatting follows the same turn template as Gemma 3.
 
 ### Qwen 3 / Qwen 2 / Llama 3
 
-**Config values:** `qwen3`, `qwen2`, `llama`
+**Config values:** `qwen3`, `qwen3_next`, `qwen2`, `llama`
 
 These three architectures share one loader (`LoadQwen3`) and one decoder implementation. Decoder structure per layer (standard pre-norm):
 
@@ -115,6 +115,16 @@ input -> InputNorm    -> Attention -> residual add
 MLP: SwiGLU gate -- `down(silu(gate(x)) * up(x))`.
 
 Qwen 2 vs Qwen 3 detection: if `model_type` is absent, the presence of `model.layers.0.self_attn.q_norm.weight` in the weights distinguishes Qwen 3 (present) from Qwen 2 (absent).
+
+Qwen 2.5 checkpoints are canonicalised to `qwen2` and use the same native decoder. The loader also recognises `Qwen2.5ForCausalLM` / `qwen2.5` aliases when inspecting model packs.
+
+### Qwen 3.6
+
+**Config values:** `qwen3_6`, `qwen3_6_moe`
+
+Qwen 3.6 configs use Qwen chat formatting and are recognised as supported model-pack metadata. Native Go generation is intentionally gated because current Qwen 3.6 MLX configs expose hybrid `linear_attention` / full-attention layer schedules, and the native decoder only implements the dense Qwen 2/3 attention path today.
+
+`PlanLocalTuning` keeps `qwen3_6` and `qwen3_6_moe` candidates on the Metal runtime with `native_runtime=false` and explicit native-gap warnings. It does not route them to `mlx_lm` automatically; native hybrid linear-attention kernels and sparse expert routing must land before these families satisfy native generation.
 
 ## Weight Loading
 

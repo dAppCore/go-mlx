@@ -6,17 +6,14 @@ import (
 	"bufio"
 	"context"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
 	core "dappco.re/go"
 )
 
-func TestServer_Listen_Good(t *testing.T) {
-	coverageTokens := "Listen"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
+func TestServer_Listen_Good_LiveSocket(t *testing.T) {
 	socketPath, cancel, done := startTestServer(t)
 	defer stopTestServer(t, cancel, done)
 
@@ -96,7 +93,7 @@ func TestServer_Listen_Ugly_ExistingNonSocket(t *testing.T) {
 	}
 }
 
-func TestNewServer_ConfigCloneAndDefaults_Good(t *testing.T) {
+func TestNewServer_ConfigCloneAndDefaults_Good_ClonesAndDefaults(t *testing.T) {
 	modelPaths := map[string]string{"default": "/models/qwen"}
 	server := NewServer(ServerConfig{ModelPaths: modelPaths})
 	modelPaths["default"] = "/mutated"
@@ -146,7 +143,7 @@ func TestCloseGenerateBackend_Good(t *testing.T) {
 	}
 }
 
-func TestServer_ResolvedSocketPathAndDefaults_Good(t *testing.T) {
+func TestServer_ResolvedSocketPathAndDefaults_Good_Fallbacks(t *testing.T) {
 	socketPath := core.PathJoin(t.TempDir(), "violet.sock")
 	server := &Server{SocketPath: socketPath}
 	got, err := server.resolvedSocketPath()
@@ -164,9 +161,26 @@ func TestServer_ResolvedSocketPathAndDefaults_Good(t *testing.T) {
 	if defaultPath == "" || !core.Contains(defaultPath, "violet.sock") {
 		t.Fatalf("DefaultSocketPath() = %q, want violet.sock path", defaultPath)
 	}
+
+	// A nil server and an empty SocketPath both fall through to the default path.
+	var nilServer *Server
+	nilPath, err := nilServer.resolvedSocketPath()
+	if err != nil {
+		t.Fatalf("resolvedSocketPath(nil server): %v", err)
+	}
+	if nilPath != defaultPath {
+		t.Fatalf("resolvedSocketPath(nil) = %q, want default %q", nilPath, defaultPath)
+	}
+	emptyPath, err := (&Server{}).resolvedSocketPath()
+	if err != nil {
+		t.Fatalf("resolvedSocketPath(empty): %v", err)
+	}
+	if emptyPath != defaultPath {
+		t.Fatalf("resolvedSocketPath(empty) = %q, want default %q", emptyPath, defaultPath)
+	}
 }
 
-func TestPrepareSocketPath_Validation_Bad(t *testing.T) {
+func TestPrepareSocketPath_Validation_Bad_EmptyAndStale(t *testing.T) {
 	if err := prepareSocketPath(""); err == nil {
 		t.Fatal("expected empty socket path error")
 	}
@@ -219,6 +233,19 @@ func TestWriteJSONLineAndRemovePath_Bad(t *testing.T) {
 	if err := daemonResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "daemon operation failed") {
 		t.Fatalf("daemonResultError(non-error) = %v", err)
 	}
+}
+
+// shortSocketPath returns a socket path under /tmp (not t.TempDir, whose
+// /var/folders/... prefix on macOS overflows the 104-byte sun_path limit).
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dirResult := core.MkdirTemp("/tmp", "violet-daemon-*")
+	if !dirResult.OK {
+		t.Fatalf("create short temp dir: %v", dirResult.Value)
+	}
+	dir := dirResult.Value.(string)
+	t.Cleanup(func() { core.RemoveAll(dir) })
+	return core.PathJoin(dir, "violet.sock")
 }
 
 func startTestServer(t *testing.T) (string, context.CancelFunc, <-chan error) {
@@ -330,114 +357,163 @@ func containsAction(raw any, action string) bool {
 	return false
 }
 
-// Generated file-aware compliance coverage.
+// --- v0.9.0 canonical AX-7 triplets (file prefix: Server) -------------------
+// Test<Server>_<Symbol>_{Good,Bad,Ugly}. The Listen scenario tests above stay
+// as the live-socket coverage; these canonical entries each name their symbol
+// directly so the audit can tie the test to its subject.
+
 func TestServer_NewServer_Good(t *testing.T) {
-	target := "NewServer"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	modelPaths := map[string]string{"default": "/models/qwen"}
+	server := NewServer(ServerConfig{ModelPaths: modelPaths})
+	if server == nil {
+		t.Fatal("NewServer() = nil, want server")
 	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
+	if server.Registry == nil {
+		t.Fatal("NewServer() Registry = nil, want default registry")
+	}
+	if server.GenerateBackend == nil {
+		t.Fatal("NewServer() GenerateBackend = nil, want native backend for configured paths")
 	}
 }
 
 func TestServer_NewServer_Bad(t *testing.T) {
-	target := "NewServer"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	// Not an error path: an empty config is degenerate input. NewServer must
+	// still return a usable server with the default registry and no backend
+	// (no model paths configured), never nil.
+	server := NewServer(ServerConfig{})
+	if server == nil {
+		t.Fatal("NewServer(empty) = nil, want server")
 	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
+	if server.Registry == nil {
+		t.Fatal("NewServer(empty) Registry = nil, want default registry")
+	}
+	if server.GenerateBackend != nil {
+		t.Fatalf("NewServer(empty) GenerateBackend = %v, want nil with no model paths", server.GenerateBackend)
 	}
 }
 
 func TestServer_NewServer_Ugly(t *testing.T) {
-	target := "NewServer"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
+	// NewServer must clone the caller's ModelPaths map — mutating it after
+	// construction must not change the server's recorded paths.
+	modelPaths := map[string]string{"default": "/models/qwen"}
+	server := NewServer(ServerConfig{ModelPaths: modelPaths})
+	modelPaths["default"] = "/mutated"
+	if server.ModelPaths["default"] != "/models/qwen" {
+		t.Fatalf("NewServer did not clone ModelPaths: %+v", server.ModelPaths)
 	}
 }
 
 func TestServer_Server_ListenAndServe_Good(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
+	socketPath := shortSocketPath(t)
+	server := NewServer(ServerConfig{SocketPath: socketPath, Registry: NewRegistry(DaemonName, "test")})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.ListenAndServe(ctx) }()
+	waitForSocket(t, socketPath)
+
+	resp := sendFrame(t, socketPath, `{"action":"info"}`)
+	if resp["name"] != DaemonName {
+		t.Fatalf("name = %v, want %s", resp["name"], DaemonName)
 	}
-	target := "Server_ListenAndServe"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListenAndServe shutdown error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe did not return after cancel")
 	}
 }
 
 func TestServer_Server_ListenAndServe_Bad(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
+	// An existing non-socket file at the path must make ListenAndServe refuse
+	// rather than clobber it.
+	socketPath := core.PathJoin(t.TempDir(), "violet.sock")
+	if result := core.WriteFile(socketPath, []byte("not a socket"), 0o600); !result.OK {
+		t.Fatalf("write existing file: %v", result.Value)
 	}
-	target := "Server_ListenAndServe"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	err := NewServer(ServerConfig{SocketPath: socketPath}).ListenAndServe(context.Background())
+	if err == nil {
+		t.Fatal("ListenAndServe over a non-socket returned nil, want error")
 	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
+	if !core.Contains(err.Error(), "refusing to replace non-socket") {
+		t.Fatalf("ListenAndServe error = %v, want non-socket refusal", err)
 	}
 }
 
 func TestServer_Server_ListenAndServe_Ugly(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	target := "Server_ListenAndServe"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
+	// An already-cancelled context: ListenAndServe must bind, observe the dead
+	// context, and shut down cleanly with a nil error rather than hang.
+	socketPath := shortSocketPath(t)
+	server := NewServer(ServerConfig{SocketPath: socketPath, Registry: NewRegistry(DaemonName, "test")})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- server.ListenAndServe(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListenAndServe(cancelled ctx) = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe did not return for a pre-cancelled context")
 	}
 }
 
 func TestServer_DefaultSocketPath_Good(t *testing.T) {
-	target := "DefaultSocketPath"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	path, err := DefaultSocketPath()
+	if err != nil {
+		t.Fatalf("DefaultSocketPath() error = %v", err)
 	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
+	if path == "" {
+		t.Fatal("DefaultSocketPath() = empty, want a path")
+	}
+	if core.PathBase(path) != "violet.sock" {
+		t.Fatalf("DefaultSocketPath() basename = %q, want violet.sock", core.PathBase(path))
 	}
 }
 
 func TestServer_DefaultSocketPath_Bad(t *testing.T) {
-	target := "DefaultSocketPath"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	// On Linux the path derives from XDG_RUNTIME_DIR; with it unset
+	// DefaultSocketPath must error. On darwin the home dir always resolves, so
+	// the function cannot fail there — assert the no-error contract instead.
+	if runtime.GOOS == "darwin" {
+		if _, err := DefaultSocketPath(); err != nil {
+			t.Fatalf("DefaultSocketPath() on darwin error = %v, want nil", err)
+		}
+		return
 	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if _, err := DefaultSocketPath(); err == nil {
+		t.Fatal("DefaultSocketPath() with XDG_RUNTIME_DIR unset returned nil error, want error")
 	}
 }
 
 func TestServer_DefaultSocketPath_Ugly(t *testing.T) {
-	target := "DefaultSocketPath"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+	// A weird-but-set XDG_RUNTIME_DIR (Linux) must be honoured verbatim under
+	// the ofm/violet.sock suffix. On darwin XDG is ignored, so assert the
+	// returned path still lands under the ofm cache dir.
+	if runtime.GOOS != "darwin" {
+		t.Setenv("XDG_RUNTIME_DIR", "/tmp/weird runtime")
+		path, err := DefaultSocketPath()
+		if err != nil {
+			t.Fatalf("DefaultSocketPath() error = %v", err)
+		}
+		if !core.Contains(path, "/tmp/weird runtime") || core.PathBase(path) != "violet.sock" {
+			t.Fatalf("DefaultSocketPath() = %q, want it under the set XDG dir", path)
+		}
+		return
 	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
+	path, err := DefaultSocketPath()
+	if err != nil {
+		t.Fatalf("DefaultSocketPath() error = %v", err)
+	}
+	if !core.Contains(path, "ofm") || core.PathBase(path) != "violet.sock" {
+		t.Fatalf("DefaultSocketPath() = %q, want an ofm/violet.sock path", path)
 	}
 }

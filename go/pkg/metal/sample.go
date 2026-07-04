@@ -1,0 +1,932 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"math"
+	"math/rand/v2"
+	"runtime"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unsafe"
+
+	core "dappco.re/go"
+)
+
+// SuppressIDsScratch is a pooled []int32 buffer reused for dedup +
+// validity-filter inside suppressTokenLogits and hostUnsuppressedGreedyToken.
+// These fire per-token when the suppression guard activates, so eliminating
+// the map[int32]bool + slice growth pair pays back across the generation.
+var SuppressIDsScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 0, 64)
+		return &buf
+	},
+}
+
+// Sampler transforms logits into a sampled token index.
+//
+//	s := newSampler(0.7, 0.9, 0, 40) // temp=0.7, topP=0.9, minP=0, topK=40
+//	tokenID := s.Sample(logits)
+type Sampler interface {
+	Sample(logits *Array) *Array
+}
+
+type samplerCloser interface {
+	Close()
+}
+
+func CloseSampler(s Sampler) {
+	if closer, ok := s.(samplerCloser); ok {
+		closer.Close()
+	}
+}
+
+// SamplerKeys derives a distinct explicit PRNG key per categorical draw.
+// Draws under the implicit default key are NOT independent across separate
+// graph evaluations — and inside a compiled sampler the default key is baked
+// into the trace, so every execution repeats the SAME draw (observed: the
+// compiled top-k/top-p lane returning one fixed token 16/16 times from
+// uniform logits). One SamplerKeys is shared by all samplers of a single
+// generation so every drawn token consumes a distinct key.
+type SamplerKeys struct {
+	root uint64
+	ctr  atomic.Uint64
+}
+
+// NewSamplerKeys returns a seeded key sequence: the same seed replays the
+// same draw sequence (per-request reproducibility without touching the
+// process-global mlx_random_seed state other requests share).
+//
+//	keys := metal.NewSamplerKeys(cfg.Seed)
+func NewSamplerKeys(seed uint64) *SamplerKeys {
+	return &SamplerKeys{root: seed}
+}
+
+// newRandomSamplerKeys returns an unseeded per-generation key sequence.
+func newRandomSamplerKeys() *SamplerKeys {
+	return &SamplerKeys{root: rand.Uint64()}
+}
+
+// Next returns the next explicit PRNG key. The caller owns the returned
+// array and must Free it once the draw that consumed it is built.
+// nil-safe: a nil sequence yields a nil key, which the *WithKey draw
+// helpers treat as the implicit default.
+func (k *SamplerKeys) Next() *Array {
+	if k == nil {
+		return nil
+	}
+	return RandomKey(splitmix64(k.root + k.ctr.Add(1)*0x9E3779B97F4A7C15))
+}
+
+// splitmix64 is the standard SplitMix64 finaliser: consecutive counter
+// values become well-separated 64-bit key seeds (distinct Threefry keys
+// give independent draw streams).
+func splitmix64(x uint64) uint64 {
+	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9
+	x = (x ^ (x >> 27)) * 0x94D049BB133111EB
+	return x ^ (x >> 31)
+}
+
+// newSampler creates a composable sampler chain from the given parameters.
+// Order: Temperature -> TopK -> TopP -> MinP -> categorical sample.
+//
+//	s := newSampler(0, 0, 0, 0)        // Greedy (temp=0)
+//	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
+//	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
+func newSampler(temp, topP, minP float32, topK int) Sampler {
+	return NewSamplerWithSuppressionKeyed(temp, topP, minP, topK, nil, nil)
+}
+
+func NewSamplerWithSuppression(temp, topP, minP float32, topK int, suppressTokens []int32) Sampler {
+	return NewSamplerWithSuppressionKeyed(temp, topP, minP, topK, suppressTokens, nil)
+}
+
+// NewSamplerWithSuppressionKeyed builds the sampler under an explicit
+// per-generation key sequence. nil keys = a fresh random-root sequence:
+// draws are correctly distributed either way; pass seeded keys when the
+// request must be reproducible.
+func NewSamplerWithSuppressionKeyed(temp, topP, minP float32, topK int, suppressTokens []int32, keys *SamplerKeys) Sampler {
+	if keys == nil {
+		keys = newRandomSamplerKeys()
+	}
+	if temp <= 0 && topP <= 0 && minP <= 0 && topK <= 0 && len(suppressTokens) > 0 {
+		return suppressedGreedy{tokens: append([]int32(nil), suppressTokens...)}
+	}
+	samplers := make([]Sampler, 0, 4)
+	if temp > 0 && temp != 1 {
+		samplers = append(samplers, Temperature(temp))
+	}
+	var fusedSuppress *SuppressTokensSampler
+	if len(suppressTokens) > 0 {
+		if topK > 0 && topP > 0 && topP < 1 && minP <= 0 && len(samplers) == 0 {
+			fusedSuppress = &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)}
+		} else {
+			samplers = append(samplers, &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
+		}
+	}
+	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
+		return &topKTopPChain{
+			prefix:   chain{steps: samplers},
+			suppress: fusedSuppress,
+			topK:     topK,
+			topP:     topP,
+			keys:     keys,
+		}
+	}
+	if topP > 0 && topP < 1 {
+		samplers = append(samplers, TopP(topP))
+	}
+	if topK > 0 {
+		samplers = append(samplers, TopKSampler(topK))
+	}
+	if minP > 0 {
+		samplers = append(samplers, MinPSampler(minP))
+	}
+	if len(samplers) == 0 {
+		return Greedy{}
+	}
+	return chain{steps: samplers, keys: keys}
+}
+
+func suppressTokenLogits(logits *Array, ids []int32) *Array {
+	if logits == nil || len(ids) == 0 {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	lastDim := logits.Dim(logits.NumDims() - 1)
+
+	// Build the valid + deduped id set via pooled scratch — replaces
+	// per-call map[int32]bool + slice growth.  Filter pass appends only
+	// in-range non-negative ids, then sort+compact removes duplicates.
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(ids) {
+		scratch = make([]int32, 0, len(ids))
+	}
+	for _, id := range ids {
+		if id < 0 || int(id) >= lastDim {
+			continue
+		}
+		scratch = append(scratch, id)
+	}
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return logits.Clone()
+	}
+	slices.Sort(scratch)
+	valid := slices.Compact(scratch)
+
+	var idxShape [MaxTensorRank]int
+	rank := logits.NumDims()
+	for i := range rank {
+		idxShape[i] = 1
+	}
+	idxShape[rank-1] = len(valid)
+	idx := FromValues(valid, idxShape[:rank]...)
+	inf := FromValue(float32(math.Inf(-1)))
+	if dtype := logits.Dtype(); dtype != DTypeFloat32 {
+		cast := AsType(inf, dtype)
+		Free(inf)
+		inf = cast
+	}
+	res := PutAlongAxis(logits, idx, inf, -1)
+	Free(idx, inf)
+
+	// FromValues has copied valid into MLX memory, scratch is safe to recycle.
+	*scratchPtr = scratch
+	SuppressIDsScratch.Put(scratchPtr)
+	return res
+}
+
+// chain applies a sequence of samplers in order, then draws a categorical
+// sample under the next explicit key (nil keys = implicit default; only the
+// draw-free prefix inside topKTopPChain runs keyless).
+//
+//	chain{steps: []Sampler{Temperature(0.7)}, keys: keys}.Sample(logits)
+type chain struct {
+	steps []Sampler
+	keys  *SamplerKeys
+}
+
+func (c chain) Sample(logits *Array) *Array {
+	curr := logits
+	for _, s := range c.steps {
+		next := s.Sample(curr)
+		if curr != logits {
+			Free(curr)
+		}
+		curr = next
+	}
+	// Final categorical sample from log-probabilities
+	key := c.keys.Next()
+	res := RandomCategoricalWithKey(curr, key)
+	Free(key)
+	if curr != logits {
+		Free(curr)
+	}
+	return res
+}
+
+func (c chain) Close() {
+	for _, s := range c.steps {
+		CloseSampler(s)
+	}
+}
+
+// topKTopPChain samples from a bounded candidate set. It matches the common
+// llama.cpp-style order used by the Gemma 4 production lane: temperature and
+// suppression first, then top-k candidate selection, then top-p within those
+// candidates. That avoids sorting the full 256k-token Gemma vocabulary for
+// every sampled token when top_k is already small.
+type topKTopPChain struct {
+	prefix              chain
+	suppress            *SuppressTokensSampler
+	topK                int
+	topP                float32
+	keys                *SamplerKeys
+	mu                  sync.Mutex
+	compiled            *CompiledFunc
+	compiledLastDim     int
+	compiledDType       DType
+	compiledSuppressID  *Array
+	compiledSuppressInf *Array
+}
+
+func (c *topKTopPChain) Sample(logits *Array) *Array {
+	if c == nil {
+		if logits == nil {
+			return nil
+		}
+		return RandomCategorical(logits)
+	}
+	curr := logits
+	for _, s := range c.prefix.steps {
+		next := s.Sample(curr)
+		if curr != logits {
+			Free(curr)
+		}
+		curr = next
+	}
+	token := c.sampleTopKTopPToken(curr)
+	if curr != logits {
+		Free(curr)
+	}
+	return token
+}
+
+func (c *topKTopPChain) Close() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.compiled != nil {
+		c.compiled.Free()
+		c.compiled = nil
+	}
+	c.compiledLastDim = 0
+	c.compiledDType = 0
+	c.compiledSuppressID = nil
+	c.compiledSuppressInf = nil
+	c.mu.Unlock()
+	CloseSampler(c.prefix)
+	if c.suppress != nil {
+		c.suppress.Close()
+		c.suppress = nil
+	}
+}
+
+// sampleTopKTopPToken draws one token under the supplied explicit key.
+// Inside the compiled sampler the key arrives as a graph INPUT — creating a
+// key (or drawing keyless) in-trace bakes the trace-time RNG state into the
+// graph, repeating the identical draw on every execution.
+func sampleTopKTopPToken(logits *Array, topK int, topP float32, key *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || topK <= 0 || topK >= lastDim {
+		filtered := TopP(topP).Sample(logits)
+		token := RandomCategoricalWithKey(filtered, key)
+		Free(filtered)
+		return token
+	}
+
+	neg := Negative(logits)
+	partitioned := Argpartition(neg, topK-1, -1)
+	Free(neg)
+	topIndices := SliceAxis(partitioned, -1, 0, int32(topK))
+	Free(partitioned)
+
+	topLogits := TakeAlongAxis(logits, topIndices, -1)
+	filtered := TopP(topP).Sample(topLogits)
+	localToken := RandomCategoricalWithKey(filtered, key)
+	localTokenExpanded := ExpandDims(localToken, -1)
+	globalToken2D := TakeAlongAxis(topIndices, localTokenExpanded, -1)
+	globalToken := Reshape1(globalToken2D, 1)
+	Free(topIndices, topLogits, filtered, localToken, localTokenExpanded, globalToken2D)
+	return globalToken
+}
+
+func (c *topKTopPChain) sampleTopKTopPToken(logits *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || c.topK <= 0 || c.topK >= lastDim {
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	if !c.ensureSuppressCache(lastDim, logits.Dtype()) && c.suppress != nil {
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	compiled := c.compiledSampler(lastDim, logits.Dtype())
+	if compiled == nil || !compiled.Valid() {
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	key := c.keys.Next()
+	out := compiled.Call(logits, key)
+	Free(key)
+	if len(out) != 1 {
+		Free(out...)
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	return out[0]
+}
+
+func (c *topKTopPChain) sampleTopKTopPTokenUncompiled(logits *Array, lastDim int) *Array {
+	key := c.keys.Next()
+	defer Free(key)
+	if c.suppress == nil || lastDim <= 0 || !c.suppress.ensureCache(lastDim, logits.Dtype()) {
+		return sampleTopKTopPToken(logits, c.topK, c.topP, key)
+	}
+	suppressed := c.suppress.suppress(logits)
+	token := sampleTopKTopPToken(suppressed, c.topK, c.topP, key)
+	Free(suppressed)
+	return token
+}
+
+func (c *topKTopPChain) ensureSuppressCache(lastDim int, dtype DType) bool {
+	if c.suppress == nil {
+		return true
+	}
+	if c.suppress.lastDim != 0 && (c.suppress.lastDim != lastDim || c.suppress.dtype != dtype) {
+		c.mu.Lock()
+		if c.compiled != nil {
+			c.compiled.Free()
+			c.compiled = nil
+		}
+		c.compiledLastDim = 0
+		c.compiledDType = 0
+		c.compiledSuppressID = nil
+		c.compiledSuppressInf = nil
+		c.mu.Unlock()
+	}
+	return c.suppress.ensureCache(lastDim, dtype)
+}
+
+func (c *topKTopPChain) compiledSampler(lastDim int, dtype DType) *CompiledFunc {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	suppressID, suppressInf := (*Array)(nil), (*Array)(nil)
+	if c.suppress != nil {
+		suppressID = c.suppress.idx
+		suppressInf = c.suppress.inf
+		if suppressID == nil || suppressInf == nil || !suppressID.Valid() || !suppressInf.Valid() {
+			return nil
+		}
+	}
+	if c.compiled != nil && c.compiled.Valid() &&
+		c.compiledLastDim == lastDim && c.compiledDType == dtype &&
+		c.compiledSuppressID == suppressID && c.compiledSuppressInf == suppressInf {
+		return c.compiled
+	}
+	if c.compiled != nil {
+		c.compiled.Free()
+		c.compiled = nil
+	}
+	topK, topP := c.topK, c.topP
+	// The PRNG key is the second compiled INPUT — never created in-trace,
+	// where it would freeze into a constant and repeat the draw per call.
+	c.compiled = CompileShapeless(func(inputs []*Array) []*Array {
+		logits, key := inputs[0], inputs[1]
+		if suppressID != nil && suppressInf != nil {
+			suppressed := PutAlongAxis(logits, suppressID, suppressInf, -1)
+			token := sampleTopKTopPToken(suppressed, topK, topP, key)
+			Free(suppressed)
+			return []*Array{token}
+		}
+		return []*Array{sampleTopKTopPToken(logits, topK, topP, key)}
+	}, false)
+	c.compiledLastDim = lastDim
+	c.compiledDType = dtype
+	c.compiledSuppressID = suppressID
+	c.compiledSuppressInf = suppressInf
+	return c.compiled
+}
+
+// Greedy returns the argmax token (deterministic, no sampling).
+//
+//	Greedy{}.Sample(logits) // picks the single most likely token
+type Greedy struct{}
+
+func (Greedy) Sample(logits *Array) *Array {
+	return Argmax(logits, -1, false)
+}
+
+type suppressedGreedy struct {
+	tokens []int32
+}
+
+func (s suppressedGreedy) Sample(logits *Array) *Array {
+	filtered := suppressTokenLogits(logits, s.tokens)
+	token := Argmax(filtered, -1, false)
+	Free(filtered)
+	return token
+}
+
+type SuppressTokensSampler struct {
+	tokens  []int32
+	idx     *Array
+	inf     *Array
+	lastDim int
+	dtype   DType
+}
+
+func (s *SuppressTokensSampler) Sample(logits *Array) *Array {
+	if s == nil {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	return s.suppress(logits)
+}
+
+func (s *SuppressTokensSampler) Close() {
+	if s == nil {
+		return
+	}
+	Free(s.idx, s.inf)
+	s.idx = nil
+	s.inf = nil
+	s.lastDim = 0
+	s.dtype = 0
+}
+
+func (s *SuppressTokensSampler) suppress(logits *Array) *Array {
+	if logits == nil || len(s.tokens) == 0 {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if !s.ensureCache(lastDim, logits.Dtype()) {
+		return logits.Clone()
+	}
+	return PutAlongAxis(logits, s.idx, s.inf, -1)
+}
+
+func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
+	if lastDim <= 0 {
+		s.Close()
+		return false
+	}
+	if s.idx != nil && s.inf != nil && s.lastDim == lastDim && s.dtype == dtype {
+		return true
+	}
+	s.Close()
+
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(s.tokens) {
+		scratch = make([]int32, 0, len(s.tokens))
+	}
+	for _, id := range s.tokens {
+		if id < 0 || int(id) >= lastDim {
+			continue
+		}
+		scratch = append(scratch, id)
+	}
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return false
+	}
+	slices.Sort(scratch)
+	valid := slices.Compact(scratch)
+
+	idx := FromValues(valid, 1, len(valid))
+	inf := FromValue(float32(math.Inf(-1)))
+	if dtype != DTypeFloat32 {
+		cast := AsType(inf, dtype)
+		Free(inf)
+		inf = cast
+	}
+	if err := Eval(idx, inf); err != nil {
+		Free(idx, inf)
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return false
+	}
+	Detach(idx, inf)
+	s.idx = idx
+	s.inf = inf
+	s.lastDim = lastDim
+	s.dtype = dtype
+
+	*scratchPtr = scratch
+	SuppressIDsScratch.Put(scratchPtr)
+	return true
+}
+
+type sampleTokenTimings struct {
+	Build     time.Duration
+	Eval      time.Duration
+	TokenRead time.Duration
+}
+
+func SampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32) (*Array, error) {
+	next, _, _, err := SampleTokenIDWithSuppressionGuard(logits, sampler, suppressTokens, false)
+	return next, err
+}
+
+func SampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32, trace bool) (*Array, int32, sampleTokenTimings, error) {
+	var timings sampleTokenTimings
+
+	buildStart := sampleTokenTimingStart(trace)
+	next := sampler.Sample(logits)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+
+	evalStart := sampleTokenTimingStart(trace)
+	if err := Eval(next); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+		Free(next)
+		return nil, 0, timings, err
+	}
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	readStart := sampleTokenTimingStart(trace)
+	id := int32(next.Int())
+	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+	if !TokenIDSuppressed(id, suppressTokens) {
+		return next, id, timings, nil
+	}
+	Free(next)
+
+	buildStart = sampleTokenTimingStart(trace)
+	filtered := suppressTokenLogits(logits, suppressTokens)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+
+	evalStart = sampleTokenTimingStart(trace)
+	if err := Eval(filtered); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+		Free(filtered)
+		return nil, 0, timings, err
+	}
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	buildStart = sampleTokenTimingStart(trace)
+	next = Greedy{}.Sample(filtered)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+	Free(filtered)
+
+	evalStart = sampleTokenTimingStart(trace)
+	if err := Eval(next); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+		Free(next)
+		return nil, 0, timings, err
+	}
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	readStart = sampleTokenTimingStart(trace)
+	id = int32(next.Int())
+	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+	if TokenIDSuppressed(id, suppressTokens) {
+		Free(next)
+		buildStart = sampleTokenTimingStart(trace)
+		next, err := hostUnsuppressedGreedyToken(logits, suppressTokens)
+		sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+		if err != nil {
+			return nil, 0, timings, err
+		}
+
+		evalStart = sampleTokenTimingStart(trace)
+		if err := Eval(next); err != nil {
+			sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+			Free(next)
+			return nil, 0, timings, err
+		}
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+		readStart = sampleTokenTimingStart(trace)
+		id = int32(next.Int())
+		sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+		if !TokenIDSuppressed(id, suppressTokens) {
+			return next, id, timings, nil
+		}
+		Free(next)
+		return nil, 0, timings, core.NewError(core.Sprintf("mlx: sampler returned suppressed token %d after suppression guard", id))
+	}
+	return next, id, timings, nil
+}
+
+func sampleTokenTimingStart(trace bool) time.Time {
+	if !trace {
+		return time.Time{}
+	}
+	return time.Now()
+}
+
+func sampleTokenTimingAdd(trace bool, total *time.Duration, start time.Time) {
+	if trace {
+		*total += time.Since(start)
+	}
+}
+
+func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array, error) {
+	if logits == nil || !logits.Valid() {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+
+	// Dedup + sort suppressTokens via pooled scratch so the inner loop can
+	// use binary search instead of a per-call map[int32]bool allocation
+	// (the original cost ~16B/entry + 8 allocs on a Gemma-sized suppress
+	// list).  Per-token hot path — fires whenever the sampler tries a
+	// suppressed id and falls through the guard.
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(suppressTokens) {
+		scratch = make([]int32, 0, len(suppressTokens))
+	}
+	for _, id := range suppressTokens {
+		if id >= 0 {
+			scratch = append(scratch, id)
+		}
+	}
+	slices.Sort(scratch)
+	suppressed := slices.Compact(scratch)
+
+	// Scan logits via a borrowed MLX-memory view rather than copying to a
+	// freshly-allocated Go []float32 (logits.Floats() does make([]float32, n)
+	// + per-element copy — ~1MB on a 258k Gemma vocab).  Argmax is read-only,
+	// no copy needed.  Dtype-convert via AsType if non-float32 so the view
+	// remains float32-typed.
+	//
+	// Stays on the legacy materialiseFloat32View helper rather than the
+	// W11-AE fast-path because callers may pass lazy (un-Eval'd) logits —
+	// the slow-path's final Materialize covers that case; the fast-path
+	// requires the caller to pre-evaluate.
+	src, converted, err := materialiseFloat32View(logits)
+	if err != nil {
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return nil, err
+	}
+	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil {
+		Free(converted)
+		*scratchPtr = scratch
+		SuppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	view := unsafe.Slice(ptr, n)
+
+	bestID := int32(-1)
+	bestValue := float32(math.Inf(-1))
+	for id, value := range view {
+		tokenID := int32(id)
+		if math.IsNaN(float64(value)) {
+			continue
+		}
+		if _, ok := slices.BinarySearch(suppressed, tokenID); ok {
+			continue
+		}
+		if bestID < 0 || value > bestValue {
+			bestID = tokenID
+			bestValue = value
+		}
+	}
+	runtime.KeepAlive(src)
+	Free(converted)
+
+	*scratchPtr = scratch
+	SuppressIDsScratch.Put(scratchPtr)
+
+	if bestID < 0 {
+		return nil, core.NewError("mlx: no finite unsuppressed logits available")
+	}
+	return fromSingleInt32(bestID), nil
+}
+
+// materialiseFloat32View returns a borrowed view-source for hostside scans of
+// a logits tensor.  Result.converted is non-nil iff a dtype conversion was
+// needed (caller must Free it after the scan finishes).
+func materialiseFloat32View(t *Array) (src, converted *Array, err error) {
+	src = t
+	if t.Dtype() != DTypeFloat32 {
+		converted = AsType(t, DTypeFloat32)
+		Materialize(converted)
+		src = converted
+	}
+	if !src.IsRowContiguous() {
+		c := Contiguous(src)
+		Materialize(c)
+		if converted != nil {
+			Free(converted)
+		}
+		converted = c
+		src = c
+	}
+	Materialize(src)
+	return src, converted, nil
+}
+
+// materialiseFloat32ViewFast returns a borrowed []float32 view of arr plus a
+// cleanup func that the caller MUST defer.  The view is tied to arr via
+// runtime.KeepAlive inside cleanup, so callers do not need their own KeepAlive.
+//
+// CONTRACT: the caller MUST have already evaluated arr (via Eval or
+// Materialize) before calling.  The fast-path deliberately skips the
+// Materialize crossing that the legacy materialiseFloat32View pays
+// unconditionally — accessing the raw float32 backing store of an un-Eval'd
+// array segfaults.  Callers that may receive lazy tensors should stay on the
+// legacy helper.
+//
+// Fast-path: when arr is already DTypeFloat32 + row-contiguous, the helper
+// skips every internal Materialize cgo crossing — the legacy
+// materialiseFloat32View calls Materialize on src unconditionally at the end,
+// even when dtype + layout already match.  At ~30-60 ns per cgo crossing,
+// dropping that one Materialize shifts the zero-copy threshold from ~1KB down
+// to ~128B (and likely lower for smaller tensors).
+//
+// Slow-path: when arr needs dtype conversion or contiguity copy, the helper
+// falls through to materialiseFloat32View — same ceremony, same overhead.
+//
+//	if err := Eval(arr); err != nil { return err }
+//	view, cleanup, err := materialiseFloat32ViewFast(arr)
+//	if err != nil { return err }
+//	defer cleanup()
+//	bestID := argmax(view)
+func materialiseFloat32ViewFast(arr *Array) ([]float32, func(), error) {
+	if arr.Dtype() == DTypeFloat32 && arr.IsRowContiguous() {
+		// Fast-path: dtype + layout already match.  Skip Materialize entirely
+		// — the only invariant the caller needs is a valid float32 backing
+		// store, which the dtype+contiguity check already proves.
+		n := arr.Size()
+		if n == 0 {
+			return nil, func() {}, nil
+		}
+		ptr := (*float32)(rawArrayDataPointer(arr))
+		if ptr == nil {
+			return nil, func() {}, core.NewError("mlx: array data pointer is nil")
+		}
+		view := unsafe.Slice(ptr, n)
+		cleanup := func() { runtime.KeepAlive(arr) }
+		return view, cleanup, nil
+	}
+	// Slow-path: fall through to the legacy helper.  AsType / Contiguous
+	// crossings are unavoidable when dtype or layout doesn't match.
+	src, converted, err := materialiseFloat32View(arr)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		return nil, func() {}, nil
+	}
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil {
+		Free(converted)
+		return nil, func() {}, core.NewError("mlx: array data pointer is nil")
+	}
+	view := unsafe.Slice(ptr, n)
+	cleanup := func() {
+		runtime.KeepAlive(src)
+		Free(converted)
+	}
+	return view, cleanup, nil
+}
+
+func TokenIDSuppressed(id int32, suppressTokens []int32) bool {
+	return slices.Contains(suppressTokens, id)
+}
+
+// Temperature scales logits by 1/temp before categorical sampling.
+// Higher values produce more random output; lower values approach Greedy.
+//
+//	Temperature(0.7).Sample(logits) // moderate creativity
+//	Temperature(0.1).Sample(logits) // near-Greedy, focused output
+type Temperature float32
+
+func (t Temperature) Sample(logits *Array) *Array {
+	return MulScalar(logits, 1.0/float32(t))
+}
+
+// TopKSampler masks all but the top-k logits, setting the rest to -inf.
+//
+//	TopKSampler(40).Sample(logits) // keep only top 40 candidates
+//	TopKSampler(10).Sample(logits) // very focused — top 10 only
+type TopKSampler int
+
+func (k TopKSampler) Sample(logits *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || int(k) <= 0 || int(k) >= lastDim {
+		return logits.Clone()
+	}
+	neg := Negative(logits)
+	maskIdx := Argpartition(neg, int(k)-1, -1)
+	Free(neg)
+	// Slice the indices beyond top-k
+	mask := SliceAxis(maskIdx, -1, int32(k), int32(lastDim))
+	Free(maskIdx)
+	// W11-R: inline the -inf scalar into PutAlongAxis via a scalar-shape
+	// FromValue; PutAlongAxis broadcasts.  Cannot collapse further without
+	// an MLX put_along_axis_scalar bridge — the FromValue cost is a single
+	// rank-0 alloc which is at floor for this op.
+	inf := FromValue(float32(math.Inf(-1)))
+	res := PutAlongAxis(logits, mask, inf, -1)
+	Free(mask, inf)
+	return res
+}
+
+// TopP implements nucleus (top-p) sampling.
+// Keeps the smallest set of tokens whose cumulative probability exceeds p.
+//
+//	TopP(0.9).Sample(logits) // include tokens covering 90% of probability mass
+//	TopP(0.5).Sample(logits) // conservative — only highest-probability half
+type TopP float32
+
+func (p TopP) Sample(logits *Array) *Array {
+	// Convert logits to probabilities
+	probs := Softmax(logits)
+
+	// Sort descending via argsort of negated probs
+	neg := Negative(probs)
+	sortIdx := Argsort(neg, -1)
+	Free(neg)
+	sortedProbs := TakeAlongAxis(probs, sortIdx, -1)
+
+	// Cumulative sum of sorted probabilities
+	cumProbs := CumSum(sortedProbs, -1, false, true)
+
+	// Mask in sorted space: keep tokens where cumprob (excluding current) <= threshold
+	shiftedCum := Subtract(cumProbs, sortedProbs)
+
+	// W11-R: inline the scalar compare + scalar/scalar where into single cgo
+	// crossings.  Was 3× FromValue + Greater + Where + 3× Free; now
+	// greaterScalar + whereScalarScalar (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt := greaterScalar(shiftedCum, float32(p))
+	sortedMask := whereScalarScalar(gt, float32(math.Inf(-1)), 0)
+	Free(gt, shiftedCum, cumProbs, sortedProbs)
+
+	// Scatter mask back to original positions
+	emptyMask := Zeros(logits.Shape(), DTypeFloat32)
+	mask := PutAlongAxis(emptyMask, sortIdx, sortedMask, -1)
+	Free(emptyMask, sortIdx, sortedMask)
+
+	// W11-R: replace zeroArr + Greater(zeroArr, mask) + inf2 + Where(gt0, inf2, logits)
+	// with scalarGreater + WhereScalarArray (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt0 := scalarGreater(0, mask)
+	res := WhereScalarArray(gt0, float32(math.Inf(-1)), logits)
+	Free(gt0, mask, probs)
+
+	return res
+}
+
+// MinPSampler masks tokens whose probability falls below min_p * max_prob.
+// Adapts the threshold relative to the best token, so the cut-off scales with confidence.
+//
+//	MinPSampler(0.05).Sample(logits) // drop tokens less than 5% of top-token probability
+//	MinPSampler(0.1).Sample(logits)  // stricter — drop tokens below 10% of max
+type MinPSampler float32
+
+func (p MinPSampler) Sample(logits *Array) *Array {
+	// Convert logits to probabilities
+	probs := Softmax(logits)
+
+	// Find the maximum probability
+	maxProb := MaxAxis(probs, -1, true)
+
+	// Threshold = min_p * max_prob
+	threshold := MulScalar(maxProb, float32(p))
+	Free(maxProb)
+
+	// W11-R: inline the scalar -inf into the where call — replaces FromValue
+	// + Where + Free(scalar) triple with a single cgo crossing.
+	gt := Greater(threshold, probs)
+	mask := WhereScalarArray(gt, float32(math.Inf(-1)), logits)
+	Free(probs, threshold, gt)
+	return mask
+}

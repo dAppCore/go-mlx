@@ -13,6 +13,12 @@ const (
 	DefaultVersion = "dev"
 )
 
+var (
+	errRegistryNil        = core.NewError("registry is nil")
+	errActionRequired     = core.NewError("action is required")
+	errGenerateBackendNil = core.NewError("generate backend is nil")
+)
+
 // Request is one JSON-line frame from a local Violet client.
 type Request struct {
 	Action      string    `json:"action"`
@@ -83,6 +89,12 @@ type Registry struct {
 	version  string
 	handlers map[string]Handler
 	order    []string
+	// infoResponse caches the rendered info Response so the steady
+	// state Dispatch("info") path allocates nothing. Built lazily on
+	// first read after creation or any Register that invalidates it.
+	// Like handlers/order, accessed without a mutex — Register is not
+	// safe to call concurrently with Dispatch (existing convention).
+	infoResponse Response
 }
 
 func NewRegistry(name, version string) *Registry {
@@ -93,10 +105,13 @@ func NewRegistry(name, version string) *Registry {
 		version = DefaultVersion
 	}
 
+	// Four handlers are registered immediately below; pre-sizing the
+	// map and the order slice avoids the initial map/slice grow steps.
 	r := &Registry{
 		name:     name,
 		version:  version,
-		handlers: make(map[string]Handler),
+		handlers: make(map[string]Handler, 4),
+		order:    make([]string, 0, 4),
 	}
 
 	if err := r.Register("embed", stubHandler("embed")); err != nil {
@@ -109,11 +124,20 @@ func NewRegistry(name, version string) *Registry {
 		panic(err)
 	}
 	if err := r.Register("info", func(context.Context, Request) (Response, error) {
-		return Response{
-			"name":    r.name,
-			"version": r.version,
-			"actions": r.Actions(),
-		}, nil
+		// JSON-marshalling reads the cached map; built once when the
+		// cache is empty, invalidated by Register. Steady state is
+		// zero-alloc — the JSON marshal walks the same map every call.
+		// JSON-marshalling a []string just iterates; no retention,
+		// so the internal r.order can be returned as-is and skip the
+		// defensive copy that Actions() does for external callers.
+		if r.infoResponse == nil {
+			r.infoResponse = Response{
+				"name":    r.name,
+				"version": r.version,
+				"actions": r.order,
+			}
+		}
+		return r.infoResponse, nil
 	}); err != nil {
 		panic(err)
 	}
@@ -128,7 +152,7 @@ func DefaultRegistryForDaemon() *Registry {
 func (r *Registry) Register(action string, handler Handler) error {
 	action = normalizeAction(action)
 	if action == "" {
-		return core.NewError("action is required")
+		return errActionRequired
 	}
 	if handler == nil {
 		return core.Errorf("handler for action %q is nil", action)
@@ -138,6 +162,12 @@ func (r *Registry) Register(action string, handler Handler) error {
 	}
 	if _, exists := r.handlers[action]; !exists {
 		r.order = append(r.order, action)
+		// New action in the order list invalidates the cached info
+		// response. The next info dispatch rebuilds with the fresh
+		// order slice. (Replacement-only registers — e.g. swapping
+		// the generate stub for a real backend — leave order untouched
+		// and don't need to invalidate.)
+		r.infoResponse = nil
 	}
 	r.handlers[action] = handler
 	return nil
@@ -146,7 +176,7 @@ func (r *Registry) Register(action string, handler Handler) error {
 // RegisterGenerateBackend replaces the default generate stub with a native backend.
 func (r *Registry) RegisterGenerateBackend(backend GenerateBackend) error {
 	if backend == nil {
-		return core.NewError("generate backend is nil")
+		return errGenerateBackendNil
 	}
 	return r.Register("generate", func(ctx context.Context, req Request) (Response, error) {
 		result, err := backend.Generate(ctx, generateRequestFromRequest(req))
@@ -159,12 +189,12 @@ func (r *Registry) RegisterGenerateBackend(backend GenerateBackend) error {
 
 func (r *Registry) Dispatch(ctx context.Context, req Request) (Response, error) {
 	if r == nil {
-		return nil, core.NewError("registry is nil")
+		return nil, errRegistryNil
 	}
 
 	action := normalizeAction(req.Action)
 	if action == "" {
-		return nil, core.NewError("action is required")
+		return nil, errActionRequired
 	}
 
 	handler, ok := r.handlers[action]
@@ -190,12 +220,14 @@ func generateRequestFromRequest(req Request) GenerateRequest {
 	if prompt == "" {
 		prompt = req.Text
 	}
-	messages := make([]Message, len(req.Messages))
-	copy(messages, req.Messages)
+	// req.Messages is owned by the Dispatch caller and is not retained
+	// past backend.Generate's return (the native backend rebuilds into
+	// inference.Message via toMLXMessages). Pass the slice through —
+	// no defensive clone needed on the hot path.
 	return GenerateRequest{
 		Prompt:      prompt,
 		Model:       req.Model,
-		Messages:    messages,
+		Messages:    req.Messages,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 	}
@@ -232,7 +264,34 @@ func normalizeAction(action string) string {
 	return core.Lower(core.Trim(action))
 }
 
+// Stub responses are pre-built once and shared across every dispatch.
+// Returning the same map is safe — the dispatch path passes the value
+// straight to writeJSONLine which only marshals (read-only) and no
+// other consumer mutates a Response after Dispatch returns.
+// (See dispatch.go's only resp[k]= writers — both build a fresh map
+// in generateResponseFromResult, never touch a stub.)
+var (
+	stubEmbedResponse    = Response{"status": "stub", "action": "embed"}
+	stubScoreResponse    = Response{"status": "stub", "action": "score"}
+	stubGenerateResponse = Response{"status": "stub", "action": "generate"}
+
+	stubEmbedHandler    Handler = func(context.Context, Request) (Response, error) { return stubEmbedResponse, nil }
+	stubScoreHandler    Handler = func(context.Context, Request) (Response, error) { return stubScoreResponse, nil }
+	stubGenerateHandler Handler = func(context.Context, Request) (Response, error) { return stubGenerateResponse, nil }
+)
+
 func stubHandler(action string) Handler {
+	switch action {
+	case "embed":
+		return stubEmbedHandler
+	case "score":
+		return stubScoreHandler
+	case "generate":
+		return stubGenerateHandler
+	}
+	// Fallback for any future stub registration — fresh closure +
+	// map so the action label is captured. The three built-in stubs
+	// above cover the only call sites today.
 	return func(context.Context, Request) (Response, error) {
 		return Response{
 			"status": "stub",

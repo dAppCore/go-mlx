@@ -5,7 +5,7 @@ description: CGO binding layer, lazy evaluation, memory model, and internal stru
 
 # Architecture
 
-go-mlx is a Go package that wraps Apple's MLX framework via the mlx-c C API. It runs LLM inference and LoRA fine-tuning on Apple Silicon GPUs (M1-M4) using Metal compute shaders.
+go-mlx is a Go package that wraps Apple's MLX framework via the mlx-c C API. It runs LLM inference and LoRA fine-tuning on Apple Silicon GPUs (M1-M5) using Metal compute shaders.
 
 ## Layer Diagram
 
@@ -15,7 +15,6 @@ Go Application
     v
 inference.TextModel / inference.TrainableModel   <-- go-inference interfaces
 mlx.LoadModel / mlx.NewSession                   <-- direct root APIs
-cmd/violet + pkg/daemon                          <-- Unix-socket native sidecar
     |
     v
 register_metal.go (metalAdapter)                  <-- Backend registration + type conversion
@@ -47,6 +46,17 @@ mlx-c v0.4.1                                     <-- C API (fetched by CMake)
 Apple MLX / Metal / Accelerate                    <-- GPU compute
 ```
 
+## Engine ↔ Shared Package Split
+
+go-mlx's non-Metal packages (`gguf`, `merge`, `hf`, `ebook`, `distill`, `grpo`, `train`, `lora`, `artifact`, `pkg/scheme`) delegate their format/codec/loss/checkpoint/client primitives to the shared `dappco.re/go/inference` module (`external/go-inference`), the same primitives every LEM Engine consumes — mlx here, and its rocm/cpu siblings alike. Concretely, `dappco.re/go/inference` owns the GGUF quantisation kernels (`inference/gguf.Quantize`/`AppendQuantize`), the model-merge tensor-blend contract (`inference/merge`), HuggingFace client/cache/JANG-classification internals (`inference/hf`), the model-as-book renderer (`inference/modelmgmt`), distillation/GRPO/SFT checkpoint persistence and loss/reward maths (`inference/checkpoint`, `inference/distill`, `inference/grpo`, `inference/train`), the pluggable-component contract layer for weight quant/KV-state/sequence-mixer schemes (`inference/scheme`), LoRA adapter inspection (`inference/lora`), and the versioned session-state export envelope (`inference/state.ExportArtifact`, which `go/artifact.Export` delegates onto). Local packages of the same name are either thin delegates that keep the call signature and package path stable for existing callers, or genuine type aliases onto the shared definitions.
+
+What stays local to go-mlx:
+
+- **The engines** — the Metal CGO engine (`internal/metal/`, wrapped by this root package) and the no-cgo native engine (`pkg/model` + `pkg/native`)
+- **Streaming safetensors I/O** (`go/safetensors`) — the bounded-memory reader/writer used on the hot weight-loading path (chunked reads, NEON F16 decode); the shared `inference/safetensors` package covers the simpler whole-file codec and is deliberately not wrapped here — see that package's doc comment for the split rationale
+- **The model zoo** (`pkg/metal/model/*` and its native-engine counterparts) — Gemma 3/4, Qwen 2/3, Llama 3, MiniMax M2, and the growing set of attention/state variants (GLA, Mamba2, RetNet, DeltaNet, MLA, NSA, MoBA, …)
+- **The loops** — generation, chat, batch inference, and the SFT/distillation/GRPO training loops, which call into the shared checkpoint/loss/reward maths but keep the Metal/native plumbing, CLI surface, and loop control local
+
 ## CGO Binding
 
 ### Build Chain
@@ -61,13 +71,11 @@ FetchContent_Declare(
 )
 ```
 
-After the CMake build, headers land in `dist/include/` and shared libraries in `dist/lib/`. The `#cgo` directives in `internal/metal/metal.go` reference these paths:
+After the CMake build, headers land in `dist/include/` and the precompiled Metal shader library lands at `dist/lib/mlx.metallib`. The full MLX C++ implementation is also vendored in-tree at `go/internal/metal/` as 187 `mlx_*.cpp` files, which cgo compiles inline during `go build` — there is no `-lmlx` / `-lmlxc` link step. The `#cgo` directives in `internal/metal/metal.go` reference only headers + system frameworks:
 
 ```
 CPPFLAGS: -I${SRCDIR}/../../dist/include
-LDFLAGS:  -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-darwin:   -framework Foundation -framework Metal -framework Accelerate
-          -Wl,-rpath,${SRCDIR}/../../dist/lib
+darwin:   -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 ```
 
 Every Go source file in `internal/metal/` carries `//go:build darwin && arm64`. The root package compiles on all platforms; the blank import `_ "dappco.re/go/mlx"` only triggers Metal backend registration on supported hardware.
@@ -134,7 +142,6 @@ Key points:
 - `Model.Close()` deterministically frees all weight arrays without relying on GC. Tied output weights (shared with the embedding table) are detected and skipped to prevent double-free.
 - Each `Generate()` call allocates fresh KV caches that are released to GC when the iterator completes.
 - Call `ClearCache()` between multi-turn chat turns for prompt memory reclaim rather than waiting for GC.
-- Violet's native daemon route loads configured models on first use and keeps them resident until shutdown. Its `generate` action goes through the same root `mlx.LoadModel` defaults as direct callers, so local agent harnesses can avoid a separate HTTP server when they already own tool execution and routing.
 
 ## Fused Metal Kernels
 
@@ -206,7 +213,7 @@ Used for Gemma 3 sliding-window attention layers. When `ContextLen` is set via `
 `newSampler(temp, topP, minP, topK)` builds a composable pipeline:
 
 ```
-Temperature -> TopP -> TopK -> MinP -> RandomCategorical
+TopP -> MinP -> TopK -> Temperature -> RandomCategorical
 ```
 
 If `temp == 0`, the chain collapses to greedy (argmax).
@@ -217,7 +224,7 @@ If `temp == 0`, the chain collapses to greedy (argmax).
 - **TopP (nucleus)** -- keep the smallest set with cumulative probability exceeding `p`
 - **MinP** -- mask tokens below `min_p * max_probability`
 
-Full sampling chain (Temperature + TopP + TopK + MinP) adds approximately 560 us over greedy per token.
+Full sampling chain (TopP + MinP + TopK) adds approximately 560 us over greedy per token.
 
 ## Public APIs
 
@@ -232,7 +239,7 @@ Consumer pattern:
 
 ```go
 import (
-    "dappco.re/go/inference"
+    "dappco.re/go/core/inference"
     _ "dappco.re/go/mlx"
 )
 
@@ -255,23 +262,19 @@ session, err := mlx.NewSession()
 
 Options from `inference.LoadConfig` understood by the Metal backend:
 
-- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers; default 131072
-- `ParallelSlots` -- caps concurrent native inference calls for one loaded model before KV/cache allocation; default 1
+- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers
 - `AdapterPath` -- loads a trained LoRA adapter from disk at model load time
 - `GPULayers` -- logged as a warning if set to 0 (Metal always uses full GPU offload)
 
-The direct root API adds `PromptCache` load settings and `WarmPromptCache`.
-The cache is a single in-memory exact token-prefix KV snapshot. It is intentionally
-conservative: dense prefixes can be sliced and restored, while wrapped rotating
-sliding-window caches are skipped unless they are still contiguous from the
-start. This keeps reuse correct for Qwen-style long prefixes and avoids silently
-reusing an invalid Gemma sliding-window state.
+## Legacy mlxlm Subprocess Backend
 
-## mlxlm Subprocess Backend
+`mlxlm/` provides a legacy manual backend (`"mlx_lm"`) that spawns a Python 3 process running an embedded `bridge.py` script. Communication is over JSON Lines (stdin/stdout). This backend requires no CGO but depends on Python 3 and the `mlx-lm` package.
 
-`mlxlm/` provides a second backend (`"mlx_lm"`) that spawns a Python 3 process running an embedded `bridge.py` script. Communication is over JSON Lines (stdin/stdout). This backend requires no CGO but depends on Python 3 and the `mlx-lm` package.
-
-Use it when CGO is not available or when you need model architectures not yet implemented natively:
+The production path does not select this backend automatically. Architectures
+not yet implemented natively remain on the Metal planning path with
+`native_runtime=false` diagnostics until their native loaders land.
+Import and request `mlx_lm` only for explicit legacy comparison or manual
+debugging:
 
 ```go
 import _ "dappco.re/go/mlx/mlxlm"

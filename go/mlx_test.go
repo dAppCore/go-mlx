@@ -1,7 +1,5 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && !nomlx
-
 package mlx_test
 
 import (
@@ -9,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"dappco.re/go"
-
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	coreio "dappco.re/go/io"
 	mlx "dappco.re/go/mlx"
@@ -73,10 +70,6 @@ func TestListBackends_Good(t *testing.T) {
 }
 
 func TestLoadModel_NoBackend_Bad(t *testing.T) {
-	coverageTokens := "NoBackend"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if r := inference.LoadModel("/nonexistent/path"); r.OK {
 		t.Error("expected error for nonexistent model path")
 	}
@@ -119,8 +112,8 @@ func TestOptions_Good(t *testing.T) {
 
 func TestDefaults_Good(t *testing.T) {
 	cfg := inference.DefaultGenerateConfig()
-	if cfg.MaxTokens != 256 {
-		t.Errorf("default MaxTokens = %d, want 256", cfg.MaxTokens)
+	if cfg.MaxTokens != 0 {
+		t.Errorf("default MaxTokens = %d, want 0 (not defaulted — resolves to the model's context at generate time)", cfg.MaxTokens)
 	}
 	if cfg.Temperature != 0.0 {
 		t.Errorf("default Temperature = %f, want 0.0", cfg.Temperature)
@@ -188,7 +181,7 @@ func TestLoadModel_Generate_Good(t *testing.T) {
 		count++
 		t.Logf("[%d] %q", tok.ID, tok.Text)
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 	if count == 0 {
@@ -229,7 +222,7 @@ func TestGemma3_1B_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -273,7 +266,7 @@ func TestGemma3_1B_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -329,10 +322,6 @@ func qwen2ModelPath(t *testing.T) string {
 
 // TestQwen2_Inference validates Qwen2 arch (DeepSeek R1 7B) end-to-end.
 func TestQwen2_Inference_Good(t *testing.T) {
-	coverageTokens := "Inference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := qwen2ModelPath(t)
 
 	loadStart := time.Now()
@@ -359,7 +348,7 @@ func TestQwen2_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -396,7 +385,7 @@ func TestQwen2_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -423,10 +412,6 @@ func llamaModelPath(t *testing.T) string {
 
 // TestLlama_Inference validates Llama 3.1 8B end-to-end.
 func TestLlama_Inference_Good(t *testing.T) {
-	coverageTokens := "Inference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := llamaModelPath(t)
 
 	loadStart := time.Now()
@@ -453,7 +438,7 @@ func TestLlama_Inference_Good(t *testing.T) {
 	}
 	genDur := time.Since(genStart)
 
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -545,7 +530,7 @@ func TestGenerate_Metrics_Good(t *testing.T) {
 	for range m.Generate(ctx, "Hello world", inference.WithMaxTokens(8)) {
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 
@@ -583,10 +568,6 @@ func TestGenerate_Metrics_Good(t *testing.T) {
 
 // TestClassify_Batch validates batched prefill-only classification.
 func TestClassify_Batch_Good(t *testing.T) {
-	coverageTokens := "Batch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := gemma3ModelPath(t)
 
 	r := inference.LoadModel(modelPath)
@@ -605,7 +586,7 @@ func TestClassify_Batch_Good(t *testing.T) {
 	}
 
 	start := time.Now()
-	results, err := m.Classify(ctx, prompts)
+	results, err := castClassify(m.Classify(ctx, prompts))
 	dur := time.Since(start)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
@@ -636,7 +617,7 @@ func TestClassify_WithLogits_Good(t *testing.T) {
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
-	results, err := m.Classify(ctx, []string{"Hello world"}, inference.WithLogits())
+	results, err := castClassify(m.Classify(ctx, []string{"Hello world"}, inference.WithLogits()))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -668,7 +649,7 @@ func TestBatchGenerate_Good(t *testing.T) {
 	}
 
 	start := time.Now()
-	results, err := m.BatchGenerate(ctx, prompts, inference.WithMaxTokens(16))
+	results, err := castBatch(m.BatchGenerate(ctx, prompts, inference.WithMaxTokens(16)))
 	dur := time.Since(start)
 	if err != nil {
 		t.Fatalf("BatchGenerate: %v", err)
@@ -716,7 +697,7 @@ func TestLlama_Chat_Good(t *testing.T) {
 		output.WriteString(tok.Text)
 		count++
 	}
-	if err := m.Err(); err != nil {
+	if err := resultError(m.Err()); err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if count == 0 {
@@ -726,35 +707,100 @@ func TestLlama_Chat_Good(t *testing.T) {
 }
 
 // Generated file-aware compliance coverage.
-func TestMlx_GC_Good(t *testing.T) {
-	target := "GC"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+
+// --- merged from attention_test.go (orphan sweep: tests the mlx-level
+// inference.AttentionInspector contract; mlx_test.go is the external-package home) ---
+func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {
+	// Load a real model and verify the adapter implements AttentionInspector.
+	b, ok := inference.Get("metal")
+	if !ok {
+		t.Fatal("metal backend not registered")
 	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
+
+	modelPath := gemma3ModelPath(t)
+	m, err := castTextModel(b.LoadModel(modelPath))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
 	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	inspector, ok := m.(inference.AttentionInspector)
+	if !ok {
+		t.Fatal("metaladapter does not implement AttentionInspector")
+	}
+
+	ctx := context.Background()
+	snap, err := inspector.InspectAttention(ctx, "What is kindness?")
+	if err != nil {
+		t.Fatalf("InspectAttention: %v", err)
+	}
+
+	if snap.NumLayers == 0 {
+		t.Error("NumLayers should be > 0")
+	}
+	if snap.NumHeads == 0 {
+		t.Error("NumHeads should be > 0")
+	}
+	if snap.SeqLen == 0 {
+		t.Error("SeqLen should be > 0")
+	}
+	if snap.HeadDim == 0 {
+		t.Error("HeadDim should be > 0")
+	}
+	if snap.Architecture == "" {
+		t.Error("Architecture should not be empty")
+	}
+	if len(snap.Keys) != snap.NumLayers {
+		t.Errorf("Keys len = %d, want %d (NumLayers)", len(snap.Keys), snap.NumLayers)
+	}
+
+	// Verify at least the first layer has data
+	if len(snap.Keys[0]) != snap.NumHeads {
+		t.Errorf("Keys[0] len = %d, want %d (NumHeads)", len(snap.Keys[0]), snap.NumHeads)
+	}
+
+	expectedLen := snap.SeqLen * snap.HeadDim
+	if len(snap.Keys[0][0]) != expectedLen {
+		t.Errorf("Keys[0][0] len = %d, want %d (SeqLen*HeadDim)", len(snap.Keys[0][0]), expectedLen)
+	}
+
+	t.Logf("AttentionSnapshot: arch=%s layers=%d heads=%d seq=%d dim=%d",
+		snap.Architecture, snap.NumLayers, snap.NumHeads, snap.SeqLen, snap.HeadDim)
 }
 
-func TestMlx_GC_Bad(t *testing.T) {
-	target := "GC"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
+// resultError collapses a core.Result into the plain error these external
+// tests were written against: nil when OK, otherwise the unwrapped underlying
+// error (identity preserved for core.Is). The package-local twin of the
+// internal mlx.resultError, needed because this external test package cannot
+// reach the unexported helper after the inference.TextModel
+// Err()/Close()/Classify()/BatchGenerate() → core.Result migration.
+func resultError(r core.Result) error {
+	if r.OK {
+		return nil
 	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
+	if err, ok := r.Value.(error); ok {
+		return err
 	}
+	return core.NewError("mlx_test: core.Result reported failure without an error value")
 }
 
-func TestMlx_GC_Ugly(t *testing.T) {
-	target := "GC"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
+// castClassify unpacks the migrated Classify core.Result into the
+// (results, error) pair the call sites expect.
+func castClassify(r core.Result) ([]inference.ClassifyResult, error) {
+	results, _ := r.Value.([]inference.ClassifyResult)
+	return results, resultError(r)
+}
+
+// castBatch unpacks the migrated BatchGenerate core.Result into
+// ([]inference.BatchResult, error).
+func castBatch(r core.Result) ([]inference.BatchResult, error) {
+	results, _ := r.Value.([]inference.BatchResult)
+	return results, resultError(r)
+}
+
+// castTextModel unpacks the migrated Backend.LoadModel core.Result into
+// (inference.TextModel, error).
+func castTextModel(r core.Result) (inference.TextModel, error) {
+	model, _ := r.Value.(inference.TextModel)
+	return model, resultError(r)
 }

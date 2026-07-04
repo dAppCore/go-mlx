@@ -4,238 +4,159 @@ package mlx
 
 import (
 	"context"
-	"math"
-	"time"
-
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
+	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
+	"math"
+	"sync"
 )
 
-const EvalReportVersion = 1
+// Per-batch sentinels — evalBatchLengths is called once per evaluate-batch
+// call (one per Eval/Run iteration), so hoisting these to package level
+// drops a per-call core.NewError alloc on the validation path.
+var (
+	errMLXEvalBatchUnaligned        = core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	errMLXEvalBatchEmptySeq         = core.NewError("mlx: eval batch contains an empty sequence")
+	errMLXEvalTokenizerNil          = core.NewError("mlx: model tokenizer is nil")
+	errMLXEvalBatchNotSFTBatch      = core.NewError("mlx: eval batch is not an SFTBatch")
+	errMLXEvalNoForward             = core.NewError("mlx: native model does not expose eval forward")
+	errMLXEvalForwardNilLogits      = core.NewError("mlx: eval forward returned nil logits")
+	errMLXEvalLossNil               = core.NewError("mlx: eval loss returned nil")
+	errMLXEvalLossNonFinite         = core.NewError("mlx: eval loss is not finite")
+	errMLXEvalDatasetSampleNotKnown = core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
+)
 
-// EvalConfig controls dataset-native perplexity and small quality probes.
-type EvalConfig struct {
-	Batch         DatasetBatchConfig `json:"batch"`
-	AdapterPath   string             `json:"adapter_path,omitempty"`
-	MaxSamples    int                `json:"max_samples,omitempty"`
-	QualityProbes []EvalQualityProbe `json:"-"`
+// evalBatchInt32BufPool / evalBatchFloat32BufPool recycle the per-batch token
+// + loss-mask scratch buffers handed to FromValues. FromValues copies the
+// slice contents into its own C-side byte buffer (binary.Encode on a fresh
+// []byte) before returning, so the caller's slice is observationally dead
+// once FromValues returns — the perfect sync.Pool lifecycle. Per-batch the
+// token buffer is len(lengths)*maxLen int32s (Batch4_Seq2048 ≈ 32 KiB) and
+// the loss-mask buffer is the same shape in float32. A training eval pass
+// that walks ~hundreds of batches per epoch sheds N × 64 KiB of fresh-make
+// + zero-fill cost across the pool's warm window.
+//
+// evalBatchAttnMaskBufPool is kept distinct from evalBatchFloat32BufPool
+// because the attention-mask shape is O(batch × maxLen²) — orders of
+// magnitude larger than the per-token loss-mask. Sharing the pool would
+// bloat the per-batch loss-mask Get path with a 64 MiB scratch that's
+// only needed when the optional attention-mask path fires (ragged batches).
+//
+// Pools store *[]T rather than []T so Put doesn't box a slice header into a
+// fresh interface{} (24 B alloc per release) — the same pattern as the kv
+// snapshot stream writer pool. The pool's New func returns a pre-allocated
+// empty slice pointer so callers never hit a Get-nil branch on a warm pool.
+var (
+	evalBatchInt32BufPool = sync.Pool{
+		New: func() any {
+			buf := make([]int32, 0)
+			return &buf
+		},
+	}
+	evalBatchFloat32BufPool = sync.Pool{
+		New: func() any {
+			buf := make([]float32, 0)
+			return &buf
+		},
+	}
+	evalBatchAttnMaskBufPool = sync.Pool{
+		New: func() any {
+			buf := make([]float32, 0)
+			return &buf
+		},
+	}
+)
+
+// acquireEvalBatchInt32Buf returns a *[]int32 wrapping a slice of exactly `n`
+// length, growing the pooled backing array if needed. Returning the pointer
+// (rather than the slice header) keeps the pool's Put path off the escape
+// path — the *[]int32 lives in the pool's interface{} slot for free, where
+// releasing a []int32 would force `&buf` to take a heap copy of the slice
+// header on every call. Caller MUST call releaseEvalBatchInt32Buf once the
+// slice contents have been copied out (FromValues binary-encodes its
+// argument before returning).
+func acquireEvalBatchInt32Buf(n int) *[]int32 {
+	bufPtr := evalBatchInt32BufPool.Get().(*[]int32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]int32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
 }
 
-// EvalRunner supplies the model operations needed for dataset evaluation.
-type EvalRunner struct {
-	Info          func(context.Context) ModelInfo
-	Tokenizer     func(context.Context) *Tokenizer
-	LoadAdapter   func(context.Context, string) (LoRAAdapterInfo, error)
-	BuildBatches  func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error)
-	EvaluateBatch func(context.Context, SFTBatch) (EvalBatchMetrics, error)
+func releaseEvalBatchInt32Buf(bufPtr *[]int32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchInt32BufPool.Put(bufPtr)
 }
 
-// EvalBatchMetrics is the loss result for one tokenized batch.
-type EvalBatchMetrics struct {
-	Samples int     `json:"samples,omitempty"`
-	Tokens  int     `json:"tokens,omitempty"`
-	Loss    float64 `json:"loss,omitempty"`
+func acquireEvalBatchFloat32Buf(n int) *[]float32 {
+	bufPtr := evalBatchFloat32BufPool.Get().(*[]float32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]float32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
 }
 
-// EvalMetrics aggregates loss and perplexity over a dataset stream.
-type EvalMetrics struct {
-	Samples    int     `json:"samples,omitempty"`
-	Batches    int     `json:"batches,omitempty"`
-	Tokens     int     `json:"tokens,omitempty"`
-	Loss       float64 `json:"loss,omitempty"`
-	Perplexity float64 `json:"perplexity,omitempty"`
+func releaseEvalBatchFloat32Buf(bufPtr *[]float32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchFloat32BufPool.Put(bufPtr)
 }
 
-// EvalReport is a JSON-friendly native eval result.
-type EvalReport struct {
-	Version   int               `json:"version"`
-	ModelInfo ModelInfo         `json:"model_info"`
-	Adapter   LoRAAdapterInfo   `json:"adapter,omitempty"`
-	Config    EvalConfig        `json:"config"`
-	Metrics   EvalMetrics       `json:"metrics"`
-	Quality   EvalQualityReport `json:"quality"`
-	Duration  time.Duration     `json:"duration,omitempty"`
+// acquireEvalBatchAttnMaskBuf returns a *[]float32 sized for the per-batch
+// attention-mask shape (batch × maxLen²). Kept on a dedicated pool so the
+// per-batch loss-mask pool's warm allocations stay token-sized.
+func acquireEvalBatchAttnMaskBuf(n int) *[]float32 {
+	bufPtr := evalBatchAttnMaskBufPool.Get().(*[]float32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]float32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
 }
 
-// EvalQualityProbe adds a custom deterministic quality check.
-type EvalQualityProbe struct {
-	Name  string                                    `json:"name"`
-	Check func(EvalQualityContext) EvalQualityCheck `json:"-"`
-}
-
-// EvalQualityContext is passed to custom eval probes.
-type EvalQualityContext struct {
-	Config    EvalConfig
-	Samples   []SFTSample
-	Metrics   EvalMetrics
-	ModelInfo ModelInfo
-	Adapter   LoRAAdapterInfo
-}
-
-// EvalQualityReport contains small deterministic checks over eval data and metrics.
-type EvalQualityReport struct {
-	Checks []EvalQualityCheck `json:"checks,omitempty"`
-}
-
-// EvalQualityCheck is one quality probe result.
-type EvalQualityCheck struct {
-	Name   string  `json:"name"`
-	Pass   bool    `json:"pass"`
-	Score  float64 `json:"score"`
-	Detail string  `json:"detail,omitempty"`
+func releaseEvalBatchAttnMaskBuf(bufPtr *[]float32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchAttnMaskBufPool.Put(bufPtr)
 }
 
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
-func RunModelEval(ctx context.Context, model *Model, dataset SFTDataset, cfg EvalConfig) (*EvalReport, error) {
+// The mlx-root wrapper adapts dataset.Dataset/dataset.Sample/SFTBatch to eval's
+// opaque types and forwards to eval.RunDataset.
+func RunModelEval(ctx context.Context, model *Model, ds dataset.Dataset, cfg eval.Config) (*eval.Report, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
-	return RunDatasetEval(ctx, NewModelEvalRunner(model), dataset, cfg)
+	// Pre-size for len+1 so the second append doesn't trigger a regrow —
+	// the original cloned via append([]T(nil), ...) then appended the
+	// ResponseCoverageProbe, paying the grow twice. One make + two
+	// appends fits the final size in a single allocation.
+	probes := make([]eval.QualityProbe, len(cfg.QualityProbes), len(cfg.QualityProbes)+1)
+	copy(probes, cfg.QualityProbes)
+	cfg.QualityProbes = append(probes, eval.ResponseCoverageProbe())
+	return eval.RunDataset(ctx, NewModelEvalRunner(model), wrapSFTDataset(ds), cfg)
 }
 
-// RunDatasetEval evaluates perplexity and quality probes over a dataset stream.
-func RunDatasetEval(ctx context.Context, runner EvalRunner, dataset SFTDataset, cfg EvalConfig) (*EvalReport, error) {
-	if ctx == nil {
-		ctx = context.Background()
+// sftSampleText pulls text/response from a wrapped dataset.Sample for eval's
+// quality probes that need to inspect sample content.
+func sftSampleText(sample eval.Sample) (string, string) {
+	if s, ok := sample.(dataset.Sample); ok {
+		return s.Text, s.Response
 	}
-	cfg = normalizeEvalConfig(cfg)
-	if runner.EvaluateBatch == nil {
-		return nil, core.NewError("mlx: eval runner requires EvaluateBatch")
-	}
-	if dataset == nil {
-		return nil, core.NewError("mlx: eval dataset is nil")
-	}
-
-	start := time.Now()
-	samples, err := collectEvalSamples(ctx, dataset, cfg.MaxSamples)
-	if err != nil {
-		return nil, err
-	}
-	if len(samples) == 0 {
-		return nil, core.NewError("mlx: eval dataset produced no samples")
-	}
-
-	report := &EvalReport{
-		Version: EvalReportVersion,
-		Config:  cfg,
-	}
-	if runner.Info != nil {
-		report.ModelInfo = runner.Info(ctx)
-		report.Adapter = report.ModelInfo.Adapter
-	}
-	if cfg.AdapterPath != "" {
-		if runner.LoadAdapter == nil {
-			return nil, core.NewError("mlx: eval runner does not support LoRA adapter loading")
-		}
-		adapter, err := runner.LoadAdapter(ctx, cfg.AdapterPath)
-		if err != nil {
-			return nil, err
-		}
-		report.Adapter = adapter
-		if runner.Info != nil {
-			report.ModelInfo = runner.Info(ctx)
-		}
-		if loraAdapterInfoEmpty(report.ModelInfo.Adapter) {
-			report.ModelInfo.Adapter = adapter
-		}
-	}
-	if loraAdapterInfoEmpty(report.Adapter) {
-		report.Adapter = report.ModelInfo.Adapter
-	}
-
-	batches, err := evalBatches(ctx, runner, NewSFTSliceDataset(samples), cfg.Batch)
-	if err != nil {
-		return nil, err
-	}
-	if len(batches) == 0 {
-		return nil, core.NewError("mlx: eval dataset produced no tokenized batches")
-	}
-
-	metrics, err := evaluateBatches(ctx, runner, batches, len(samples))
-	if err != nil {
-		return nil, err
-	}
-	report.Metrics = metrics
-	report.Duration = nonZeroDuration(time.Since(start))
-	report.Quality = runEvalQualityProbes(EvalQualityContext{
-		Config:    cfg,
-		Samples:   samples,
-		Metrics:   metrics,
-		ModelInfo: report.ModelInfo,
-		Adapter:   report.Adapter,
-	})
-	return report, nil
+	return "", ""
 }
 
-func normalizeEvalConfig(cfg EvalConfig) EvalConfig {
-	cfg.Batch = normalizeDatasetBatchConfig(cfg.Batch)
-	cfg.QualityProbes = append([]EvalQualityProbe(nil), cfg.QualityProbes...)
-	return cfg
-}
-
-func collectEvalSamples(ctx context.Context, dataset SFTDataset, maxSamples int) ([]SFTSample, error) {
-	var samples []SFTSample
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if maxSamples > 0 && len(samples) >= maxSamples {
-			break
-		}
-		sample, ok, err := dataset.Next()
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			break
-		}
-		samples = append(samples, cloneSFTSample(sample))
+// sftBatchTokens returns the loss-eligible token count for a wrapped SFTBatch.
+func sftBatchTokens(batch eval.Batch) int {
+	if b, ok := batch.(SFTBatch); ok {
+		return sftBatchLossTokens(b)
 	}
-	return samples, nil
-}
-
-func evalBatches(ctx context.Context, runner EvalRunner, dataset SFTDataset, cfg DatasetBatchConfig) ([]SFTBatch, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if runner.BuildBatches != nil {
-		return runner.BuildBatches(ctx, dataset, cfg)
-	}
-	if runner.Tokenizer == nil {
-		return nil, core.NewError("mlx: eval runner requires Tokenizer or BuildBatches")
-	}
-	tok := runner.Tokenizer(ctx)
-	return BuildDatasetBatches(tok, dataset, cfg)
-}
-
-func evaluateBatches(ctx context.Context, runner EvalRunner, batches []SFTBatch, samples int) (EvalMetrics, error) {
-	metrics := EvalMetrics{Samples: samples, Batches: len(batches)}
-	var weightedLoss float64
-	for _, batch := range batches {
-		if err := ctx.Err(); err != nil {
-			return EvalMetrics{}, err
-		}
-		batchMetrics, err := runner.EvaluateBatch(ctx, batch)
-		if err != nil {
-			return EvalMetrics{}, err
-		}
-		if batchMetrics.Tokens <= 0 {
-			batchMetrics.Tokens = sftBatchLossTokens(batch)
-		}
-		if batchMetrics.Tokens <= 0 {
-			continue
-		}
-		if math.IsNaN(batchMetrics.Loss) || math.IsInf(batchMetrics.Loss, 0) {
-			return EvalMetrics{}, core.NewError("mlx: eval batch loss is not finite")
-		}
-		metrics.Tokens += batchMetrics.Tokens
-		weightedLoss += batchMetrics.Loss * float64(batchMetrics.Tokens)
-	}
-	if metrics.Tokens == 0 {
-		return EvalMetrics{}, core.NewError("mlx: eval produced no loss tokens")
-	}
-	metrics.Loss = weightedLoss / float64(metrics.Tokens)
-	metrics.Perplexity = math.Exp(metrics.Loss)
-	return metrics, nil
+	return 0
 }
 
 func sftBatchLossTokens(batch SFTBatch) int {
@@ -264,46 +185,418 @@ func sftBatchLossTokens(batch SFTBatch) int {
 	return tokens
 }
 
-func runEvalQualityProbes(ctx EvalQualityContext) EvalQualityReport {
-	checks := defaultEvalQualityChecks(ctx)
-	for _, probe := range ctx.Config.QualityProbes {
-		check := EvalQualityCheck{Name: probe.Name}
-		if probe.Check == nil {
-			check.Pass = false
-			check.Detail = "probe has no check function"
+// wrapSFTDataset adapts a mlx.SFTDataset to eval.Dataset (opaque samples).
+func wrapSFTDataset(d dataset.Dataset) eval.Dataset {
+	if d == nil {
+		return nil
+	}
+	return &sftDatasetAdapter{ds: d}
+}
+
+type sftDatasetAdapter struct {
+	ds dataset.Dataset
+}
+
+func (a *sftDatasetAdapter) Next() (eval.Sample, bool, error) {
+	sample, ok, err := a.ds.Next()
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return dataset.CloneSample(sample), true, nil
+}
+
+// modelInfoToEval converts an mlx.ModelInfo to the driver-neutral eval.Info.
+func modelInfoToEval(info ModelInfo) eval.Info {
+	return eval.Info{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
+		Adapter:       loraToEvalAdapter(info.Adapter),
+	}
+}
+
+// loraToEvalAdapter converts an mlx-root lora.AdapterInfo to eval.AdapterInfo.
+func loraToEvalAdapter(info lora.AdapterInfo) eval.AdapterInfo {
+	return eval.AdapterInfo{
+		Name:       info.Name,
+		Path:       info.Path,
+		Hash:       info.Hash,
+		Rank:       info.Rank,
+		Alpha:      info.Alpha,
+		Scale:      info.Scale,
+		TargetKeys: core.SliceClone(info.TargetKeys),
+	}
+}
+
+// evalAdapterToLora converts back from eval.AdapterInfo when mlx-root code
+// needs the typed mlx.lora form.
+func evalAdapterToLora(info eval.AdapterInfo) lora.AdapterInfo {
+	return lora.AdapterInfo{
+		Name:       info.Name,
+		Path:       info.Path,
+		Hash:       info.Hash,
+		Rank:       info.Rank,
+		Alpha:      info.Alpha,
+		Scale:      info.Scale,
+		TargetKeys: core.SliceClone(info.TargetKeys),
+	}
+}
+
+// evalInfoToModel converts from driver-neutral eval.Info back to mlx.ModelInfo.
+func evalInfoToModel(info eval.Info) ModelInfo {
+	return ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
+		Adapter:       evalAdapterToLora(info.Adapter),
+	}
+}
+
+type nativeEvalInternalModel interface {
+	Internal() metal.InternalModel
+}
+
+// NewModelEvalRunner adapts a loaded native Model to driver-neutral
+// eval.Runner. The driver provides callbacks for the few accessors
+// eval needs (Info, LoadAdapter, BuildBatches, EvaluateBatch, BatchTokens,
+// SampleText).
+func NewModelEvalRunner(model *Model) eval.Runner {
+	return eval.Runner{
+		Info: func(ctx context.Context) eval.Info {
+			if err := ctx.Err(); err != nil || model == nil {
+				return eval.Info{}
+			}
+			return modelInfoToEval(model.Info())
+		},
+		LoadAdapter: func(ctx context.Context, path string) (eval.AdapterInfo, error) {
+			if err := ctx.Err(); err != nil {
+				return eval.AdapterInfo{}, err
+			}
+			if model == nil {
+				return eval.AdapterInfo{}, errMLXModelNil
+			}
+			if _, err := model.LoadLoRA(path); err != nil {
+				return eval.AdapterInfo{}, err
+			}
+			return loraToEvalAdapter(model.Adapter()), nil
+		},
+		BuildBatches: func(ctx context.Context, ds eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
+			if model == nil {
+				return nil, errMLXModelNil
+			}
+			batchCfg, ok := cfg.(dataset.BatchConfig)
+			if !ok {
+				batchCfg = dataset.BatchConfig{}
+			}
+			tok := model.Tokenizer()
+			if tok == nil {
+				return nil, errMLXEvalTokenizerNil
+			}
+			sftDataset := evalDatasetToSFT(ds)
+			sftBatches, err := BuildDatasetBatches(tok, sftDataset, batchCfg)
+			if err != nil {
+				return nil, err
+			}
+			batches := make([]eval.Batch, len(sftBatches))
+			// Index iteration — SFTBatch is ~96 B (Batch struct with 3
+			// slice headers + the Targets [][]int header). Range copied
+			// each into the loop variable before we boxed it into the
+			// eval.Batch interface. For large eval runs (hundreds of
+			// batches) this is meaningful pure-stack waste; index reads
+			// straight from source into the interface slot.
+			for i := range sftBatches {
+				batches[i] = sftBatches[i]
+			}
+			return batches, nil
+		},
+		EvaluateBatch: func(ctx context.Context, batch eval.Batch) (eval.BatchMetrics, error) {
+			if model == nil {
+				return eval.BatchMetrics{}, errMLXModelNil
+			}
+			sftBatch, ok := batch.(SFTBatch)
+			if !ok {
+				return eval.BatchMetrics{}, errMLXEvalBatchNotSFTBatch
+			}
+			m, err := model.evaluateDatasetBatch(ctx, sftBatch)
+			if err != nil {
+				return eval.BatchMetrics{}, err
+			}
+			return eval.BatchMetrics{Samples: m.Samples, Tokens: m.Tokens, Loss: m.Loss}, nil
+		},
+		BatchTokens: sftBatchTokens,
+		SampleText:  sftSampleText,
+	}
+}
+
+type evalDatasetSFTAdapter struct {
+	src eval.Dataset
+}
+
+func (a *evalDatasetSFTAdapter) Next() (dataset.Sample, bool, error) {
+	sample, ok, err := a.src.Next()
+	if err != nil || !ok {
+		return dataset.Sample{}, ok, err
+	}
+	if s, ok := sample.(dataset.Sample); ok {
+		return s, true, nil
+	}
+	return dataset.Sample{}, false, errMLXEvalDatasetSampleNotKnown
+}
+
+func evalDatasetToSFT(d eval.Dataset) dataset.Dataset {
+	return &evalDatasetSFTAdapter{src: d}
+}
+
+// evalBatchMetricsDarwin is the driver-internal version used by Model.evaluateDatasetBatch.
+type evalBatchMetricsDarwin struct {
+	Samples int
+	Tokens  int
+	Loss    float64
+}
+
+func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalBatchMetricsDarwin, error) {
+	if err := ctx.Err(); err != nil {
+		return evalBatchMetricsDarwin{}, err
+	}
+	if m == nil || m.model == nil {
+		return evalBatchMetricsDarwin{}, errMLXModelNil
+	}
+
+	lengths, maxLen, err := evalBatchLengths(batch)
+	if err != nil {
+		return evalBatchMetricsDarwin{}, err
+	}
+	// FromValues binary-encodes the slice into its own C-side byte buffer
+	// before returning — once FromValues completes, the scratch slice is
+	// observationally dead and can return to the pool. evalBatchTokenData
+	// + evalBatchLossMaskData return the wrapping *[]T so the slice header
+	// stays out of the pool's interface{} boxing path (saving the 24 B
+	// per-release alloc the slice-of-T variant would pay).
+	inputDataPtr := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+	inputs := FromValues(*inputDataPtr, len(lengths), maxLen)
+	releaseEvalBatchInt32Buf(inputDataPtr)
+	targetDataPtr := evalBatchTokenData(batch.Targets, lengths, maxLen)
+	targets := FromValues(*targetDataPtr, len(lengths), maxLen)
+	releaseEvalBatchInt32Buf(targetDataPtr)
+	lossMaskDataPtr := evalBatchLossMaskData(batch, lengths, maxLen)
+	lossMask := FromValues(*lossMaskDataPtr, len(lengths), maxLen)
+	releaseEvalBatchFloat32Buf(lossMaskDataPtr)
+	attnMask, attnMaskBufPtr := evalOptionalBatchAttentionMask(lengths, maxLen)
+	if attnMaskBufPtr != nil {
+		releaseEvalBatchAttnMaskBuf(attnMaskBufPtr)
+	}
+	defer Free(inputs, targets, lossMask, attnMask)
+
+	native, ok := m.model.(nativeEvalInternalModel)
+	if !ok {
+		return evalBatchMetricsDarwin{}, errMLXEvalNoForward
+	}
+	internal := native.Internal()
+	caches := internal.NewCache()
+	defer freeEvalCaches(caches)
+
+	logits := internal.ForwardMasked(inputs, attnMask, caches)
+	if logits == nil {
+		return evalBatchMetricsDarwin{}, errMLXEvalForwardNilLogits
+	}
+	loss := MaskedCrossEntropyLoss(logits, targets, lossMask)
+	if loss == nil {
+		Free(logits)
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNil
+	}
+	Materialize(loss)
+	lossValue := loss.Float()
+	Free(logits, loss)
+	if math.IsNaN(lossValue) || math.IsInf(lossValue, 0) {
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNonFinite
+	}
+	return evalBatchMetricsDarwin{
+		Samples: len(lengths),
+		Tokens:  sftBatchLossTokens(batch),
+		Loss:    lossValue,
+	}, nil
+}
+
+func evalBatchLengths(batch SFTBatch) ([]int32, int, error) {
+	tokens := batch.Batch.Tokens
+	targets := batch.Targets
+	if len(tokens) == 0 || len(tokens) != len(targets) {
+		return nil, 0, errMLXEvalBatchUnaligned
+	}
+	// Local slice references avoid the per-row batch.Batch.Length/.LossMask
+	// re-resolve through the SFTBatch indirection on every iteration.
+	rowLengths := batch.Batch.Length
+	lossMasks := batch.Batch.LossMask
+	lengths := make([]int32, len(tokens))
+	maxLen := 0
+	for i := range tokens {
+		n := min(len(targets[i]), len(tokens[i]))
+		if i < len(rowLengths) && rowLengths[i] > 0 && rowLengths[i] < n {
+			n = rowLengths[i]
+		}
+		if i < len(lossMasks) && len(lossMasks[i]) < n {
+			n = len(lossMasks[i])
+		}
+		if n <= 0 {
+			return nil, 0, errMLXEvalBatchEmptySeq
+		}
+		lengths[i] = int32(n)
+		if n > maxLen {
+			maxLen = n
+		}
+	}
+	return lengths, maxLen, nil
+}
+
+// evalBatchTokenData populates a pooled int32 scratch slice (acquired via
+// acquireEvalBatchInt32Buf) with len(seqs)*maxLen int32s laid out row-major
+// per sequence. Returns the wrapping *[]int32 so the caller releases the
+// pooled slice back without re-boxing the slice header through an interface.
+func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) *[]int32 {
+	n := len(seqs) * maxLen
+	bufPtr := acquireEvalBatchInt32Buf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale ints from a previous batch —
+	// re-zero before the per-row writes so the unused tail (past the row
+	// limit) stays at 0, matching the make([]int32, …) baseline. clear
+	// expands to a single runtime.memclr; one bulk write beats N+1 row-tail
+	// fills.
+	clear(data)
+	for i, seq := range seqs {
+		limit := int(lengths[i])
+		base := i * maxLen
+		// Local slice + ranged limit lets the compiler hoist the per-iter
+		// bounds checks on data[base+j] and seq[j] — the previous form
+		// repeated data[base+j] with two-operand index, which the SSA
+		// pass treats as needing a fresh bounds check per write.
+		dst := data[base : base+limit : base+limit]
+		src := seq[:limit:limit]
+		for j := range dst {
+			dst[j] = int32(src[j])
+		}
+	}
+	return bufPtr
+}
+
+// evalBatchLossMaskData populates a pooled float32 scratch slice with the
+// per-row loss masks (defaulting absent rows + masked tails to 1). Returns
+// the wrapping *[]float32 for caller-driven release.
+func evalBatchLossMaskData(batch SFTBatch, lengths []int32, maxLen int) *[]float32 {
+	n := len(lengths) * maxLen
+	bufPtr := acquireEvalBatchFloat32Buf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale floats — re-zero so the
+	// non-copied tail (past base+limit) stays 0. Cheaper than per-row
+	// post-copy zero-fill because clear() is a single memclr.
+	clear(data)
+	masks := batch.Batch.LossMask
+	for i, l := range lengths {
+		limit := int(l)
+		base := i * maxLen
+		// Hoist the per-row mask resolution out of the inner loop —
+		// the original checked len(masks) and len(masks[i]) on every
+		// token, which is the hot path for SFT eval batches.
+		var maskRow []float32
+		if i < len(masks) {
+			maskRow = masks[i]
+		}
+		if len(maskRow) >= limit {
+			// Full mask row available — copy from the explicit values,
+			// no per-element fallback needed.
+			copy(data[base:base+limit], maskRow[:limit])
 		} else {
-			check = probe.Check(ctx)
-			if check.Name == "" {
-				check.Name = probe.Name
+			// Partial or no mask: copy what we have, then fill the
+			// remaining limit slots with the default value of 1.
+			n := copy(data[base:base+limit], maskRow)
+			row := data[base+n : base+limit]
+			for j := range row {
+				row[j] = 1
 			}
 		}
-		checks = append(checks, check)
 	}
-	return EvalQualityReport{Checks: checks}
+	return bufPtr
 }
 
-func defaultEvalQualityChecks(ctx EvalQualityContext) []EvalQualityCheck {
-	samples := len(ctx.Samples)
-	responseLike := 0
-	for _, sample := range ctx.Samples {
-		if core.Trim(sample.Text) != "" || core.Trim(sample.Response) != "" {
-			responseLike++
+// evalBatchAttentionMask builds the causal+padding attention mask into a
+// pooled float32 scratch slice and wraps it in an Array via FromValues. The
+// returned bufPtr is the slice the caller must release once FromValues has
+// taken its copy (binary-encoded into a fresh C-side byte buffer). Per-batch
+// mask shape is O(batch × maxLen²) — for ragged Batch4_Seq2048 this is 64
+// MiB of float32 data, the dominant per-call alloc on the optional-mask path.
+func evalBatchAttentionMask(lengths []int32, maxLen int) (*Array, *[]float32) {
+	negInf := float32(math.Inf(-1))
+	batchSize := len(lengths)
+	n := batchSize * maxLen * maxLen
+	bufPtr := acquireEvalBatchAttnMaskBuf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale values from a previous mask —
+	// zero before the row-tail writes so the unmasked region matches the
+	// make([]float32, …) baseline.
+	clear(data)
+	// data is zero-initialised — only need to set negInf positions.
+	// Causal+padding mask: for each (i,j), unmask iff j <= i && j < length.
+	// Walk the masked region by row, writing the negInf tail in two
+	// runs per row instead of branching per cell. This drops the per-
+	// (i,j) compare from O(N²) to one slice write per row.
+	for b, length := range lengths {
+		base := b * maxLen * maxLen
+		limit := int(length)
+		for i := range maxLen {
+			rowStart := base + i*maxLen
+			// Unmasked range: j in [0, min(i+1, limit)). All other cells
+			// in the row stay non-zero (negInf).
+			unmaskedEnd := min(i+1, limit)
+			if unmaskedEnd < 0 {
+				unmaskedEnd = 0
+			}
+			// Fill the masked tail with negInf — left zeros are already
+			// the unmask value, no per-cell store needed there.
+			tail := data[rowStart+unmaskedEnd : rowStart+maxLen]
+			for j := range tail {
+				tail[j] = negInf
+			}
 		}
 	}
-	lossFinite := !math.IsNaN(ctx.Metrics.Loss) && !math.IsInf(ctx.Metrics.Loss, 0) && ctx.Metrics.Loss >= 0
-	pplFinite := !math.IsNaN(ctx.Metrics.Perplexity) && !math.IsInf(ctx.Metrics.Perplexity, 0) && ctx.Metrics.Perplexity >= 1
-	return []EvalQualityCheck{
-		{Name: "samples_present", Pass: samples > 0, Score: boolScore(samples > 0), Detail: core.Sprintf("%d", samples)},
-		{Name: "token_coverage", Pass: ctx.Metrics.Tokens > 0, Score: boolScore(ctx.Metrics.Tokens > 0), Detail: core.Sprintf("%d", ctx.Metrics.Tokens)},
-		{Name: "loss_finite", Pass: lossFinite, Score: boolScore(lossFinite), Detail: core.Sprintf("%.6f", ctx.Metrics.Loss)},
-		{Name: "perplexity_finite", Pass: pplFinite, Score: boolScore(pplFinite), Detail: core.Sprintf("%.6f", ctx.Metrics.Perplexity)},
-		{Name: "response_coverage", Pass: responseLike == samples, Score: fractionScore(responseLike, samples), Detail: core.Sprintf("%d/%d", responseLike, samples)},
-	}
+	return FromValues(data, batchSize, 1, maxLen, maxLen), bufPtr
 }
 
-func fractionScore(numerator, denominator int) float64 {
-	if denominator <= 0 {
-		return 0
+// evalOptionalBatchAttentionMask returns (nil, nil) on the fast path
+// (uniform-length batches) and (mask, bufPtr) on the ragged path. The
+// bufPtr is the pooled scratch slice — caller must release after FromValues
+// has copied its contents.
+func evalOptionalBatchAttentionMask(lengths []int32, maxLen int) (*Array, *[]float32) {
+	if !evalNeedsExplicitAttentionMask(lengths, maxLen) {
+		return nil, nil
 	}
-	return float64(numerator) / float64(denominator)
+	return evalBatchAttentionMask(lengths, maxLen)
+}
+
+func evalNeedsExplicitAttentionMask(lengths []int32, maxLen int) bool {
+	if maxLen <= 0 || len(lengths) == 0 {
+		return true
+	}
+	for _, length := range lengths {
+		if int(length) != maxLen {
+			return true
+		}
+	}
+	return false
+}
+
+func freeEvalCaches(caches []Cache) {
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		Free(cache.State()...)
+		cache.Reset()
+	}
 }

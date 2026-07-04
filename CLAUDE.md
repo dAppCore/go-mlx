@@ -12,30 +12,61 @@ Implements the `inference.Backend` and `inference.TextModel` interfaces from `da
 
 **darwin/arm64 only.** All CGO files carry `//go:build darwin && arm64`. A stub provides `MetalAvailable() bool` returning false on every other platform. Files that need the native MLX runtime use the build tag; non-Darwin builds compile against `*_stub.go` files.
 
-## Build & Test
+## How to use this repo — drive `task`, never hand-roll the build
+
+**This repo is driven by [Taskfile.yml](Taskfile.yml) (`go-task`). Run `task <target>` — do NOT reconstruct the build with bare `go build` / `go test` and manual env exports.** The Taskfile already bakes in everything the build needs:
+
+- `GOCACHE` (default `/private/tmp/codex-go-mlx-cache` — the repo's shared build cache; not a "codex env", just the default)
+- `GO_DARWIN_LDFLAGS = -extldflags=-mmacosx-version-min=26.0` (Metal 4 floor — the build fails without it)
+- `MLX_METALLIB_PATH = {{.ROOT_DIR}}/dist/lib/mlx.metallib`
+- `-tags metal_runtime` on the test path
+
+Hand-exporting those yourself is how you get a subtly-wrong build and waste a session. `task fmt; go-task --list` shows every target. The Go module lives in `go/`; the Taskfile `dir: go` handles the `cd` for you.
 
 ```bash
-# Build mlx-c C library (required on fresh checkout, ~2min on M3 Ultra)
-git submodule update --init --recursive
-go generate ./...
+# Build the binary (self-contained — embeds the gzipped metallib). Output: bin/lthn-mlx
+task build:lthn
 
-# Run all tests
-go test ./...
+# Compile the native engine's OWN fused Metal kernels (router-topk, q4 lm-head argmax, bf16)
+#   -> dist/lib/lthn_kernels.metallib, loaded beside mlx.metallib. Build after editing pkg/native/kernels/*.metal.
+task build:kernels
 
-# Run a single test
-go test -run TestRMSNorm_Good ./go/internal/metal/
+# Run the whole Go suite (metal_runtime tag + ldflags, on the GPU)
+task test
 
-# Run benchmarks
-go test -bench=. -benchtime=2s ./go/internal/metal/
+# fmt + vet + test
+task qa
 
-# Lint
-golangci-lint run ./...
+# Real coverage figure (metal_runtime + model_eval tags) -> /tmp/go-mlx-coverage.out
+task cov
 
-# Clean rebuild (if dist/ is stale)
-rm -rf build dist && go generate ./...
+# C++ side (standalone lib/mlx build + the kernel-bridge tests). First run cold-builds MLX ~15 min.
+task test:cpp        # vendored MLX suite
+task test:cpp:kernels  # go-mlx's own Metal-kernel bridges
+
+# Clean
+task clean
 ```
 
-The compiled libraries (`dist/lib/`) are gitignored and must be rebuilt on each fresh checkout. Headers in `dist/include/` are committed for Go module consumers. On sandboxed systems, set `GOCACHE` to a writable directory such as `/tmp/codex-go-mlx-cache`.
+**Fresh checkout:** `git submodule update --init --recursive`, then build the MLX C library + metallib (`go generate ./...` from `go/`, or the CMake path in `docs/build.md`) so `dist/lib/mlx.metallib` exists before `task build:lthn` can embed it. `dist/lib/` is gitignored (rebuilt per checkout); `dist/include/` headers are committed for module consumers.
+
+### The two engines, and trying them
+
+| Engine | Path | How to run |
+|--------|------|-----------|
+| **cgo metal** (mature: MTP, paged KV, cache modes) | `go/internal/metal/` | `./bin/lthn-mlx generate <model-dir>` / `serve` |
+| **no-cgo native** (`pkg/native` + `pkg/model` — the contract engine, current focus) | `go/pkg/native/` | add `-native`: `./bin/lthn-mlx generate -native …` |
+
+```bash
+# Try the native engine end-to-end (greedy, deterministic). Model = a gemma4 HF/MLX snapshot dir.
+./bin/lthn-mlx generate -native -temp 0 -max-tokens 64 -prompt "Explain RoPE in one sentence." \
+  ~/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/*/
+
+# Serve it over the OpenAI/Anthropic/Ollama API, then curl /v1/chat/completions
+./bin/lthn-mlx serve -native <model-dir>          # default :11434
+```
+
+`generate -native` does NOT yet support `-trace` or `-state` (cgo-engine only); those exit 2. A run-quick smoke of the served engine also exists as the `lethean-lem` skill (`lem.sh smoke e2b`), but for *driving the repo itself* prefer `task` + the binary directly.
 
 ## Repository Layout
 
@@ -44,17 +75,18 @@ After Mantis #1241, all Go code lives under `go/`:
 ```
 go/                          Go module root (dappco.re/go/mlx)
   *.go                       Public root API: model, tokenizer, compute, training, eval, distill, GRPO, hf-fit, merge, gguf-quantize, kv-snapshot, lora-fuse
+  cmd/mlx/                   CLI tool (built with `-o core-mlx`; consumers rename: lthn-mlx)
   cmd/violet/                Unix-socket sidecar daemon
   internal/metal/            All CGO code (mlx-c bindings)
   mlxlm/                     CGO-free Python subprocess backend
   pkg/daemon/                Daemon implementation
-  pkg/memvid/                Memvid storage CLI
+  pkg/memvid/                Deprecated State codec compatibility shim
   tests/                     Integration tests
 cpp/                         C++ side (CLion-side companion)
 docs/                        Markdown documentation
 examples/                    Per-feature usage examples (markdown)
 external/                    Vendored core libraries
-lib/mlx/                     Upstream mlx submodule (pinned at v0.30.1)
+lib/mlx/                     Upstream mlx submodule (pinned at v0.31.1)
 patches/                     Local patches to lib/mlx (not auto-applied)
 ```
 
@@ -127,7 +159,7 @@ Architecture is detected from `config.json` (`model_type`) for safetensors and f
 
 ## Submodule Patches
 
-`lib/mlx` is pinned at upstream tag `v0.30.1`. Local patches that we do not upstream live in `patches/` as standalone diff files (e.g. `patches/mlx-metallib-path.patch` for the `MLX_METALLIB_PATH` env-var override). Patches are not auto-applied — run them inside the submodule manually when their function is needed:
+`lib/mlx` is pinned at upstream tag `v0.31.1`. Local patches that we do not upstream live in `patches/` as standalone diff files (e.g. `patches/mlx-metallib-path.patch` for the `MLX_METALLIB_PATH` env-var override). Patches are not auto-applied — run them inside the submodule manually when their function is needed:
 
 ```bash
 git -C lib/mlx apply ../../patches/mlx-metallib-path.patch

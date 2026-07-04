@@ -2,22 +2,11 @@ coverage:
   status:
     project:
       default:
-        target: 80%
-        threshold: 1%
+        target: 98%
+        threshold: 8%
     patch:
       default:
         target: 70%
 
 ignore:
-  # Hardware/native runtime paths need a separate Metal-backed integration gate.
-  - "go/*_darwin.go"
-  - "go/register_metal.go"
-  - "go/internal/metal/**"
-
-  # Adapter shells and sidecars are tested, but not part of the core library gate.
-  - "go/training.go"
-  - "go/mlxlm/**"
-  - "go/pkg/daemon/**"
-  - "go/pkg/memvid/cli/**"
-  - "go/cmd/**"
   - "go/tests/**"

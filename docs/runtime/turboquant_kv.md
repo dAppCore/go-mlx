@@ -1,0 +1,307 @@
+<!-- SPDX-Licence-Identifier: EUPL-1.2 -->
+
+# TurboQuant KV Implementation Note
+
+Status: research implementation for the explicit `turboquant` cache mode. This
+is not a default path. The current code has a versioned page payload, a
+physical 3.5-bit/channel reference layout using a 3-bit regular / 4-bit outlier
+split, and a reference restore bridge that dequantizes compressed pages back
+into MLX arrays before attention. Pinned restore and compressed-attention
+kernels are still open work.
+
+Source basis: `/Users/snider/Downloads/2504.19874v1.pdf`, especially Algorithm
+1 `TurboQuantmse`, Algorithm 2 `TurboQuantprod`, and the KV-cache compression
+experiments. The current planner estimate uses `3.5` bits per KV element as the
+paper-backed hypothesis to validate, not as a production guarantee.
+
+## GOAL Coverage
+
+This note closes only the implementation-note requirement from `GOAL.md`. It
+maps the paper algorithms onto the current go-mlx cache tensors and restore
+surface as follows:
+
+- Algorithm 1, `TurboQuantmse`: the V path and the MSE base of the K path use
+  explicit vector norms, deterministic rotation seeds, mixed-width centroid
+  codes, and a page-local codebook id.
+- Algorithm 2, `TurboQuantprod`: the K path stores the MSE base plus residual
+  norm and packed QJL signs, then exposes `EstimateKeyInnerProductsInto` as the
+  current compressed-score reference surface.
+- Logical tensor shape: every compressed page remains a rank-4 logical MLX K/V
+  view, `[batch, kv_heads, page_tokens, head_dim]`; state and cache metadata
+  also record logical token offset, page size, cache index, layer identity,
+  layer type, and shared-KV owner.
+- Restore format: `turboquant-kv-v1` payloads are sectioned, little-endian,
+  64-byte aligned, version checked, and fail closed when read as any older
+  fp16/q8/k-q8-v-q4/paged snapshot family.
+
+It does not close the validation or promotion gates. The current reference path
+still dequantizes compressed pages into MLX arrays for compatibility before
+attention; pinned State-file restore and native compressed attention remain
+separate implementation/benchmark work.
+
+## Current go-mlx Cache Shape
+
+Native K/V tensors are rank-4 MLX arrays:
+
+```text
+[batch, kv_heads, seq_len, head_dim]
+```
+
+The active cache families expose that shape differently:
+
+- `KVCache`, `RotatingKVCache`, and `FixedKVCache` store one K array and one V
+  array per cache.
+- `PagedKVCache` stores `kPages` and `vPages`, each page still shaped as
+  `[batch, kv_heads, page_len, head_dim]`. The default page size is `2048`;
+  Gemma 4 local sliding caches cap at the model-native local window (`512` for
+  E2B/E4B-style packs, `1024` for 12B Unified), while global owner layers carry
+  the long retained context.
+- `KVSnapshot` version `4` stores native byte slabs per logical layer via
+  `KeyBytes`/`KeyShape` and `ValueBytes`/`ValueShape`. Version `5` adds
+  explicit `CacheMode` plus opaque TurboQuant page payloads so compressed KV
+  state can survive the public `kv.Snapshot` binary format and root/Metal
+  conversion without being mistaken for fp16, q8, or paged K/V slabs.
+- Native slab restore already has a zero-copy pinned raw-byte path through
+  `fromPinnedRawBytes`.
+- `fromPinnedRawBytesStrided` and the external `go-cgo` C++23 `mdspan` helper
+  are the right substrate for future State-file pages that should be viewed
+  without reshuffling.
+
+TurboQuant must preserve this logical shape. Compression changes only the
+physical page payload and the attention/dequant path.
+
+## Algorithm Mapping
+
+TurboQuant works on vectors in `R^d`; for go-mlx, one vector is one token row:
+
+```text
+cache page vector = cache[layer or cache_index][kind K/V][batch][head][token][:]
+d = head_dim
+```
+
+The paper assumes unit vectors. K/V rows are not guaranteed to be unit length,
+so each encoded vector stores a norm. Zero vectors use a zero-norm sentinel and
+skip rotation/quantisation.
+
+### K path: `TurboQuantprod`
+
+Keys participate directly in attention score inner products, so they should use
+the paper's inner-product path:
+
+1. Normalize key vector `k` into `k_hat` and store `||k||`.
+2. Apply `TurboQuantmse` with `b - 1` bits per coordinate:
+   - deterministic rotation seed produces `Pi`;
+   - `y = Pi * k_hat`;
+   - each coordinate stores the nearest centroid index.
+3. Reconstruct the MSE approximation and compute residual
+   `r = k_hat - DeQuantmse(idx)`.
+4. Store `qjl = sign(S * r)` plus `||r||`.
+5. During attention, keep the query vector high precision and estimate
+   `q dot k` from the MSE reconstruction plus the QJL residual correction,
+   scaled by the stored key norm.
+
+The first correctness implementation may dequantize K pages back to fp16/bf16
+before calling existing attention. The production implementation should consume
+compressed K pages in native attention so retained global pages are not
+expanded for every decode step.
+
+### V path: `TurboQuantmse`
+
+Values are multiplied by attention weights rather than used as lookup keys for
+an inner-product search. They should start with the MSE path:
+
+1. Normalize value vector `v` and store `||v||`.
+2. Rotate with the same deterministic rotation family, scoped separately for V.
+3. Store nearest-centroid indices for each coordinate.
+4. Dequantize by centroid lookup, inverse rotation, and norm rescale.
+
+If long-output quality shows value reconstruction error dominates, add a
+`TurboQuantprod` V experiment behind a separate gate instead of changing the
+default TurboQuant design.
+
+## Outlier Split
+
+The paper's `2.5` and `3.5` bit KV results come from splitting channels into
+outlier and non-outlier sets and applying independent TurboQuant instances at
+different bit widths. go-mlx should make that explicit metadata:
+
+```text
+outlier_policy:
+  kind: channel_mask
+  dimension: head_dim
+  mask_bits: packed bitset
+  normal_bits: N
+  outlier_bits: M
+  effective_bits: weighted_average(normal_bits, outlier_bits)
+```
+
+Do not hard-code a channel count from another model family. Gemma 4 E2B/E4B
+needs its own calibration sweep over K and V rows, reported separately for
+local and global caches.
+
+## Physical Layout
+
+Use a versioned TurboQuant physical layout instead of overloading q8 or paged
+snapshots. Older or malformed payloads still fail closed through the exact
+layout/codec/version checks.
+
+Each compressed page should carry:
+
+- schema version and codec name, for example `turboquant-kv-v1`;
+- model identity, architecture, cache layout hash, and tokenizer/config hashes;
+- `cache_index`, logical layer index, layer type, and shared-KV owner identity;
+- logical shape `[batch, kv_heads, seq_len, head_dim]`;
+- logical token offset, page token count, page size, and local-window cap;
+- K codec metadata: algorithm `turboquantprod`, effective bits, rotation seed,
+  QJL seed, codebook id, norm policy, residual-norm policy, outlier policy,
+  packed centroid indices, packed QJL signs, vector norms, residual norms;
+- V codec metadata: algorithm `turboquantmse`, effective bits, rotation seed,
+  codebook id, norm policy, outlier policy, packed centroid indices, vector
+  norms;
+- byte alignment and endian marker.
+
+Payloads should be page-local and appendable. A State file can then index pages
+by token range without materializing a full context. Public State blocks treat
+opaque compressed payload snapshots as whole blocks unless a native Metal block
+source has already emitted block-specific payload pages; this avoids silently
+splitting a bit-packed page at the wrong token boundary. For Metal, align binary
+payload sections to at least a cache-line boundary and keep K and V page
+payloads independently addressable so the first implementation can dequantize
+one side without touching the other.
+
+## Restore Strategy
+
+Implement restore in three stages:
+
+1. **Reference restore:** read compressed pages, dequantize to MLX arrays, and
+   reuse the existing attention paths. This validates schema, quality, and
+   retained-State behaviour before optimizing. `TurboQuantKVCache` now owns
+   compressed `TurboQuantKVReferencePagePayload` pages and regenerates arrays as
+   the compatibility bridge.
+2. **Pinned page restore:** memory-map the State payload, pin the relevant
+   compressed page bytes, and wrap the page as MLX data or C++23 `mdspan`
+   views. This removes copy pressure but may still dequantize before attention.
+3. **Compressed attention:** keep K pages compressed through score computation.
+   Query vectors stay high precision; the native kernel applies centroid and
+   QJL corrections while walking compressed pages.
+
+At every stage, local Gemma 4 caches must remain bounded to their configured
+sliding window. Only global owner layers should show retained long-context
+growth.
+
+## Integration Points
+
+- `go/internal/metal.TurboQuantKVPageLayout` is the first concrete metadata
+  contract for `turboquant-kv-v1` pages. It validates rank-4 logical shape,
+  exact layout version, K=`TurboQuantprod`, V=`TurboQuantmse`, QJL seed
+  presence for keys, outlier masks, and effective-bit accounting.
+- `memory.KVCacheModeTurboQuant` remains opt-in and never selected by
+  `NewPlan` until quality gates pass.
+- `scaleKVElements(..., KVCacheModeTurboQuant)` is a lower-bound data estimate
+  at `3.5` bits per element. Once metadata is real, planner estimates must add
+  norms, QJL residual norms, seeds/codebook ids, outlier masks, and page index
+  overhead.
+- `go/internal/metal.TurboQuantKVCache` exists beside `PagedKVCache`, not hidden
+  inside q8. It is selected only by the explicit `turboquant` cache mode. The
+  reference cache now emits K=`TurboQuantprod` and V=`TurboQuantmse` payloads
+  with deterministic 3-bit regular channels and 4-bit outlier channels over the
+  high half of the head dimension. The stored codec metadata names the
+  outlier split as `outlier_policy=high-half-head-dim-v1`, records
+  `norm_policy=explicit-vector-norm-bf16-v1` for K and V, and records
+  `residual_norm_policy=explicit-vector-residual-norm-bf16-v1` for K because
+  only `TurboQuantprod` carries the QJL residual path. The bit split gives
+  `3500` effective bits/milli for both K and V in the stored layout.
+- Snapshot, prompt-cache, and public State restore accept TurboQuant only when
+  the page schema version matches exactly; older, empty, or partial snapshots
+  fail clearly. `kv.Snapshot` v5 keeps compressed page payloads opaque at the
+  portable layer and preserves them through State block save/load.
+- Driver reports must label TurboQuant separately from `fp16`, `q8`,
+  `k-q8-v-q4`, `paged`, and `fixed`.
+
+Current focused go-mlx self-benchmark on the M3 Ultra dev target after the
+direct base-array payload restore path, section-buffer packing, and pooled
+encode/decode scratch pass:
+
+```text
+BenchmarkTurboQuantKVCache_Update_D128_T8                                  93869 ns/op  26900 B/op  20 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31877 ns/op  10625 B/op  12 allocs/op
+BenchmarkTurboQuantKVCache_PayloadEstimate_D128_T16_P4                      3269 ns/op      0 B/op   0 allocs/op
+BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          32285 ns/op   7564 B/op   5 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8                      19059 ns/op  49152 B/op  50 allocs/op
+BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8                    12572 ns/op     32 B/op   1 allocs/op
+BenchmarkTurboQuantKVReferencePage_EstimateKeysInto_D128_T8                12801 ns/op      0 B/op   0 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8                   16028 ns/op   2032 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8                   14804 ns/op   7552 B/op  26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8         34067 ns/op  56704 B/op  76 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      22841 ns/op   8205 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatDataInto_D128_T8  22257 ns/op      0 B/op   0 allocs/op
+BenchmarkTurboQuantKVReferencePayloads_DecodeFloatData_D128_T8             44704 ns/op  16409 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePayloads_DecodeFloatDataInto_D128_T8         43053 ns/op      0 B/op   0 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8             32526 ns/op   8370 B/op   6 allocs/op
+```
+
+The `LegacyBase` row is the previous compatibility shape: decode the full
+reference payload, rebuild the key/value object graph including QJL metadata,
+then materialise base K/V. `BaseFloatData` is the direct restore route used by
+`DecodeBaseArrays`, so it is the go-mlx self-baseline for this compatibility
+bridge. It now borrows the existing TurboQuant decode scratch pool; the
+remaining two allocations are the decoded K and V output slices handed to the
+pinned MLX array bridge.
+
+The cache restore path also borrows the same decode scratch pool while
+materialising one or more payload pages, so `SnapshotRestore` no longer pays the
+extra scratch allocation pair on every retained-State restore.
+
+Cache-level payload accounting is explicit through `PayloadEstimate`: it sums
+section bytes, cache-line padding bytes, and the fp16 K+V baseline across all
+payload pages. The estimate uses the same per-vector packed-byte layout as the
+physical payload. This matters for small pages because 64-byte section alignment
+can dominate the compressed sections; reports must show padded payload bytes
+separately from the ideal section-byte ratio.
+
+The reference encoder borrows the matching encode scratch pool for normalise,
+rotate, and residual buffers. Encoding a page now allocates only the retained
+page vector slices plus centroid/QJL code buffers, and `Update` inherits that
+lower allocation floor before the compatibility restore bridge rebuilds MLX
+arrays.
+
+The estimator path now has a caller-owned `EstimateKeyInnerProductsInto` form
+for compressed-attention experiments that want to reuse one scores buffer while
+walking retained compressed K pages. The existing allocating helper remains for
+small diagnostics.
+
+The direct page restore path also exposes `DecodeBaseFloatDataInto`, letting a
+future pinned/page restore bridge reuse K/V float buffers while decoding one
+compressed page. The allocating `DecodeBaseFloatData` helper remains the simple
+compatibility surface. The cache-level multi-page restore now has the same
+caller-owned-buffer form through `turboQuantKVDecodePayloadFloatDataInto`, so
+future State restore work can reuse full-context K/V buffers while walking
+compressed payload pages in token order.
+
+These are reference-path costs, not production-kernel targets.
+
+## Validation Matrix
+
+Minimum pre-promotion checks:
+
+- CPU/reference round trips for MSE K/V rows, zero vectors, bad shapes, and
+  packed bitstreams.
+- Seeded statistical test that the K-side `TurboQuantprod` estimator is
+  unbiased within tolerance over random query/key pairs.
+- Metadata tests for outlier masks, effective-bit accounting, and page
+  alignment.
+- Restore tests proving unsupported TurboQuant snapshots fail closed, then
+  versioned snapshots restore through the reference path.
+- Greedy generation parity/quality checks against fp16 or paged cache on short
+  prompts before any long-context run.
+- Retained workflow tests at the normal `30k`-`40k` opencode-sized target and
+  the `100k` stress lane, reporting restore, raw decode, wall time, peak memory,
+  estimated energy, and long-output coherence.
+- Focused benchmarks only: page encode, page dequant, pinned restore, and
+  compressed attention. Avoid broad cache bench sweeps that accumulate MLX
+  memory across unrelated cases.
+
+Promotion requires TurboQuant to beat the accepted retained-State baseline on
+active-plus-cache memory after metadata is counted, while also preserving
+retained wall/restore behaviour and visible quality. It should not be promoted
+for a short-context decode number or a peak-memory-only improvement.

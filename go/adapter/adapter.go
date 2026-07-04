@@ -1,0 +1,267 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// Package adapter wraps an inference.TextModel with buffered + streaming
+// callback APIs.
+//
+//	a := adapter.New(model, "mlx")
+//	result, _ := a.Generate(ctx, prompt, adapter.GenOpts{MaxTokens: 128})
+package adapter
+
+import (
+	"context"
+
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+)
+
+// errAdapterNil is the sentinel returned when the receiver Adapter or its
+// wrapped model is nil. Hoisted to a package-level var so the hot guard at
+// the top of every Adapter method does not allocate a fresh *Err per call.
+var errAdapterNil = core.NewError("adapter: inference adapter is nil")
+
+// errCallbackNil is the sentinel returned when a streaming token callback
+// is nil. Hoisted for the same reason as errAdapterNil.
+var errCallbackNil = core.NewError("adapter: token callback is nil")
+
+// errInspectUnsupported is the sentinel returned by InspectAttention when
+// the wrapped model does not implement inference.AttentionInspector.
+var errInspectUnsupported = core.NewError("adapter: wrapped model does not support attention inspection")
+
+// resultErr converts a failed core.Result (r.OK == false) from model.Err() /
+// model.Close() into a plain error for this package's error-returning API.
+// It unwraps to the original error Value rather than returning r itself:
+// Result satisfies the error interface (it has an Error() string method), so
+// returning r directly would compile, but it would box a distinct error value
+// — breaking core.Is / errors.Is and equality checks callers make against the
+// model's original error. Falls back to a fresh error carrying the same
+// message text on the (contractually unreachable) case where Value isn't an
+// error.
+func resultErr(r core.Result) error {
+	if err, ok := r.Value.(error); ok {
+		return err
+	}
+	return core.NewError(r.Error())
+}
+
+// GenOpts controls buffered adapter generation.
+type GenOpts struct {
+	MaxTokens int
+	Temp      float64
+}
+
+// Result holds buffered text plus optional backend metrics.
+type Result struct {
+	Text    string
+	Metrics *inference.GenerateMetrics
+}
+
+// TokenCallback receives streamed token text.
+type TokenCallback func(token string) error
+
+// Adapter wraps an inference.TextModel with buffered/string APIs.
+type Adapter struct {
+	model inference.TextModel
+	name  string
+}
+
+// New wraps a loaded inference model with an adapter surface.
+//
+//	a := adapter.New(model, "mlx")
+func New(model inference.TextModel, name string) *Adapter {
+	return &Adapter{model: model, name: name}
+}
+
+// Name returns the configured adapter name.
+func (a *Adapter) Name() string {
+	if a == nil {
+		return ""
+	}
+	return a.name
+}
+
+// Available reports whether the underlying model is loaded.
+func (a *Adapter) Available() bool {
+	return a != nil && a.model != nil
+}
+
+// Model returns the wrapped inference.TextModel.
+func (a *Adapter) Model() inference.TextModel {
+	if a == nil {
+		return nil
+	}
+	return a.model
+}
+
+// Close releases the underlying model.
+func (a *Adapter) Close() error {
+	if a == nil || a.model == nil {
+		return nil
+	}
+	model := a.model
+	a.model = nil
+	if r := model.Close(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
+}
+
+// Generate collects a streamed response into a single string.
+//
+//	result, err := a.Generate(ctx, "prompt", adapter.GenOpts{MaxTokens: 64})
+func (a *Adapter) Generate(ctx context.Context, prompt string, opts GenOpts) (Result, error) {
+	if a == nil || a.model == nil {
+		return Result{}, errAdapterNil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Cache the model pointer locally so the streaming loop, the Err
+	// check, and the Metrics fetch all skip the interface-table reload
+	// the compiler emits for repeated a.model accesses.
+	model := a.model
+	// Stack-allocate the Builder via a value-typed local — core.NewBuilder
+	// returns *strings.Builder which always heap-escapes. The Builder's
+	// internal byte slice still grows on the heap, but the header itself
+	// stays on the stack frame and we drop one alloc per Generate call.
+	var builder core.Builder
+	for token := range model.Generate(ctx, prompt, genOptsToInference(opts)...) {
+		builder.WriteString(token.Text)
+	}
+	if r := model.Err(); !r.OK {
+		return Result{Text: builder.String()}, resultErr(r)
+	}
+
+	metrics := model.Metrics()
+	return Result{Text: builder.String(), Metrics: &metrics}, nil
+}
+
+// GenerateStream forwards token text to a callback.
+func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpts, cb TokenCallback) error {
+	if a == nil || a.model == nil {
+		return errAdapterNil
+	}
+	if cb == nil {
+		return errCallbackNil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	model := a.model
+	var callbackErr error
+	tokens := model.Generate(ctx, prompt, genOptsToInference(opts)...)
+	for token := range tokens {
+		if callbackErr != nil {
+			continue
+		}
+		if err := cb(token.Text); err != nil {
+			callbackErr = err
+			cancel()
+		}
+	}
+	if callbackErr != nil {
+		return callbackErr
+	}
+	if r := model.Err(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
+}
+
+// Chat collects a streamed chat response into a single string.
+//
+//	result, err := a.Chat(ctx, messages, adapter.GenOpts{})
+func (a *Adapter) Chat(ctx context.Context, messages []inference.Message, opts GenOpts) (Result, error) {
+	if a == nil || a.model == nil {
+		return Result{}, errAdapterNil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	model := a.model
+	// Value-typed Builder local — matches the alloc-shaving rationale in
+	// Generate (see comment there).
+	var builder core.Builder
+	for token := range model.Chat(ctx, messages, genOptsToInference(opts)...) {
+		builder.WriteString(token.Text)
+	}
+	if r := model.Err(); !r.OK {
+		return Result{Text: builder.String()}, resultErr(r)
+	}
+
+	metrics := model.Metrics()
+	return Result{Text: builder.String(), Metrics: &metrics}, nil
+}
+
+// ChatStream forwards chat token text to a callback.
+func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, opts GenOpts, cb TokenCallback) error {
+	if a == nil || a.model == nil {
+		return errAdapterNil
+	}
+	if cb == nil {
+		return errCallbackNil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	model := a.model
+	var callbackErr error
+	tokens := model.Chat(ctx, messages, genOptsToInference(opts)...)
+	for token := range tokens {
+		if callbackErr != nil {
+			continue
+		}
+		if err := cb(token.Text); err != nil {
+			callbackErr = err
+			cancel()
+		}
+	}
+	if callbackErr != nil {
+		return callbackErr
+	}
+	if r := model.Err(); !r.OK {
+		return resultErr(r)
+	}
+	return nil
+}
+
+// InspectAttention delegates to the underlying model when supported.
+func (a *Adapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+	if a == nil || a.model == nil {
+		return nil, errAdapterNil
+	}
+	inspector, ok := a.model.(inference.AttentionInspector)
+	if !ok {
+		return nil, errInspectUnsupported
+	}
+	return inspector.InspectAttention(ctx, prompt, opts...)
+}
+
+func genOptsToInference(opts GenOpts) []inference.GenerateOption {
+	// Switch on the 2x2 truth table so the slice is constructed in a
+	// single literal expression — no count phase, no make + append +
+	// append round-trip. The compiler emits each branch as a direct
+	// slice-literal initialisation at its exact final length.
+	hasMax := opts.MaxTokens > 0
+	hasTemp := opts.Temp > 0
+	switch {
+	case hasMax && hasTemp:
+		return []inference.GenerateOption{
+			inference.WithMaxTokens(opts.MaxTokens),
+			inference.WithTemperature(float32(opts.Temp)),
+		}
+	case hasMax:
+		return []inference.GenerateOption{inference.WithMaxTokens(opts.MaxTokens)}
+	case hasTemp:
+		return []inference.GenerateOption{inference.WithTemperature(float32(opts.Temp))}
+	default:
+		return nil
+	}
+}

@@ -1,0 +1,218 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package gemma4
+
+import (
+	"sync/atomic"
+
+	"dappco.re/go/mlx/pkg/metal"
+)
+
+// Per-layer-input path toggles — in-code diagnostics, off by default, NEVER
+// ambient env (an env-readable compute toggle is external control). enableCompiled
+// trials the compiled variant; disable is a correctness-breaking switch that
+// isolates the per-layer-input cost. Flip a const locally to investigate.
+var (
+	enableCompiledGemma4PerLayerInputs = false
+	disableGemma4PerLayerInputs        = false
+)
+
+// gemma4PerLayerCombineScale is the constant 2**-0.5 (i.e. 1/sqrt(2))
+// applied as the final scaling factor when combining the per-layer
+// projected hidden with the per-layer input embedding inside
+// perLayerInputTensor. Lifting the float32 narrowing here keeps the
+// per-token forward pass free of math.Pow.
+const gemma4PerLayerCombineScale float32 = 0.70710678118654752440
+
+// Gemma4TextConfig holds Gemma 4 text model configuration.
+type Gemma4TextConfig struct {
+	// Embedded neutral core — promotes ModelType/HiddenSize/NumHiddenLayers/
+	// IntermediateSize/NumAttentionHeads/NumKeyValueHeads/HeadDim/VocabSize/
+	// RMSNormEps/MaxPositionEmbeddings. Shared with every model on the SDK.
+	metal.TransformerConfig
+
+	PadTokenID                int32                 `json:"pad_token_id"`
+	ImageTokenID              int32                 `json:"image_token_id"`
+	AudioTokenID              int32                 `json:"audio_token_id"`
+	VideoTokenID              int32                 `json:"video_token_id"`
+	BOITokenID                int32                 `json:"boi_token_id"`
+	BOATokenID                int32                 `json:"boa_token_id"`
+	EOITokenID                int32                 `json:"eoi_token_id"`
+	EOATokenIndex             int32                 `json:"eoa_token_index"`
+	NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
+	GlobalHeadDim             int32                 `json:"global_head_dim"`
+	GlobalPartialRotaryFactor float32               `json:"global_partial_rotary_factor"`
+	VocabSizePerLayerInput    int32                 `json:"vocab_size_per_layer_input"`
+	SlidingWindow             int32                 `json:"sliding_window"`
+	SlidingWindowPattern      int32                 `json:"sliding_window_pattern"`
+	NumKVSharedLayers         int32                 `json:"num_kv_shared_layers"`
+	HiddenSizePerLayerInput   int32                 `json:"hidden_size_per_layer_input"`
+	AttentionKEqV             bool                  `json:"attention_k_eq_v"`
+	FinalLogitSoftcapping     float32               `json:"final_logit_softcapping"`
+	UseDoubleWideMLP          bool                  `json:"use_double_wide_mlp"`
+	UseDoubleWideMLPDeclared  bool                  `json:"-"`
+	AttentionKEqVDeclared     bool                  `json:"-"`
+	EnableMoEBlockDeclared    bool                  `json:"-"`
+	EnableMoEBlock            bool                  `json:"enable_moe_block"`
+	NumExperts                *int32                `json:"num_experts"`
+	TopKExperts               *int32                `json:"top_k_experts"`
+	MoEIntermediateSize       *int32                `json:"moe_intermediate_size"`
+	TieWordEmbeddings         bool                  `json:"tie_word_embeddings"`
+	RopeParameters            map[string]RopeParams `json:"rope_parameters"`
+	LayerTypesInput           []string              `json:"layer_types"`
+
+	Quantization                *metal.QuantizationConfig `json:"-"`
+	VisionConfig                *Gemma4VisionConfig       `json:"-"`
+	AudioConfig                 *Gemma4AudioConfig        `json:"-"`
+	LayerTypes                  []string                  `json:"-"`
+	EmbeddingScale              float32                   `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
+	PerLayerInputEmbeddingScale float32                   `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
+	PerLayerProjectionScale     float32                   `json:"-"` // Computed: 1/sqrt(hidden_size); cached to skip per-token math.Pow in perLayerInputTensor
+}
+
+// RopeParams holds RoPE configuration for a single attention type.
+type RopeParams struct {
+	PartialRotaryFactor float32 `json:"partial_rotary_factor"`
+	RopeTheta           float64 `json:"rope_theta"`
+	RopeType            string  `json:"rope_type"`
+	Factor              float32 `json:"factor"`
+}
+
+// Gemma4Model is the Gemma 4 text model.
+type Gemma4Model struct {
+	EmbedTokens         *metal.Embedding
+	EmbedTokensPerLayer *metal.Embedding
+	VisionTower         *Gemma4VisionModel
+	MultiModalProjector *Gemma4MultiModalProjector
+	AudioProjector      *Gemma4AudioProjector
+	AudioEncoder        *Gemma4AudioEncoder
+	AudioFeatures       *Gemma4AudioFeatureExtractor
+	ImageFeatures       *Gemma4ImageFeatureConfig
+	Layers              []*Gemma4DecoderLayer
+	Norm                *metal.RMSNormModule
+	Output              *metal.Linear
+	PerLayerModelProj   *metal.Linear
+	PerLayerProjNorm    *metal.RMSNormModule
+
+	NormScaled             *metal.Array
+	PerLayerProjNormScaled *metal.Array
+
+	Tok *metal.Tokenizer
+	Cfg *Gemma4TextConfig
+
+	PreviousKVs       []int32
+	CacheIndexByLayer []int32
+	modelType         string
+
+	compiledPerLayerInputs       *metal.CompiledFunc
+	compiledPerLayerInputsFailed bool
+
+	// Whole-stack graph-eval scratch — allocated once, overwritten in place each
+	// token so steady-state decode costs zero per-token plan/input allocation
+	// (see compiled_stack.go).
+	stackPlan   *gemma4StackPlan
+	stackOwners []stackOwner
+	stackIn     []*metal.Array
+}
+
+// Gemma4DecoderLayer is a single transformer block.
+type Gemma4DecoderLayer struct {
+	InputNorm    *metal.RMSNormModule
+	Attention    *Gemma4Attention
+	PostAttnNorm *metal.RMSNormModule
+	PreFFNorm    *metal.RMSNormModule
+	MLP          *metal.MLP
+	PostFFNorm   *metal.RMSNormModule
+
+	EnableMoE   bool
+	Router      *Gemma4Router
+	Experts     *Gemma4Experts
+	PreFFNorm2  *metal.RMSNormModule
+	PostFFNorm1 *metal.RMSNormModule
+	PostFFNorm2 *metal.RMSNormModule
+
+	PerLayerInputGate     *metal.Linear
+	PerLayerProjection    *metal.Linear
+	PostPerLayerInputNorm *metal.RMSNormModule
+
+	LayerScalar *metal.Array
+
+	InputNormScaled             *metal.Array
+	PostAttnNormScaled          *metal.Array
+	PreFFNormScaled             *metal.Array
+	PostFFNormScaled            *metal.Array
+	PreFFNorm2Scaled            *metal.Array
+	PostFFNorm1Scaled           *metal.Array
+	PostFFNorm2Scaled           *metal.Array
+	PostPerLayerInputNormScaled *metal.Array
+
+	LayerType     string
+	IsSliding     bool
+	DoubleWideMLP bool
+	LayerIdx      int32
+	FFNMemory     metal.FFNMemoryAugmenter
+
+	// compiledDecode caches the whole-layer compiled decode eligibility +
+	// canonical weight inputs (compiled_layer.go). The compiled closures
+	// themselves are shared across layers in a package-level trace-key map.
+	compiledDecode atomic.Pointer[gemma4CompiledLayerState]
+}
+
+// Gemma4Attention implements Gemma 4 attention with per-layer RoPE and K-eq-V.
+type Gemma4Attention struct {
+	QProj *metal.Linear
+	KProj *metal.Linear
+	VProj *metal.Linear
+	OProj *metal.Linear
+	QNorm *metal.RMSNormModule
+	KNorm *metal.RMSNormModule
+	VNorm *metal.RMSNormModule
+
+	QNormScaled *metal.Array
+	KNormScaled *metal.Array
+
+	HeadDim        int32
+	NKVHeads       int32
+	UseKEqV        bool
+	Scale          float32
+	RopeBase       float32
+	RopeRotatedDim int32
+	RopeFreqs      *metal.Array
+}
+
+// Gemma4Router routes tokens to top-k experts.
+type Gemma4Router struct {
+	Proj           *metal.Linear
+	Scale          *metal.Array
+	PerExpertScale *metal.Array
+	ScaleScaled    *metal.Array
+	RootSize       float32
+	TopK           int32
+	Eps            float32
+}
+
+// Gemma4Experts holds the SwitchGLU sparse MoE block.
+type Gemma4Experts struct {
+	GateUpProj *metal.SwitchLinear
+	GateProj   *metal.SwitchLinear
+	UpProj     *metal.SwitchLinear
+	DownProj   *metal.SwitchLinear
+}
+
+// sharedKV is the per-layer K/V hand-off type. It now lives in package metal
+// (metal.SharedKV) because the fused cgo kernels both produce and consume it
+// (RFC.model-sdk Cat 3); this alias keeps the architecture's references stable.
+// Methods are the exported metal ones: HasState/HasPages/Free/Clone.
+type sharedKV = metal.SharedKV
+
+// moveSharedKV forwards to metal.MoveSharedKV so architecture callers keep a
+// short local name.
+func moveSharedKV(kv *sharedKV) sharedKV {
+	return metal.MoveSharedKV(kv)
+}
+
+func gemma4ValidKV(k, v *metal.Array) bool {
+	return k != nil && k.Valid() && v != nil && v.Valid()
+}

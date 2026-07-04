@@ -112,6 +112,61 @@ type DistillResult struct {
 
 The full result is JSON-serialisable so a downstream harness can persist and diff runs.
 
+## Simple Self-Distillation
+
+`RunSimpleSelfDistillation` implements the native SSD data-generation and SFT
+core without Python. It samples raw responses from the frozen model with
+`SampleMaxTokens`, non-unit `SampleTemperature`, `SampleTopP`, `SampleTopK`,
+`SampleMinP`, and `RepetitionPenalty`, then trains those raw prompt/response rows
+through the existing SFT path. `DecodeTemperature` is carried separately for the
+post-SSD decode configuration.
+
+When `SimpleSelfDistillationRunner.ModelInfo` is set, the generated SFT config
+uses model-specific normalisation before training. `Model.RunSimpleSelfDistillation`
+sets it automatically, so Gemma-4 SSD runs reuse the same LoRA target policy as
+normal Gemma-4 SFT.
+
+`DefaultSimpleSelfDistillationConfig()` mirrors the upstream ml-ssd
+data-generation defaults: Qwen3-4B/rStar-Coder-style sampling at temperature
+`1.5`, `top_k=20`, `top_p=0.8`, repetition penalty `1.0`, and `65536` sample
+tokens.
+
+The ml-ssd data-generation post-process is available through
+`FilterShortestPercent`. A value of `10` drops the shortest generation decile
+from the SFT dataset after raw sampling while preserving the full raw sample
+record in the result for auditability.
+
+`RunSimpleSelfDistillationCodeBenchmark` is the native code-eval seam for
+LiveCodeBench-style checks. It samples `NRepeat` candidate solutions per task
+with a caller-provided `GenerateConfig`, delegates code execution to the
+runner's `RunTests` callback, extracts and post-processes fenced code blocks in
+Go, aggregates candidate pass rate plus LiveCodeBench pass@k metrics (including
+per-difficulty metrics when labels are present), and can write the JSON report to
+`OutputPath`. The unavoidable language-specific execution boundary stays behind
+the callback; the go-mlx harness itself does not import or shell out to Python.
+When `Seeds` is set, each repeat receives `Seeds[0]+repeat` in the forwarded
+`GenerateConfig`, matching the upstream eval loop while leaving ad hoc callers
+free to provide their own sampler behaviour.
+
+Use `LoadSimpleSelfDistillationLiveCodeBenchV6JSONL` or its file variant to
+load LiveCodeBench-style JSONL and keep the v6 contest-date window natively in
+Go. The broader `LoadSimpleSelfDistillationCodeBenchmarkJSONL` helper remains
+available for other code benchmark datasets.
+
+`DefaultSimpleSelfDistillationCodeBenchmarkConfig()` mirrors the upstream eval
+shape: `LiveCodeBench-v6`, `n_repeat=20`, `max_tokens=32768`, temperature `0.6`,
+`top_p=0.95`, `top_k=20`, `min_p=0.0`, and seeds `0,1234,1234,1234`.
+`SimpleSelfDistillationRecipes()` describes the released SimpleSD-4B-instruct,
+SimpleSD-4B-thinking, and SimpleSD-30b-a3b-instruct parity recipes for native
+reproduction runs.
+
+The `cmd/mlx` surface exposes two no-Python helpers for these artefacts:
+`ssd-recipes -json` prints the native recipe defaults, and `ssd-eval -json
+-samples livecodebench.jsonl -output results/lcb-report.json -n-repeat 10
+-sampling-params "temperature=0.9,top_p=0.8,top_k=20,max_tokens=65536"`
+loads LiveCodeBench-style JSONL, applies the v6 date filter, and emits the
+normalised eval plan used by `RunSimpleSelfDistillationCodeBenchmark`.
+
 ## See Also
 
 - [`examples/training/distill.md`](../examples/training/distill.md) — end-to-end walkthrough

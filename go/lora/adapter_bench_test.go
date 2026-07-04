@@ -1,0 +1,135 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// Benchmarks for LoRA adapter inspection + identity helpers.
+// Per AX-11 — InspectAdapter fires per model load when a LoRA is
+// attached (config parse + safetensors hashing), and IsEmpty fires
+// per session state check. InspectAdapter/Inspect now delegate to
+// inference/lora, so these benchmarks exercise this package's public
+// entry points end-to-end rather than the (now removed) local hashing
+// internals.
+//
+// Run:    go test -bench='BenchmarkAdapter' -benchmem -run='^$' ./go/lora
+
+package lora
+
+import (
+	"testing"
+
+	core "dappco.re/go"
+)
+
+// Sinks defeat compiler DCE.
+var (
+	loraAdapterBenchSinkInfo AdapterInfo
+	loraAdapterBenchSinkErr  error
+	loraAdapterBenchSinkBool bool
+)
+
+// writeBenchAdapter materialises a synthetic adapter directory with a
+// config + a stub weight blob. Hash-side bench cost scales with the
+// weight length — feeding small payloads keeps timing dominated by
+// the parser, larger payloads exercise the SHA path.
+//
+//	dir := writeBenchAdapter(b, `{"rank":8,...}`, weightBytes)
+func writeBenchAdapter(b *testing.B, config string, weightSize int) string {
+	b.Helper()
+	dir := b.TempDir()
+	if result := core.WriteFile(core.PathJoin(dir, "adapter_config.json"), []byte(config), 0o600); !result.OK {
+		b.Fatalf("WriteFile adapter_config: %v", result.Value)
+	}
+	weights := make([]byte, weightSize)
+	for i := range weights {
+		weights[i] = byte(i)
+	}
+	if result := core.WriteFile(core.PathJoin(dir, "adapter.safetensors"), weights, 0o600); !result.OK {
+		b.Fatalf("WriteFile adapter.safetensors: %v", result.Value)
+	}
+	return dir
+}
+
+// --- InspectAdapter — full path: read config + hash weights ---
+
+func BenchmarkAdapter_InspectAdapter_SmallWeights(b *testing.B) {
+	dir := writeBenchAdapter(b, `{"rank":8,"alpha":16,"lora_layers":["self_attn.q_proj","self_attn.v_proj"]}`, 1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkInfo, loraAdapterBenchSinkErr = InspectAdapter(dir)
+	}
+}
+
+func BenchmarkAdapter_InspectAdapter_TypicalWeights(b *testing.B) {
+	// 256KiB weight stub — proxy for a small rank-8 adapter file. The
+	// SHA-256 over the weight blob dominates timing once rank gets real.
+	dir := writeBenchAdapter(b, `{"rank":8,"alpha":16,"lora_layers":["self_attn.q_proj","self_attn.v_proj","self_attn.k_proj","self_attn.o_proj"]}`, 256*1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkInfo, loraAdapterBenchSinkErr = InspectAdapter(dir)
+	}
+}
+
+func BenchmarkAdapter_InspectAdapter_PEFTAliasesConfig(b *testing.B) {
+	// PEFT-style config — exercises the firstNonZero* fallback chains
+	// that pick between rank/r, alpha/lora_alpha, target_keys/target_modules.
+	dir := writeBenchAdapter(b, `{"r":16,"lora_alpha":32,"target_modules":["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]}`, 4096)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkInfo, loraAdapterBenchSinkErr = InspectAdapter(dir)
+	}
+}
+
+// --- Inspect — explicit identity path (used by staged adapters) ---
+
+func BenchmarkAdapter_Inspect_StagedIdentity(b *testing.B) {
+	dir := writeBenchAdapter(b, `{"rank":32,"alpha":64,"lora_layers":["q_proj","v_proj"]}`, 8192)
+	stagedIdentity := "/agents/active/adapter"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkInfo, loraAdapterBenchSinkErr = Inspect(dir, stagedIdentity)
+	}
+}
+
+// --- InspectAdapter (.safetensors file path) — exercises the
+// branch where path points at a single safetensors file rather than a
+// directory. ---
+
+func BenchmarkAdapter_InspectAdapter_SafetensorsPath(b *testing.B) {
+	dir := writeBenchAdapter(b, `{"rank":4,"alpha":8,"lora_layers":["q_proj"]}`, 4096)
+	path := core.PathJoin(dir, "adapter.safetensors")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkInfo, loraAdapterBenchSinkErr = InspectAdapter(path)
+	}
+}
+
+// --- AdapterInfo.IsEmpty — predicate hit on every session bootstrap ---
+
+func BenchmarkAdapter_IsEmpty_Empty(b *testing.B) {
+	info := AdapterInfo{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkBool = info.IsEmpty()
+	}
+}
+
+func BenchmarkAdapter_IsEmpty_Populated(b *testing.B) {
+	info := AdapterInfo{
+		Name:       "q-domain",
+		Path:       "/adapters/q-domain",
+		Hash:       "sha256:abcdef",
+		Rank:       16,
+		Alpha:      32,
+		Scale:      2,
+		TargetKeys: []string{"q_proj", "v_proj"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loraAdapterBenchSinkBool = info.IsEmpty()
+	}
+}

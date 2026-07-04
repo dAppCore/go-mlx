@@ -68,7 +68,7 @@ This phase was a full architectural restructure. All CGO code was moved to `inte
 - **Deterministic `Close()`** (`f2ca7fe`): Walks full model tree and explicitly frees all weight arrays. Handles tied output weights (skips double-free), nil safety, idempotent close. 8 new tests in `close_test.go`.
 - **Non-contiguous array fix** (`df0b300`): `ensureContiguous()` added. `Floats()`, `DataInt32()`, `Ints()` now call it automatically. `mlx_contiguous` and `_mlx_array_is_row_contiguous` bound from mlx-c.
 - **TopP and MinP sampling implemented** (`df0b300`): Previously stubs passing logits through unchanged. Now fully implemented using cumsum, argsort, and masked scattering.
-- **Virgil code review applied** (`fb0692b` through `443347a`): 12 items across critical/important/minor categories including thread-safe error handler (atomic), macOS deployment target corrected (13.3), `LoadOption` propagation, KV cache leak documented, repeat penalty implemented, stream caching, BPE merge algorithm, `CompileShapeless` dead code removed, naming cleanup.
+- **Virgil code review applied** (`fb0692b` through `443347a`): 12 items across critical/important/minor categories including thread-safe error handler (atomic), macOS deployment target corrected, `LoadOption` propagation, KV cache leak documented, repeat penalty implemented, stream caching, BPE merge algorithm, `CompileShapeless` dead code removed, naming cleanup.
 - **29 benchmarks baselined on M3 Ultra** (`ff01175`).
 - **4 new error handling tests** in `error_test.go`.
 - **148 tests total in `internal/metal/`; 11 root integration tests** (159 total).
@@ -126,7 +126,7 @@ The Python subprocess backend (`mlxlm`) does not support `Classify`, `BatchGener
 
 ### macOS Version Minimum
 
-The CMake build sets `CMAKE_OSX_DEPLOYMENT_TARGET=13.3`, which is MLX's stated minimum. Testing has been performed on macOS 26.2 (Tahoe beta). Behaviour on macOS 13.x or 14.x has not been validated.
+The CMake build sets `CMAKE_OSX_DEPLOYMENT_TARGET=26.0`, which is go-mlx's supported minimum. Testing has been performed on macOS 26.x; earlier macOS releases are out of scope.
 
 ---
 

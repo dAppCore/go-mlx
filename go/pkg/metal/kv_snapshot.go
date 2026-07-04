@@ -1,0 +1,626 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"context"
+	"iter"
+
+	core "dappco.re/go"
+)
+
+const (
+	// KVSnapshotVersion is the native KV snapshot schema version. It MUST track
+	// kv.SnapshotVersion: a snapshot round-tripped through the kv block bundle
+	// carries that format's version (kvconv copies it onto KVSnapshot.Version),
+	// and validatePromptCacheKVSnapshot rejects anything above this cap. v5 added
+	// per-layer CacheMode + TurboQuantPayloads, v6 added per-layer MaxSize — all
+	// three are fields on KVLayerSnapshot and carried by kvconv, so this side
+	// fully supports v6; it was simply left at 4 when the kv format advanced,
+	// which broke store-wake (durable agent-memory restore rejected its own v6
+	// snapshots). Keep in lockstep with kv.SnapshotVersion.
+	KVSnapshotVersion = 6
+)
+
+// KVSnapshot is a CPU-readable copy of model key/value cache tensors.
+type KVSnapshot struct {
+	Version       int
+	Architecture  string
+	Tokens        []int32
+	Generated     []int32
+	TokenOffset   int
+	NumLayers     int
+	NumHeads      int
+	SeqLen        int
+	HeadDim       int
+	NumQueryHeads int
+	LogitShape    []int32
+	Logits        []float32
+	Layers        []KVLayerSnapshot
+}
+
+// KVSnapshotCaptureOptions controls native K/V capture.
+type KVSnapshotCaptureOptions struct {
+	// RawKVOnly captures native K/V dtype bytes without retaining float32
+	// key/value slices.
+	RawKVOnly bool
+	// BlockStartToken skips capture of KV blocks that end at or before this
+	// token when ranging blocks — the trusted-prefix sleep lane: blocks the
+	// parent bundle already holds are grafted by reference downstream, so
+	// re-capturing (GPU->CPU copy) and re-hashing them per turn is pure
+	// waste that scales with the whole conversation instead of the turn.
+	BlockStartToken int
+}
+
+// KVLayerSnapshot contains cache tensors for a logical transformer layer.
+type KVLayerSnapshot struct {
+	Layer      int
+	CacheIndex int
+	CacheMode  KVCacheMode
+	// MaxSize records the SOURCE cache's window/rotation clamp at capture
+	// time. Restore prefers it over the wake-era model template's geometry —
+	// a window-clamped sliding cache slept under one bound must not wake at
+	// another (postCap regime ineligible, window semantics lost). 0 = the
+	// source had no clamp, or a pre-v6 snapshot: template fallback.
+	MaxSize            int
+	TurboQuantPayloads []TurboQuantKVReferencePagePayload
+	KeyDType           DType
+	KeyBytes           []byte
+	KeyShape           []int32
+	ValueDType         DType
+	ValueBytes         []byte
+	ValueShape         []int32
+	Heads              []KVHeadSnapshot
+}
+
+// KVHeadSnapshot contains flattened key/value tensors for one KV head.
+type KVHeadSnapshot struct {
+	Key        []float32
+	KeyDType   DType
+	KeyBytes   []byte
+	Value      []float32
+	ValueDType DType
+	ValueBytes []byte
+}
+
+// KVSnapshotBlock is one contiguous token range from a KV snapshot.
+type KVSnapshotBlock struct {
+	Index      int
+	TokenStart int
+	TokenCount int
+	Snapshot   *KVSnapshot
+}
+
+// KVSnapshotBlockSource streams KV snapshot blocks without requiring callers to
+// assemble a full CPU snapshot first.
+type KVSnapshotBlockSource struct {
+	TokenCount   int
+	PrefixTokens int
+	BlockCount   int
+	Load         func(context.Context, int) (KVSnapshotBlock, error)
+}
+
+// CaptureKV runs one prefill pass and returns the resulting K/V cache tensors.
+func (m *Model) CaptureKV(ctx context.Context, prompt string) (*KVSnapshot, error) {
+	return m.CaptureKVWithOptions(ctx, prompt, KVSnapshotCaptureOptions{})
+}
+
+// CaptureKVWithOptions runs one prefill pass and returns the resulting K/V
+// cache tensors with explicit capture options.
+func (m *Model) CaptureKVWithOptions(ctx context.Context, prompt string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, slotErr := m.acquireSlot(ctx)
+	if slotErr != nil {
+		return nil, slotErr
+	}
+	defer release()
+
+	var (
+		result *KVSnapshot
+		err    error
+	)
+	if deviceErr := m.withDevice(func() {
+		result, err = m.captureKVWithOptions(ctx, prompt, opts)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return result, err
+}
+
+// CaptureKVChunks runs one streaming prefill pass over bounded prompt chunks
+// and returns the resulting K/V cache tensors.
+func (m *Model) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*KVSnapshot, error) {
+	return m.CaptureKVChunksWithOptions(ctx, chunks, KVSnapshotCaptureOptions{})
+}
+
+// CaptureKVChunksWithOptions runs one streaming prefill pass over bounded
+// prompt chunks and returns K/V cache tensors with explicit capture options.
+func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, slotErr := m.acquireSlot(ctx)
+	if slotErr != nil {
+		return nil, slotErr
+	}
+	defer release()
+
+	var (
+		result *KVSnapshot
+		err    error
+	)
+	if deviceErr := m.withDevice(func() {
+		result, err = m.captureKVChunksWithOptions(ctx, chunks, opts)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return result, err
+}
+
+func (m *Model) captureKV(ctx context.Context, prompt string) (*KVSnapshot, error) {
+	return m.captureKVWithOptions(ctx, prompt, KVSnapshotCaptureOptions{})
+}
+
+func (m *Model) captureKVWithOptions(ctx context.Context, prompt string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	tokens := m.tokenizer.Encode(prompt)
+	return m.captureKVTokensWithOptions(ctx, tokens, opts)
+}
+
+func (m *Model) captureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*KVSnapshot, error) {
+	return m.captureKVChunksWithOptions(ctx, chunks, KVSnapshotCaptureOptions{})
+}
+
+func (m *Model) captureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	caches := m.newPromptSnapshotCaches()
+	defer FreeCaches(caches)
+
+	tokens, logits, err := m.prefillPromptChunks(ctx, chunks, caches)
+	if err != nil {
+		return nil, core.E("Model.CaptureKV", "prefill chunks", err)
+	}
+	defer Free(logits)
+
+	return m.snapshotKVCachesWithOptions(tokens, caches, opts, logits)
+}
+
+func (m *Model) captureKVTokens(ctx context.Context, tokens []int32) (*KVSnapshot, error) {
+	return m.captureKVTokensWithOptions(ctx, tokens, KVSnapshotCaptureOptions{})
+}
+
+func (m *Model) captureKVTokensWithOptions(ctx context.Context, tokens []int32, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	if len(tokens) == 0 {
+		return nil, core.E("Model.CaptureKV", "empty prompt after tokenisation", nil)
+	}
+
+	caches := m.newPromptSnapshotCaches()
+	defer FreeCaches(caches)
+
+	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
+	if err != nil {
+		return nil, core.E("Model.CaptureKV", "prefill", err)
+	}
+	defer Free(logits)
+
+	return m.snapshotKVCachesWithOptions(tokens, caches, opts, logits)
+}
+
+func (m *Model) snapshotKVCaches(tokens []int32, caches []Cache, logits ...*Array) (*KVSnapshot, error) {
+	return m.snapshotKVCachesWithOptions(tokens, caches, KVSnapshotCaptureOptions{}, logits...)
+}
+
+func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts KVSnapshotCaptureOptions, logits ...*Array) (*KVSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	if len(tokens) == 0 {
+		return nil, core.E("Model.CaptureKV", "empty token state", nil)
+	}
+	info := m.Info()
+	seqLen := kvSnapshotSeqLen(tokens, caches)
+	snapshotTokens := tokens
+	if seqLen < len(snapshotTokens) {
+		snapshotTokens = snapshotTokens[len(snapshotTokens)-seqLen:]
+	}
+	layers := make([]KVLayerSnapshot, info.NumLayers)
+	cacheIndexByLayer := attentionCacheIndexByLayer(m.model, info.NumLayers, len(caches))
+	cacheSnapshots := make(map[int]kvCacheSnapshot, len(caches))
+	var numHeads, headDim int
+	var logitShape []int32
+	var logitValues []float32
+
+	for layerIdx, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx < 0 {
+			continue
+		}
+		snapshot, ok := cacheSnapshots[cacheIdx]
+		if !ok {
+			var extracted bool
+			snapshot, extracted = inspectKVCacheWithOptions(caches[cacheIdx], seqLen, opts)
+			if !extracted {
+				continue
+			}
+			cacheSnapshots[cacheIdx] = snapshot
+		}
+		// Heads: a freshly extracted snapshot (ok == false) is single-owner —
+		// inspectKVCacheWithOptions just allocated its head slices for this
+		// layer alone, so reference them directly (same bytes a clone would
+		// carry, consistent with KeyBytes/ValueBytes which are already taken by
+		// reference above). Only a snapshot REUSED from the map (ok == true, a
+		// cache shared across layers) must clone to avoid two layers aliasing
+		// the same backing arrays. This drops the redundant per-head data copy
+		// on the common 1:1-mapped path (allocs/op and B/op).
+		heads := snapshot.Heads
+		if ok {
+			heads = cloneKVSnapshotHeads(snapshot.Heads)
+		}
+		layers[layerIdx] = KVLayerSnapshot{
+			Layer:              layerIdx,
+			CacheIndex:         cacheIdx,
+			CacheMode:          snapshot.CacheMode,
+			MaxSize:            cacheClampMaxSize(caches[cacheIdx]),
+			TurboQuantPayloads: cloneTurboQuantKVPayloads(snapshot.TurboQuantPayloads),
+			KeyDType:           snapshot.KeyDType,
+			KeyBytes:           snapshot.KeyBytes,
+			KeyShape:           append([]int32(nil), snapshot.KeyShape...),
+			ValueDType:         snapshot.ValueDType,
+			ValueBytes:         snapshot.ValueBytes,
+			ValueShape:         append([]int32(nil), snapshot.ValueShape...),
+			Heads:              heads,
+		}
+		if numHeads == 0 {
+			numHeads = snapshot.NumHeads
+		}
+		if headDim == 0 {
+			headDim = snapshot.HeadDim
+		}
+	}
+	if len(logits) > 0 && logits[0] != nil && logits[0].Valid() {
+		logitShape = append([]int32(nil), logits[0].Shape()...)
+		logitValues = logits[0].Floats()
+	}
+
+	return &KVSnapshot{
+		Version:       KVSnapshotVersion,
+		Architecture:  info.Architecture,
+		Tokens:        append([]int32(nil), snapshotTokens...),
+		TokenOffset:   len(tokens),
+		NumLayers:     info.NumLayers,
+		NumHeads:      numHeads,
+		SeqLen:        seqLen,
+		HeadDim:       headDim,
+		NumQueryHeads: attentionQueryHeads(m.model),
+		LogitShape:    logitShape,
+		Logits:        logitValues,
+		Layers:        layers,
+	}, nil
+}
+
+func (m *Model) kvBlockBoundaries(blockSize, seqLen int, caches []Cache) []int {
+	expected := 2
+	if blockSize > 0 {
+		expected += seqLen / blockSize
+	}
+	expected += len(caches)
+	boundaries := make([]int, 0, expected)
+	boundaries = append(boundaries, 0)
+	for next := blockSize; next < seqLen; next += blockSize {
+		boundaries = append(boundaries, next)
+	}
+	boundaries = append(boundaries, seqLen)
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		windowLen := min(cache.Len(), seqLen)
+		if windowLen <= 0 || windowLen >= seqLen {
+			continue
+		}
+		boundaries = kvBlockBoundaryInsert(boundaries, seqLen-windowLen)
+	}
+	return boundaries
+}
+
+func kvBlockBoundaryInsert(boundaries []int, v int) []int {
+	for i, boundary := range boundaries {
+		if boundary == v {
+			return boundaries
+		}
+		if boundary > v {
+			boundaries = append(boundaries, 0)
+			copy(boundaries[i+1:], boundaries[i:])
+			boundaries[i] = v
+			return boundaries
+		}
+	}
+	return append(boundaries, v)
+}
+
+func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, baseOffset, start, end int, final bool, opts KVSnapshotCaptureOptions, logits *Array) (*KVSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	if start < 0 || end <= start || end > len(tokens) {
+		return nil, core.NewError("mlx: invalid KV snapshot block range")
+	}
+	info := m.Info()
+	seqLen := len(tokens)
+	layers := make([]KVLayerSnapshot, info.NumLayers)
+	cacheIndexByLayer := attentionCacheIndexByLayer(m.model, info.NumLayers, len(caches))
+	cacheSnapshots := make(map[int]kvCacheSnapshot, len(caches))
+	var numHeads, headDim int
+
+	for layerIdx, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx < 0 || cacheIdx >= len(caches) || caches[cacheIdx] == nil {
+			continue
+		}
+		cacheWindowLen := min(caches[cacheIdx].Len(), seqLen)
+		if cacheWindowLen <= 0 {
+			continue
+		}
+		windowStart := seqLen - cacheWindowLen
+		overlapStart := max(start, windowStart)
+		overlapEnd := min(end, seqLen)
+		layers[layerIdx] = KVLayerSnapshot{
+			Layer:      layerIdx,
+			CacheIndex: cacheIdx,
+			MaxSize:    cacheClampMaxSize(caches[cacheIdx]),
+		}
+		if overlapStart >= overlapEnd {
+			continue
+		}
+		snapshot, ok := cacheSnapshots[cacheIdx]
+		if !ok {
+			var extracted bool
+			snapshot, extracted = inspectKVCacheRangeWithOptions(caches[cacheIdx], overlapStart-windowStart, overlapEnd-windowStart, opts)
+			if !extracted {
+				continue
+			}
+			cacheSnapshots[cacheIdx] = snapshot
+		}
+		layers[layerIdx].CacheMode = snapshot.CacheMode
+		layers[layerIdx].TurboQuantPayloads = cloneTurboQuantKVPayloads(snapshot.TurboQuantPayloads)
+		layers[layerIdx].KeyDType = snapshot.KeyDType
+		layers[layerIdx].KeyBytes = snapshot.KeyBytes
+		layers[layerIdx].KeyShape = append([]int32(nil), snapshot.KeyShape...)
+		layers[layerIdx].ValueDType = snapshot.ValueDType
+		layers[layerIdx].ValueBytes = snapshot.ValueBytes
+		layers[layerIdx].ValueShape = append([]int32(nil), snapshot.ValueShape...)
+		layers[layerIdx].Heads = cloneKVSnapshotHeads(snapshot.Heads)
+		if numHeads == 0 {
+			numHeads = snapshot.NumHeads
+		}
+		if headDim == 0 {
+			headDim = snapshot.HeadDim
+		}
+	}
+
+	var logitShape []int32
+	var logitValues []float32
+	if final && logits != nil && logits.Valid() {
+		logitShape = append([]int32(nil), logits.Shape()...)
+		logitValues = logits.Floats()
+	}
+	return &KVSnapshot{
+		Version:       KVSnapshotVersion,
+		Architecture:  info.Architecture,
+		Tokens:        append([]int32(nil), tokens[start:end]...),
+		TokenOffset:   baseOffset + end,
+		NumLayers:     info.NumLayers,
+		NumHeads:      numHeads,
+		SeqLen:        end - start,
+		HeadDim:       headDim,
+		NumQueryHeads: attentionQueryHeads(m.model),
+		LogitShape:    logitShape,
+		Logits:        logitValues,
+		Layers:        layers,
+	}, nil
+}
+
+func kvSnapshotSeqLen(tokens []int32, caches []Cache) int {
+	seqLen := len(tokens)
+	var CacheLen int
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		CacheLen = max(CacheLen, cache.Len())
+	}
+	if CacheLen > 0 && CacheLen < seqLen {
+		return CacheLen
+	}
+	return seqLen
+}
+
+type kvCacheSnapshot struct {
+	NumHeads           int
+	HeadDim            int
+	CacheMode          KVCacheMode
+	TurboQuantPayloads []TurboQuantKVReferencePagePayload
+	KeyDType           DType
+	KeyBytes           []byte
+	KeyShape           []int32
+	ValueDType         DType
+	ValueBytes         []byte
+	ValueShape         []int32
+	Heads              []KVHeadSnapshot
+}
+
+// cacheClampMaxSize returns the cache's window/rotation clamp for snapshot
+// capture — the geometry truth a wake restore must reconstruct. 0 = no clamp
+// (plain/paged caches grow unbounded; restore uses the model template).
+func cacheClampMaxSize(cache Cache) int {
+	switch c := cache.(type) {
+	case *FixedKVCache:
+		return c.maxSize
+	case *RotatingKVCache:
+		return c.maxSize
+	case *QuantizedKVCache:
+		return c.maxSize
+	default:
+		return 0
+	}
+}
+
+func inspectKVCache(cache Cache, seqLen int) (kvCacheSnapshot, bool) {
+	return inspectKVCacheWithOptions(cache, seqLen, KVSnapshotCaptureOptions{})
+}
+
+func inspectKVCacheWithOptions(cache Cache, seqLen int, opts KVSnapshotCaptureOptions) (kvCacheSnapshot, bool) {
+	return inspectKVCacheRangeWithOptions(cache, 0, min(cache.Len(), seqLen), opts)
+}
+
+func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshotCaptureOptions) (kvCacheSnapshot, bool) {
+	if cache == nil {
+		return kvCacheSnapshot{}, false
+	}
+	if turbo, ok := cache.(*TurboQuantKVCache); ok {
+		return inspectTurboQuantKVCacheRange(turbo, start, end)
+	}
+	state, ownedState := CacheReadState(cache)
+	defer Free(ownedState...)
+	if len(state) < 2 || !state[0].Valid() || !state[1].Valid() {
+		return kvCacheSnapshot{}, false
+	}
+
+	kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
+	vArray := state[1] // V tensor from cache: [B, H, L_alloc, D]
+	kShape := kArray.Shape()
+	vShape := vArray.Shape()
+	if len(kShape) != 4 || len(vShape) != 4 || kShape[1] != vShape[1] {
+		return kvCacheSnapshot{}, false
+	}
+
+	numHeads := int(kShape[1])
+	headDim := int(kShape[3])
+	valueHeadDim := int(vShape[3])
+	validLen := cache.Len()
+	if start < 0 || end <= start || end > validLen {
+		return kvCacheSnapshot{}, false
+	}
+
+	kSliced := Slice(kArray, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(end), kShape[3]})
+	vSliced := Slice(vArray, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(end), vShape[3]})
+	if err := Eval(kSliced, vSliced); err != nil {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+
+	kDType := kSliced.Dtype()
+	vDType := vSliced.Dtype()
+	kRaw := kSliced.RawBytes()
+	vRaw := vSliced.RawBytes()
+	kNativeShape := append([]int32(nil), kSliced.Shape()...)
+	vNativeShape := append([]int32(nil), vSliced.Shape()...)
+
+	if opts.RawKVOnly {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{
+			NumHeads:   numHeads,
+			HeadDim:    headDim,
+			KeyDType:   kDType,
+			KeyBytes:   kRaw,
+			KeyShape:   kNativeShape,
+			ValueDType: vDType,
+			ValueBytes: vRaw,
+			ValueShape: vNativeShape,
+			Heads:      make([]KVHeadSnapshot, numHeads),
+		}, true
+	}
+
+	// W11-X / W11-AE: borrow MLX-memory views rather than copying the full
+	// K and V cache slices into fresh Go []float32 buffers (Floats() does
+	// make + per-element copy — on a realistic 32-head/1024-token/128-dim
+	// cache that was 16MB × 2 = 32MB / 2 allocs per call).  Per-head Key
+	// and Value buffers are copied into independent slices via the loop
+	// below, so the borrowed views end at function return.
+	// W11-AE: kSliced/vSliced were Eval'd above, so the fast-path skips
+	// the final Materialize crossing when dtype + layout already match.
+	kFlat, kFlatCleanup, err := materialiseFloat32ViewFast(kSliced)
+	if err != nil {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+	defer kFlatCleanup()
+	vFlat, vFlatCleanup, err := materialiseFloat32ViewFast(vSliced)
+	if err != nil {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+	defer vFlatCleanup()
+	if len(kFlat) == 0 || len(vFlat) == 0 {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+
+	blockLen := end - start
+	heads := make([]KVHeadSnapshot, numHeads)
+	keyStride := blockLen * headDim
+	valueStride := blockLen * valueHeadDim
+	keyRawStride := keyStride * DTypeByteSize(kDType)
+	valueRawStride := valueStride * DTypeByteSize(vDType)
+	for h := range numHeads {
+		keyStart := h * keyStride
+		keyEnd := keyStart + keyStride
+		valueStart := h * valueStride
+		valueEnd := valueStart + valueStride
+		if keyEnd > len(kFlat) || valueEnd > len(vFlat) {
+			break
+		}
+		keyHeadDType, keyHeadBytes := kvSnapshotHeadRaw(kRaw, kDType, h*keyRawStride, keyRawStride)
+		valueHeadDType, valueHeadBytes := kvSnapshotHeadRaw(vRaw, vDType, h*valueRawStride, valueRawStride)
+		heads[h] = KVHeadSnapshot{
+			KeyDType:   keyHeadDType,
+			KeyBytes:   keyHeadBytes,
+			ValueDType: valueHeadDType,
+			ValueBytes: valueHeadBytes,
+			Key:        append([]float32(nil), kFlat[keyStart:keyEnd]...),
+			Value:      append([]float32(nil), vFlat[valueStart:valueEnd]...),
+		}
+	}
+	Free(kSliced, vSliced)
+
+	return kvCacheSnapshot{
+		NumHeads: numHeads,
+		HeadDim:  headDim,
+		Heads:    heads,
+	}, true
+}
+
+func kvSnapshotHeadRaw(raw []byte, dtype DType, start, count int) (DType, []byte) {
+	if len(raw) == 0 || DTypeByteSize(dtype) <= 0 || count <= 0 {
+		return 0, nil
+	}
+	end := start + count
+	if start < 0 || end > len(raw) || start >= end {
+		return 0, nil
+	}
+	return dtype, append([]byte(nil), raw[start:end]...)
+}
+
+func cloneKVSnapshotHeads(src []KVHeadSnapshot) []KVHeadSnapshot {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make([]KVHeadSnapshot, len(src))
+	for i, head := range src {
+		cloned[i] = KVHeadSnapshot{
+			Key:        append([]float32(nil), head.Key...),
+			KeyDType:   head.KeyDType,
+			KeyBytes:   append([]byte(nil), head.KeyBytes...),
+			Value:      append([]float32(nil), head.Value...),
+			ValueDType: head.ValueDType,
+			ValueBytes: append([]byte(nil), head.ValueBytes...),
+		}
+	}
+	return cloned
+}

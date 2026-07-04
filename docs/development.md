@@ -14,7 +14,7 @@ Module: `dappco.re/go/mlx`
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Go | 1.25.5+ | Module toolchain |
+| Go | 1.26.0+ | Module toolchain |
 | CMake | 3.24+ | Builds mlx-c from source |
 | AppleClang | 17.0+ | C/C++ compiler for mlx-c |
 | macOS SDK | 26.2+ | Metal framework headers |
@@ -30,8 +30,8 @@ brew install cmake
 
 go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
-```go
-replace dappco.re/go/inference => ../go-inference
+```
+replace dappco.re/go/core/inference => ../go-inference
 ```
 
 After adding modules or changing dependencies: `go work sync`
@@ -48,21 +48,6 @@ Run from the module root:
 go generate ./...
 ```
 
-Fresh checkouts must initialise the source submodules before building:
-
-```bash
-git submodule update --init --recursive
-```
-
-The forwarding translation units in `internal/metal/` include source files from
-the git submodules `lib/mlx` and `lib/mlx-c`; leaving those submodules empty
-will make the C++ includes fail before the Go package can build. The
-`lib/generated` tree contains generated sources, not a submodule, and must also
-be present for those forwarded includes to resolve.
-Those forwarding files are the only local compilation entrypoints for the
-upstream `.cpp` files; do not also add the same upstream sources to a separate
-target or CMake source list, or the linker may see duplicate definitions.
-
 This executes the `//go:generate` directives in `mlx.go`:
 
 ```
@@ -74,25 +59,27 @@ cmake --install build
 CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
 - `MLX_BUILD_GGUF=ON` (GGUF load/save support)
-- `BUILD_SHARED_LIBS=ON`
-- macOS deployment target: 13.3 (minimum required by MLX)
+- `BUILD_SHARED_LIBS=OFF` (cgo inlines the MLX C++ tree; CMake builds static archives + the metallib only)
+- macOS deployment target: 26.0
 
-The built library installs to `dist/include/` and `dist/lib/`. Build time is approximately 2 minutes on M3 Ultra.
+The built artefacts install to `dist/include/` (headers cgo references) and `dist/lib/` (precompiled Metal shader library `mlx.metallib`). Build time is approximately 2 minutes on M3 Ultra.
 
 The `dist/` directory is gitignored and must be rebuilt on each fresh checkout.
 
 ### Step 2: Run Tests
 
 ```bash
-go test ./...
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 Tests require a working mlx-c build. Integration tests that load model files are skipped automatically when model paths are absent (`/Volumes/Data/lem/safetensors/...`).
 
-If you are running inside a larger parent workspace whose `go.work` does not include `go-mlx`, use:
+If you are running inside a larger parent workspace whose `go.work` does not
+include `go-mlx`, run from the repository root or point `GOWORK` at this
+checkout's workspace so `external/` dev branches stay active:
 
 ```bash
-GOWORK=off go test ./...
+GOWORK=/path/to/go-mlx/go.work go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 ---
@@ -102,17 +89,39 @@ GOWORK=off go test ./...
 The `#cgo` directives in `internal/metal/metal.go` set all required flags automatically when building on darwin/arm64:
 
 ```c
-#cgo CXXFLAGS: -std=c++17
+#cgo CXXFLAGS: -std=gnu++23 -mmacosx-version-min=26.0 -O2 -DNDEBUG ...
 #cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
-#cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
-#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
+#cgo darwin CFLAGS: -x objective-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx -I${SRCDIR}/../../../lib/mlx-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include
+#cgo darwin LDFLAGS: -mmacosx-version-min=26.0 -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 ```
 
-`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`), so the `../../dist/` path resolves to the module root `dist/`.
+`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The MLX C++ implementation is vendored as `mlx_*.cpp` files alongside `metal.go` and cgo compiles them inline — no `-L${SRCDIR}/../../dist/lib -lmlxc -lmlx` link step. The full directive set is in `go/internal/metal/metal.go`.
 
-No manual environment variables are needed for `go build` or `go test`.
+The final Go executable/test link also needs the macOS 26.0 floor because the
+native runtime is aligned to the Metal 4 API generation shipped with macOS
+Tahoe 26. Apple's Metal 4 docs cover the lower-overhead command API, explicit
+compilation API, native tensor resource type, and machine-learning passes; the
+macOS 26 release notes are the operating-system boundary for that Metal 4
+support. Use the Taskfile when possible; it passes the linker floor
+automatically. For direct Go invocations, include:
+
+```bash
+go build -trimpath -ldflags "-extldflags=-mmacosx-version-min=26.0" ./cmd/mlx
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
+```
+
+Reference links:
+
+- [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+- [SwiftPM macOSVersion.v26](https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26)
+- [What's new in macOS 26](https://developer.apple.com/macos/whats-new/)
+- [What's new in Metal](https://developer.apple.com/metal/whats-new/)
+- [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
+- [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
+- [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes)
+- [Metal feature set tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
 
 ---
 
@@ -181,17 +190,6 @@ Key benchmarks:
 
 Model-level benchmarks (`model.Forward`, tokenizer) require model files on disk and are not included in the automated suite.
 
-For machine/model-level checks, use the fast eval harness:
-
-```bash
-go-mlx bench -json /path/to/model
-```
-
-This runs a short generation pass plus prompt-cache, KV restore,
-state-bundle, and probe-overhead checks. It is intended for beta tester
-reports and for validating that memory-planner changes are supported by local
-data before they become defaults.
-
 ---
 
 ## Code Structure
@@ -228,7 +226,7 @@ UK English throughout: colour, organisation, centre, initialise, behaviour. Neve
 
 - `declare(strict_types=1)` equivalent: all parameters and return types must be explicitly typed
 - PSR-12 equivalent: `gofmt` + `goimports`; run before committing
-- `go test ./...` must pass before every commit; no red tests in main
+- `go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...` must pass before every commit; no red tests in main
 
 ### Licence Header
 
@@ -283,7 +281,7 @@ Co-Authored-By: Virgil <virgil@lethean.io>
 
 ```cmake
 set(MLX_BUILD_SAFETENSORS ON)   # Required for model loading
-set(MLX_BUILD_GGUF ON)          # GGUF load/save support
+set(MLX_BUILD_GGUF OFF)         # GGUF not supported
 set(BUILD_SHARED_LIBS ON)       # Shared .dylib for rpath loading
 set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3)  # MLX minimum
 ```
@@ -297,9 +295,9 @@ go generate ./...
 
 ---
 
-## mlxlm Backend Development
+## Legacy mlxlm Backend Development
 
-The `mlxlm/` package has no CGO dependency and tests run on any platform where Python 3 is available. Tests use `testdata/mock_bridge.py` instead of the real `bridge.py`, so no `mlx-lm` installation is required.
+The legacy `mlxlm/` package has no CGO dependency and tests run on any platform where Python 3 is available. It is not selected as an automatic production fallback while native architecture gaps remain. Tests use `testdata/mock_bridge.py` instead of the real `bridge.py`, so no `mlx-lm` installation is required.
 
 Run mlxlm tests:
 
@@ -321,7 +319,7 @@ go build -tags nomlxlm ./...
 
 ```
 go-mlx
-├── dappco.re/go/inference           (shared interfaces, zero dependencies)
+├── forge.lthn.ai/core/go-inference  (shared interfaces, zero dependencies)
 └── mlx-c v0.4.1                     (CMake, fetched from GitHub at generate time)
     └── Apple MLX (Metal GPU compute)
         └── Foundation, Metal, Accelerate frameworks

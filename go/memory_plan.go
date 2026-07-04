@@ -2,333 +2,151 @@
 
 package mlx
 
-const MemoryGiB uint64 = 1 << 30
-
-// MemoryClass names the local Apple memory tier driving runtime policy.
-type MemoryClass string
-
-const (
-	MemoryClassUnknown    MemoryClass = "unknown"
-	MemoryClassApple16GB  MemoryClass = "apple-silicon-16gb"
-	MemoryClassApple24GB  MemoryClass = "apple-silicon-24gb"
-	MemoryClassApple32GB  MemoryClass = "apple-silicon-32gb"
-	MemoryClassApple64GB  MemoryClass = "apple-silicon-64gb"
-	MemoryClassApple96GB  MemoryClass = "apple-silicon-96gb"
-	MemoryClassApple128GB MemoryClass = "apple-silicon-128gb-plus"
-)
-
-// KVCachePolicy names the cache shape selected by the planner.
-type KVCachePolicy string
-
-const (
-	KVCacheDefault  KVCachePolicy = ""
-	KVCacheRotating KVCachePolicy = "rotating"
-	KVCacheFull     KVCachePolicy = "full"
-)
-
-// KVCacheMode names the physical KV storage strategy used by the native cache.
-type KVCacheMode string
-
-const (
-	KVCacheModeDefault KVCacheMode = ""
-	KVCacheModeFP16    KVCacheMode = "fp16"
-	KVCacheModeQ8      KVCacheMode = "q8"
-	KVCacheModeKQ8VQ4  KVCacheMode = "k-q8-v-q4"
-	KVCacheModePaged   KVCacheMode = "paged"
+import (
+	"dappco.re/go/inference/memory"
+	"dappco.re/go/mlx/model"
+	"dappco.re/go/mlx/model/minimax/m2"
+	mp "dappco.re/go/inference/modelpack"
 )
 
 // MemoryPlanInput supplies measured hardware and optional model metadata.
+// Carries mlx-shaped DeviceInfo + ModelInfo at the boundary; PlanMemory
+// converts to memory.Input before delegating.
 type MemoryPlanInput struct {
 	Device    DeviceInfo
-	Pack      *ModelPack
+	Pack      *mp.ModelPack
 	ModelInfo *ModelInfo
 }
 
-// MemoryPlan is the local runtime policy derived from measured device memory.
-type MemoryPlan struct {
-	MachineClass               MemoryClass   `json:"machine_class"`
-	Architecture               string        `json:"architecture,omitempty"`
-	DeviceMemoryBytes          uint64        `json:"device_memory_bytes,omitempty"`
-	RecommendedWorkingSetBytes uint64        `json:"recommended_working_set_bytes,omitempty"`
-	ContextLength              int           `json:"context_length"`
-	CachePolicy                KVCachePolicy `json:"cache_policy"`
-	CacheMode                  KVCacheMode   `json:"cache_mode,omitempty"`
-	BatchSize                  int           `json:"batch_size"`
-	PrefillChunkSize           int           `json:"prefill_chunk_size"`
-	ParallelSlots              int           `json:"parallel_slots"`
-	PromptCache                bool          `json:"prompt_cache"`
-	PromptCacheMinTokens       int           `json:"prompt_cache_min_tokens"`
-	PreferredQuantization      int           `json:"preferred_quantization,omitempty"`
-	ModelQuantization          int           `json:"model_quantization,omitempty"`
-	ModelQuantizationType      string        `json:"model_quantization_type,omitempty"`
-	ModelQuantizationFamily    string        `json:"model_quantization_family,omitempty"`
-	MemoryLimitBytes           uint64        `json:"memory_limit_bytes,omitempty"`
-	CacheLimitBytes            uint64        `json:"cache_limit_bytes,omitempty"`
-	WiredLimitBytes            uint64        `json:"wired_limit_bytes,omitempty"`
-	EstimatedKVCacheBytes      uint64        `json:"estimated_kv_cache_bytes,omitempty"`
-	EstimatedKVCacheModeBytes  uint64        `json:"estimated_kv_cache_mode_bytes,omitempty"`
-	KVCacheSavingsRatio        float64       `json:"kv_cache_savings_ratio,omitempty"`
-	Notes                      []string      `json:"notes,omitempty"`
-}
-
-// PlanMemory chooses opinionated local inference settings from measured memory.
-func PlanMemory(input MemoryPlanInput) MemoryPlan {
-	deviceMemory := input.Device.MemorySize
-	workingSet := input.Device.MaxRecommendedWorkingSetSize
-	if workingSet == 0 {
-		workingSet = deviceMemory
+// PlanMemory chooses opinionated local inference settings from measured
+// memory. Calls the generic planner, then layers MiniMax-M2-specific
+// expert-residency and forward-skeleton hints on top.
+//
+//	plan := mlx.PlanMemory(mlx.MemoryPlanInput{Device: dev, Pack: &pack})
+func PlanMemory(input MemoryPlanInput) memory.Plan {
+	plan := memory.NewPlan(memory.Input{
+		Device:    deviceInfoToMemory(input.Device),
+		Pack:      input.Pack,
+		ModelInfo: modelInfoPtrToMemory(input.ModelInfo),
+	})
+	if input.Pack == nil {
+		return plan
 	}
-	class := memoryClassForBytes(deviceMemory)
-	plan := baseMemoryPlan(class)
-	plan.MachineClass = class
-	plan.Architecture = input.Device.Architecture
-	plan.DeviceMemoryBytes = deviceMemory
-	plan.RecommendedWorkingSetBytes = workingSet
-	plan.MemoryLimitBytes = percentBytes(workingSet, 85)
-	plan.CacheLimitBytes = percentBytes(workingSet, 8)
-	plan.WiredLimitBytes = percentBytes(workingSet, 75)
-
-	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture := modelMemoryHints(input)
-	if modelContext > 0 && modelContext < plan.ContextLength {
-		plan.ContextLength = modelContext
-		plan.Notes = append(plan.Notes, "context capped by model metadata")
+	skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*m2.LayerForwardSkeleton)
+	mm, _ := input.Pack.MiniMaxM2.(*m2.TensorPlan)
+	if skel == nil && mm == nil {
+		return plan
 	}
-	plan.ModelQuantization = modelQuant
-	plan.ModelQuantizationType = modelQuantType
-	plan.ModelQuantizationFamily = modelQuantFamily
-	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
-		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
+	// At least one M2 note will be appended below; grow Notes once now
+	// so each append lands in spare capacity instead of triggering a
+	// per-append heap copy (NewPlan returns Notes sized at its own len).
+	extra := 0
+	if skel != nil {
+		extra++
 	}
-	applyModelArchitectureMemoryHints(&plan, modelArchitecture)
-	plan.EstimatedKVCacheBytes = estimateKVCacheBytes(plan, input, KVCacheModeFP16)
-	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytes(plan, input, plan.CacheMode)
-	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
-		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
+	if mm != nil {
+		extra++
+	}
+	if cap(plan.Notes)-len(plan.Notes) < extra {
+		grown := make([]string, len(plan.Notes), len(plan.Notes)+extra)
+		copy(grown, plan.Notes)
+		plan.Notes = grown
+	}
+	if skel != nil {
+		plan.ModelForwardSkeletonValidated = true
+		plan.ModelForwardSkeletonBytes = skel.EstimatedBytes()
+		plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
+	}
+	if mm != nil {
+		plan.ExpertResidency = m2.PlanResidency(*mm, plan, nil)
+		plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
 	}
 	return plan
 }
 
-func memoryClassForBytes(bytes uint64) MemoryClass {
-	if bytes == 0 {
-		return MemoryClassUnknown
-	}
-	switch gib := (bytes + MemoryGiB - 1) / MemoryGiB; {
-	case gib <= 18:
-		return MemoryClassApple16GB
-	case gib <= 26:
-		return MemoryClassApple24GB
-	case gib <= 40:
-		return MemoryClassApple32GB
-	case gib <= 80:
-		return MemoryClassApple64GB
-	case gib <= 112:
-		return MemoryClassApple96GB
-	default:
-		return MemoryClassApple128GB
+func deviceInfoToMemory(info DeviceInfo) memory.DeviceInfo {
+	return memory.DeviceInfo{
+		Architecture:                 info.Architecture,
+		MaxBufferLength:              info.MaxBufferLength,
+		MaxRecommendedWorkingSetSize: info.MaxRecommendedWorkingSetSize,
+		MemorySize:                   info.MemorySize,
 	}
 }
 
-func baseMemoryPlan(class MemoryClass) MemoryPlan {
-	switch class {
-	case MemoryClassApple16GB:
-		return MemoryPlan{
-			ContextLength:         8192,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeKQ8VQ4,
-			BatchSize:             1,
-			PrefillChunkSize:      512,
-			ParallelSlots:         1,
-			PromptCache:           false,
-			PromptCacheMinTokens:  0,
-			PreferredQuantization: 4,
-		}
-	case MemoryClassApple24GB:
-		return MemoryPlan{
-			ContextLength:         16384,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      768,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
-	case MemoryClassApple32GB:
-		return MemoryPlan{
-			ContextLength:         32768,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
-	case MemoryClassApple64GB:
-		return MemoryPlan{
-			ContextLength:         65536,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             2,
-			PrefillChunkSize:      2048,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  DefaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
-	case MemoryClassApple96GB:
-		return MemoryPlan{
-			ContextLength:         DefaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             4,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  DefaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
-	case MemoryClassApple128GB:
-		return MemoryPlan{
-			ContextLength:         DefaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             6,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  DefaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
-	default:
-		return MemoryPlan{
-			ContextLength:         DefaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         DefaultLocalParallelSlots,
-			PromptCache:           true,
-			PromptCacheMinTokens:  DefaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
+func modelInfoPtrToMemory(info *ModelInfo) *memory.ModelInfo {
+	if info == nil {
+		return nil
+	}
+	return &memory.ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		NumKVHeads:    info.NumKVHeads,
+		HeadDim:       info.HeadDim,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
 	}
 }
 
-func estimateKVCacheBytes(plan MemoryPlan, input MemoryPlanInput, mode KVCacheMode) uint64 {
-	if plan.ContextLength <= 0 {
-		return 0
+// minPositive returns the smaller of a and b, treating non-positive as
+// "unset" (the other operand wins). Retained as a private mlx-root
+// helper for callers (small_model_smoke.go) that referenced the old
+// in-package name.
+func minPositive(a, b int) int {
+	if a <= 0 {
+		return b
 	}
-	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 || hidden <= 0 {
-		return 0
+	if b <= 0 {
+		return a
 	}
-	elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
-	switch mode {
-	case KVCacheModeKQ8VQ4:
-		// K uses one byte, V uses four logical bits. The current native cache
-		// stores q4 values in int8 lanes until packed kernels are available.
-		return elements * 3 / 4
-	case KVCacheModeQ8:
-		return elements
-	default:
-		return elements * 2
+	if a < b {
+		return a
 	}
+	return b
 }
 
-func kvEstimateShape(input MemoryPlanInput, class MemoryClass) (layers, hidden int) {
-	if input.ModelInfo != nil {
-		layers = input.ModelInfo.NumLayers
-		hidden = input.ModelInfo.HiddenSize
+// maxPositive returns the larger of a and b. Retained as a private
+// mlx-root helper for callers (small_model_smoke.go) that referenced
+// the old in-package name.
+func maxPositive(a, b int) int {
+	if a > b {
+		return a
 	}
-	if input.Pack != nil {
-		if layers == 0 {
-			layers = input.Pack.NumLayers
-		}
-		if hidden == 0 {
-			hidden = input.Pack.HiddenSize
-		}
-	}
-	if layers > 0 && hidden > 0 {
-		return layers, hidden
-	}
-	switch class {
-	case MemoryClassApple16GB, MemoryClassApple24GB:
-		return 28, 2048
-	case MemoryClassApple32GB:
-		return 32, 3072
-	case MemoryClassApple64GB:
-		return 40, 4096
-	default:
-		return 48, 5120
-	}
+	return b
 }
 
-func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, quantType, quantFamily, architecture string) {
-	if input.Pack != nil {
-		contextLength = input.Pack.ContextLength
-		quantization = input.Pack.QuantBits
-		quantType = input.Pack.QuantType
-		quantFamily = input.Pack.QuantFamily
-		architecture = input.Pack.Architecture
-	}
-	if input.ModelInfo != nil {
-		if input.ModelInfo.Architecture != "" {
-			architecture = input.ModelInfo.Architecture
-		}
-		if input.ModelInfo.ContextLength > 0 {
-			contextLength = input.ModelInfo.ContextLength
-		}
-		if input.ModelInfo.QuantBits > 0 {
-			quantization = input.ModelInfo.QuantBits
-		}
-	}
-	return contextLength, quantization, quantType, quantFamily, architecture
-}
-
-func applyModelArchitectureMemoryHints(plan *MemoryPlan, architecture string) {
-	switch normalizeKnownArchitecture(architecture) {
-	case "qwen3_moe":
-		plan.Notes = append(plan.Notes, "Qwen3-MoE sparse expert routing increases memory pressure; prefer compact KV cache modes on constrained Apple memory")
-		if plan.MachineClass == MemoryClassApple24GB || plan.MachineClass == MemoryClassApple32GB {
-			plan.CacheMode = KVCacheModeKQ8VQ4
-			plan.Notes = append(plan.Notes, "Qwen3-MoE uses asymmetric K@q8,V@q4 cache below 64GB")
-		}
-	case "qwen3_next":
-		plan.Notes = append(plan.Notes, "Qwen3-Next uses nested text_config metadata; keep context and cache policy tied to text model limits")
-	}
-}
-
-func percentBytes(value uint64, percent uint64) uint64 {
-	if value == 0 {
-		return 0
-	}
-	return value * percent / 100
-}
-
-var memoryPlannerDeviceInfo = GetDeviceInfo
+var memoryPlannerDeviceInfo = safeRuntimeDeviceInfo
 
 func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
-	var plan MemoryPlan
-	if cfg.MemoryPlan != nil {
-		plan = *cfg.MemoryPlan
-	} else if cfg.AutoMemoryPlan {
-		var pack *ModelPack
-		if inspected, err := InspectModelPack(modelPath, WithPackRequireChatTemplate(false)); err == nil {
+	// Caller-supplied plan path is the typical inference re-entry: the
+	// model was loaded once, the plan was persisted, and every later
+	// call reuses it. Read directly through the pointer instead of
+	// dereferencing into a stack value (memory.Plan is ~300B with
+	// embedded ExpertResidencyPlan, so the value-copy was a measurable
+	// per-call overhead on the LoadModel hot path).
+	var plan *memory.Plan
+	switch {
+	case cfg.MemoryPlan != nil:
+		plan = cfg.MemoryPlan
+	case cfg.AutoMemoryPlan:
+		var pack *mp.ModelPack
+		if inspected, err := model.Inspect(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
 		}
-		plan = PlanMemory(MemoryPlanInput{
+		built := PlanMemory(MemoryPlanInput{
 			Device: memoryPlannerDeviceInfo(),
 			Pack:   pack,
 		})
-	} else {
+		// Only when WE built the plan does cfg.MemoryPlan need an
+		// updated pointer; the caller-supplied case already has it.
+		cfg.MemoryPlan = &built
+		plan = &built
+	default:
 		return cfg
 	}
-
-	cfg.MemoryPlan = &plan
-	if plan.ContextLength > 0 && (cfg.ContextLength == 0 || cfg.ContextLength == DefaultLocalContextLength) {
+	if plan.ContextLength > 0 && !cfg.contextLengthExplicit && cfg.ContextLength == 0 {
 		cfg.ContextLength = plan.ContextLength
 	}
 	if plan.ParallelSlots > 0 && (cfg.ParallelSlots == 0 || cfg.ParallelSlots == DefaultLocalParallelSlots) {
@@ -351,8 +169,11 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	if cfg.PrefillChunkSize == 0 {
 		cfg.PrefillChunkSize = plan.PrefillChunkSize
 	}
-	if cfg.ExpectedQuantization == 0 {
-		cfg.ExpectedQuantization = plan.PreferredQuantization
+	// ExpectedQuantization (a loader sanity hint) is the model's ACTUAL
+	// quantisation when known. Unquantised/unknown models leave it 0 — there
+	// is no machine-class preference to fall back to.
+	if cfg.ExpectedQuantization == 0 && plan.ModelQuantization > 0 {
+		cfg.ExpectedQuantization = plan.ModelQuantization
 	}
 	if cfg.MemoryLimitBytes == 0 {
 		cfg.MemoryLimitBytes = plan.MemoryLimitBytes

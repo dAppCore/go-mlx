@@ -1,0 +1,639 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+// KV cache bench coverage map (W7-E, Wave 7).
+//
+// Five cache variants live in cache.go + prompt_cache.go:
+//
+//   KVCache          — unbounded, grows by step chunks (256). Owner-layer
+//                      pattern for Gemma 4 global attention (1/6 of layers).
+//   RotatingKVCache  — bounded, slides at maxSize. Should map onto local
+//                      sliding-window layers (5/6 of layers, capped at the
+//                      model-native window).
+//   FixedKVCache     — fixed-capacity ring with explicit overflow. Used by
+//                      the native fixed-owner attention path.
+//   QuantizedKVCache — int8 quantised K/V with optional q4 (key/value
+//                      bits configurable). Memory floor.
+//   PagedKVCache     — page-based growing cache with explicit prealloc mode.
+//                      Targets the
+//                      paged-attention dispatch path.
+//
+// Coverage shape:
+//   - Single-token Append at typical context sizes (1, 32, 512, 4096).
+//     Sliding-window-cap fixtures (for example RotatingKVCache @ 512) enforce
+//     Gemma 4 local layer behaviour — bench the steady-state append cost AFTER
+//     cap.
+//   - Reset cost (free + zero state).
+//   - Stretched-context Append (16k+) for KVCache + PagedKVCache to
+//     surface the O(N) concat tax noted in IDEAS.md §1.
+//
+// Each Append loop pre-builds the K/V input and re-creates the cache
+// per iteration to keep the measurement on the Update path rather than
+// allocation amortisation. State is Evaled per iter to flush the
+// Metal graph — without this, we'd just be measuring graph
+// construction.
+
+import "testing"
+
+// --- Helpers ---
+
+// makeSingleTokenKVShape returns a [B, H, 1, D] K/V pair for a single
+// token append. Reused across cache variants — keeps payload size
+// constant so the variant overhead is isolated.
+func makeSingleTokenKVShape(B, H, D int32) (*Array, *Array) {
+	k := RandomUniform(0, 1, []int32{B, H, 1, D}, DTypeFloat32)
+	v := RandomUniform(0, 1, []int32{B, H, 1, D}, DTypeFloat32)
+	Materialize(k, v)
+	return k, v
+}
+
+// makeMultiTokenKVShape returns [B, H, L, D] for prefill-style append.
+func makeMultiTokenKVShape(B, H, L, D int32) (*Array, *Array) {
+	k := RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
+	v := RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
+	Materialize(k, v)
+	return k, v
+}
+
+func clearMetalCacheAfterBenchIteration(b *testing.B) {
+	b.Helper()
+	b.StopTimer()
+	clearCacheNoCheck()
+	b.StartTimer()
+}
+
+// --- KVCache (unbounded) ---
+
+func BenchmarkKVCache_Append_SingleToken_FromEmpty(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewKVCache()
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Repeated single-token append — first 32 tokens. Below the 256 step
+// boundary, so no buffer regrow happens.
+func BenchmarkKVCache_Append_SingleToken_To32(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewKVCache()
+		for range 32 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// 512 tokens — crosses the 256 step boundary twice, triggering buffer
+// regrow. This is where the concat tax shows up.
+func BenchmarkKVCache_Append_SingleToken_To512(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewKVCache()
+		for range 512 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Multi-token prefill: one fat Update of 512 tokens.
+func BenchmarkKVCache_Append_512TokenPrefill(b *testing.B) {
+	k, v := makeMultiTokenKVShape(1, 8, 512, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewKVCache()
+		ck, cv := cache.Update(k, v, 512)
+		Free(ck, cv)
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// 4k prefill — typical agentic-turn shape.
+func BenchmarkKVCache_Append_4096TokenPrefill(b *testing.B) {
+	k, v := makeMultiTokenKVShape(1, 8, 4096, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewKVCache()
+		ck, cv := cache.Update(k, v, 4096)
+		Free(ck, cv)
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Reset cost is folded into the per-iteration KVCache_Append loops
+// (each iter ends with cache.Reset). A dedicated Reset bench needs
+// StopTimer/StartTimer pairing that b.Loop() does not support; for
+// pure Reset cost see the allocs delta in KVCache_Append benches.
+
+// --- RotatingKVCache (bounded sliding window — Gemma 4 local layer cap) ---
+
+// 512-token cap matches Gemma 4 local sliding-window layers.
+func BenchmarkRotatingKVCache_Append_SingleToken_BelowCap(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewRotatingKVCache(512)
+		for range 128 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Append past the cap — this is the steady-state local layer cost.
+// If the ring buffer rolls correctly, ns/op should stabilise here
+// instead of growing linearly.
+func BenchmarkRotatingKVCache_Append_SingleToken_PastCap(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewRotatingKVCache(512)
+		// Fill past cap so we measure the steady-state path.
+		for range 1024 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Larger cap — non-Gemma local-window scenarios.
+func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_Below(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewRotatingKVCache(4096)
+		for range 512 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// 4k cap, append past cap — long-context local-layer steady state.
+func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_PastCap(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewRotatingKVCache(4096)
+		for range 8192 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Multi-token rotating prefill — exercises updateConcat path.
+func BenchmarkRotatingKVCache_Append_512Prefill_Cap512(b *testing.B) {
+	k, v := makeMultiTokenKVShape(1, 8, 512, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewRotatingKVCache(512)
+		ck, cv := cache.Update(k, v, 512)
+		Free(ck, cv)
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// --- FixedKVCache (fixed-capacity ring) ---
+
+func BenchmarkFixedKVCache_Append_SingleToken_Cap512_Below(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewFixedKVCache(512)
+		for range 256 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// Past cap — overflow path inside FixedKVCache.updateOverflow.
+func BenchmarkFixedKVCache_Append_SingleToken_Cap512_PastCap(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewFixedKVCache(512)
+		for range 1024 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// FP16 storage path — relevant for memory-bound long context.
+func BenchmarkFixedKVCache_Append_SingleToken_FP16(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewFixedKVCacheWithDType(512, DTypeFloat16)
+		for range 256 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// --- QuantizedKVCache (int8 / q4) ---
+
+func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q8(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewQuantizedKVCache(512, 8, 8)
+		for range 128 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q4(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewQuantizedKVCache(512, 8, 4)
+		for range 128 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// 4k prefill quantised — memory-bound path. Eval cost includes the
+// quantize step on the just-written tail.
+func BenchmarkQuantizedKVCache_Append_4096Prefill_Q8Q8(b *testing.B) {
+	k, v := makeMultiTokenKVShape(1, 8, 4096, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewQuantizedKVCache(4096, 8, 8)
+		ck, cv := cache.Update(k, v, 4096)
+		Free(ck, cv)
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
+// --- PagedKVCache: page-based append ---
+
+func BenchmarkPagedKVCache_Append_SingleToken_PageSize256_To128(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(0, 256)
+		for range 128 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// Cross-page boundary repeatedly — exercises the page concat /
+// prealloc decision in appendPages.
+func BenchmarkPagedKVCache_Append_SingleToken_PageSize64_To512(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(0, 64)
+		for range 512 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+func BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(512, 512)
+		for range 1024 {
+			state := cache.UpdateBorrowedPages(k, v, 1)
+			state.Free()
+		}
+		if len(cache.kPages) != 1 || len(cache.vPages) != 1 {
+			b.Fatalf("page count = %d/%d, want one K/V page", len(cache.kPages), len(cache.vPages))
+		}
+		if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+			b.Fatalf("Eval dirty compacted state: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// Prealloc on — should reduce per-page allocations.
+func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
+		for range 256 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// Prealloc off — baseline append-concat path.
+func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCacheWithPrealloc(0, 256, false)
+		for range 256 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// Prealloc + larger page count — 4k tokens with 256-token pages
+// means 16 pages, exercising the page-list traversal cost.
+func BenchmarkPagedKVCache_Append_4096Tokens_PageSize256_Prealloc(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
+		for range 4096 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// MaxSize trim — bounded paged cache behaviour.
+func BenchmarkPagedKVCache_Append_BoundedTo1024_PastCap(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(1024, 256)
+		for range 2048 {
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+// UpdateBorrowedPages — the borrowed-state hot path used by the
+// fixed-owner attention dispatcher to avoid full-page clones.
+func BenchmarkPagedKVCache_UpdateBorrowedPages_To128(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(0, 256)
+		for range 128 {
+			state := cache.UpdateBorrowedPages(k, v, 1)
+			state.Free()
+		}
+		if err := Eval(cache.State()...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
+	}
+}
+
+func BenchmarkSharedKV_CloneFixedBorrowed_Gemma4LocalWindow_L512(b *testing.B) {
+	keys := RandomUniform(-1, 1, []int32{1, 8, 512, 64}, DTypeFloat16)
+	values := RandomUniform(-1, 1, []int32{1, 8, 512, 64}, DTypeFloat16)
+	defer Free(keys, values)
+	Materialize(keys, values)
+
+	kv := SharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
+	b.ReportAllocs()
+	for b.Loop() {
+		retained := kv.Clone()
+		retained.Free()
+	}
+}
+
+func BenchmarkSharedKV_ClonePagedBorrowed_8Pages(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for range 2048 {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	pages := cache.BorrowedPageState()
+	kv := SharedKV{Pages: pages, Offset: cache.Offset()}
+	b.ReportAllocs()
+	for b.Loop() {
+		retained := kv.Clone()
+		retained.Free()
+	}
+	cache.Reset()
+}
+
+func BenchmarkSharedKV_MovePagedBorrowed_8Pages(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for range 2048 {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	pages := cache.BorrowedPageState()
+	kv := SharedKV{Pages: pages, Offset: cache.Offset()}
+	b.ReportAllocs()
+	for b.Loop() {
+		source := kv
+		retained := MoveSharedKV(&source)
+		source.Free()
+		_ = retained.HasState()
+	}
+	cache.Reset()
+}
+
+// --- KV cache state access (no Update — pure reads) ---
+
+func BenchmarkKVCache_StateAccess_After128(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewKVCache()
+	for range 128 {
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cache.State()
+	}
+	cache.Reset()
+}
+
+func BenchmarkPagedKVCache_StateAccess_After128_PageSize256(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for range 128 {
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cache.State()
+	}
+	cache.Reset()
+}
+
+func BenchmarkPagedKVCache_AppendDirtyState_After128_PageSize256(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for range 128 {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+		b.Fatalf("Eval dirty state: %v", err)
+	}
+	dst := make([]*Array, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		dst = cache.AppendDirtyState(dst[:0])
+	}
+	cache.Reset()
+}
+
+// --- Detach cost (post-Eval break-graph-references step) ---
+
+// Folded into KVCache_Append loops via the per-iter Reset path — a
+// dedicated Detach bench needs StopTimer/StartTimer pairing that
+// b.Loop() does not support cleanly. The detach call is part of every
+// cache.Reset cycle in the Append benches above.

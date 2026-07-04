@@ -1,0 +1,124 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package m2
+
+import (
+	"math/rand"
+	"testing"
+)
+
+// BenchmarkRouteTokens exercises sigmoid scoring + top-k sort + renormalisation
+// on a representative MiniMax M2 routing shape (256 experts × top-8).
+func BenchmarkRouteTokens(b *testing.B) {
+	const tokens, experts, topK = 32, 256, 8
+	cfg := Config{NumLocalExperts: experts, NumExpertsPerToken: topK, ScoringFunc: "sigmoid", UseRoutingBias: true}
+	scores := make([][]float32, tokens)
+	rng := rand.New(rand.NewSource(1))
+	for i := range scores {
+		row := make([]float32, experts)
+		for j := range row {
+			row[j] = rng.Float32()*4 - 2
+		}
+		scores[i] = row
+	}
+	bias := make([]float32, experts)
+	for i := range bias {
+		bias[i] = rng.Float32() * 0.1
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RouteTokens(cfg, scores, bias); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRouterProbeEvents covers the per-decision clone path that builds
+// probe.Event records (one per token, with cloned ExpertIDs + Weights).
+func BenchmarkRouterProbeEvents(b *testing.B) {
+	const tokens, topK = 32, 8
+	decisions := make([]RouterDecision, tokens)
+	for i := range decisions {
+		ids := make([]int, topK)
+		weights := make([]float32, topK)
+		for j := range ids {
+			ids[j] = (i*31 + j) & 0xff
+			weights[j] = float32(j+1) / 36
+		}
+		decisions[i] = RouterDecision{TokenIndex: i, ExpertIDs: ids, Weights: weights}
+	}
+	tokenIDs := make([]int32, tokens)
+	for i := range tokenIDs {
+		tokenIDs[i] = int32(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = RouterProbeEvents(7, tokenIDs, decisions)
+	}
+}
+
+// BenchmarkProjectRouterScores exercises the inner hidden @ router.weight.T
+// loop, the hottest path in router projection.
+func BenchmarkProjectRouterScores(b *testing.B) {
+	const tokens, hidden, experts = 16, 3072, 256
+	router := RouterWeights{NumExperts: experts, HiddenSize: hidden, Weight: make([]float32, experts*hidden)}
+	rng := rand.New(rand.NewSource(2))
+	for i := range router.Weight {
+		router.Weight[i] = rng.Float32()*0.02 - 0.01
+	}
+	hidStates := make([][]float32, tokens)
+	for i := range hidStates {
+		row := make([]float32, hidden)
+		for j := range row {
+			row[j] = rng.Float32()*0.5 - 0.25
+		}
+		hidStates[i] = row
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ProjectRouterScores(hidStates, router); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDispatchExperts covers the per-decision defensive clone of hidden
+// row + weighted sum into output, exercising the host-shaped routing path.
+func BenchmarkDispatchExperts(b *testing.B) {
+	const tokens, topK, dim = 16, 8, 256
+	hidden := make([][]float32, tokens)
+	for i := range hidden {
+		row := make([]float32, dim)
+		for j := range row {
+			row[j] = float32((i+j)&0xff) / 255
+		}
+		hidden[i] = row
+	}
+	decisions := make([]RouterDecision, tokens)
+	for i := range decisions {
+		ids := make([]int, topK)
+		weights := make([]float32, topK)
+		for j := range ids {
+			ids[j] = j
+			weights[j] = float32(j+1) / 36
+		}
+		decisions[i] = RouterDecision{TokenIndex: i, ExpertIDs: ids, Weights: weights}
+	}
+	experts := map[int]ExpertFunc{}
+	for j := range topK {
+		j := j
+		experts[j] = func(values []float32) []float32 {
+			out := make([]float32, len(values))
+			for k, v := range values {
+				out[k] = v * float32(j+1)
+			}
+			return out
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := DispatchExperts(hidden, decisions, experts); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

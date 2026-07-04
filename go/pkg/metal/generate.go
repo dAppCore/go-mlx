@@ -1,0 +1,1328 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"context"
+	"iter"
+	"slices"
+	"sync"
+	"time"
+	"unsafe"
+
+	core "dappco.re/go"
+)
+
+// Token represents a single generated token.
+type Token struct {
+	ID   int32
+	Text string
+}
+
+// ChatMessage represents a chat turn. Images carries encoded PNG/JPEG bytes
+// attached to the turn (#98) — the vision-chat lane splices their projected
+// features into the prompt; text-only engines reject image turns loudly.
+type ChatMessage struct {
+	Role    string
+	Content string
+	Images  [][]byte
+}
+
+const defaultGenerationClearCacheInterval = 256
+
+// GenerateConfig holds generation parameters.
+type GenerateConfig struct {
+	MaxTokens           int
+	Temperature         float32
+	TopK                int
+	TopP                float32
+	MinP                float32
+	Seed                uint64
+	SeedSet             bool
+	StopTokens          []int32
+	SuppressTokens      []int32
+	MinTokensBeforeStop int
+	RepeatPenalty       float32
+	ProbeSink           ProbeSink
+	TraceTokenPhases    bool
+	TraceTokenText      bool
+	ClearCache          bool
+	ClearCacheInterval  int
+	// EnableThinking toggles Gemma 4 reasoning at prompt-build time. nil = model
+	// default (on for Gemma 4); &true = on; &false = off (plain template, plus the
+	// 26B/31B ghost-channel suppressor). Ignored by non-Gemma-4 architectures.
+	EnableThinking *bool
+	// ThinkingBudget caps tokens spent inside the thought channel (#99): when a
+	// reasoning model exceeds it, the engine forces the channel-close token so
+	// the model emits its visible answer instead of burning the whole budget
+	// reasoning. 0 = unlimited (the default). Budgeted requests ride the serial
+	// decode lane, not the pipelined one.
+	ThinkingBudget int
+}
+
+// Metrics holds performance metrics from the last inference operation.
+type Metrics struct {
+	PromptTokens        int
+	GeneratedTokens     int
+	FirstTokenDuration  time.Duration
+	PrefillDuration     time.Duration
+	DecodeDuration      time.Duration
+	TotalDuration       time.Duration
+	PrefillTokensPerSec float64
+	DecodeTokensPerSec  float64
+	// WarmDecodeTokensPerSec excludes the FIRST decode step (kernel JIT
+	// compiles, cache growth, allocator warmup) — the steady-state rate.
+	// DecodeTokensPerSec includes that cold start, so it RISES asymptotically
+	// with generation length as the fixed cost amortises; this one stays flat.
+	// "Decode got faster with more tokens" is this dilution, not acceleration.
+	WarmDecodeTokensPerSec     float64
+	PeakMemoryBytes            uint64
+	ActiveMemoryBytes          uint64
+	CacheMemoryBytes           uint64
+	ProcessVirtualMemoryBytes  uint64
+	ProcessResidentMemoryBytes uint64
+	ProcessPeakResidentBytes   uint64
+	PromptCacheHits            int
+	PromptCacheMisses          int
+	PromptCacheHitTokens       int
+	PromptCacheMissTokens      int
+	PromptCacheRestoreDuration time.Duration
+	CacheProfile               *CacheProfile
+	TurboQuantKVPayload        *TurboQuantKVCachePayloadEstimate
+	TokenPhases                []TokenPhaseTrace
+	MTP                        *MTPMetrics
+	Adapter                    AdapterInfo
+	// DecodeLane names the loop that served the generation ("pipelined" or
+	// "serial"), and DecodeLaneReason carries the first failed eligibility
+	// condition when serial — rate triage starts by knowing which loop ran.
+	DecodeLane       string
+	DecodeLaneReason string
+	// CompiledLayerHits counts whole-layer compiled decode steps during this
+	// generation (all layers compiled = layers × tokens).
+	CompiledLayerHits uint64
+	// Vision-feature LRU outcome for this request (#99): hits skipped the
+	// vision tower entirely.
+	VisionFeatureCacheHits   int
+	VisionFeatureCacheMisses int
+	// ThinkingBudgetForced reports that the thinking budget cut a thought
+	// channel short this generation (#99).
+	ThinkingBudgetForced bool
+}
+
+// MTPMetrics records counters from an attached multi-token-prediction drafter.
+type MTPMetrics struct {
+	DraftTokenSchedule     []int
+	ProposedTokens         int
+	AcceptedTokens         int
+	RejectedTokens         int
+	TargetVerifyCalls      int
+	TargetCalls            int
+	DraftCalls             int
+	AcceptanceRate         float64
+	VisibleTokensPerSec    float64
+	TargetTokensPerSec     float64
+	WarmDecodeTokensPerSec float64
+	WallDuration           time.Duration
+	RestoreDuration        time.Duration
+	TargetVerifyDuration   time.Duration
+	TargetDuration         time.Duration
+	DraftDuration          time.Duration
+	PeakMemoryBytes        uint64
+}
+
+// TokenPhaseTrace reports coarse timing buckets for one decode-loop token.
+type TokenPhaseTrace struct {
+	Step                   int                `json:"step"`
+	TokenID                int32              `json:"token_id"`
+	TokenText              string             `json:"token_text,omitempty"`
+	FinalToken             bool               `json:"final_token,omitempty"`
+	TotalDuration          time.Duration      `json:"total_duration,omitempty"`
+	LogitsDuration         time.Duration      `json:"logits_duration,omitempty"`
+	SampleDuration         time.Duration      `json:"sample_duration,omitempty"`
+	SampleEvalDuration     time.Duration      `json:"sample_eval_duration,omitempty"`
+	TokenReadDuration      time.Duration      `json:"token_read_duration,omitempty"`
+	DecodeTextDuration     time.Duration      `json:"decode_text_duration,omitempty"`
+	ProbeTokenDuration     time.Duration      `json:"probe_token_duration,omitempty"`
+	YieldDuration          time.Duration      `json:"yield_duration,omitempty"`
+	NextInputDuration      time.Duration      `json:"next_input_duration,omitempty"`
+	ForwardDuration        time.Duration      `json:"forward_duration,omitempty"`
+	PrefetchDuration       time.Duration      `json:"prefetch_duration,omitempty"`
+	PrefetchLogitsDuration time.Duration      `json:"prefetch_logits_duration,omitempty"`
+	PrefetchCacheDuration  time.Duration      `json:"prefetch_cache_duration,omitempty"`
+	MaterializeDuration    time.Duration      `json:"materialize_duration,omitempty"`
+	DetachDuration         time.Duration      `json:"detach_duration,omitempty"`
+	CacheProbeDuration     time.Duration      `json:"cache_probe_duration,omitempty"`
+	OtherDuration          time.Duration      `json:"other_duration,omitempty"`
+	NativeEvents           []NativePhaseTrace `json:"native_events,omitempty"`
+}
+
+// NativePhaseTrace reports a gated native materialisation event inside a
+// decode forward pass.
+type NativePhaseTrace struct {
+	Name     string        `json:"name"`
+	Duration time.Duration `json:"duration"`
+	Error    string        `json:"error,omitempty"`
+	Pages    int           `json:"pages,omitempty"`
+	Tokens   int           `json:"tokens,omitempty"`
+}
+
+// AdapterInfo identifies an active LoRA inference adapter.
+type AdapterInfo struct {
+	Name       string
+	Path       string
+	Hash       string
+	Rank       int
+	Alpha      float32
+	Scale      float32
+	TargetKeys []string
+}
+
+// Model wraps a loaded transformer model for text generation.
+type Model struct {
+	model                 InternalModel
+	tokenizer             *Tokenizer
+	modelType             string
+	device                DeviceType
+	contextLen            int // 0 = unbounded (model default)
+	cachePolicy           string
+	cacheMode             string
+	kvCacheStorageDType   string
+	pagedKVPageSize       int
+	pagedKVPrealloc       bool
+	fixedSlidingCacheSize int
+	batchSizeLimit        int
+	prefillChunkSize      int
+	parallelSlots         chan struct{}
+	promptCacheMu         sync.Mutex
+	promptCacheEnabled    bool
+	promptCacheMinTokens  int
+	promptCache           *PromptCacheEntry
+	adapter               *LoRAAdapter
+	adapterInfo           AdapterInfo
+	lastErr               error
+	lastMetrics           Metrics
+	// Vision-feature LRU (#99): tower output cached by image content hash.
+	visionCacheMu sync.Mutex
+	visionCache   *visionFeatureCache
+}
+
+// ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
+//
+//	switch m.ModelType() { case "gemma3": ...; case "qwen3": ... }
+func (m *Model) ModelType() string { return m.modelType }
+
+// Err returns the error from the last Generate/Chat call, if any.
+//
+//	if err := m.Err(); err != nil { log.Fatal(err) }
+func (m *Model) Err() error { return m.lastErr }
+
+func (m *Model) requireTextRuntime(operation string) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	architecture := m.modelType
+	if architecture == "" {
+		architecture = m.model.ModelType()
+	}
+	if r, ok := m.model.(MoETextRuntimeReporter); ok {
+		if !r.MoETextRuntimeAvailable() {
+			return core.NewError(operation + ": " + r.MoETextDecodeFamily() + " model is loaded but native sparse-expert decode kernels are not yet linked")
+		}
+	}
+	if r, ok := m.model.(DecodeUnavailableReporter); ok {
+		return r.DecodeUnavailableError(operation)
+	}
+	if m.tokenizer == nil {
+		if architecture == "" {
+			architecture = "unknown"
+		}
+		return core.NewError(operation + ": tokenizer unavailable for " + architecture)
+	}
+	return nil
+}
+
+// LastMetrics returns performance metrics from the last inference call.
+//
+//	met := m.LastMetrics()
+//	fmt.Printf("decode: %.0f tok/s, peak GPU: %d MB\n", met.DecodeTokensPerSec, met.PeakMemoryBytes/1024/1024)
+func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
+
+func (m *Model) acquireSlot(ctx context.Context) (func(), error) {
+	if m == nil || m.parallelSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	select {
+	case m.parallelSlots <- struct{}{}:
+		released := false
+		return func() {
+			if released {
+				return
+			}
+			released = true
+			<-m.parallelSlots
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ModelInfo holds metadata about a loaded model.
+type ModelInfo struct {
+	Architecture          string
+	VocabSize             int
+	NumLayers             int
+	NumHeads              int
+	NumKVHeads            int
+	HeadDim               int
+	HiddenSize            int
+	QuantBits             int
+	QuantGroup            int
+	ContextLength         int
+	SlidingWindow         int
+	KVCacheStorageDType   string
+	PagedKVPageSize       int
+	PagedKVPrealloc       bool
+	FixedSlidingCacheSize int
+	Adapter               AdapterInfo
+}
+
+// Info returns metadata about the loaded model.
+//
+//	info := m.Info()
+//	fmt.Printf("arch=%s vocab=%d layers=%d quant=%d-bit\n", info.Architecture, info.VocabSize, info.NumLayers, info.QuantBits)
+func (m *Model) Info() ModelInfo {
+	info := ModelInfo{
+		Architecture: m.modelType,
+		NumLayers:    m.model.NumLayers(),
+	}
+	if reporter, ok := m.model.(ModelInfoReporter); ok {
+		reporter.FillModelInfo(&info)
+	}
+	if m.contextLen > 0 {
+		info.ContextLength = m.contextLen
+	}
+	info.KVCacheStorageDType = m.kvCacheStorageDType
+	info.PagedKVPageSize = m.pagedKVPageSize
+	info.PagedKVPrealloc = m.pagedKVPrealloc
+	info.FixedSlidingCacheSize = m.fixedSlidingCacheSize
+	info.Adapter = m.Adapter()
+	return info
+}
+
+// Close releases all model weight arrays. After Close, the Model must not be used.
+func (m *Model) Close() error {
+	if m.model == nil {
+		return nil
+	}
+	if closer, ok := m.model.(ModelCloser); ok {
+		closer.CloseModel()
+	}
+	m.model = nil
+	m.tokenizer = nil
+	m.adapter = nil
+	m.adapterInfo = AdapterInfo{}
+	m.clearPromptCache()
+	m.closeVisionFeatureCache()
+	// Closing a model should release its freed weights from the global MLX
+	// allocator cache as well, so callers can immediately load another model.
+	ClearCache()
+	return nil
+}
+
+// Chat formats messages using the model's native template and streams tokens.
+//
+//	for tok := range m.Chat(ctx, []metal.ChatMessage{{Role: "user", Content: "Hello"}}, cfg) {
+//	    fmt.Print(tok.Text)
+//	}
+func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateConfig) iter.Seq[Token] {
+	if err := m.requireTextRuntime("Model.Chat"); err != nil {
+		return func(yield func(Token) bool) {
+			if m != nil {
+				m.lastErr = err
+			}
+		}
+	}
+	if chatMessagesCarryImages(messages) {
+		return m.chatVision(ctx, messages, cfg)
+	}
+	prompt := m.formatChat(messages, cfg)
+	return m.Generate(ctx, prompt, cfg)
+}
+
+// ChatChunks formats messages with the native chat template and streams tokens
+// from bounded prompt chunks.
+func (m *Model) ChatChunks(ctx context.Context, messages []ChatMessage, chunkBytes int, cfg GenerateConfig) iter.Seq[Token] {
+	if err := m.requireTextRuntime("Model.ChatChunks"); err != nil {
+		return func(yield func(Token) bool) {
+			if m != nil {
+				m.lastErr = err
+			}
+		}
+	}
+	return m.GenerateChunks(ctx, m.formatChatChunks(messages, chunkBytes, cfg), cfg)
+}
+
+// WarmPromptCache prefills and stores an exact token-prefix KV cache.
+func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
+	if err := m.requireTextRuntime("Model.WarmPromptCache"); err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var warmErr error
+	if deviceErr := m.withDevice(func() {
+		streamErr := m.withGenerationStream(func() {
+			tokens := m.tokenizer.Encode(prompt)
+			warmErr = m.warmPromptCacheTokens(ctx, tokens)
+		})
+		if streamErr != nil {
+			warmErr = streamErr
+		}
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return warmErr
+}
+
+// WarmPromptCacheChunks prefills and stores an exact token-prefix KV cache from
+// bounded prompt chunks.
+func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if err := m.requireTextRuntime("Model.WarmPromptCacheChunks"); err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var warmErr error
+	if deviceErr := m.withDevice(func() {
+		streamErr := m.withGenerationStream(func() {
+			warmErr = m.warmPromptCacheChunks(ctx, chunks)
+		})
+		if streamErr != nil {
+			warmErr = streamErr
+		}
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return warmErr
+}
+
+func (m *Model) warmPromptCacheTokens(ctx context.Context, tokens []int32) error {
+	caches := m.newPromptSnapshotCaches()
+	defer FreeCaches(caches)
+	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
+	if err == nil {
+		err = m.storePromptCache(tokens, caches, logits)
+	}
+	Free(logits)
+	return err
+}
+
+func (m *Model) warmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	caches := m.newPromptSnapshotCaches()
+	defer FreeCaches(caches)
+	tokens, logits, err := m.prefillPromptChunks(ctx, chunks, caches)
+	if err == nil {
+		err = m.storePromptCache(tokens, caches, logits)
+	}
+	Free(logits)
+	return err
+}
+
+// Generate streams tokens for the given prompt.
+// Each call allocates fresh KV caches released when the iterator completes.
+//
+//	for tok := range m.Generate(ctx, "What is 2+2?", metal.GenerateConfig{MaxTokens: 64}) {
+//	    fmt.Print(tok.Text)
+//	}
+func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		if m == nil {
+			return
+		}
+		m.lastErr = nil
+		m.lastMetrics = Metrics{}
+		if err := m.requireTextRuntime("Model.Generate"); err != nil {
+			m.lastErr = err
+			return
+		}
+		if bd, ok := m.model.(BlockDiffusionModel); ok {
+			// Diffusion checkpoints decode by canvas denoising — the
+			// autoregressive lanes never see them.
+			m.generateViaBlockDiffusion(ctx, bd, prompt, cfg)(yield)
+			return
+		}
+		if m.sessionRouteEligible(cfg) {
+			m.generateViaSession(ctx, prompt, cfg)(yield)
+			return
+		}
+		release, err := m.acquireSlot(ctx)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		defer release()
+		releasePromptCache := m.acquirePromptCache()
+		defer releasePromptCache()
+		if err := m.withDevice(func() {
+			if streamErr := m.withGenerationStream(func() {
+				if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+					m.lastErr = seedErr
+					return
+				}
+				m.generate(ctx, prompt, cfg)(yield)
+			}); streamErr != nil {
+				m.lastErr = streamErr
+			}
+		}); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+// sessionRouteEligible reports whether a one-shot generation can ride the
+// session machinery — the pipelined decode + compiled closures + prompt-cache
+// restore live there, so the session route is the fast path (e2b: 180.9 tok/s
+// session vs 126.5 one-shot on the same snapshot). The one-shot loop remains
+// for the configs sessions do not implement.
+func (m *Model) sessionRouteEligible(cfg GenerateConfig) bool {
+	// Sessions do not implement the allocator clear-cache debug lever.
+	return !cfg.ClearCache
+}
+
+// generateViaSession runs a one-shot generation through a throwaway session.
+// The session takes its own slot/prompt-cache/device scopes per operation, so
+// this wraps NOTHING — double-acquiring the slot semaphore would deadlock a
+// single-slot model. Session.Generate writes m.lastMetrics in its defer;
+// the session error is mirrored into m.lastErr for the Model.Err contract.
+func (m *Model) generateViaSession(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		sess := m.NewSession()
+		defer sess.Close()
+		if err := sess.Prefill(ctx, prompt); err != nil {
+			m.lastErr = err
+			return
+		}
+		if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+			m.lastErr = seedErr
+			return
+		}
+		sess.Generate(ctx, cfg)(yield)
+		if err := sess.Err(); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+// GenerateChunks streams tokens for a prompt supplied as bounded text chunks.
+// Each chunk is tokenized independently and appended to one logical token
+// stream, avoiding pathological tokenizer work on very large prompt strings.
+func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], cfg GenerateConfig) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		if m == nil {
+			return
+		}
+		m.lastErr = nil
+		m.lastMetrics = Metrics{}
+		if err := m.requireTextRuntime("Model.GenerateChunks"); err != nil {
+			m.lastErr = err
+			return
+		}
+		release, err := m.acquireSlot(ctx)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		defer release()
+		releasePromptCache := m.acquirePromptCache()
+		defer releasePromptCache()
+		if err := m.withDevice(func() {
+			if streamErr := m.withGenerationStream(func() {
+				if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+					m.lastErr = seedErr
+					return
+				}
+				tokens, encodeErr := m.encodePromptChunks(chunks)
+				if encodeErr != nil {
+					m.lastErr = encodeErr
+					return
+				}
+				m.generateTokens(ctx, tokens, cfg)(yield)
+			}); streamErr != nil {
+				m.lastErr = streamErr
+			}
+		}); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+func applyGenerationSeed(cfg GenerateConfig) error {
+	if !cfg.SeedSet {
+		return nil
+	}
+	return SeedRandom(cfg.Seed)
+}
+
+// samplerKeysForConfig builds the per-generation explicit PRNG key sequence:
+// seeded configs replay the same draws, unseeded get a random root. One
+// sequence is shared by a generation's sampler AND earlySampler so every
+// drawn token consumes a distinct key (the global mlx_random_seed state
+// cannot give per-request reproducibility — concurrent requests interleave
+// on it).
+func samplerKeysForConfig(cfg GenerateConfig) *SamplerKeys {
+	if cfg.SeedSet {
+		return NewSamplerKeys(cfg.Seed)
+	}
+	return newRandomSamplerKeys()
+}
+
+// generationStreamEnabled reports whether the streaming decode path is active.
+// The value is carried by the runtime gate, which the loaded model's
+// EngineFeatures.Apply sets (and CLI / shell-env diagnostics may override) —
+// there is no separate init-time package var, so a later clear is honoured
+// rather than frozen at boot. (#55 slice 3b)
+func generationStreamEnabled() bool {
+	return generationStreamRuntimeEnabled()
+}
+
+// asyncDecodePrefetchEnabled reports whether decode overlaps the next step's
+// weight prefetch. Carried by the runtime gate (set by the loaded model's
+// EngineFeatures.Apply; CLI / shell-env may override) — no init-time package
+// var, so a clear is honoured rather than frozen at boot. (#55 slice 3b)
+func asyncDecodePrefetchEnabled() bool {
+	return asyncDecodePrefetchRuntimeEnabled()
+}
+
+func generationClearCacheInterval(cfg GenerateConfig) int {
+	if cfg.ClearCacheInterval > 0 {
+		return cfg.ClearCacheInterval
+	}
+	return defaultGenerationClearCacheInterval
+}
+
+func maybeClearGenerationCache(cfg GenerateConfig) {
+	if cfg.ClearCache {
+		ClearCache()
+	}
+}
+
+func (m *Model) withGenerationStream(fn func()) error {
+	if !generationStreamEnabled() {
+		fn()
+		return nil
+	}
+	return withTemporaryDefaultStream(m.modelDevice(), fn)
+}
+
+func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	return m.generateTokens(ctx, m.tokenizer.Encode(prompt), cfg)
+}
+
+func (m *Model) encodePromptChunks(chunks iter.Seq[string]) ([]int32, error) {
+	if m == nil || m.tokenizer == nil {
+		return nil, core.NewError("mlx: tokenizer is nil")
+	}
+	if chunks == nil {
+		return nil, core.NewError("mlx: prompt chunks are nil")
+	}
+	tokens := []int32{}
+	seenContent := false
+	for chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		ids := m.tokenizer.Encode(chunk)
+		if seenContent {
+			ids = stripImplicitChunkBOS(m.tokenizer, ids)
+		}
+		tokens = append(tokens, ids...)
+		seenContent = true
+	}
+	if len(tokens) == 0 {
+		return nil, core.NewError("Model.GenerateChunks: empty prompt after tokenisation")
+	}
+	return tokens, nil
+}
+
+func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string], caches []Cache) ([]int32, *Array, error) {
+	return m.prefillPromptChunksWithPrefix(ctx, chunks, caches, false, "Model.GenerateChunks")
+}
+
+func (m *Model) prefillPromptChunksWithPrefix(ctx context.Context, chunks iter.Seq[string], caches []Cache, seenContent bool, scope string) ([]int32, *Array, error) {
+	if m == nil || m.tokenizer == nil {
+		return nil, nil, core.NewError("mlx: tokenizer is nil")
+	}
+	if chunks == nil {
+		return nil, nil, core.NewError("mlx: prompt chunks are nil")
+	}
+	tokens := []int32{}
+	var logits *Array
+	if scope == "" {
+		scope = "Model.GenerateChunks"
+	}
+	for chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		ids := m.tokenizer.Encode(chunk)
+		if seenContent {
+			ids = stripImplicitChunkBOS(m.tokenizer, ids)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		nextLogits, err := m.prefillTokenBlock(ctx, ids, caches)
+		if err != nil {
+			Free(logits)
+			return nil, nil, core.E(scope, core.Sprintf("prefill chunk tokens=%d", len(tokens)), err)
+		}
+		Free(logits)
+		logits = nextLogits
+		tokens = append(tokens, ids...)
+		seenContent = true
+	}
+	if len(tokens) == 0 {
+		return nil, nil, core.NewError(scope + ": empty prompt after tokenisation")
+	}
+	return tokens, logits, nil
+}
+
+func stripImplicitChunkBOS(tokenizer *Tokenizer, tokens []int32) []int32 {
+	if tokenizer == nil || !tokenizer.HasBOSToken() || len(tokens) == 0 {
+		return tokens
+	}
+	if tokens[0] != tokenizer.BOSToken() {
+		return tokens
+	}
+	return tokens[1:]
+}
+
+// promptPreparer primes a generation: caches + last-token logits for a token
+// prompt. preparePrompt is the text lane; the vision-chat lane supplies a
+// multimodal preparer that injects image features during prefill (#98).
+type promptPreparer func(context.Context, []int32, GenerateConfig) (PromptPreparation, error)
+
+func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg GenerateConfig) iter.Seq[Token] {
+	return m.generateTokensFrom(ctx, tokens, cfg, m.preparePrompt)
+}
+
+func (m *Model) generateTokensFrom(ctx context.Context, tokens []int32, cfg GenerateConfig, prepare promptPreparer) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		totalStart := time.Now()
+		ResetPeakMemory()
+
+		promptLen := len(tokens)
+		prepared, err := prepare(ctx, tokens, cfg)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		caches := prepared.Caches
+		logits := prepared.Logits
+		prefillDur := prepared.Duration
+		defer FreeCaches(caches)
+		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
+		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
+
+		budgetTracker := m.newThinkingBudgetTracker(cfg)
+
+		samplerKeys := samplerKeysForConfig(cfg)
+		sampler := NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens, samplerKeys)
+		defer CloseSampler(sampler)
+		earlySuppressTokens := cfg.SuppressTokens
+		earlySampler := sampler
+		earlySamplerDistinct := false
+		if cfg.MinTokensBeforeStop > 0 {
+			earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, m.tokenizer)
+			if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
+				earlySampler = NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens, samplerKeys)
+				earlySamplerDistinct = true
+			}
+		}
+		if earlySamplerDistinct {
+			defer CloseSampler(earlySampler)
+		}
+		var genCount int
+		var firstTokenDuration time.Duration
+		tokenPhases := newTokenPhaseTraceBuffer(cfg)
+
+		defer func() {
+			decodeDur := time.Since(totalStart) - prefillDur
+			totalDur := time.Since(totalStart)
+			processMemory := GetProcessMemory()
+			m.lastMetrics = Metrics{
+				PromptTokens:               promptLen,
+				GeneratedTokens:            genCount,
+				FirstTokenDuration:         firstTokenDuration,
+				PrefillDuration:            prefillDur,
+				DecodeDuration:             decodeDur,
+				TotalDuration:              totalDur,
+				PeakMemoryBytes:            GetPeakMemory(),
+				ActiveMemoryBytes:          GetActiveMemory(),
+				CacheMemoryBytes:           GetCacheMemory(),
+				ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
+				ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
+				ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
+				CacheProfile:               modelCacheProfile(m.model, caches),
+				TurboQuantKVPayload:        turboQuantKVCachesPayloadEstimate(caches),
+				TokenPhases:                tokenPhases,
+				Adapter:                    m.Adapter(),
+			}
+			if prefillDur > 0 {
+				m.lastMetrics.PrefillTokensPerSec = float64(promptLen) / prefillDur.Seconds()
+			}
+			if decodeDur > 0 {
+				m.lastMetrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
+			}
+			// firstTokenDuration is measured from totalStart (includes prefill);
+			// the first DECODE step's share is firstTokenDuration - prefillDur.
+			if genCount > 1 && firstTokenDuration > prefillDur {
+				warmDur := decodeDur - (firstTokenDuration - prefillDur)
+				if warmDur > 0 {
+					m.lastMetrics.WarmDecodeTokensPerSec = float64(genCount-1) / warmDur.Seconds()
+				}
+			}
+			if prepared.CacheHit {
+				m.lastMetrics.PromptCacheHits = 1
+			} else {
+				m.lastMetrics.PromptCacheMisses = 1
+			}
+			m.lastMetrics.PromptCacheHitTokens = prepared.CacheHitTokens
+			m.lastMetrics.PromptCacheMissTokens = prepared.CacheMissTokens
+			m.lastMetrics.PromptCacheRestoreDuration = prepared.RestoreDuration
+			m.lastMetrics.ThinkingBudgetForced = budgetTracker.forcedClose()
+		}()
+
+		var history []int32 // for repeat penalty
+		var directNext *Array
+		var suppressTokensArray *Array
+		if len(cfg.SuppressTokens) > 0 && directGreedyTokenEnabled() {
+			suppressTokensArray = SuppressTokenArray(cfg.SuppressTokens)
+		}
+		var earlySuppressTokensArray *Array
+		if len(earlySuppressTokens) > 0 && len(earlySuppressTokens) != len(cfg.SuppressTokens) && directGreedyTokenEnabled() {
+			earlySuppressTokensArray = SuppressTokenArray(earlySuppressTokens)
+		}
+
+		defer func() {
+			Free(logits, directNext, suppressTokensArray, earlySuppressTokensArray)
+		}()
+
+		// Resolve the generation budget from truth — an explicit MaxTokens is
+		// honoured; MaxTokens <= 0 generates to the model's remaining context
+		// (the EOS/stop checks below terminate the loop), never a hardcoded cap.
+		budget := generationTokenBudget(cfg.MaxTokens, m.Info().ContextLength, len(tokens))
+		for i := 0; i < budget; i++ {
+			tracePhases := cfg.TraceTokenPhases
+			var phaseStart, phaseLast time.Time
+			var phase TokenPhaseTrace
+			if tracePhases {
+				phaseStart = time.Now()
+				phaseLast = phaseStart
+				phase = TokenPhaseTrace{Step: i}
+			}
+			select {
+			case <-ctx.Done():
+				m.lastErr = ctx.Err()
+				return
+			default:
+			}
+
+			var next *Array
+			var sampledID int32
+			sampledIDSet := false
+			nextEvaluated := false
+			stepCfg := cfg
+			stepSampler := sampler
+			stepSuppressTokens := cfg.SuppressTokens
+			if generationStopSuppressionActive(genCount, cfg) {
+				stepCfg.SuppressTokens = earlySuppressTokens
+				stepSampler = earlySampler
+				stepSuppressTokens = earlySuppressTokens
+			}
+			if directNext != nil {
+				next = directNext
+				directNext = nil
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			} else if nativeGreedyDecodeAvailable(stepCfg, history, logits) {
+				var err error
+				next, err = nativeGreedyDecodeToken(logits)
+				if err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("native Greedy decode step %d", i), err)
+					return
+				}
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			} else {
+				lastPos, err := lastTokenLogits(logits)
+				if err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("last logits step %d", i), err)
+					return
+				}
+
+				if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
+					oldLastPos := lastPos
+					lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
+					Free(oldLastPos)
+				}
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+
+				if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("probe logits step %d", i), err)
+					Free(lastPos)
+					return
+				}
+				if tracePhases && cfg.ProbeSink != nil {
+					phase.CacheProbeDuration += time.Since(phaseLast)
+				}
+				if tracePhases {
+					phaseLast = time.Now()
+				}
+
+				var sampleErr error
+				var sampleTimings sampleTokenTimings
+				next, sampledID, sampleTimings, sampleErr = SampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
+				if sampleErr != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), sampleErr)
+					Free(lastPos)
+					return
+				}
+				sampledIDSet = true
+				nextEvaluated = true
+				if tracePhases {
+					phase.SampleDuration = sampleTimings.Build
+					phase.SampleEvalDuration = sampleTimings.Eval
+					phase.TokenReadDuration += sampleTimings.TokenRead
+					phaseLast = time.Now()
+				}
+				Free(lastPos)
+			}
+			if !nextEvaluated {
+				if err := Eval(next); err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
+					Free(next)
+					return
+				}
+				if tracePhases {
+					phase.SampleEvalDuration += time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			}
+			// Eval(next) also materialises the lazy decode forward that produced
+			// logits for this token, so detach logits and caches at this
+			// boundary before building the next one-token graph.
+			detachEvalState(logits, caches)
+			if cfg.ClearCache {
+				if interval := generationClearCacheInterval(cfg); interval > 0 && (i+1)%interval == 0 {
+					ClearCache()
+				}
+			}
+			if tracePhases {
+				phase.DetachDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
+			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
+			if tracePhases && cfg.ProbeSink != nil {
+				phase.CacheProbeDuration += time.Since(phaseLast)
+			}
+			if tracePhases {
+				phaseLast = time.Now()
+			}
+
+			id := sampledID
+			if !sampledIDSet {
+				id = int32(next.Int())
+				if tracePhases {
+					phase.TokenReadDuration += time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			}
+			// Thinking budget (#99): the sampled token (held by next) is fed
+			// forward via id below, so overriding id here forces the
+			// channel-close into the sequence — the model never sees the
+			// token it would have chosen, exactly like the pipelined lane is
+			// disabled for budgeted requests.
+			id = budgetTracker.observe(id)
+			if cfg.RepeatPenalty > 1.0 {
+				history = append(history, id)
+			}
+			text := m.tokenizer.DecodeToken(id)
+			if tracePhases {
+				phase.TokenID = id
+				if cfg.TraceTokenText {
+					phase.TokenText = text
+				}
+				phase.DecodeTextDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+			emitProbeToken(cfg.ProbeSink, ProbePhaseDecode, i, id, text, promptLen, genCount+1)
+			if tracePhases {
+				phase.ProbeTokenDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+
+			if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
+				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
+				return
+			}
+			if slices.Contains(cfg.StopTokens, id) {
+				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
+				return
+			}
+
+			genCount++
+			if firstTokenDuration == 0 {
+				firstTokenDuration = time.Since(totalStart)
+			}
+			if !yield(Token{ID: id, Text: text}) {
+				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
+				return
+			}
+			if tracePhases {
+				phase.YieldDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+			Free(next)
+			if i == budget-1 {
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
+				return
+			}
+
+			nextInput := FromSingleInt32Matrix(id)
+			if tracePhases {
+				phase.NextInputDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+
+			oldLogits := logits
+			nextCfg := cfg
+			nextSuppressTokens := cfg.SuppressTokens
+			nextSuppressTokensArray := suppressTokensArray
+			if generationStopSuppressionActive(genCount, cfg) {
+				nextCfg.SuppressTokens = earlySuppressTokens
+				nextSuppressTokens = earlySuppressTokens
+				if earlySuppressTokensArray != nil {
+					nextSuppressTokensArray = earlySuppressTokensArray
+				}
+			}
+			if directGreedyTokenAvailable(nextCfg, history, m.model) {
+				if tracePhases {
+					resetNativePhaseTraceEvents()
+				}
+				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, nextSuppressTokens, nextSuppressTokensArray)
+				if tracePhases {
+					phase.ForwardDuration = time.Since(phaseLast)
+					phase.NativeEvents = takeNativePhaseTraceEvents()
+					phaseLast = time.Now()
+				}
+				Free(nextInput)
+				if nextToken == nil || !nextToken.Valid() {
+					if err := LastError(); err != nil {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct Greedy decode step %d", i), err)
+					} else {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct Greedy decode step %d", i), core.NewError("model forward returned nil token"))
+					}
+					Free(oldLogits, nextToken)
+					logits = nil
+					return
+				}
+				Free(oldLogits)
+				logits = nil
+				directNext = nextToken
+				var prefetchTimings asyncDecodePrefetchTimings
+				var prefetchErr error
+				if tracePhases {
+					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "direct Greedy token and dirty KV", directNext, caches)
+				} else {
+					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "direct Greedy token and dirty KV", directNext, caches)
+				}
+				if prefetchErr != nil {
+					m.lastErr = prefetchErr
+					return
+				}
+				if tracePhases {
+					phase.PrefetchDuration = time.Since(phaseLast)
+					phase.PrefetchLogitsDuration = prefetchTimings.Logits
+					phase.PrefetchCacheDuration = prefetchTimings.Cache
+					phaseLast = time.Now()
+				}
+			} else {
+				if tracePhases {
+					resetNativePhaseTraceEvents()
+				}
+				nextLogits, _ := m.forwardLastTokenLogits(nextInput, nil, caches)
+				if tracePhases {
+					phase.ForwardDuration = time.Since(phaseLast)
+					phase.NativeEvents = takeNativePhaseTraceEvents()
+					phaseLast = time.Now()
+				}
+				Free(nextInput)
+				if nextLogits == nil || !nextLogits.Valid() {
+					if err := LastError(); err != nil {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
+					} else {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), core.NewError("model forward returned nil logits"))
+					}
+					Free(oldLogits, nextLogits)
+					logits = nil
+					return
+				}
+				Free(oldLogits)
+				logits = nextLogits
+				var prefetchTimings asyncDecodePrefetchTimings
+				var prefetchErr error
+				if tracePhases {
+					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "next logits and dirty KV", logits, caches)
+				} else {
+					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "next logits and dirty KV", logits, caches)
+				}
+				if prefetchErr != nil {
+					m.lastErr = prefetchErr
+					return
+				}
+				if tracePhases {
+					phase.PrefetchDuration = time.Since(phaseLast)
+					phase.PrefetchLogitsDuration = prefetchTimings.Logits
+					phase.PrefetchCacheDuration = prefetchTimings.Cache
+					phaseLast = time.Now()
+				}
+			}
+			if tracePhases {
+				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+			}
+		}
+	}
+}
+
+func directGreedyTokenAvailable(cfg GenerateConfig, history []int32, model InternalModel) bool {
+	if !directGreedyTokenEnabled() {
+		return false
+	}
+	if _, ok := model.(GreedyTokenModel); !ok {
+		return false
+	}
+	return cfg.ProbeSink == nil &&
+		cfg.Temperature == 0 &&
+		cfg.TopP == 0 &&
+		cfg.MinP == 0 &&
+		cfg.TopK == 0 &&
+		(len(cfg.SuppressTokens) == 0 || suppressedGreedyTokenAvailable(model)) &&
+		(cfg.RepeatPenalty <= 1 || len(history) == 0)
+}
+
+func generationStopSuppressionActive(generated int, cfg GenerateConfig) bool {
+	return cfg.MinTokensBeforeStop > 0 && generated < cfg.MinTokensBeforeStop
+}
+
+func generationStopSuppressionTokens(base, stop []int32, tokenizer *Tokenizer) []int32 {
+	out := base
+	if tokenizer != nil && tokenizer.HasEOSToken() {
+		out = appendUniqueSuppressionToken(out, tokenizer.EOSToken(), base)
+	}
+	for _, id := range stop {
+		out = appendUniqueSuppressionToken(out, id, base)
+	}
+	return out
+}
+
+func appendUniqueSuppressionToken(out []int32, id int32, base []int32) []int32 {
+	if slices.Contains(out, id) {
+		return out
+	}
+	if len(out) == len(base) {
+		out = append([]int32(nil), out...)
+	}
+	return append(out, id)
+}
+
+func suppressedGreedyTokenAvailable(model InternalModel) bool {
+	_, ok := model.(SuppressedGreedyTokenModel)
+	return ok
+}
+
+type borrowedSuppressedGreedyTokenModel interface {
+	forwardGreedyTokenWithSuppressionArray(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32, suppress *Array) *Array
+}
+
+func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32, suppress *Array) (*Array, bool) {
+	if len(suppressTokens) > 0 {
+		if greedyModel, ok := m.model.(borrowedSuppressedGreedyTokenModel); ok {
+			return greedyModel.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, suppress), true
+		}
+		greedyModel, ok := m.model.(SuppressedGreedyTokenModel)
+		if !ok {
+			return nil, false
+		}
+		return greedyModel.ForwardGreedyTokenWithSuppression(tokens, mask, caches, suppressTokens), true
+	}
+	greedyModel, ok := m.model.(GreedyTokenModel)
+	if !ok {
+		return nil, false
+	}
+	return greedyModel.ForwardGreedyToken(tokens, mask, caches), true
+}
+
+// applyRepeatPenalty modifies logits to discourage repeated tokens.
+// For each unique token ID in history: positive logits are divided by penalty,
+// negative logits are multiplied by penalty. Both make the token less likely.
+func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array {
+	// Deduplicate history via pooled scratch slice — sort + compact beats
+	// map[int32]bool for the typical history sizes (≤256 tokens) and avoids
+	// the per-call map allocation that dominated B/op.
+	scratchPtr := repeatPenaltyScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(history) {
+		scratch = make([]int32, 0, len(history))
+	}
+	scratch = append(scratch, history...)
+	slices.Sort(scratch)
+	indices := slices.Compact(scratch)
+
+	idx := FromValues(indices, 1, len(indices))
+	gathered := TakeAlongAxis(logits, idx, -1)
+
+	zero := FromValue(float32(0))
+	invPenalty := FromValue(1.0 / penalty)
+	penaltyVal := FromValue(penalty)
+
+	// Positive logits: divide by penalty. Negative logits: multiply by penalty.
+	gt := Greater(gathered, zero)
+	m1 := Mul(gathered, invPenalty)
+	m2 := Mul(gathered, penaltyVal)
+	penalised := Where(gt, m1, m2)
+	Free(gt, m1, m2)
+
+	res := PutAlongAxis(logits, idx, penalised, -1)
+	Free(idx, gathered, zero, invPenalty, penaltyVal, penalised)
+
+	// Return the scratch buffer to the pool — FromValues has copied the
+	// indices into MLX-owned memory already.
+	*scratchPtr = scratch
+	repeatPenaltyScratch.Put(scratchPtr)
+	return res
+}
+
+func lastTokenLogits(logits *Array) (*Array, error) {
+	if logits == nil || !logits.Valid() {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ndim := logits.NumDims()
+	if ndim <= 0 {
+		return nil, core.NewError("mlx: logits rank is invalid")
+	}
+	shape := logits.ShapeRaw()
+	if ndim == 1 {
+		return Reshape2(logits, 1, int32(shapeRawDim(shape, 0))), nil
+	}
+	if ndim == 2 {
+		rows := shapeRawDim(shape, 0)
+		if rows <= 0 {
+			return nil, core.NewError("mlx: logits sequence is empty")
+		}
+		if rows == 1 {
+			return Reshape2(logits, 1, int32(shapeRawDim(shape, 1))), nil
+		}
+		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
+		out := Reshape2(last, 1, int32(shapeRawDim(shape, 1)))
+		Free(last)
+		return out, nil
+	}
+	seqAxis := ndim - 2
+	seqLen := shapeRawDim(shape, seqAxis)
+	if seqLen <= 0 {
+		return nil, core.NewError("mlx: logits sequence is empty")
+	}
+	if seqLen == 1 && lastTokenLogitsSinglePosition(shape, ndim) {
+		return Reshape2(logits, 1, int32(shapeRawDim(shape, ndim-1))), nil
+	}
+	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
+	out := Reshape2(last, 1, int32(shapeRawDim(shape, ndim-1)))
+	Free(last)
+	return out, nil
+}
+
+func lastTokenLogitsSinglePosition(shape unsafe.Pointer, ndim int) bool {
+	for axis := 0; axis < ndim-1; axis++ {
+		if shapeRawDim(shape, axis) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func materializeLastTokenLogits(logits *Array) (*Array, error) {
+	if logits == nil {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	if !logits.Valid() {
+		if err := LastError(); err != nil {
+			return nil, core.E("mlx", "logits are empty", err)
+		}
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	if err := Eval(logits); err != nil {
+		Free(logits)
+		return nil, err
+	}
+	last, err := lastTokenLogits(logits)
+	if err != nil {
+		Free(logits)
+		return nil, err
+	}
+	if err := Eval(last); err != nil {
+		Free(logits, last)
+		return nil, err
+	}
+	Detach(last)
+	Free(logits)
+	return last, nil
+}

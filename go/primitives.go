@@ -1,0 +1,209 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"time"
+
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/mlx/spine"
+)
+
+// primitives.go is the mlx package's facade over the metal backend's tensor,
+// autodiff, optimiser and loss primitives — the thin re-export surface the
+// training code (sft, ssd, grpo, distill) and the inference spine build on.
+// It carries no training-loop logic of its own; those loops live in their own
+// files, and metaladapter's methods live with their type in inference_contract.go.
+
+// nonZeroDuration clamps a measured interval to a minimum of one
+// nanosecond so downstream rate math (tokens/sec, steps/sec) in the
+// distillation and GRPO training loops never divides by a zero duration.
+func nonZeroDuration(duration time.Duration) time.Duration {
+	if duration <= 0 {
+		return time.Nanosecond
+	}
+	return duration
+}
+
+// Array is a Metal GPU tensor.
+type Array = metal.Array
+
+// LoRAAdapter holds all LoRA layers applied to a model.
+type LoRAAdapter = metal.LoRAAdapter
+
+// LoRAConfig specifies which layers to apply LoRA to and with what parameters.
+// The definition lives in spine so the train package can carry it inside
+// SFTConfig without importing root.
+type LoRAConfig = spine.LoRAConfig
+
+// Batch describes one RFC-style training batch.
+type Batch = metal.Batch
+
+// TrainConfig holds RFC-style training loop settings.
+type TrainConfig struct {
+	Epochs         int
+	BatchSize      int
+	LearningRate   float64
+	EvalInterval   int
+	SaveInterval   int
+	EvalLossThresh float64
+	ProbeSink      probe.Sink
+}
+
+// DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
+//
+//	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
+func DefaultLoRAConfig() LoRAConfig {
+	return spine.DefaultLoRAConfig()
+}
+
+// DefaultAdamWConfig returns the standard AdamW hyperparameters.
+var DefaultAdamWConfig = metal.DefaultAdamWConfig
+
+// GradFn computes both loss values and gradients via reverse-mode autodiff.
+type GradFn = metal.GradFn
+
+// AdamW is the decoupled weight decay optimiser.
+type AdamW = metal.AdamW
+
+// AdamWConfig configures AdamW construction.
+type AdamWConfig = metal.AdamWConfig
+
+// Cache is a per-layer KV cache.
+type Cache = metal.Cache
+
+// DType represents a Metal array data type.
+type DType = metal.DType
+
+// InternalModel is the training-level model interface with Forward/NewCache.
+//
+//	internalModel := mlx.TrainingModel(trainableModel)
+//	logits := internalModel.Forward(tokens, caches)
+type InternalModel = metal.InternalModel
+
+var (
+	DTypeFloat32  = metal.DTypeFloat32
+	DTypeBFloat16 = metal.DTypeBFloat16
+)
+
+// ValueAndGrad creates a GradFn that computes both the function value and
+// gradients with respect to the arguments at the given indices.
+//
+//	lossFunction := func(parameters []*Array) []*Array { return []*Array{loss} }
+//	grad := mlx.ValueAndGrad(lossFunction, 0, 1, 2)
+//	values, grads, err := grad.Apply(parameters...)
+func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) *GradFn {
+	return metal.ValueAndGrad(lossFunction, argumentIndices...)
+}
+
+// NewAdamW creates an AdamW optimiser with default hyperparameters.
+//
+//	optimizer := mlx.NewAdamW(1e-4)
+//	optimizer := mlx.NewAdamW(&mlx.AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
+func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
+
+// CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
+//
+//	loss := mlx.CrossEntropyLoss(logits, targets) // logits: [B, L, V], targets: [B, L]
+func CrossEntropyLoss(logits, targets *Array) *Array {
+	return metal.CrossEntropyLoss(logits, targets)
+}
+
+// MaskedCrossEntropyLoss computes cross-entropy loss only on masked positions.
+//
+//	loss := mlx.MaskedCrossEntropyLoss(logits, targets, mask) // mask: 1.0 = include, 0.0 = ignore
+func MaskedCrossEntropyLoss(logits, targets, mask *Array) *Array {
+	return metal.MaskedCrossEntropyLoss(logits, targets, mask)
+}
+
+// Checkpoint wraps a function for memory-efficient gradient recomputation.
+//
+//	checkpointedBlock := mlx.Checkpoint(func(hidden []*Array) []*Array {
+//	    return []*Array{decoder.Forward(hidden[0])}
+//	})
+func Checkpoint(forwardPass func([]*Array) []*Array) func([]*Array) []*Array {
+	return metal.Checkpoint(forwardPass)
+}
+
+// FromValues creates a Metal Array from a Go slice with the given shape.
+//
+//	tokens := mlx.FromValues([]int32{1, 2, 3}, 1, 3) // [1, L] token tensor
+func FromValues[S ~[]E, E metal.ArrayElement](values S, shape ...int) *Array {
+	return metal.FromValues(values, shape...)
+}
+
+// Materialize forces evaluation of lazy Metal arrays.
+//
+//	mlx.Materialize(firstOutput, secondOutput, thirdOutput) // block until GPU eval completes
+func Materialize(arrays ...*Array) { metal.Materialize(arrays...) }
+
+// Free releases Metal arrays immediately without waiting for GC.
+//
+//	mlx.Free(embeddingOutput, hiddenState, previousLogits) // explicit release after each decode step
+func Free(arrays ...*Array) { metal.Free(arrays...) }
+
+// Zeros creates an array of zeros with the given shape and dtype.
+//
+//	zeroMatrix := mlx.Zeros([]int32{outFeatures, rank}, mlx.DTypeFloat32) // zero-init LoRA B matrix
+func Zeros(shape []int32, dtype metal.DType) *Array { return metal.Zeros(shape, dtype) }
+
+// ConcreteAdapter returns the concrete *LoRAAdapter from an inference.Adapter.
+// Panics if the adapter is not from the Metal backend.
+//
+//	loraAdapter := mlx.ConcreteAdapter(adapter)
+//	trainableParameters := loraAdapter.AllTrainableParams()
+func ConcreteAdapter(adapter inference.Adapter) *LoRAAdapter {
+	return adapter.(*LoRAAdapter)
+}
+
+// TrainingModel returns the InternalModel from a Metal-loaded TrainableModel.
+// Gives direct access to Forward() and NewCache() for the training loop.
+// Panics if the model is not from the Metal backend.
+//
+//	internalModel := mlx.TrainingModel(trainableModel)
+//	logits := internalModel.Forward(tokens, caches)
+func TrainingModel(trainableModel inference.TrainableModel) InternalModel {
+	return trainableModel.(*metaladapter).InternalModel()
+}
+
+// Tensor operations — the metal linear-algebra and autodiff primitives exposed on
+// the root surface. Moved here from backend.go to sit with the rest of the facade.
+
+// MatMul returns the matrix product of a and b.
+func MatMul(a, b *Array) *Array { return metal.Matmul(a, b) }
+
+// Add returns element-wise a + b.
+func Add(a, b *Array) *Array { return metal.Add(a, b) }
+
+// Mul returns element-wise a * b.
+func Mul(a, b *Array) *Array { return metal.Mul(a, b) }
+
+// Softmax returns softmax along the last axis.
+func Softmax(a *Array) *Array { return metal.Softmax(a) }
+
+// Slice extracts a sub-array along a single axis.
+func Slice(a *Array, start, end, axis any) *Array {
+	return metal.SliceAxis(
+		a,
+		normalizeRootIntArg("axis", axis),
+		normalizeRootInt32Arg("start", start),
+		normalizeRootInt32Arg("end", end),
+	)
+}
+
+// Reshape returns a view with the given shape.
+func Reshape(a *Array, shape ...any) *Array {
+	return metal.Reshape(a, normalizeRootShapeArgs(shape)...)
+}
+
+// VJP computes the vector-Jacobian product.
+func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (outputs []*Array, vjps []*Array, err error) {
+	return metal.VJP(fn, primals, cotangents)
+}
+
+// JVP computes the Jacobian-vector product.
+func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outputs []*Array, jvps []*Array, err error) {
+	return metal.JVP(fn, primals, tangents)
+}

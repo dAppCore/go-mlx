@@ -1,16 +1,17 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && !nomlx
-
 package mlx
 
 import (
 	"context"
+	"dappco.re/go/inference/blockcache"
 	"iter"
+	"sync"
 
 	"dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/inference/scheduler"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func init() {
@@ -83,7 +84,59 @@ var loadBackendModel = func(modelPath string, cfg metal.LoadConfig) (*metal.Mode
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
-func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
+// LoadModelAsTextModel loads modelPath with the rich mlx.LoadOption
+// surface and returns it as an inference.TextModel ready for the
+// openai/anthropic/ollama compat handlers (drop into an
+// openaicompat.ResolverFunc).
+//
+// Bridge for cmd/mlx's `serve` command: the standard inference.LoadOption
+// boundary (via inference.LoadModel + metalbackend.LoadModel) only flows
+// ContextLength + ParallelSlots + AdapterPath + GPULayers from caller
+// inputs; tuned profiles' CacheMode, CachePolicy, BatchSize, PromptCache,
+// memory caps, etc. get filled in by PlanMemory() defaults and the
+// caller-supplied values get silently dropped. This bridge skips that
+// narrowing by translating mlx.LoadOption → metal.LoadConfig directly,
+// preserving all 13 candidate fields the auto-tune profile encodes.
+//
+//	model, err := mlx.LoadModelAsTextModel(modelPath,
+//	    mlx.WithContextLength(8192),
+//	    mlx.WithKVCacheMode(memory.KVCacheModeStreaming),
+//	    mlx.WithBatchSize(64),
+//	)
+func LoadModelAsTextModel(modelPath string, opts ...LoadOption) (inference.TextModel, error) {
+	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
+	if err != nil {
+		return nil, err
+	}
+	cfg = applyMemoryPlanToLoadConfig(modelPath, cfg)
+	metalCfg := metal.LoadConfig{
+		ContextLen:            cfg.ContextLength,
+		ParallelSlots:         cfg.ParallelSlots,
+		DisablePromptCache:    !cfg.PromptCache,
+		PromptCacheMinTokens:  cfg.PromptCacheMinTokens,
+		AdapterPath:           cfg.AdapterPath,
+		Device:                metal.DeviceType(cfg.Device),
+		CachePolicy:           string(cfg.CachePolicy),
+		KVCacheMode:           string(cfg.CacheMode),
+		KVCacheStorageDType:   cfg.KVCacheStorageDType,
+		PagedKVPageSize:       cfg.PagedKVPageSize,
+		PagedKVPrealloc:       cfg.PagedKVPrealloc,
+		FixedSlidingCacheSize: cfg.FixedSlidingCacheSize,
+		BatchSize:             cfg.BatchSize,
+		PrefillChunkSize:      cfg.PrefillChunkSize,
+		ExpectedQuantization:  cfg.ExpectedQuantization,
+		MemoryLimitBytes:      cfg.MemoryLimitBytes,
+		CacheLimitBytes:       cfg.CacheLimitBytes,
+		WiredLimitBytes:       cfg.WiredLimitBytes,
+	}
+	nativeModel, err := loadBackendModel(modelPath, metalCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &metaladapter{model: nativeModel, schedulerMaxConcurrent: cfg.ParallelSlots}, nil
+}
+
+func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) core.Result {
 	loadOptions := inference.ApplyLoadOpts(opts)
 	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
 	if partialOffloadUnsupported {
@@ -106,26 +159,36 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 		AdapterPath:          loadOptions.AdapterPath,
 		Device:               metal.DeviceType(deviceName),
 		CachePolicy:          string(plan.CachePolicy),
+		KVCacheMode:          string(plan.CacheMode),
 		BatchSize:            plan.BatchSize,
 		PrefillChunkSize:     plan.PrefillChunkSize,
-		ExpectedQuantization: plan.PreferredQuantization,
+		ExpectedQuantization: plan.ModelQuantization,
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,
 	})
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
-	return &metaladapter{model: model}, nil
+	return core.Ok(&metaladapter{model: model, schedulerMaxConcurrent: parallelSlots})
 }
 
 type metaladapter struct {
-	model *metal.Model
+	model                  *metal.Model
+	probeSink              inference.ProbeSink
+	schedulerMu            sync.Mutex
+	scheduler              *scheduler.Model
+	schedulerMaxConcurrent int
+	cacheMu                sync.Mutex
+	cacheService           *blockcache.Service
+	// continuity, when set via EnableConversationContinuity, routes Chat
+	// through the no-prompt-replay conversation loop; declined requests fall
+	// through to the stateless path.
+	continuity *ConversationContinuity
 }
 
 func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Generate(ctx, prompt, metalOptions) {
 			if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
@@ -136,11 +199,15 @@ func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts .
 }
 
 func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	if adapter.continuity != nil {
+		if seq, ok := adapter.continuity.Chat(ctx, messages, opts...); ok {
+			return seq
+		}
+	}
+	metalOptions := adapter.generateConfig(opts...)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
-		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content, Images: msg.Images}
 	}
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Chat(ctx, metalMessages, metalOptions) {
@@ -151,12 +218,27 @@ func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Mess
 	}
 }
 
-func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+// AcceptsImages reports whether the loaded checkpoint serves image chat
+// turns — the inference.VisionModel capability probe.
+func (adapter *metaladapter) AcceptsImages() bool {
+	return adapter.model.AcceptsImages()
+}
+
+func inferenceMessagesCarryImages(messages []inference.Message) bool {
+	for i := range messages {
+		if len(messages[i].Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
 	classifications := make([]inference.ClassifyResult, len(results))
 	for index, result := range results {
@@ -165,15 +247,14 @@ func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opt
 			Logits: result.Logits,
 		}
 	}
-	return classifications, nil
+	return core.Ok(classifications)
 }
 
-func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) core.Result {
+	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
 	if err != nil {
-		return nil, err
+		return core.Fail(err)
 	}
 	batchResults := make([]inference.BatchResult, len(results))
 	for index, result := range results {
@@ -183,7 +264,7 @@ func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string
 		}
 		batchResults[index] = inference.BatchResult{Tokens: tokens, Err: result.Err}
 	}
-	return batchResults, nil
+	return core.Ok(batchResults)
 }
 
 func (adapter *metaladapter) Metrics() inference.GenerateMetrics {
@@ -230,5 +311,5 @@ func (adapter *metaladapter) InspectAttention(ctx context.Context, prompt string
 	}, nil
 }
 
-func (adapter *metaladapter) Err() error   { return adapter.model.Err() }
-func (adapter *metaladapter) Close() error { return adapter.model.Close() }
+func (adapter *metaladapter) Err() core.Result   { return core.ResultOf(nil, adapter.model.Err()) }
+func (adapter *metaladapter) Close() core.Result { return core.ResultOf(nil, adapter.model.Close()) }

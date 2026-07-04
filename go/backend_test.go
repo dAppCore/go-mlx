@@ -1,0 +1,2133 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"context"
+	"encoding/binary"
+	"iter"
+	"math"
+	"reflect"
+	"testing"
+	"time"
+
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+	memvid "dappco.re/go/inference/state"
+	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/gguf"
+	"dappco.re/go/inference/kv"
+	"dappco.re/go/mlx/kvconv"
+	"dappco.re/go/inference/memory"
+	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
+	"dappco.re/go/inference/probe"
+	"dappco.re/go/mlx/spine"
+)
+
+type fakeNativeModel struct {
+	err                            error
+	info                           metal.ModelInfo
+	tokenizer                      *metal.Tokenizer
+	tokens                         []metal.Token
+	chatTokens                     []metal.Token
+	classifyResults                []metal.ClassifyResult
+	batchResults                   []metal.BatchResult
+	metrics                        metal.Metrics
+	modelType                      string
+	attention                      *metal.AttentionResult
+	kvSnapshot                     *metal.KVSnapshot
+	session                        inference.SessionHandle
+	probeEvents                    []metal.ProbeEvent
+	gemma4AssistantPair            *gemma4.Gemma4AssistantPair
+	gemma4AssistantResult          gemma4.Gemma4AssistantGenerateResult
+	gemma4AssistantErr             error
+	classifyReturnLogits           bool
+	lastGenerateConfig             metal.GenerateConfig
+	lastGemma4AssistantConfig      metal.GenerateConfig
+	lastGemma4AssistantPrompt      string
+	lastGemma4AssistantDraftTokens int
+	lastChatConfig                 metal.GenerateConfig
+	lastChatChunkConfig            metal.GenerateConfig
+	lastChatChunkBytes             int
+	lastBatchConfig                metal.GenerateConfig
+	lastClassifyConfig             metal.GenerateConfig
+	lastGeneratePrompt             string
+	lastChatMessages               []metal.ChatMessage
+	lastChatChunkMessages          []metal.ChatMessage
+	lastLoRAConfig                 metal.LoRAConfig
+	loraAdapter                    *metal.LoRAAdapter
+	loadedLoRAPath                 string
+	loadedLoRAAdapter              *metal.LoRAAdapter
+	loadedLoRAErr                  error
+	unloadLoRACalls                int
+	unloadLoRAErr                  error
+	warmPrompt                     string
+	warmErr                        error
+	restoredPromptKV               *metal.KVSnapshot
+	restorePromptKVErr             error
+	restoredPromptBlocks           []metal.KVSnapshotBlock
+	restoreBlockPrefix             int
+	restoreBlockErr                error
+	warmChunks                     []string
+	clearPromptCacheCalls          int
+	capturedChunks                 []string
+	generatedChunks                []string
+	closeErr                       error
+	closeCalls                     int
+}
+
+func (m *fakeNativeModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
+	m.lastLoRAConfig = cfg
+	return m.loraAdapter
+}
+func (m *fakeNativeModel) LoadLoRA(path string) (*metal.LoRAAdapter, error) {
+	m.loadedLoRAPath = path
+	return m.loadedLoRAAdapter, m.loadedLoRAErr
+}
+func (m *fakeNativeModel) UnloadLoRA() error {
+	m.unloadLoRACalls++
+	return m.unloadLoRAErr
+}
+func (m *fakeNativeModel) BatchGenerate(_ context.Context, _ []string, cfg metal.GenerateConfig) ([]metal.BatchResult, error) {
+	m.lastBatchConfig = cfg
+	return m.batchResults, m.err
+}
+func (m *fakeNativeModel) Chat(_ context.Context, messages []metal.ChatMessage, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastChatConfig = cfg
+	m.lastChatMessages = append([]metal.ChatMessage(nil), messages...)
+	tokens := m.chatTokens
+	if len(tokens) == 0 {
+		tokens = m.tokens
+	}
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+func (m *fakeNativeModel) ChatChunks(_ context.Context, messages []metal.ChatMessage, chunkBytes int, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastChatChunkConfig = cfg
+	m.lastChatChunkMessages = append([]metal.ChatMessage(nil), messages...)
+	m.lastChatChunkBytes = chunkBytes
+	tokens := m.chatTokens
+	if len(tokens) == 0 {
+		tokens = m.tokens
+	}
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+func (m *fakeNativeModel) Classify(_ context.Context, _ []string, cfg metal.GenerateConfig, returnLogits bool) ([]metal.ClassifyResult, error) {
+	m.lastClassifyConfig = cfg
+	m.classifyReturnLogits = returnLogits
+	return m.classifyResults, m.err
+}
+func (m *fakeNativeModel) Close() error {
+	m.closeCalls++
+	return m.closeErr
+}
+func (m *fakeNativeModel) Err() error            { return m.err }
+func (m *fakeNativeModel) Info() metal.ModelInfo { return m.info }
+func (m *fakeNativeModel) InspectAttention(_ context.Context, _ string) (*metal.AttentionResult, error) {
+	return m.attention, m.err
+}
+func (m *fakeNativeModel) CaptureKV(_ context.Context, _ string) (*metal.KVSnapshot, error) {
+	return m.kvSnapshot, m.err
+}
+func (m *fakeNativeModel) CaptureKVChunks(_ context.Context, chunks iter.Seq[string]) (*metal.KVSnapshot, error) {
+	m.capturedChunks = collectStringSeq(chunks)
+	return m.kvSnapshot, m.err
+}
+func (m *fakeNativeModel) LastMetrics() metal.Metrics { return m.metrics }
+func (m *fakeNativeModel) ModelType() string {
+	if m.modelType != "" {
+		return m.modelType
+	}
+	return m.info.Architecture
+}
+func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
+func (m *fakeNativeModel) Generate(_ context.Context, prompt string, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastGenerateConfig = cfg
+	m.lastGeneratePrompt = prompt
+	return func(yield func(metal.Token) bool) {
+		for _, event := range m.probeEvents {
+			if cfg.ProbeSink != nil {
+				cfg.ProbeSink.EmitProbe(event)
+			}
+		}
+		for _, tok := range m.tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+
+// GenerateGemma4Assistant is capture machinery for active speculative Gemma 4
+// assistant tests. Production dispatch calls gemma4.Gemma4AssistantPair.Generate
+// against a concrete *metal.Model; this fake records the legacy call shape used
+// by root-package regression tests.
+func (m *fakeNativeModel) GenerateGemma4Assistant(_ context.Context, pair *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
+	m.gemma4AssistantPair = pair
+	m.lastGemma4AssistantPrompt = prompt
+	m.lastGemma4AssistantConfig = cfg
+	m.lastGemma4AssistantDraftTokens = draftTokens
+	return m.gemma4AssistantResult, m.gemma4AssistantErr
+}
+func (m *fakeNativeModel) GenerateChunks(_ context.Context, chunks iter.Seq[string], cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastGenerateConfig = cfg
+	m.generatedChunks = collectStringSeq(chunks)
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range m.tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+func (m *fakeNativeModel) WarmPromptCache(_ context.Context, prompt string) error {
+	m.warmPrompt = prompt
+	return m.warmErr
+}
+func (m *fakeNativeModel) WarmPromptCacheChunks(_ context.Context, chunks iter.Seq[string]) error {
+	m.warmChunks = collectStringSeq(chunks)
+	return m.warmErr
+}
+func (m *fakeNativeModel) ClearPromptCache() {
+	m.clearPromptCacheCalls++
+}
+func (m *fakeNativeModel) RestorePromptCacheFromKV(_ context.Context, snapshot *metal.KVSnapshot) error {
+	m.restoredPromptKV = snapshot
+	return m.restorePromptKVErr
+}
+func (m *fakeNativeModel) RestorePromptCacheFromKVBlocks(ctx context.Context, source metal.KVSnapshotBlockSource) error {
+	m.restoreBlockPrefix = source.PrefixTokens
+	for i := 0; i < source.BlockCount; i++ {
+		block, err := source.Load(ctx, i)
+		if err != nil {
+			return err
+		}
+		m.restoredPromptBlocks = append(m.restoredPromptBlocks, block)
+		if block.TokenStart+block.TokenCount >= source.PrefixTokens {
+			break
+		}
+	}
+	return m.restoreBlockErr
+}
+func (m *fakeNativeModel) NewSession() inference.SessionHandle {
+	return m.session
+}
+
+func collectStringSeq(chunks iter.Seq[string]) []string {
+	out := []string{}
+	if chunks == nil {
+		return out
+	}
+	for chunk := range chunks {
+		out = append(out, chunk)
+	}
+	return out
+}
+
+func seqStrings(values ...string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for _, value := range values {
+			if !yield(value) {
+				return
+			}
+		}
+	}
+}
+
+func collectTokensFromChannel(tokens <-chan Token) []Token {
+	out := []Token{}
+	for token := range tokens {
+		out = append(out, token)
+	}
+	return out
+}
+
+func collectTokenSeq(tokens iter.Seq[Token]) []Token {
+	out := []Token{}
+	for token := range tokens {
+		out = append(out, token)
+	}
+	return out
+}
+
+func TestNormalizeLoadConfig_Defaults_Good(t *testing.T) {
+	cfg, err := normalizeLoadConfig(LoadConfig{})
+	if err != nil {
+		t.Fatalf("normalizeLoadConfig: %v", err)
+	}
+	if cfg.Device != "gpu" {
+		t.Fatalf("Device = %q, want gpu", cfg.Device)
+	}
+}
+
+func TestNormalizeLoadConfig_CPU_Good(t *testing.T) {
+	cfg, err := normalizeLoadConfig(LoadConfig{Device: "CPU", ContextLength: 4096, Quantization: 4})
+	if err != nil {
+		t.Fatalf("normalizeLoadConfig: %v", err)
+	}
+	if cfg.Device != "cpu" {
+		t.Fatalf("Device = %q, want cpu", cfg.Device)
+	}
+}
+
+func TestInferenceGenerateConfigToMetal_PreservesSamplingOptions_Good(t *testing.T) {
+	cfg := inference.ApplyGenerateOpts([]inference.GenerateOption{
+		inference.WithMaxTokens(64),
+		inference.WithTemperature(0.7),
+		inference.WithTopK(20),
+		inference.WithTopP(0.9),
+		inference.WithStopTokens(1, 2),
+		inference.WithRepeatPenalty(1.1),
+	})
+
+	got := inferenceGenerateConfigToMetal(cfg)
+	if got.MaxTokens != 64 || got.Temperature != 0.7 || got.TopK != 20 || got.TopP != 0.9 {
+		t.Fatalf("unexpected metal generate config: %+v", got)
+	}
+	if !reflect.DeepEqual(got.StopTokens, []int32{1, 2}) {
+		t.Fatalf("StopTokens = %v, want [1 2]", got.StopTokens)
+	}
+	if got.RepeatPenalty != 1.1 {
+		t.Fatalf("RepeatPenalty = %f, want 1.1", got.RepeatPenalty)
+	}
+}
+
+func TestToMetalGenerateConfig_PreservesGenerationClearCache_Good(t *testing.T) {
+	got := spine.ToMetalGenerateConfig(GenerateConfig{GenerationClearCache: true, GenerationClearCacheInterval: 64})
+	if !got.ClearCache || got.ClearCacheInterval != 64 {
+		t.Fatalf("ClearCache = %v/%d, want true/64", got.ClearCache, got.ClearCacheInterval)
+	}
+}
+
+func TestModelGenerateBuffered_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info:   metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 48, QuantBits: 4, ContextLength: 131072},
+			tokens: []metal.Token{{ID: 1, Text: "Hello"}, {ID: 2, Text: " world"}},
+		},
+		cfg: LoadConfig{ContextLength: 8192},
+	}
+
+	got, err := model.Generate("ignored")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got != "Hello world" {
+		t.Fatalf("Generate() = %q, want %q", got, "Hello world")
+	}
+
+	info := model.Info()
+	if info.ContextLength != 8192 {
+		t.Fatalf("Info().ContextLength = %d, want 8192", info.ContextLength)
+	}
+}
+
+func TestModelInfo_ContextLengthFallsBackToNative_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture:  "qwen3",
+				NumLayers:     32,
+				HiddenSize:    2560,
+				QuantBits:     4,
+				ContextLength: 32768,
+			},
+		},
+	}
+
+	info := model.Info()
+	if info.ContextLength != 32768 {
+		t.Fatalf("Info().ContextLength = %d, want 32768", info.ContextLength)
+	}
+}
+
+func TestModelInfo_PreservesNativeNumHeads_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "gemma4_text",
+				NumHeads:     16,
+			},
+		},
+	}
+
+	if got := model.Info().NumHeads; got != 16 {
+		t.Fatalf("Info().NumHeads = %d, want native 16", got)
+	}
+}
+
+type nativeWithoutPromptCache struct{}
+
+func (nativeWithoutPromptCache) ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+func (nativeWithoutPromptCache) BatchGenerate(context.Context, []string, metal.GenerateConfig) ([]metal.BatchResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) Chat(context.Context, []metal.ChatMessage, metal.GenerateConfig) iter.Seq[metal.Token] {
+	return func(func(metal.Token) bool) {}
+}
+func (nativeWithoutPromptCache) Classify(context.Context, []string, metal.GenerateConfig, bool) ([]metal.ClassifyResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) Close() error { return nil }
+func (nativeWithoutPromptCache) Err() error   { return nil }
+func (nativeWithoutPromptCache) Generate(context.Context, string, metal.GenerateConfig) iter.Seq[metal.Token] {
+	return func(func(metal.Token) bool) {}
+}
+func (nativeWithoutPromptCache) Info() metal.ModelInfo { return metal.ModelInfo{} }
+func (nativeWithoutPromptCache) InspectAttention(context.Context, string) (*metal.AttentionResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) LastMetrics() metal.Metrics  { return metal.Metrics{} }
+func (nativeWithoutPromptCache) ModelType() string           { return "" }
+func (nativeWithoutPromptCache) Tokenizer() *metal.Tokenizer { return nil }
+
+func TestModelWarmPromptCache_ForwardsToNative_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCache("stable prefix"); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if native.warmPrompt != "stable prefix" {
+		t.Fatalf("warmPrompt = %q, want stable prefix", native.warmPrompt)
+	}
+}
+
+func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
+	model := &Model{model: nativeWithoutPromptCache{}}
+
+	if err := model.WarmPromptCache("stable prefix"); err == nil {
+		t.Fatal("expected unsupported prompt cache error")
+	}
+}
+
+func TestModelClearPromptCache_ForwardsToNative_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.ClearPromptCache(); err != nil {
+		t.Fatalf("ClearPromptCache: %v", err)
+	}
+	if native.clearPromptCacheCalls != 1 {
+		t.Fatalf("clearPromptCacheCalls = %d, want 1", native.clearPromptCacheCalls)
+	}
+}
+
+func TestModelClearPromptCache_UnsupportedNative_Bad(t *testing.T) {
+	model := &Model{model: nativeWithoutPromptCache{}}
+
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("expected unsupported prompt cache clearing error")
+	}
+}
+
+func TestModelClearPromptCache_NilModel_Ugly(t *testing.T) {
+	var model *Model
+
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("ClearPromptCache(nil model) error = nil")
+	}
+}
+
+func TestModelWarmPromptCacheFromMemvidBlocks_Good(t *testing.T) {
+	source := memvid.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, kv.MemvidBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+	}
+	store := &recordingMemvidStore{store: source}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), store, bundle, 2); err != nil {
+		t.Fatalf("WarmPromptCacheFromMemvidBlocks() error = %v", err)
+	}
+
+	if len(store.resolved) != 1 || store.resolved[0] != bundle.Blocks[0].Memvid.ChunkID {
+		t.Fatalf("resolved chunks = %v, want only first block chunk %d", store.resolved, bundle.Blocks[0].Memvid.ChunkID)
+	}
+	if native.restoredPromptKV != nil {
+		t.Fatal("restoredPromptKV != nil, want streaming block restore without assembled full snapshot")
+	}
+	if native.restoreBlockPrefix != 2 {
+		t.Fatalf("restoreBlockPrefix = %d, want 2", native.restoreBlockPrefix)
+	}
+	if len(native.restoredPromptBlocks) != 1 {
+		t.Fatalf("restoredPromptBlocks = %d, want one prefix block", len(native.restoredPromptBlocks))
+	}
+	restored := native.restoredPromptBlocks[0].Snapshot
+	if restored == nil || restored.TokenOffset != 2 || restored.SeqLen != 2 || len(restored.Tokens) != 2 {
+		t.Fatalf("restored block snapshot = %+v, want first two-token prefix", restored)
+	}
+	if len(restored.Logits) != 0 {
+		t.Fatalf("restored block Logits = %v, want none for prefix warm", restored.Logits)
+	}
+}
+
+func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
+	source := memvid.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	head := &snapshot.Layers[0].Heads[0]
+	for _, value := range head.Key {
+		head.KeyBytes = appendUint16LE(head.KeyBytes, float32ToFloat16(value))
+	}
+	for _, value := range head.Value {
+		head.ValueBytes = appendUint16LE(head.ValueBytes, float32ToFloat16(value))
+	}
+	head.Key = nil
+	head.Value = nil
+	head.KeyDType = "float16"
+	head.ValueDType = "float16"
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, kv.MemvidBlockOptions{
+		BlockSize:  2,
+		KVEncoding: kv.EncodingNative,
+	})
+	if err != nil {
+		t.Fatalf("SaveMemvidBlocks(native) error = %v", err)
+	}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), source, bundle, 2); err != nil {
+		t.Fatalf("WarmPromptCacheFromMemvidBlocks(native raw-only) error = %v", err)
+	}
+
+	if len(native.restoredPromptBlocks) != 1 {
+		t.Fatalf("restoredPromptBlocks = %d, want one prefix block", len(native.restoredPromptBlocks))
+	}
+	restored := native.restoredPromptBlocks[0].Snapshot
+	if restored == nil || len(restored.Layers) == 0 || len(restored.Layers[0].Heads) == 0 {
+		t.Fatalf("restored block snapshot = %+v, want native raw-only head", restored)
+	}
+	restoredHead := restored.Layers[0].Heads[0]
+	if len(restoredHead.Key) != 0 || len(restoredHead.Value) != 0 {
+		t.Fatalf("restored float32 key/value lengths = %d/%d, want raw-only", len(restoredHead.Key), len(restoredHead.Value))
+	}
+	if restoredHead.KeyDType != metal.DTypeFloat16 || restoredHead.ValueDType != metal.DTypeFloat16 {
+		t.Fatalf("restored dtypes = %v/%v, want float16", restoredHead.KeyDType, restoredHead.ValueDType)
+	}
+	if len(restoredHead.KeyBytes) != 8 || len(restoredHead.ValueBytes) != 8 {
+		t.Fatalf("restored bytes = %d/%d, want two tokens x dim two x f16", len(restoredHead.KeyBytes), len(restoredHead.ValueBytes))
+	}
+}
+
+func TestModelGenerateBuffered_Error_Bad(t *testing.T) {
+	wantErr := core.NewError("boom")
+	model := &Model{
+		model: &fakeNativeModel{
+			err:    wantErr,
+			tokens: []metal.Token{{ID: 1, Text: "partial"}},
+		},
+	}
+
+	_, err := model.Generate("ignored")
+	if !core.Is(err, wantErr) {
+		t.Fatalf("Generate() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestModelGenerateStream_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}},
+		},
+	}
+
+	ch := model.GenerateStream(context.Background(), "ignored", WithMinP(0.05))
+	var got []Token
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case tok, ok := <-ch:
+			if !ok {
+				if len(got) != 2 {
+					t.Fatalf("stream yielded %d tokens, want 2", len(got))
+				}
+				if got[0].Value != "A" || got[1].Text != "B" {
+					t.Fatalf("unexpected stream tokens: %+v", got)
+				}
+				return
+			}
+			got = append(got, tok)
+		case <-timeout:
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+}
+
+func TestModelGenerateTokens_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokenSeq(model.GenerateTokens(context.Background(), "ignored", WithMaxTokens(7), WithMinP(0.05)))
+
+	if len(got) != 2 || got[0].ID != 7 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateTokens() tokens = %+v, want A/B with ids", got)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 || native.lastGenerateConfig.MinP != 0.05 {
+		t.Fatalf("GenerateTokens() config = %+v, want max tokens/min-p", native.lastGenerateConfig)
+	}
+}
+
+func TestModelGenerateChunksStream_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokensFromChannel(model.GenerateChunksStream(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7)))
+
+	if len(got) != 2 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateChunksStream() tokens = %+v, want A/B", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelGenerateChunkTokens_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokenSeq(model.GenerateChunkTokens(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7)))
+
+	if len(got) != 2 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateChunkTokens() tokens = %+v, want A/B", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		tokens: []metal.Token{{ID: 1, Text: "A"}},
+	}
+	model := &Model{model: native}
+
+	for range model.GenerateStream(
+		context.Background(),
+		"ignored",
+		WithMaxTokens(9),
+		WithTemperature(0.3),
+		WithTopK(11),
+		WithTopP(0.8),
+		WithMinP(0.05),
+		WithSeed(123),
+		WithStopTokens(4, 5),
+		WithMinTokensBeforeStop(1),
+		WithRepeatPenalty(1.2),
+	) {
+	}
+
+	cfg := native.lastGenerateConfig
+	if cfg.MaxTokens != 9 {
+		t.Fatalf("MaxTokens = %d, want 9", cfg.MaxTokens)
+	}
+	if cfg.Temperature != 0.3 {
+		t.Fatalf("Temperature = %f, want 0.3", cfg.Temperature)
+	}
+	if cfg.TopK != 11 {
+		t.Fatalf("TopK = %d, want 11", cfg.TopK)
+	}
+	if cfg.TopP != 0.8 {
+		t.Fatalf("TopP = %f, want 0.8", cfg.TopP)
+	}
+	if cfg.MinP != 0.05 {
+		t.Fatalf("MinP = %f, want 0.05", cfg.MinP)
+	}
+	if !cfg.SeedSet || cfg.Seed != 123 {
+		t.Fatalf("Seed = %d/%v, want 123/true", cfg.Seed, cfg.SeedSet)
+	}
+	if cfg.RepeatPenalty != 1.2 {
+		t.Fatalf("RepeatPenalty = %f, want 1.2", cfg.RepeatPenalty)
+	}
+	if !reflect.DeepEqual(cfg.StopTokens, []int32{4, 5}) {
+		t.Fatalf("StopTokens = %v, want [4 5]", cfg.StopTokens)
+	}
+	if cfg.MinTokensBeforeStop != 1 {
+		t.Fatalf("MinTokensBeforeStop = %d, want 1", cfg.MinTokensBeforeStop)
+	}
+}
+
+func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
+	recorder := probe.NewRecorder()
+	native := &fakeNativeModel{
+		probeEvents: []metal.ProbeEvent{{
+			Kind:  metal.ProbeEventToken,
+			Phase: metal.ProbePhaseDecode,
+			Step:  2,
+			Token: &metal.ProbeToken{
+				ID:              9,
+				Text:            "Z",
+				PromptTokens:    4,
+				GeneratedTokens: 1,
+			},
+		}},
+	}
+	model := &Model{model: native}
+
+	if _, err := model.Generate("ignored", WithProbeSink(recorder)); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	if native.lastGenerateConfig.ProbeSink == nil {
+		t.Fatal("native probe.Sink = nil, want configured")
+	}
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("probe events len = %d, want 1", len(events))
+	}
+	if events[0].Kind != probe.KindToken || events[0].Phase != probe.PhaseDecode {
+		t.Fatalf("probe event = %+v", events[0])
+	}
+	if events[0].Token == nil || events[0].Token.ID != 9 || events[0].Token.Text != "Z" {
+		t.Fatalf("probe token = %+v", events[0].Token)
+	}
+}
+
+func TestModelChatBuffered_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			chatTokens: []metal.Token{{ID: 3, Text: "Hi"}, {ID: 4, Text: " there"}},
+		},
+	}
+
+	got, err := model.Chat([]inference.Message{{Role: "user", Content: "hello"}}, WithTopP(0.8))
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if got != "Hi there" {
+		t.Fatalf("Chat() = %q, want %q", got, "Hi there")
+	}
+}
+
+func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	for range model.ChatStream(context.Background(), messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)) {
+	}
+
+	if !reflect.DeepEqual(native.lastChatMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat messages = %+v", native.lastChatMessages)
+	}
+	if native.lastChatConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastChatConfig.MaxTokens)
+	}
+	if native.lastChatConfig.TopP != 0.85 {
+		t.Fatalf("TopP = %f, want 0.85", native.lastChatConfig.TopP)
+	}
+	if native.lastChatConfig.RepeatPenalty != 1.05 {
+		t.Fatalf("RepeatPenalty = %f, want 1.05", native.lastChatConfig.RepeatPenalty)
+	}
+}
+
+func TestModelChatTokens_ForwardsMessagesAndOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokenSeq(model.ChatTokens(context.Background(), messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatTokens() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat messages = %+v", native.lastChatMessages)
+	}
+	if native.lastChatConfig.MaxTokens != 7 || native.lastChatConfig.TopP != 0.85 || native.lastChatConfig.RepeatPenalty != 1.05 {
+		t.Fatalf("ChatTokens() config = %+v, want max tokens/top-p/repeat penalty", native.lastChatConfig)
+	}
+}
+
+func TestModelChatChunksStream_ForwardsMessagesAndChunkBytes_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokensFromChannel(model.ChatChunksStream(context.Background(), messages, 4096, WithMaxTokens(7), WithTopP(0.85)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatChunksStream() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatChunkMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat chunk messages = %+v", native.lastChatChunkMessages)
+	}
+	if native.lastChatChunkBytes != 4096 {
+		t.Fatalf("chunk bytes = %d, want 4096", native.lastChatChunkBytes)
+	}
+	if native.lastChatChunkConfig.MaxTokens != 7 || native.lastChatChunkConfig.TopP != 0.85 {
+		t.Fatalf("chat chunk cfg = %+v, want max tokens/top-p", native.lastChatChunkConfig)
+	}
+}
+
+func TestModelChatChunkTokens_ForwardsMessagesAndChunkBytes_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokenSeq(model.ChatChunkTokens(context.Background(), messages, 4096, WithMaxTokens(7), WithTopP(0.85)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatChunkTokens() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatChunkMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat chunk messages = %+v", native.lastChatChunkMessages)
+	}
+	if native.lastChatChunkBytes != 4096 {
+		t.Fatalf("chunk bytes = %d, want 4096", native.lastChatChunkBytes)
+	}
+	if native.lastChatChunkConfig.MaxTokens != 7 || native.lastChatChunkConfig.TopP != 0.85 {
+		t.Fatalf("chat chunk cfg = %+v, want max tokens/top-p", native.lastChatChunkConfig)
+	}
+}
+
+func TestModelClassify_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			classifyResults: []metal.ClassifyResult{{
+				Token:  metal.Token{ID: 9, Text: "yes"},
+				Logits: []float32{0.1, 0.9},
+			}},
+		},
+	}
+
+	results, err := model.Classify([]string{"prompt"}, WithTemperature(0.1), WithLogits())
+	if err != nil {
+		t.Fatalf("Classify() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Classify() len = %d, want 1", len(results))
+	}
+	if results[0].Token.Text != "yes" || results[0].Token.Value != "yes" {
+		t.Fatalf("Classify() token = %+v, want text/value yes", results[0].Token)
+	}
+	if !reflect.DeepEqual(results[0].Logits, []float32{0.1, 0.9}) {
+		t.Fatalf("Classify() logits = %v, want [0.1 0.9]", results[0].Logits)
+	}
+	native := model.model.(*fakeNativeModel)
+	if !native.classifyReturnLogits {
+		t.Fatal("classifyReturnLogits = false, want true")
+	}
+	if native.lastClassifyConfig.Temperature != 0.1 {
+		t.Fatalf("Classify() temperature = %f, want 0.1", native.lastClassifyConfig.Temperature)
+	}
+}
+
+func TestModelBatchGenerate_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			batchResults: []metal.BatchResult{{
+				Tokens: []metal.Token{{ID: 1, Text: "A"}, {ID: 2, Text: "B"}},
+			}},
+		},
+	}
+
+	results, err := model.BatchGenerate([]string{"prompt"}, WithMaxTokens(12))
+	if err != nil {
+		t.Fatalf("BatchGenerate() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("BatchGenerate() len = %d, want 1", len(results))
+	}
+	if len(results[0].Tokens) != 2 || results[0].Tokens[1].Text != "B" {
+		t.Fatalf("BatchGenerate() tokens = %+v", results[0].Tokens)
+	}
+	native := model.model.(*fakeNativeModel)
+	if native.lastBatchConfig.MaxTokens != 12 {
+		t.Fatalf("BatchGenerate() MaxTokens = %d, want 12", native.lastBatchConfig.MaxTokens)
+	}
+}
+
+func TestModelMetricsAndModelType_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			modelType: "gemma4_text",
+			metrics: metal.Metrics{
+				PromptTokens:      32,
+				GeneratedTokens:   5,
+				PeakMemoryBytes:   1024,
+				ActiveMemoryBytes: 512,
+				MTP: &metal.MTPMetrics{
+					DraftTokenSchedule:     []int{2, 2, 1},
+					ProposedTokens:         5,
+					AcceptedTokens:         4,
+					RejectedTokens:         1,
+					TargetVerifyCalls:      3,
+					TargetCalls:            4,
+					DraftCalls:             3,
+					AcceptanceRate:         0.8,
+					VisibleTokensPerSec:    91,
+					TargetTokensPerSec:     120,
+					WarmDecodeTokensPerSec: 95,
+					WallDuration:           80 * time.Millisecond,
+					RestoreDuration:        5 * time.Millisecond,
+					TargetVerifyDuration:   40 * time.Millisecond,
+					DraftDuration:          12 * time.Millisecond,
+				},
+				CacheProfile: &metal.CacheProfile{
+					Architecture:       "gemma4_text",
+					TotalCaches:        6,
+					LocalCaches:        5,
+					GlobalCaches:       1,
+					SharedLayers:       2,
+					CachelessLayers:    3,
+					LocalWindowTokens:  512,
+					MaxLocalTokens:     512,
+					MaxGlobalTokens:    4000,
+					MaxProcessedTokens: 4000,
+				},
+			},
+		},
+	}
+
+	if got := model.ModelType(); got != "gemma4_text" {
+		t.Fatalf("ModelType() = %q, want %q", got, "gemma4_text")
+	}
+	metrics := model.Metrics()
+	if metrics.PromptTokens != 32 || metrics.GeneratedTokens != 5 {
+		t.Fatalf("Metrics() = %+v, want prompt=32 generated=5", metrics)
+	}
+	if metrics.PeakMemoryBytes != 1024 || metrics.ActiveMemoryBytes != 512 {
+		t.Fatalf("Metrics() memory = %+v, want peak=1024 active=512", metrics)
+	}
+	if metrics.CacheProfile == nil || metrics.CacheProfile.LocalCaches != 5 || metrics.CacheProfile.GlobalCaches != 1 || metrics.CacheProfile.CachelessLayers != 3 || metrics.CacheProfile.LocalWindowLeaked {
+		t.Fatalf("Metrics() cache profile = %+v, want bounded Gemma 4 local/global topology", metrics.CacheProfile)
+	}
+	if metrics.MTP == nil || metrics.MTP.ProposedTokens != 5 || metrics.MTP.AcceptedTokens != 4 || metrics.MTP.RejectedTokens != 1 {
+		t.Fatalf("Metrics() MTP = %+v, want proposed/accepted/rejected counters", metrics.MTP)
+	}
+	if len(metrics.MTP.DraftTokenSchedule) != 3 || metrics.MTP.DraftTokenSchedule[2] != 1 {
+		t.Fatalf("Metrics() MTP schedule = %+v, want copied draft token schedule", metrics.MTP.DraftTokenSchedule)
+	}
+	if metrics.MTP.TargetVerifyCalls != 3 || metrics.MTP.WarmDecodeTokensPerSec != 95 || metrics.MTP.RestoreDuration != 5*time.Millisecond {
+		t.Fatalf("Metrics() MTP timing = %+v, want target verify calls, warm tok/s, and restore duration", metrics.MTP)
+	}
+}
+
+func TestModelInspectAttention_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			attention: &metal.AttentionResult{
+				NumLayers:     2,
+				NumHeads:      4,
+				SeqLen:        8,
+				HeadDim:       16,
+				NumQueryHeads: 8,
+				Keys:          [][][]float32{{{1, 2, 3}}},
+				Queries:       [][][]float32{{{4, 5, 6}}},
+				Architecture:  "gemma4_text",
+			},
+		},
+	}
+
+	snapshot, err := model.InspectAttention("prompt")
+	if err != nil {
+		t.Fatalf("InspectAttention() error = %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("InspectAttention() = nil, want non-nil")
+	}
+	if snapshot.NumLayers != 2 || snapshot.HeadDim != 16 || snapshot.Architecture != "gemma4_text" {
+		t.Fatalf("InspectAttention() = %+v", snapshot)
+	}
+	if snapshot.NumQueryHeads != 8 {
+		t.Fatalf("InspectAttention().NumQueryHeads = %d, want 8", snapshot.NumQueryHeads)
+	}
+	if !snapshot.HasQueries() {
+		t.Fatal("InspectAttention().HasQueries() = false, want true")
+	}
+}
+
+func TestModelCaptureKV_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		kvSnapshot: &metal.KVSnapshot{
+			Version:      metal.KVSnapshotVersion,
+			Architecture: "gemma4_text",
+			Tokens:       []int32{1, 2},
+			NumLayers:    1,
+			NumHeads:     1,
+			SeqLen:       2,
+			HeadDim:      2,
+			Layers: []metal.KVLayerSnapshot{{
+				Layer: 0,
+				Heads: []metal.KVHeadSnapshot{{
+					Key:   []float32{1, 2, 3, 4},
+					Value: []float32{5, 6, 7, 8},
+				}},
+			}},
+		},
+	}
+	model := &Model{model: native}
+
+	snapshot, err := model.CaptureKV("prompt")
+	if err != nil {
+		t.Fatalf("CaptureKV() error = %v", err)
+	}
+	if snapshot.Architecture != "gemma4_text" || snapshot.SeqLen != 2 {
+		t.Fatalf("CaptureKV() = %+v", snapshot)
+	}
+	head, ok := snapshot.Head(0, 0)
+	if !ok {
+		t.Fatal("CaptureKV().Head() ok = false, want true")
+	}
+	if head.Key[3] != 4 || head.Value[0] != 5 {
+		t.Fatalf("CaptureKV().Head() = %+v", head)
+	}
+	head.Key[0] = 99
+	if native.kvSnapshot.Layers[0].Heads[0].Key[0] != 1 {
+		t.Fatal("CaptureKV() returned aliased native key data")
+	}
+}
+
+func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
+	layout := metal.TurboQuantKVPageLayout{
+		Version:     metal.TurboQuantKVLayoutVersion,
+		Codec:       metal.TurboQuantKVCodecName,
+		CacheIndex:  0,
+		Layer:       0,
+		LayerType:   "sliding_attention",
+		SharedOwner: 0,
+		Shape:       metal.TurboQuantKVShape{Batch: 1, Heads: 1, SeqLen: 1, HeadDim: 2},
+		TokenOffset: 0,
+		PageTokens:  1,
+		PageSize:    1,
+		LocalWindow: 512,
+		Key: metal.TurboQuantKVCodec{
+			Algorithm:          metal.TurboQuantKVAlgorithmProd,
+			NormalBits:         3,
+			NormPolicy:         metal.TurboQuantKVNormPolicyExplicitVectorBF16V1,
+			ResidualNormPolicy: metal.TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+			RotationSeed:       11,
+			QJLSeed:            13,
+			CodebookID:         metal.TurboQuantKVReferenceCodebookUniform,
+		},
+		Value: metal.TurboQuantKVCodec{
+			Algorithm:    metal.TurboQuantKVAlgorithmMSE,
+			NormalBits:   3,
+			NormPolicy:   metal.TurboQuantKVNormPolicyExplicitVectorBF16V1,
+			RotationSeed: 17,
+			CodebookID:   metal.TurboQuantKVReferenceCodebookUniform,
+		},
+	}
+	page, err := metal.EncodeTurboQuantKVReferencePage([]float32{1, 2}, []float32{3, 4}, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v", err)
+	}
+	native := &metal.KVSnapshot{
+		Version:      metal.KVSnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       1,
+		HeadDim:      2,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:              0,
+			CacheIndex:         0,
+			CacheMode:          metal.KVCacheModeTurboQuant,
+			TurboQuantPayloads: []metal.TurboQuantKVReferencePagePayload{payload},
+		}},
+	}
+
+	root := kvconv.ToRootKVSnapshot(native)
+	if root.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(root.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("root layer mode/payloads = %q/%d, want turboquant payload", root.Layers[0].CacheMode, len(root.Layers[0].TurboQuantPayloads))
+	}
+	encoded, err := root.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	var loaded kv.Snapshot
+	if err := loaded.UnmarshalBinary(encoded); err != nil {
+		t.Fatalf("UnmarshalBinary() error = %v", err)
+	}
+	// Versioning is promotion-based: the encoded version is the lowest that
+	// carries the snapshot's features (payloads need v5; a layer MaxSize
+	// would promote to v6). Assert payload capability, not the top constant.
+	if loaded.Version < 5 || loaded.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(loaded.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("loaded version/mode/payloads = %d/%q/%d, want >=v5 turboquant payload", loaded.Version, loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads))
+	}
+	roundTrip := kvconv.ToMetalKVSnapshot(&loaded)
+	if roundTrip.Layers[0].CacheMode != metal.KVCacheModeTurboQuant || len(roundTrip.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("metal round trip mode/payloads = %q/%d, want turboquant payload", roundTrip.Layers[0].CacheMode, len(roundTrip.Layers[0].TurboQuantPayloads))
+	}
+	got := roundTrip.Layers[0].TurboQuantPayloads[0]
+	if got.Layout.PageTokens != payload.Layout.PageTokens || !reflect.DeepEqual(got.Data, payload.Data) {
+		t.Fatalf("round trip payload = page_tokens:%d data:%d, want page_tokens:%d data:%d", got.Layout.PageTokens, len(got.Data), payload.Layout.PageTokens, len(payload.Data))
+	}
+}
+
+func TestModelWarmPromptCacheChunks_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("<bos>", "chunk")); err != nil {
+		t.Fatalf("WarmPromptCacheChunks() error = %v", err)
+	}
+	if !reflect.DeepEqual(native.warmChunks, []string{"<bos>", "chunk"}) {
+		t.Fatalf("warm chunks = %#v", native.warmChunks)
+	}
+}
+
+func TestModelWarmPromptCacheFromKV_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+	snapshot := &kv.Snapshot{
+		Version:      kv.SnapshotVersion,
+		Architecture: "qwen3",
+		Tokens:       []int32{1},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       1,
+		HeadDim:      1,
+		Layers: []kv.LayerSnapshot{{
+			Layer: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:        []float32{1},
+				Value:      []float32{2},
+				KeyBytes:   []byte{1, 2},
+				ValueBytes: []byte{3, 4},
+				KeyDType:   "float16",
+				ValueDType: "bfloat16",
+			}},
+		}},
+	}
+
+	if err := model.WarmPromptCacheFromKV(snapshot); err != nil {
+		t.Fatalf("WarmPromptCacheFromKV() error = %v", err)
+	}
+	if native.restoredPromptKV == nil || native.restoredPromptKV.Layers[0].Heads[0].KeyDType != metal.DTypeFloat16 {
+		t.Fatalf("restored KV = %+v, want converted raw dtype", native.restoredPromptKV)
+	}
+	if err := (&Model{model: nativeWithoutPromptCache{}}).WarmPromptCacheFromKV(snapshot); err == nil {
+		t.Fatal("WarmPromptCacheFromKV(unsupported) error = nil")
+	}
+}
+
+func TestModelGenerateChunks_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{Text: "ok"}}}
+	model := &Model{model: native}
+
+	got, err := model.GenerateChunks(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7))
+	if err != nil {
+		t.Fatalf("GenerateChunks() error = %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("GenerateChunks() = %q, want ok", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelCaptureKVChunks_Good(t *testing.T) {
+	native := &fakeNativeModel{kvSnapshot: &metal.KVSnapshot{
+		Version:      metal.KVSnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1, 2, 3},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       3,
+		HeadDim:      1,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer: 0,
+			Heads: []metal.KVHeadSnapshot{{Key: []float32{1, 2, 3}, Value: []float32{4, 5, 6}}},
+		}},
+	}}
+	model := &Model{model: native}
+
+	snapshot, err := model.CaptureKVChunks(context.Background(), seqStrings("prefix", "suffix"))
+	if err != nil {
+		t.Fatalf("CaptureKVChunks() error = %v", err)
+	}
+	if snapshot.SeqLen != 3 {
+		t.Fatalf("SeqLen = %d, want 3", snapshot.SeqLen)
+	}
+	if !reflect.DeepEqual(native.capturedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("captured chunks = %#v", native.capturedChunks)
+	}
+}
+
+func TestModelClose_Idempotent_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{
+		model: native,
+		tok:   NewTokenizer(&metal.Tokenizer{}),
+	}
+
+	if err := model.Close(); err != nil {
+		t.Fatalf("first Close(): %v", err)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls after first Close = %d, want 1", native.closeCalls)
+	}
+	if model.model != nil {
+		t.Fatal("model handle should be cleared after Close")
+	}
+	if model.tok != nil {
+		t.Fatal("tokenizer handle should be cleared after Close")
+	}
+
+	if err := model.Close(); err != nil {
+		t.Fatalf("second Close(): %v", err)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls after second Close = %d, want 1", native.closeCalls)
+	}
+}
+
+func TestModelErrAndTokenizer_Good(t *testing.T) {
+	wantErr := core.NewError("model failed")
+	tokenizer := NewTokenizer(&metal.Tokenizer{})
+	model := &Model{model: &fakeNativeModel{err: wantErr}, tok: tokenizer}
+	if !core.Is(model.Err(), wantErr) {
+		t.Fatalf("Err() = %v, want %v", model.Err(), wantErr)
+	}
+	if model.Tokenizer() != tokenizer {
+		t.Fatal("Tokenizer() did not return model tokenizer")
+	}
+	if (*Model)(nil).Err() != nil || (*Model)(nil).Tokenizer() != nil {
+		t.Fatal("nil model Err/Tokenizer should return nil")
+	}
+}
+
+func TestModelNilPublicSurface_Bad(t *testing.T) {
+	var model *Model
+	if _, err := model.Generate("x"); err == nil {
+		t.Fatal("Generate(nil model) error = nil")
+	}
+	if _, err := model.Chat([]inference.Message{{Role: "user", Content: "x"}}); err == nil {
+		t.Fatal("Chat(nil model) error = nil")
+	}
+	if _, err := model.GenerateChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("GenerateChunks(nil model) error = nil")
+	}
+	if err := model.WarmPromptCache("x"); err == nil {
+		t.Fatal("WarmPromptCache(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("WarmPromptCacheChunks(nil model) error = nil")
+	}
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("ClearPromptCache(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheFromKV(&kv.Snapshot{}); err == nil {
+		t.Fatal("WarmPromptCacheFromKV(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), nil, nil, 0); err == nil {
+		t.Fatal("WarmPromptCacheFromMemvidBlocks(nil model) error = nil")
+	}
+	if _, err := model.Classify([]string{"x"}); err == nil {
+		t.Fatal("Classify(nil model) error = nil")
+	}
+	if _, err := model.BatchGenerate([]string{"x"}); err == nil {
+		t.Fatal("BatchGenerate(nil model) error = nil")
+	}
+	if _, err := model.InspectAttention("x"); err == nil {
+		t.Fatal("InspectAttention(nil model) error = nil")
+	}
+	if _, err := model.CaptureKV("x"); err == nil {
+		t.Fatal("CaptureKV(nil model) error = nil")
+	}
+	if _, err := model.CaptureKVChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("CaptureKVChunks(nil model) error = nil")
+	}
+	if _, err := model.LoadLoRA("/tmp/missing"); err == nil {
+		t.Fatal("LoadLoRA(nil model) error = nil")
+	}
+	if err := model.UnloadLoRA(); err == nil {
+		t.Fatal("UnloadLoRA(nil model) error = nil")
+	}
+	if _, err := model.SwapLoRA("/tmp/missing"); err == nil {
+		t.Fatal("SwapLoRA(nil model) error = nil")
+	}
+	if NewLoRA(model, nil) != nil {
+		t.Fatal("NewLoRA(nil model) != nil")
+	}
+	if model.MergeLoRA(nil) != nil {
+		t.Fatal("MergeLoRA(nil adapter) should return receiver")
+	}
+
+	if tokens := collectTokensFromChannel(model.GenerateStream(context.Background(), "x")); len(tokens) != 0 {
+		t.Fatalf("GenerateStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokensFromChannel(model.GenerateChunksStream(context.Background(), seqStrings("x"))); len(tokens) != 0 {
+		t.Fatalf("GenerateChunksStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokensFromChannel(model.ChatChunksStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}}, 8)); len(tokens) != 0 {
+		t.Fatalf("ChatChunksStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
+		t.Fatalf("ChatStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.GenerateTokens(context.Background(), "x")); len(tokens) != 0 {
+		t.Fatalf("GenerateTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.GenerateChunkTokens(context.Background(), seqStrings("x"))); len(tokens) != 0 {
+		t.Fatalf("GenerateChunkTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.ChatChunkTokens(context.Background(), []inference.Message{{Role: "user", Content: "x"}}, 8)); len(tokens) != 0 {
+		t.Fatalf("ChatChunkTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.ChatTokens(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
+		t.Fatalf("ChatTokens(nil model) tokens = %+v, want none", tokens)
+	}
+}
+
+func TestModelClose_Error_Bad(t *testing.T) {
+	wantErr := core.NewError("close boom")
+	native := &fakeNativeModel{closeErr: wantErr}
+	model := &Model{model: native}
+
+	err := model.Close()
+	if !core.Is(err, wantErr) {
+		t.Fatalf("Close() error = %v, want %v", err, wantErr)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", native.closeCalls)
+	}
+	if model.model != nil {
+		t.Fatal("model handle should still be cleared on close error")
+	}
+}
+
+func TestModelLoadLoRA_ForwardsToNative_Good(t *testing.T) {
+	wantAdapter := &metal.LoRAAdapter{}
+	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
+	native := &fakeNativeModel{loadedLoRAAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got, err := model.LoadLoRA(adapterDir)
+	if err != nil {
+		t.Fatalf("LoadLoRA() error = %v", err)
+	}
+	if got != wantAdapter {
+		t.Fatalf("LoadLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.loadedLoRAPath != adapterDir {
+		t.Fatalf("native loaded path = %q, want %q", native.loadedLoRAPath, adapterDir)
+	}
+}
+
+func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
+	_, err := LoadModel("/does/not/matter", WithDevice("tpu"))
+	if err == nil {
+		t.Fatal("expected unsupported device error")
+	}
+}
+
+func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.Device != metal.DeviceCPU {
+			t.Fatalf("Device = %q, want %q", cfg.Device, metal.DeviceCPU)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithDevice("cpu"))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.AdapterPath != adapterDir {
+			t.Fatalf("AdapterPath = %q, want %q", cfg.AdapterPath, adapterDir)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithAdapterPath(adapterDir))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.ParallelSlots != 4 {
+			t.Fatalf("ParallelSlots = %d, want 4", cfg.ParallelSlots)
+		}
+		if cfg.DisablePromptCache {
+			t.Fatal("DisablePromptCache = true, want false")
+		}
+		if cfg.PromptCacheMinTokens != DefaultPromptCacheMinTokens {
+			t.Fatalf("PromptCacheMinTokens = %d, want %d", cfg.PromptCacheMinTokens, DefaultPromptCacheMinTokens)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithParallelSlots(4))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_ForwardsTypedKVConfig_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.KVCacheStorageDType != "fp16" {
+			t.Fatalf("KVCacheStorageDType = %q, want fp16", cfg.KVCacheStorageDType)
+		}
+		if cfg.PagedKVPageSize != 1024 {
+			t.Fatalf("PagedKVPageSize = %d, want 1024", cfg.PagedKVPageSize)
+		}
+		if !cfg.PagedKVPrealloc {
+			t.Fatal("PagedKVPrealloc = false, want true")
+		}
+		if cfg.FixedSlidingCacheSize != 4096 {
+			t.Fatalf("FixedSlidingCacheSize = %d, want 4096", cfg.FixedSlidingCacheSize)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel(
+		"/does/not/matter",
+		WithKVCacheStorageDType("fp16"),
+		WithPagedKVPageSize(1024),
+		WithPagedKVPrealloc(true),
+		WithFixedSlidingCacheSize(4096),
+	)
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_UsesNativeSlidingWindow_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text", SlidingWindow: 1024}}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.SlidingWindow != 1024 {
+		t.Fatalf("Info().SlidingWindow = %d, want native model window 1024", info.SlidingWindow)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_DefaultSlidingWindowUnbounded_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4", SlidingWindow: 1024}}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.SlidingWindow != 1024 {
+		t.Fatalf("Info().SlidingWindow = %d, want native model window 1024", info.SlidingWindow)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	originalDeviceInfo := memoryPlannerDeviceInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		memoryPlannerDeviceInfo = originalDeviceInfo
+	})
+
+	memoryPlannerDeviceInfo = func() DeviceInfo {
+		return DeviceInfo{
+			Architecture:                 "apple7",
+			MemorySize:                   16 << 30,
+			MaxRecommendedWorkingSetSize: 14 << 30,
+		}
+	}
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if cfg.ContextLen != 8192 {
+			t.Fatalf("ContextLen = %d, want planner 8192", cfg.ContextLen)
+		}
+		if !cfg.DisablePromptCache {
+			t.Fatal("DisablePromptCache = false, want planner to disable on 16GB")
+		}
+		if cfg.PrefillChunkSize != 512 || cfg.BatchSize != 1 {
+			t.Fatalf("shape = prefill %d batch %d, want 512/1", cfg.PrefillChunkSize, cfg.BatchSize)
+		}
+		if cfg.MemoryLimitBytes == 0 || cfg.CacheLimitBytes == 0 || cfg.WiredLimitBytes == 0 {
+			t.Fatalf("allocator limits not forwarded: %+v", cfg)
+		}
+		return &fakeNativeModel{
+			info: metal.ModelInfo{Architecture: "gemma4_text", QuantBits: 4, ContextLength: 8192},
+		}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if model.cfg.MemoryPlan == nil || model.cfg.MemoryPlan.MachineClass != memory.ClassApple16GB {
+		t.Fatalf("model memory plan = %+v, want 16GB class", model.cfg.MemoryPlan)
+	}
+	info := model.Info()
+	if info.CacheMode != memory.KVCacheModeKQ8VQ4 || info.CachePolicy != memory.KVCacheRotating {
+		t.Fatalf("info cache = %q/%q, want planner cache", info.CachePolicy, info.CacheMode)
+	}
+	if info.ContextLength != 8192 || info.PrefillChunkSize != 512 || info.BatchSize != 1 {
+		t.Fatalf("info runtime shape = ctx:%d prefill:%d batch:%d, want planner shape", info.ContextLength, info.PrefillChunkSize, info.BatchSize)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_ExplicitDefaultContextBypassesMemoryPlanClamp_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		if cfg.ContextLen != DefaultLocalContextLength {
+			t.Fatalf("ContextLen = %d, want explicit context %d", cfg.ContextLen, DefaultLocalContextLength)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text", ContextLength: DefaultLocalContextLength}}, nil
+	}
+
+	model, err := LoadModel(
+		"/does/not/matter",
+		WithContextLength(DefaultLocalContextLength),
+		WithMemoryPlan(memory.Plan{ContextLength: 32768}),
+	)
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	originalReadGGUFInfo := readGGUFInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		readGGUFInfo = originalReadGGUFInfo
+	})
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		return &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "gemma4_text",
+				NumLayers:    48,
+				QuantBits:    0, // unknown
+			},
+		}, nil
+	}
+	readGGUFInfo = func(modelPath string) (gguf.Info, error) {
+		return gguf.Info{}, core.NewError("no gguf metadata")
+	}
+
+	model, err := LoadModel("/does/not/matter", WithQuantization(4))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	originalReadGGUFInfo := readGGUFInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		readGGUFInfo = originalReadGGUFInfo
+	})
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		return &fakeNativeModel{}, nil
+	}
+	readGGUFInfo = func(modelPath string) (gguf.Info, error) {
+		return gguf.Info{
+			Architecture:  "gemma4_text",
+			VocabSize:     262144,
+			HiddenSize:    2560,
+			NumLayers:     48,
+			ContextLength: 131072,
+			QuantBits:     4,
+			QuantGroup:    64,
+		}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithQuantization(4), WithAutoMemoryPlan(false))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.Architecture != "gemma4_text" {
+		t.Fatalf("Info().Architecture = %q, want gemma4_text", info.Architecture)
+	}
+	if info.NumLayers != 48 {
+		t.Fatalf("Info().NumLayers = %d, want 48", info.NumLayers)
+	}
+	if info.VocabSize != 262144 {
+		t.Fatalf("Info().VocabSize = %d, want 262144", info.VocabSize)
+	}
+	if info.HiddenSize != 2560 {
+		t.Fatalf("Info().HiddenSize = %d, want 2560", info.HiddenSize)
+	}
+	if info.ContextLength != 131072 {
+		t.Fatalf("Info().ContextLength = %d, want 131072", info.ContextLength)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("Info() quant = %d-bit group=%d, want 4-bit group=64", info.QuantBits, info.QuantGroup)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	_, err = LoadModel("/does/not/matter", WithQuantization(8), WithAutoMemoryPlan(false))
+	if err == nil {
+		t.Fatal("expected quantization mismatch error from GGUF metadata")
+	}
+}
+
+func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
+	medium := coreio.NewMemoryMedium()
+	if err := medium.Write("models/demo/config.json", `{"model_type":"gemma3"}`); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := medium.Write("models/demo/tokenizer.json", `{"model":{"type":"BPE","vocab":{},"merges":[]}}`); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := medium.Write("models/demo/model.gguf", "stub"); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+	if err := medium.Write("adapters/demo/adapter_config.json", `{"rank":8,"alpha":16}`); err != nil {
+		t.Fatalf("write adapter config: %v", err)
+	}
+	if err := medium.Write("adapters/demo/adapter.safetensors", "stub"); err != nil {
+		t.Fatalf("write adapter weights: %v", err)
+	}
+
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	var stagedPath string
+	var stagedAdapterPath string
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
+		stagedPath = modelPath
+		stagedAdapterPath = cfg.AdapterPath
+		if cfg.ContextLen != 2048 {
+			t.Fatalf("ContextLen = %d, want 2048", cfg.ContextLen)
+		}
+		if result := core.Stat(core.PathJoin(modelPath, "config.json")); !result.OK {
+			t.Fatalf("staged config missing: %v", result.Value)
+		}
+		if result := core.Stat(core.PathJoin(modelPath, "tokenizer.json")); !result.OK {
+			t.Fatalf("staged tokenizer missing: %v", result.Value)
+		}
+		if result := core.Stat(core.PathJoin(modelPath, "model.gguf")); !result.OK {
+			t.Fatalf("staged weights missing: %v", result.Value)
+		}
+		if cfg.AdapterPath == "" {
+			t.Fatal("expected staged adapter path to be passed to native loader")
+		}
+		if result := core.Stat(core.PathJoin(cfg.AdapterPath, "adapter_config.json")); !result.OK {
+			t.Fatalf("staged adapter config missing: %v", result.Value)
+		}
+		if result := core.Stat(core.PathJoin(cfg.AdapterPath, "adapter.safetensors")); !result.OK {
+			t.Fatalf("staged adapter weights missing: %v", result.Value)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel(
+		"models/demo",
+		WithMedium(medium),
+		WithContextLength(2048),
+		WithAdapterPath("adapters/demo"),
+	)
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+
+	if stagedPath == "" {
+		t.Fatal("expected staged path to be passed to native loader")
+	}
+	if stagedAdapterPath == "" {
+		t.Fatal("expected staged adapter path to be passed to native loader")
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if result := core.Stat(stagedPath); result.OK || !core.IsNotExist(apiTestResultError(result)) {
+		t.Fatalf("staged path should be removed on Close, stat result = %v", result.Value)
+	}
+	if result := core.Stat(stagedAdapterPath); result.OK || !core.IsNotExist(apiTestResultError(result)) {
+		t.Fatalf("staged adapter path should be removed on Close, stat result = %v", result.Value)
+	}
+}
+
+func apiTestResultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return nil
+}
+
+// appendUint16LE appends value to out in little-endian byte order.
+func appendUint16LE(out []byte, value uint16) []byte {
+	var buf [2]byte
+	binary.LittleEndian.PutUint16(buf[:], value)
+	return append(out, buf[:]...)
+}
+
+// float32ToFloat16 converts a float32 to IEEE-754 float16 bits.
+// Used by api_test.go to build binary tensor fixtures.
+func float32ToFloat16(value float32) uint16 {
+	bits := math.Float32bits(value)
+	sign := uint16((bits >> 16) & 0x8000)
+	exp := int((bits >> 23) & 0xff)
+	frac := bits & 0x7fffff
+	if exp == 255 {
+		if frac == 0 {
+			return sign | 0x7c00
+		}
+		return sign | 0x7e00
+	}
+	exp = exp - 127 + 15
+	if exp >= 31 {
+		return sign | 0x7c00
+	}
+	if exp <= 0 {
+		if exp < -10 {
+			return sign
+		}
+		frac |= 0x800000
+		shift := uint32(14 - exp)
+		return sign | uint16(frac>>shift)
+	}
+	return sign | uint16(exp<<10) | uint16(frac>>13)
+}
+
+func stateBundleTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2},
+		Generated:     []int32{2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 8,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{1, 0, 0, 1},
+				Value: []float32{0, 1, 1, 0},
+			}},
+		}},
+	}
+}
+
+func kvSnapshotBlocksTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2, 3, 4},
+		Generated:     []int32{4},
+		TokenOffset:   4,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        4,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{10, 11, 12, 13, 14, 15, 16, 17},
+				Value: []float32{20, 21, 22, 23, 24, 25, 26, 27},
+			}},
+		}},
+	}
+}
+
+type recordingMemvidStore struct {
+	store    memvid.Store
+	resolved []int
+}
+
+func (s *recordingMemvidStore) Get(ctx context.Context, chunkID int) (string, error) {
+	s.resolved = append(s.resolved, chunkID)
+	return s.store.Get(ctx, chunkID)
+}
+
+func (s *recordingMemvidStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+	s.resolved = append(s.resolved, chunkID)
+	return memvid.Resolve(ctx, s.store, chunkID)
+}
+
+type failingMemvidWriter struct{}
+
+func (failingMemvidWriter) Put(ctx context.Context, text string, opts memvid.PutOptions) (memvid.ChunkRef, error) {
+	return memvid.ChunkRef{}, context.Canceled
+}
+
+// --- merged from kv_snapshot_restore_test.go (Track A: tests match their source file) ---
+// f32Bytes encodes float32 values as little-endian bytes — the on-disk K/V
+// slab layout that fromPinnedRawBytes pins zero-copy.
+func f32Bytes(values []float32) []byte {
+	out := make([]byte, len(values)*4)
+	for i, v := range values {
+		binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(v))
+	}
+	return out
+}
+
+// TestToMetalKVSnapshot_DualNativePlusHeads_Good asserts the zero-copy
+// passthrough fix preserves a byte-identical restore surface. For a v4 dual-
+// populated snapshot (native layer KeyBytes/ValueBytes + decoded per-head
+// float32) the metal snapshot must carry:
+//   - layer KeyBytes/ValueBytes by reference (the restorer pins these), and
+//   - the same per-head float32 values (now passed by reference, not copied).
+//
+// The restored cache is identical because the restorer reads only the layer
+// bytes, and those are unchanged by the fix.
+func TestToMetalKVSnapshot_DualNativePlusHeads_Good(t *testing.T) {
+	src := &kv.Snapshot{
+		Version:      kv.SnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1, 2},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       2,
+		HeadDim:      2,
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "float32",
+			KeyBytes:   f32Bytes([]float32{1, 2, 3, 4}),
+			KeyShape:   []int32{1, 1, 2, 2},
+			ValueDType: "float32",
+			ValueBytes: f32Bytes([]float32{5, 6, 7, 8}),
+			ValueShape: []int32{1, 1, 2, 2},
+			Heads: []kv.HeadSnapshot{{
+				Key:        []float32{1, 2, 3, 4},
+				KeyDType:   "float32",
+				Value:      []float32{5, 6, 7, 8},
+				ValueDType: "float32",
+			}},
+		}},
+	}
+
+	out := kvconv.ToMetalKVSnapshot(src)
+	if len(out.Layers) != 1 || len(out.Layers[0].Heads) != 1 {
+		t.Fatalf("kvconv.ToMetalKVSnapshot() shape = %d layers / %d heads", len(out.Layers), len(out.Layers[0].Heads))
+	}
+	layer := out.Layers[0]
+
+	// Layer native bytes must be byte-identical (passed by reference). This
+	// is what the restorer pins zero-copy, so byte-equality here is the
+	// State-continuity correctness assertion.
+	if !bytesEqual(layer.KeyBytes, src.Layers[0].KeyBytes) {
+		t.Fatalf("layer KeyBytes diverged: %v vs %v", layer.KeyBytes, src.Layers[0].KeyBytes)
+	}
+	if !bytesEqual(layer.ValueBytes, src.Layers[0].ValueBytes) {
+		t.Fatalf("layer ValueBytes diverged: %v vs %v", layer.ValueBytes, src.Layers[0].ValueBytes)
+	}
+
+	// Per-head float32 must carry the same values (now by reference).
+	head := layer.Heads[0]
+	if !float32sEqual(head.Key, src.Layers[0].Heads[0].Key) {
+		t.Fatalf("head Key diverged: %v vs %v", head.Key, src.Layers[0].Heads[0].Key)
+	}
+	if !float32sEqual(head.Value, src.Layers[0].Heads[0].Value) {
+		t.Fatalf("head Value diverged: %v vs %v", head.Value, src.Layers[0].Heads[0].Value)
+	}
+	// Head dtype derives from head.KeyBytes (absent on a decoded-heads
+	// layer), so it resolves to the zero DType — unchanged by the fix and
+	// irrelevant for native layers, where the restorer reads layer bytes.
+	if head.KeyDType != 0 || head.ValueDType != 0 {
+		t.Fatalf("head dtype = %v/%v, want zero (no head bytes)", head.KeyDType, head.ValueDType)
+	}
+
+	// The head Key must alias the source (passed by reference, not copied)
+	// — confirming the doubling is gone. Mutating the metal-side slice is
+	// observable in the source; this aliasing is SAFE because the restorer
+	// never reads heads on a native layer, and the source outlives the call.
+	head.Key[0] = 42
+	if src.Layers[0].Heads[0].Key[0] != 42 {
+		t.Fatal("native-layer head Key was copied, not passed by reference — doubling not eliminated")
+	}
+}
+
+// TestToMetalKVSnapshot_HeadsOnly_Good asserts the heads-only path (no layer
+// native bytes — e.g. a v3 snapshot) still deep-copies per-head float32 into
+// an independent slab, so a later mutation of the source does NOT corrupt the
+// metal snapshot. This is the load-bearing defensive copy on the only path
+// where heads ARE the cache data; the fix must leave it intact.
+func TestToMetalKVSnapshot_HeadsOnly_Good(t *testing.T) {
+	src := &kv.Snapshot{
+		Version:      kv.SnapshotVersion,
+		Architecture: "qwen3",
+		Tokens:       []int32{1, 2},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       2,
+		HeadDim:      2,
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:        []float32{1, 2, 3, 4},
+				KeyDType:   "float32",
+				Value:      []float32{5, 6, 7, 8},
+				ValueDType: "float32",
+			}},
+		}},
+	}
+
+	out := kvconv.ToMetalKVSnapshot(src)
+	head := out.Layers[0].Heads[0]
+	if !float32sEqual(head.Key, []float32{1, 2, 3, 4}) {
+		t.Fatalf("head Key = %v, want [1 2 3 4]", head.Key)
+	}
+
+	// Mutate the source; the heads-only path must have copied, so the metal
+	// snapshot is unaffected.
+	src.Layers[0].Heads[0].Key[0] = 99
+	if head.Key[0] != 1 {
+		t.Fatal("heads-only path aliased source key data — defensive copy lost")
+	}
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func float32sEqual(a, b []float32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// --- merged from attention_snapshot_test.go (Track A: tests match their source file) ---
+func TestAttentionSnapshotHasQueries_Good(t *testing.T) {
+	if (&AttentionSnapshot{}).HasQueries() {
+		t.Fatal("HasQueries() = true, want false for empty snapshot")
+	}
+
+	snapshot := &AttentionSnapshot{
+		Queries: [][][]float32{{{1, 2, 3}}},
+	}
+	if !snapshot.HasQueries() {
+		t.Fatal("HasQueries() = false, want true when queries are present")
+	}
+}
+
+// --- merged from backend_common_test.go (edge tidy) ---
+func TestBackendDeviceForGPULayers_Good(t *testing.T) {
+	tests := []struct {
+		name                   string
+		gpuLayers              int
+		wantDevice             string
+		wantPartialOffloadWarn bool
+	}{
+		{name: "default", gpuLayers: -1, wantDevice: "gpu"},
+		{name: "cpu_only", gpuLayers: 0, wantDevice: "cpu"},
+		{name: "partial_gpu_offload", gpuLayers: 12, wantDevice: "gpu", wantPartialOffloadWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDevice, gotWarn := backendDeviceForGPULayers(tt.gpuLayers)
+			if gotDevice != tt.wantDevice {
+				t.Fatalf("device = %q, want %q", gotDevice, tt.wantDevice)
+			}
+			if gotWarn != tt.wantPartialOffloadWarn {
+				t.Fatalf("partialOffloadUnsupported = %t, want %t", gotWarn, tt.wantPartialOffloadWarn)
+			}
+		})
+	}
+}
+
+// --- merged from backend_adapter_test.go (edge tidy) ---
+// stubTextModel embeds the TextModel interface — NewMLXBackend's tests
+// only identity-check the wrapped model, they never invoke it, so the
+// nil method set is fine and keeps the fixture one line.
+type stubTextModel struct {
+	inference.TextModel
+}
+
+type stubBackend struct {
+	model    inference.TextModel
+	loadPath string
+	loadErr  error
+}
+
+func (backend *stubBackend) Name() string { return "metal" }
+func (backend *stubBackend) Available() bool {
+	return true
+}
+func (backend *stubBackend) LoadModel(path string, _ ...inference.LoadOption) core.Result {
+	backend.loadPath = path
+	if backend.loadErr != nil {
+		return core.Fail(backend.loadErr)
+	}
+	return core.Ok(backend.model)
+}
+
+func TestNewMLXBackend_Good(t *testing.T) {
+	oldBackend, hadOldBackend := inference.Get("metal")
+	if hadOldBackend {
+		defer inference.Register(oldBackend)
+	}
+
+	model := &stubTextModel{}
+	backend := &stubBackend{model: model}
+	inference.Register(backend)
+
+	a, err := NewMLXBackend("/tmp/model-path", inference.WithContextLen(4096))
+	if err != nil {
+		t.Fatalf("NewMLXBackend() error = %v", err)
+	}
+	if a.Name() != "mlx" {
+		t.Fatalf("adapter name = %q, want %q", a.Name(), "mlx")
+	}
+	if a.Model() != model {
+		t.Fatal("adapter should expose the loaded model")
+	}
+	if backend.loadPath != "/tmp/model-path" {
+		t.Fatalf("backend load path = %q, want %q", backend.loadPath, "/tmp/model-path")
+	}
+}

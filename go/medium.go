@@ -63,7 +63,20 @@ func mediumModelRoot(modelPath string) string {
 	cleaned := cleanMediumPath(modelPath)
 	switch {
 	case core.HasSuffix(cleaned, ".gguf"), core.HasSuffix(cleaned, ".safetensors"):
-		return cleanMediumPath(core.PathDir(cleaned))
+		// core.PathDir on a slash-clean input (which `cleaned` always
+		// is — cleanMediumPath returned it) yields another slash-clean
+		// prefix with no leading/trailing whitespace. Re-running
+		// cleanMediumPath on that output is dead work: Trim has nothing
+		// to strip, and CleanPath would walk the byte array a second
+		// time only to produce the identical string. The "." → ""
+		// remap is preserved because PathDir already returns "." when
+		// the input has no separator, and we surface that via the
+		// switch on the literal "." below.
+		dir := core.PathDir(cleaned)
+		if dir == "." {
+			return ""
+		}
+		return dir
 	default:
 		return cleaned
 	}
@@ -78,19 +91,34 @@ func cleanMediumPath(p string) string {
 }
 
 func mediumRelativePath(root, target string) string {
-	if target == "" {
+	if target == "" || target == root {
 		return ""
 	}
 	if root == "" {
 		return core.TrimPrefix(target, "/")
 	}
-	// Forward-slash paths are POSIX; compute relative via filepath.Rel and
-	// convert back to slash form so callers receive consistent separators.
+	// Hot path: walkMedium feeds the visit callback with target paths
+	// built via `PathJoin(root, entry.Name())`, so >99% of callers hit
+	// `target == root + "/" + suffix` (clean POSIX, no "..", no
+	// trailing slash on root). When that prefix invariant holds we
+	// can return the suffix directly — no filepath.Rel clean+walk, no
+	// fromSlashPath/ToSlash round-trip, no Result type assertion.
+	if rl := len(root); len(target) > rl+1 && target[rl] == '/' && target[:rl] == root {
+		return target[rl+1:]
+	}
+	// Cold path — non-prefix targets or paths with ".." components.
+	// Forward-slash paths are POSIX; compute relative via filepath.Rel
+	// and convert back to slash form so callers receive consistent
+	// separators.
 	relativeResult := core.PathRel(fromSlashPath(root), fromSlashPath(target))
-	if !relativeResult.OK || relativeResult.Value.(string) == "." {
+	if !relativeResult.OK {
 		return ""
 	}
-	return core.PathToSlash(relativeResult.Value.(string))
+	rel, _ := relativeResult.Value.(string)
+	if rel == "." {
+		return ""
+	}
+	return core.PathToSlash(rel)
 }
 
 func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) error {
@@ -104,7 +132,15 @@ func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) er
 		relative := mediumRelativePath(sourceRoot, sourcePath)
 		destinationPath := destinationRoot
 		if relative != "" {
-			destinationPath = core.PathJoin(destinationRoot, fromSlashPath(relative))
+			// destinationRoot comes from MkdirTemp (no trailing
+			// separator); relative is slash-clean from
+			// mediumRelativePath; their OS-native concat is already
+			// clean, so filepath.Join's Clean step is dead work
+			// against the same invariant exploited by walkMedium's
+			// per-entry concat. Use the compile-time-constant
+			// PathSeparator so the Windows back-slash path stays
+			// correct without dispatching through filepath.Join.
+			destinationPath = destinationRoot + string(core.PathSeparator) + fromSlashPath(relative)
 		}
 		if entry.IsDir() {
 			if r := core.MkdirAll(destinationPath, 0o755); !r.OK {
@@ -121,10 +157,32 @@ func walkMedium(medium coreio.Medium, root string, visit func(string, fs.DirEntr
 	if err != nil {
 		return core.E("mlx.walkMedium", "list "+root, err)
 	}
+	// Hoist the root-empty check out of the per-entry loop so we don't
+	// re-compare the (loop-invariant) root on every directory entry.
+	// The old shape evaluated `entry.Name()` first then optionally
+	// discarded the result via the PathJoin assignment; computing the
+	// final entryPath in one branch per loop avoids that dead store.
+	//
+	// PathJoin → filepath.Join → strings.Join + filepath.Clean. On
+	// the medium.List invariant (POSIX-slash entries, single-segment
+	// names with no separator, root that we cleaned at the call-site
+	// chain into stagePathFromMedium → cleanMediumPath) the Clean is
+	// dead work — concatenating two slash-clean inputs with a single
+	// "/" yields a slash-clean output. Inlining the concat skips the
+	// per-entry function-call overhead + Clean's byte-by-byte scan;
+	// alloc count is unchanged (1 string concat = 1 alloc either way)
+	// but CPU drops by the cost of one Clean call per visited node.
+	// Windows callers, if/when they appear, would need filepath.Join
+	// for back-slash separators — but the medium surface is POSIX-
+	// only by io.Medium contract (List returns slash-rooted entries),
+	// so the OS branch was never load-bearing here.
+	hasRoot := root != ""
 	for _, entry := range entries {
-		entryPath := entry.Name()
-		if root != "" {
-			entryPath = core.PathJoin(root, entry.Name())
+		var entryPath string
+		if hasRoot {
+			entryPath = root + "/" + entry.Name()
+		} else {
+			entryPath = entry.Name()
 		}
 		if err := visit(entryPath, entry); err != nil {
 			return err
@@ -168,5 +226,12 @@ func copyMediumFile(medium coreio.Medium, sourcePath, destinationPath string) er
 }
 
 func fromSlashPath(path string) string {
+	// On POSIX (os.PathSeparator == '/') the substitution is a no-op
+	// but strings.Replace still allocates a fresh string + scan-and-copy.
+	// The const comparison collapses at build time so Windows callers
+	// pay the rewrite and Darwin/Linux pay only the branch + return.
+	if core.PathSeparator == '/' {
+		return path
+	}
 	return core.Replace(path, "/", string(core.PathSeparator))
 }

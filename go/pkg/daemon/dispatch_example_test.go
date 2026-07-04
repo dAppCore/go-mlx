@@ -2,35 +2,61 @@
 
 package daemon
 
-import core "dappco.re/go"
+import (
+	"context"
 
-// Generated runnable examples for file-aware public API coverage.
+	core "dappco.re/go"
+)
+
+// Runnable examples that invoke the public registry API with deterministic output.
+
 func ExampleNewRegistry() {
-	core.Println("NewRegistry")
-	// Output: NewRegistry
+	registry := NewRegistry("violet", "1.0")
+	resp, _ := registry.Dispatch(context.Background(), Request{Action: "info"})
+	core.Println(resp["version"])
+	// Output: 1.0
 }
 
 func ExampleDefaultRegistryForDaemon() {
-	core.Println("DefaultRegistryForDaemon")
-	// Output: DefaultRegistryForDaemon
+	registry := DefaultRegistryForDaemon()
+	resp, _ := registry.Dispatch(context.Background(), Request{Action: "info"})
+	core.Println(resp["name"])
+	// Output: violet
 }
 
 func ExampleRegistry_Register() {
-	core.Println("Registry_Register")
-	// Output: Registry_Register
+	registry := NewRegistry("violet", "test")
+	_ = registry.Register("ping", func(context.Context, Request) (Response, error) {
+		return Response{"status": "pong"}, nil
+	})
+	resp, _ := registry.Dispatch(context.Background(), Request{Action: "ping"})
+	core.Println(resp["status"])
+	// Output: pong
 }
 
 func ExampleRegistry_RegisterGenerateBackend() {
-	core.Println("Registry_RegisterGenerateBackend")
-	// Output: Registry_RegisterGenerateBackend
+	registry := NewRegistry("violet", "test")
+	_ = registry.RegisterGenerateBackend(exampleBackend{})
+	resp, _ := registry.Dispatch(context.Background(), Request{Action: "generate", Prompt: "hi"})
+	core.Println(resp["text"])
+	// Output: hello from backend
 }
 
 func ExampleRegistry_Dispatch() {
-	core.Println("Registry_Dispatch")
-	// Output: Registry_Dispatch
+	registry := NewRegistry("violet", "test")
+	resp, _ := registry.Dispatch(context.Background(), Request{Action: "embed"})
+	core.Println(resp["status"])
+	// Output: stub
 }
 
 func ExampleRegistry_Actions() {
-	core.Println("Registry_Actions")
-	// Output: Registry_Actions
+	registry := NewRegistry("violet", "test")
+	core.Println(len(registry.Actions()))
+	// Output: 4
+}
+
+type exampleBackend struct{}
+
+func (exampleBackend) Generate(context.Context, GenerateRequest) (GenerateResult, error) {
+	return GenerateResult{Text: "hello from backend"}, nil
 }

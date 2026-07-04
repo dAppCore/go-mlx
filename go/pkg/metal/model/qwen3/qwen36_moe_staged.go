@@ -1,0 +1,121 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package qwen3
+
+import (
+	"dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
+
+type qwen36MoEStagedModel struct {
+	path      string
+	config    *metal.DenseConfig
+	plan      metal.HybridAttentionCachePlan
+	tokenizer *metal.Tokenizer
+}
+
+func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoEStagedModel, error) {
+	cfg, err := metal.ParseDenseConfig(configData)
+	if err != nil {
+		return nil, core.E("qwen3_6_moe.load", "parse config", err)
+	}
+	if err := validateQwen36MoEStagedConfig(cfg); err != nil {
+		return nil, err
+	}
+	plan, err := metal.BuildHybridAttentionCachePlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0)
+	if err != nil {
+		return nil, err
+	}
+	root := metal.ResolveModelRoot(modelPath)
+	tokenizer, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	if err != nil {
+		return nil, core.E("qwen3_6_moe.load", "load tokenizer", err)
+	}
+	return &qwen36MoEStagedModel{path: root, config: cfg, plan: plan, tokenizer: tokenizer}, nil
+}
+
+func validateQwen36MoEStagedConfig(cfg *metal.DenseConfig) error {
+	if cfg == nil {
+		return core.NewError("qwen3_6_moe validation requires config")
+	}
+	if metal.NormalizeProbeModelType(cfg.ModelType) != "qwen3_6_moe" {
+		return core.NewError("qwen3_6_moe validation requires qwen3_6_moe config")
+	}
+	if !cfg.IsMoE() {
+		return core.NewError("qwen3_6_moe validation requires sparse expert metadata")
+	}
+	if cfg.HiddenSize <= 0 || cfg.NumHiddenLayers <= 0 || cfg.VocabSize <= 0 {
+		return core.NewError("qwen3_6_moe validation requires hidden size, layer count, and vocab size")
+	}
+	if cfg.NumAttentionHeads <= 0 || cfg.NumKeyValueHeads <= 0 {
+		return core.NewError("qwen3_6_moe validation requires attention and key/value head counts")
+	}
+	if cfg.NumExperts <= 0 || cfg.NumExpertsPerTok <= 0 || cfg.MoEIntermediateSize <= 0 {
+		return core.NewError("qwen3_6_moe validation requires expert count, experts-per-token, and moe intermediate size")
+	}
+	if _, err := metal.BuildHybridAttentionCachePlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *qwen36MoEStagedModel) Forward(_ *metal.Array, _ []metal.Cache) *metal.Array { return nil }
+
+func (m *qwen36MoEStagedModel) ForwardMasked(_ *metal.Array, _ *metal.Array, _ []metal.Cache) *metal.Array {
+	return nil
+}
+
+func (m *qwen36MoEStagedModel) NewCache() []metal.Cache {
+	plan, ok := m.qwen36HybridCachePlan()
+	if !ok {
+		return nil
+	}
+	return qwen36NewHybridCaches(plan)
+}
+
+func (m *qwen36MoEStagedModel) qwen36HybridCachePlan() (metal.HybridAttentionCachePlan, bool) {
+	if m.config == nil {
+		return metal.HybridAttentionCachePlan{}, false
+	}
+	if len(m.plan.Layers) == int(m.config.NumHiddenLayers) && len(m.plan.CacheIndexByLayer) == int(m.config.NumHiddenLayers) {
+		return m.plan, true
+	}
+	plan, err := metal.BuildHybridAttentionCachePlan(int(m.config.NumHiddenLayers), m.config.LayerTypes, 0)
+	if err != nil {
+		return metal.HybridAttentionCachePlan{}, false
+	}
+	m.plan = plan
+	return plan, true
+}
+
+func (m *qwen36MoEStagedModel) NumLayers() int { return int(m.config.NumHiddenLayers) }
+
+func (m *qwen36MoEStagedModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
+
+func (m *qwen36MoEStagedModel) ModelType() string { return "qwen3_6_moe" }
+
+func (m *qwen36MoEStagedModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+
+func (m *qwen36MoEStagedModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet")
+}
+
+func (m *qwen36MoEStagedModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = int(m.config.VocabSize)
+	info.HiddenSize = int(m.config.HiddenSize)
+	info.ContextLength = int(m.config.MaxPositionEmbeddings)
+	if m.config.Quantization != nil {
+		info.QuantBits = m.config.Quantization.Bits
+		info.QuantGroup = m.config.Quantization.GroupSize
+	}
+}
+
+func (m *qwen36MoEStagedModel) HybridAttentionCachePlan() (metal.HybridAttentionCachePlan, bool) {
+	plan, ok := m.qwen36HybridCachePlan()
+	if !ok {
+		return metal.HybridAttentionCachePlan{}, false
+	}
+	return plan, true
+}

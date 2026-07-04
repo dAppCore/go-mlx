@@ -5,9 +5,9 @@ description: Native Metal GPU inference and training for Go on Apple Silicon.
 
 # go-mlx
 
-`dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/inference` and an RFC-style direct root-package API.
+`dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/core/inference` and an RFC-style direct root-package API.
 
-**Platform:** darwin/arm64 only (Apple Silicon M1-M4). A stub provides `MetalAvailable() bool` returning false on all other platforms.
+**Platform:** darwin/arm64 on [macOS Tahoe 26.0+](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes) (Apple Silicon M1-M5). A stub provides `MetalAvailable() bool` returning false on all other platforms.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ import (
     "context"
     "fmt"
 
-    "dappco.re/go/inference"
+    "dappco.re/go/core/inference"
     _ "dappco.re/go/mlx" // registers "metal" backend via init()
 )
 
@@ -47,17 +47,13 @@ import (
 )
 
 model, err := mlx.LoadModel("/path/to/model/",
-    mlx.WithContextLength(262144), // opt into larger Qwen-class contexts
-    mlx.WithParallelSlots(1),      // one foreground local runner by default
+    mlx.WithContextLength(8192),
+    mlx.WithDevice("cpu"), // "gpu" or "cpu"
 )
 if err != nil {
     panic(err)
 }
 defer model.Close()
-
-if err := model.WarmPromptCache(stableSystemAndToolsPrefix); err != nil {
-    panic(err)
-}
 
 text, err := model.Generate("What is 2+2?", mlx.WithMaxTokens(64))
 if err != nil {
@@ -71,15 +67,11 @@ fmt.Println(text)
 - **Streaming inference** -- token-by-token generation via `iter.Seq[Token]` (range-over-func)
 - **Multi-turn chat** -- native chat templates for Gemma 3/4, Qwen 2/3, and Llama 3
 - **Batch inference** -- `Classify` (prefill-only) and `BatchGenerate` (autoregressive) for multiple prompts
-- **Frame compute sessions** -- non-LLM pixel-buffer pipelines with explicit per-frame lifecycle, scaling, swizzling, palette expansion, and format conversion
+- **Frame compute sessions** -- non-LLM pixel-buffer pipelines for scaling, swizzling, palette expansion, and format conversion
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
-- **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
+- **Quantisation** -- transparent support for MLX 4-bit, 6-bit, and 8-bit quantised models via `QuantizedMatmul`; Gemma 4 small-model policy is q6 default, q8 quality, q4 constrained fallback
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
-- **Restorable model state** -- capture KV, logits, token offsets, and generated-token history into reloadable sessions
-- **State bundles** -- strict JSON artifacts that bind model identity, tokenizer/chat-template metadata, prompt hash, sampler settings, LoRA identity, KV hash, SAMI/probe data, and optional memvid refs
 - **Performance metrics** -- prefill/decode tokens per second, GPU memory usage
-- **Local-runner defaults** -- GPU, 131k bounded context, one native slot, and exact token-prefix prompt cache enabled by default
-- **Non-HTTP sidecar** -- Violet serves native generation over a local Unix socket for harnesses that do not need an OpenAI-compatible HTTP layer
 
 ## Supported Models
 
@@ -98,42 +90,7 @@ Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoin
 |---------|---------|
 | Root (`mlx`) | Public API: backend registration, direct model API, memory controls, training type exports |
 | `internal/metal/` | All CGO code: array ops, model loaders, generation, training primitives |
-| `mlxlm/` | Alternative subprocess backend via Python's mlx-lm (no CGO required) |
-| `pkg/daemon/` and `cmd/violet` | Unix-socket sidecar for local native generation without HTTP |
-
-## Violet Native Route
-
-Violet is the direct local route for CoreAgent-style harnesses that already own
-tool execution and do not need an OpenAI-compatible server. Configure one or
-more model paths, run the daemon, then send one JSON frame per line over the
-Unix socket:
-
-```toml
-# violet.toml
-[models]
-default = "/path/to/mlx/model"
-```
-
-```bash
-violet --config violet.toml --socket /tmp/violet.sock
-```
-
-Prompt generation:
-
-```json
-{"action":"generate","prompt":"What is 2+2?","max_tokens":64}
-```
-
-Chat generation:
-
-```json
-{"action":"generate","messages":[{"role":"system","content":"Be direct."},{"role":"user","content":"What is 2+2?"}],"max_tokens":64}
-```
-
-The native route uses the same `mlx.LoadModel` defaults as the direct API:
-GPU execution, 131k bounded context, one active native slot, and exact
-token-prefix prompt caching. Models are loaded on first use and kept resident
-until the daemon exits.
+| `mlxlm/` | Legacy manual subprocess backend via Python's mlx-lm; not an automatic production fallback |
 
 ## Metal Memory Controls
 
@@ -181,7 +138,6 @@ Measured on M3 Ultra (60-core GPU, 96 GB unified memory):
 - [Architecture](architecture.md) -- CGO binding layer, lazy evaluation, memory model, attention, KV cache
 - [Models](models.md) -- model loading, supported architectures, tokenisation, chat templates
 - [Training](training.md) -- LoRA fine-tuning, gradient computation, AdamW optimiser, loss functions
-- [Model State Roadmap](model-state-roadmap.md) -- native session restore, state bundles, probes, training runner, model packs, memory planning, benchmarks
 - [Build Guide](build.md) -- prerequisites, CMake setup, build tags, testing
 
 ## Downstream Consumers

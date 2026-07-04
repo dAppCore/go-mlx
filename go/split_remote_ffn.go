@@ -1,0 +1,219 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"context"
+	"maps"
+	"strconv"
+
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+)
+
+// RemoteSplitFFNConfig configures an HTTP-backed FFN placement for split
+// inference. The endpoint URL receives JSON RemoteSplitFFNRequest payloads and
+// returns RemoteSplitFFNResponse payloads.
+type RemoteSplitFFNConfig struct {
+	Endpoint inference.SplitEndpoint `json:"endpoint"`
+	URL      string                  `json:"url,omitempty"`
+	Headers  map[string]string       `json:"headers,omitempty"`
+	Client   *core.HTTPClient        `json:"-"`
+}
+
+// RemoteSplitFFNRequest is the stable wire shape sent to a remote FFN
+// placement.
+type RemoteSplitFFNRequest struct {
+	EndpointID string            `json:"endpoint_id,omitempty"`
+	Layer      int               `json:"layer"`
+	Hidden     []float32         `json:"hidden,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+}
+
+// RemoteSplitFFNResponse is the stable wire shape returned by a remote FFN
+// placement.
+type RemoteSplitFFNResponse struct {
+	Hidden []float32 `json:"hidden,omitempty"`
+	Error  string    `json:"error,omitempty"`
+}
+
+// RemoteSplitFFNExecutor calls a remote HTTP endpoint for omitted FFN layers.
+type RemoteSplitFFNExecutor struct {
+	endpoint inference.SplitEndpoint
+	url      string
+	// userHeader holds caller-supplied request headers in the
+	// already-canonicalised http.Header (= map[string][]string) shape
+	// ForwardFFN splats into each new request. Canonical keys + shared
+	// 1-element value slices are produced once at construction via
+	// Header.Set, so per-call cost is a direct map-index assignment
+	// per entry — no textproto.CanonicalMIMEHeaderKey, no fresh
+	// []string{value} backing slice. nil when the caller provided no
+	// headers, which lets ForwardFFN skip the range loop entirely on
+	// the bare-endpoint deployment shape.
+	userHeader core.Header
+	client     *core.HTTPClient
+}
+
+// jsonContentTypeValues is the shared 1-element header value slice
+// reused across every ForwardFFN request — net/http.Header treats the
+// []string as the canonical value vector, so a single immutable
+// package-level allocation services every Accept + Content-Type
+// header write without ever materialising a fresh slice.
+var jsonContentTypeValues = []string{"application/json"}
+
+// Sentinel errors for the remote FFN executor hot paths. Built once at
+// package init instead of per-call so the steady-state ForwardFFN cost
+// excludes the core.NewError allocation triplet (errors.New + struct +
+// interface header) for each guard the call cannot avoid checking.
+var (
+	errRemoteSplitFFNExecutorNil = core.NewError("mlx: remote split FFN executor is nil")
+	errRemoteSplitFFNBodyShape   = core.NewError("mlx: remote split FFN response body shape is invalid")
+	errRemoteSplitFFNEmptyHidden = core.NewError("mlx: remote split FFN endpoint returned empty hidden state")
+)
+
+// NewRemoteSplitFFNExecutor creates a network-backed SplitFFNExecutor.
+func NewRemoteSplitFFNExecutor(cfg RemoteSplitFFNConfig) (*RemoteSplitFFNExecutor, error) {
+	url := core.Trim(firstNonEmpty(cfg.URL, cfg.Endpoint.URL))
+	if url == "" {
+		return nil, core.NewError("mlx: remote split FFN endpoint URL is required")
+	}
+	if cfg.Endpoint.Role != "" && cfg.Endpoint.Role != inference.SplitEndpointRoleFFN {
+		return nil, core.NewError("mlx: remote split FFN endpoint role must be ffn")
+	}
+	client := cfg.Client
+	if client == nil {
+		client = &core.HTTPClient{}
+	}
+	// Canonicalise caller-supplied headers once at construction so
+	// ForwardFFN can splat them directly via map-index assignment
+	// instead of paying textproto.CanonicalMIMEHeaderKey + a fresh
+	// []string{value} backing slice per Header.Set on every request.
+	// Leave userHeader nil when the caller provided no extra headers
+	// — ForwardFFN can then short-circuit the range loop entirely
+	// for the bare-endpoint deployment shape.
+	var userHeader core.Header
+	if len(cfg.Headers) > 0 {
+		userHeader = make(core.Header, len(cfg.Headers))
+		for k, v := range cfg.Headers {
+			userHeader.Set(k, v)
+		}
+	}
+	return &RemoteSplitFFNExecutor{
+		endpoint:   cfg.Endpoint,
+		url:        url,
+		userHeader: userHeader,
+		client:     client,
+	}, nil
+}
+
+// ForwardFFN sends one FFN layer request to the configured remote endpoint.
+func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFFNRequest) (SplitFFNResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SplitFFNResult{}, err
+	}
+	if executor == nil {
+		return SplitFFNResult{}, errRemoteSplitFFNExecutorNil
+	}
+	// NewRemoteSplitFFNExecutor already trims + validates the URL and
+	// stores the trimmed form on the receiver. Re-running core.Trim on
+	// every ForwardFFN call walked the URL string each invocation for
+	// a guarantee the constructor had already proven; drop the loop.
+	payload := RemoteSplitFFNRequest{
+		EndpointID: executor.endpoint.ID,
+		Layer:      req.Layer,
+		// cloneSplitHidden on req.Hidden was a defensive copy before
+		// handing the slice to JSONMarshal. JSONMarshal only reads
+		// from the slice and never mutates or retains references,
+		// payload itself is a local stack value, so the clone served
+		// no contract — drop it and let the marshaller iterate the
+		// caller's slice directly. Saves one alloc + N float32 worth
+		// of bytes per call.
+		Hidden: req.Hidden,
+		// Same reasoning for Labels: the marshaller iterates the map
+		// read-only, payload is stack-local, the constructor already
+		// snapshotted endpoint.Labels into the receiver. Aliasing the
+		// receiver's stable map saves one cloneStringMap call per
+		// ForwardFFN invocation (2 allocs / sizeof map entries).
+		Labels: executor.endpoint.Labels,
+	}
+	encoded := core.JSONMarshal(payload)
+	if !encoded.OK {
+		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "marshal request", modelSliceResultError(encoded))
+	}
+	// core.NewBufferReader → bytes.Reader directly over the JSON bytes
+	// avoids the []byte → string copy the prior core.NewReader path forced.
+	// JSONMarshal already owns a fresh []byte, so handing it straight to
+	// the request body costs one fewer allocation per ForwardFFN call.
+	httpReqResult := core.NewHTTPRequestContext(ctx, "POST", executor.url, core.NewBufferReader(encoded.Value.([]byte)))
+	if !httpReqResult.OK {
+		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "build request", modelSliceResultError(httpReqResult))
+	}
+	httpReq := httpReqResult.Value.(*core.Request)
+	// httpReq.Header was just constructed empty by NewRequestWithContext
+	// (make(Header) with no entries). Splat the always-on Accept +
+	// Content-Type pair directly via map-index assignment against the
+	// shared package-singleton jsonContentTypeValues slice — both
+	// keys are already canonical so net/http's textproto.CanonicalMIME
+	// HeaderKey can be skipped, and the value slice never escapes /
+	// is never mutated by the transport so the singleton is safe to
+	// share. The previous Header.Set path went through canonicalisation
+	// per call and allocated a fresh []string{value} backing slice per
+	// Set; the direct assignment drops both costs.
+	httpReq.Header["Accept"] = jsonContentTypeValues
+	httpReq.Header["Content-Type"] = jsonContentTypeValues
+	// User headers were canonicalised once at construction and stored
+	// in the shared canonical form, so the per-call cost is a direct
+	// map copy per entry. nil userHeader skips the iteration entirely.
+	maps.Copy(httpReq.Header, executor.userHeader)
+	resp, err := executor.client.Do(httpReq)
+	if err != nil {
+		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "post request", err)
+	}
+	defer resp.Body.Close()
+	read := core.ReadAll(resp.Body)
+	if !read.OK {
+		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "read response", modelSliceResultError(read))
+	}
+	body, ok := read.Value.(string)
+	if !ok {
+		return SplitFFNResult{}, errRemoteSplitFFNBodyShape
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// core.Sprintf("%d: %s", ...) routed through fmt's reflection-driven
+		// formatter — strconv.Itoa is direct ascii conversion with zero
+		// reflection; core.Concat fuses the parts without a fmt.State.
+		return SplitFFNResult{}, core.NewError(core.Concat("mlx: remote split FFN endpoint returned ", strconv.Itoa(resp.StatusCode), ": ", core.Trim(body)))
+	}
+	var remote RemoteSplitFFNResponse
+	// core.ReadAll handed us a string built from a fresh []byte buffer the
+	// HTTP transport owns alone; core.AsBytes returns the same backing
+	// array without copying. JSONUnmarshal does not retain references past
+	// the call (it consumes tokens into target fields), so the read-only
+	// alias is safe here. Saves one alloc the size of the response body
+	// on every successful ForwardFFN call.
+	if result := core.JSONUnmarshal(core.AsBytes(body), &remote); !result.OK {
+		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "parse response", modelSliceResultError(result))
+	}
+	if remote.Error != "" {
+		// "fixed prefix" + remote.Error compiled to runtime.concatstring2
+		// — runtime allocates a fresh backing buffer and copies both halves
+		// each time. core.Concat pre-sizes a strings.Builder exactly,
+		// folding both writes into a single Grow + WriteString sequence
+		// and producing one allocation total instead of one for the
+		// intermediate concat plus one for the error string.
+		return SplitFFNResult{}, core.NewError(core.Concat("mlx: remote split FFN endpoint error: ", remote.Error))
+	}
+	if len(remote.Hidden) == 0 {
+		return SplitFFNResult{}, errRemoteSplitFFNEmptyHidden
+	}
+	// remote.Hidden was allocated fresh by JSONUnmarshal into the
+	// stack-local remote value just above; no other code holds a
+	// reference to that backing array. The previous cloneSplitHidden
+	// produced a second copy purely for paranoia. Returning the
+	// unmarshalled slice directly transfers ownership and saves the
+	// per-response copy of N float32s plus the slice-header alloc.
+	return SplitFFNResult{Hidden: remote.Hidden}, nil
+}

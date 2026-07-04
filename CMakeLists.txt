@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.24)
 project(mlx)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/CompilerCache.cmake)
 
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/dist" CACHE PATH "" FORCE)
@@ -11,13 +16,14 @@ endif()
 set(MLX_BUILD_GGUF ON CACHE BOOL "" FORCE)
 set(MLX_BUILD_SAFETENSORS ON CACHE BOOL "" FORCE)
 set(MLX_C_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 set(CMAKE_INSTALL_RPATH "@loader_path")
 
 include(FetchContent)
 
-set(MLX_C_GIT_TAG "v0.4.1" CACHE STRING "")
+set(MLX_C_GIT_TAG "fba4470" CACHE STRING "") # mlx-c main: bindings regenerated for MLX 0.31.2 (v0.6.0 predates the 0.31.2 FFT API)
+set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 
 FetchContent_Declare(
   mlx-c

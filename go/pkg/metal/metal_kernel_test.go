@@ -1,0 +1,515 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"math"
+	"testing"
+)
+
+// --- Good: correct usage ---
+
+func TestMetalKernel_ExpElementwise_Good(t *testing.T) {
+	// Custom Metal kernel that computes exp(x) element-wise, matching the C example.
+	source := `uint elem = thread_position_in_grid.x;
+T tmp = inp[elem];
+out[elem] = metal::exp(tmp);`
+
+	kernel := NewMetalKernel("test_exp", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{0, 1, 2, 3}, 4)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.AddTemplateDType("T", DTypeFloat32)
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(results))
+	}
+
+	Materialize(results[0])
+	got := results[0].Floats()
+	want := []float64{math.Exp(0), math.Exp(1), math.Exp(2), math.Exp(3)}
+
+	if len(got) != len(want) {
+		t.Fatalf("length mismatch: got %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if math.Abs(float64(got[i])-want[i]) > 1e-3 {
+			t.Errorf("exp[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMetalKernel_AddKernel_Good(t *testing.T) {
+	// Custom kernel that adds two arrays element-wise.
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = a[elem] + b[elem];`
+
+	kernel := NewMetalKernel("test_add", []string{"a", "b"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	a := FromValues([]float32{1, 2, 3, 4}, 4)
+	b := FromValues([]float32{10, 20, 30, 40}, 4)
+	Materialize(a, b)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(a.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(a.Shape(), a.Dtype())
+
+	results, err := kernel.Apply(cfg, a, b)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	Materialize(results[0])
+	got := results[0].Floats()
+	want := []float32{11, 22, 33, 44}
+
+	for i := range got {
+		if math.Abs(float64(got[i])-float64(want[i])) > 1e-5 {
+			t.Errorf("add[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMetalKernel_2DShape_Good(t *testing.T) {
+	// Verify output shape is preserved for multi-dimensional arrays.
+	source := `uint elem = thread_position_in_grid.x;
+T tmp = inp[elem];
+out[elem] = tmp * tmp;`
+
+	kernel := NewMetalKernel("test_square", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.AddTemplateDType("T", DTypeFloat32)
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	Materialize(results[0])
+	shape := results[0].Shape()
+	if shape[0] != 2 || shape[1] != 3 {
+		t.Errorf("shape = %v, want [2 3]", shape)
+	}
+
+	got := results[0].Floats()
+	want := []float32{1, 4, 9, 16, 25, 36}
+	for i := range got {
+		if math.Abs(float64(got[i])-float64(want[i])) > 1e-3 {
+			t.Errorf("square[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMetalKernel_ConfigReuse_Good(t *testing.T) {
+	// Config can be reused across multiple Apply calls.
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = inp[elem] + inp[elem];`
+
+	kernel := NewMetalKernel("test_double", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(4, 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg([]int32{4}, DTypeFloat32)
+
+	for round := range 3 {
+		input := FromValues([]float32{float32(round), float32(round + 1), float32(round + 2), float32(round + 3)}, 4)
+		Materialize(input)
+
+		results, err := kernel.Apply(cfg, input)
+		if err != nil {
+			t.Fatalf("round %d: Apply failed: %v", round, err)
+		}
+		Materialize(results[0])
+		got := results[0].Floats()
+		for i, v := range got {
+			want := float32(round+i) * 2
+			if math.Abs(float64(v)-float64(want)) > 1e-5 {
+				t.Errorf("round %d [%d] = %f, want %f", round, i, v, want)
+			}
+		}
+	}
+}
+
+// --- Bad: invalid or error-producing usage ---
+
+func TestMetalKernel_NilConfig_Bad(t *testing.T) {
+	// Applying with a freed config should produce an error, not a panic.
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = inp[elem];`
+
+	kernel := NewMetalKernel("test_nil_cfg", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	cfg := NewMetalKernelConfig()
+	cfg.Free() // free before use
+
+	input := FromValues([]float32{1, 2, 3, 4}, 4)
+	Materialize(input)
+
+	_, err := kernel.Apply(cfg, input)
+	if err == nil {
+		t.Log("Apply with freed config did not error — MLX-C may tolerate nil config")
+	}
+}
+
+func TestMetalKernel_EmptySource_Bad(t *testing.T) {
+	// Empty source string should either error on apply or produce no useful output.
+	kernel := NewMetalKernel("test_empty", []string{"inp"}, []string{"out"}, "", "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1, 2}, 2)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	_, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Logf("expected error from empty source: %v", err)
+	}
+}
+
+func TestMetalKernel_DoubleFree_Bad(t *testing.T) {
+	// Double-free on kernel and config should not panic.
+	kernel := NewMetalKernel("test_dbl_free", []string{"inp"}, []string{"out"},
+		"uint i = thread_position_in_grid.x; out[i] = inp[i];", "", true, false)
+	kernel.Free()
+	kernel.Free() // second free is a no-op
+
+	cfg := NewMetalKernelConfig()
+	cfg.Free()
+	cfg.Free() // second free is a no-op
+}
+
+// --- Ugly: edge cases and boundary conditions ---
+
+func TestMetalKernel_SingleElement_Ugly(t *testing.T) {
+	// Kernel operating on a single element.
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = inp[elem] * 42.0f;`
+
+	kernel := NewMetalKernel("test_single", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1.0}, 1)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(1, 1, 1)
+	cfg.SetThreadGroup(1, 1, 1)
+	cfg.AddOutputArg([]int32{1}, DTypeFloat32)
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	Materialize(results[0])
+	got := results[0].Floats()
+	if len(got) != 1 || math.Abs(float64(got[0])-42.0) > 1e-3 {
+		t.Errorf("single element = %v, want [42.0]", got)
+	}
+}
+
+func TestMetalKernel_LargeArray_Ugly(t *testing.T) {
+	// Kernel operating on a large array to verify grid/threadgroup scaling.
+	n := 100000
+	data := make([]float32, n)
+	for i := range data {
+		data[i] = float32(i)
+	}
+
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = inp[elem] + 1.0f;`
+
+	kernel := NewMetalKernel("test_large", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues(data, n)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(n, 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg([]int32{int32(n)}, DTypeFloat32)
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	Materialize(results[0])
+	got := results[0].Floats()
+	if len(got) != n {
+		t.Fatalf("expected %d elements, got %d", n, len(got))
+	}
+
+	// Spot-check a few values
+	for _, idx := range []int{0, 1, 100, 1000, n - 1} {
+		want := float32(idx) + 1.0
+		if math.Abs(float64(got[idx])-float64(want)) > 1e-3 {
+			t.Errorf("[%d] = %f, want %f", idx, got[idx], want)
+		}
+	}
+}
+
+func TestMetalKernel_InitValue_Ugly(t *testing.T) {
+	// Test SetInitValue — output should start at the init value,
+	// and kernel writes only to specific positions.
+	source := `uint elem = thread_position_in_grid.x;
+if (elem == 0) { out[elem] = 99.0f; }`
+
+	kernel := NewMetalKernel("test_init", []string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{0, 0, 0, 0}, 4)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.SetInitValue(-1.0)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	Materialize(results[0])
+	got := results[0].Floats()
+	// Element 0 is written to 99.0, others should be init value -1.0
+	if math.Abs(float64(got[0])-99.0) > 1e-3 {
+		t.Errorf("[0] = %f, want 99.0", got[0])
+	}
+	for i := 1; i < len(got); i++ {
+		if math.Abs(float64(got[i])-(-1.0)) > 1e-3 {
+			t.Errorf("[%d] = %f, want -1.0 (init value)", i, got[i])
+		}
+	}
+}
+
+// TestMetalKernel_ApplyOne_Parity_Good verifies the ApplyOne fast path returns
+// bit-identical results to Apply for a single-output kernel — guards against
+// the inline-C apply_one wrapper diverging from the apply + size + get triple.
+func TestMetalKernel_ApplyOne_Parity_Good(t *testing.T) {
+	// Kernel matching the AddKernel test — two inputs, one output.
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = a[elem] + b[elem];`
+
+	kernel := NewMetalKernel("test_apply_one_parity", []string{"a", "b"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6, 7, 8}, 8)
+	b := FromValues([]float32{10, 20, 30, 40, 50, 60, 70, 80}, 8)
+	defer Free(a, b)
+	Materialize(a, b)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(a.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(a.Shape(), a.Dtype())
+
+	// Apply path.
+	results, err := kernel.Apply(cfg, a, b)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	defer Free(results...)
+	Materialize(results[0])
+	applyOut := results[0].Floats()
+
+	// ApplyOne path — independent cfg required because the C kernel
+	// config stores the output-arg list and cannot be reused safely.
+	cfg2 := NewMetalKernelConfig()
+	defer cfg2.Free()
+	cfg2.SetGrid(a.Size(), 1, 1)
+	cfg2.SetThreadGroup(256, 1, 1)
+	cfg2.AddOutputArg(a.Shape(), a.Dtype())
+
+	out, err := kernel.ApplyOne(cfg2, a, b)
+	if err != nil {
+		t.Fatalf("ApplyOne failed: %v", err)
+	}
+	defer Free(out)
+	Materialize(out)
+	applyOneOut := out.Floats()
+
+	if len(applyOneOut) != len(applyOut) {
+		t.Fatalf("length mismatch: ApplyOne=%d, Apply=%d", len(applyOneOut), len(applyOut))
+	}
+	for i := range applyOneOut {
+		// Bit-exact: same kernel, same inputs, same dispatch path under the hood.
+		if applyOneOut[i] != applyOut[i] {
+			t.Errorf("[%d] ApplyOne=%g Apply=%g (bit-exact mismatch)", i, applyOneOut[i], applyOut[i])
+		}
+	}
+}
+
+// TestMetalKernel_DispatchOne_Parity_Good verifies the DispatchOne fast path
+// returns bit-identical results to the ApplyOne+cfg sequence for a
+// single-output kernel.  Guards against the inline-C dispatch_one wrapper
+// diverging from the cfg-driven dispatch sequence (config_new + set_grid +
+// set_thread_group + add_output_arg + apply + config_free).
+func TestMetalKernel_DispatchOne_Parity_Good(t *testing.T) {
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = a[elem] + b[elem];`
+
+	kernel := NewMetalKernel("test_dispatch_one_parity", []string{"a", "b"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6, 7, 8}, 8)
+	b := FromValues([]float32{10, 20, 30, 40, 50, 60, 70, 80}, 8)
+	defer Free(a, b)
+	Materialize(a, b)
+
+	// ApplyOne path (the previous-best dispatch).
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(a.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(a.Shape(), a.Dtype())
+
+	prev, err := kernel.ApplyOne(cfg, a, b)
+	if err != nil {
+		t.Fatalf("ApplyOne failed: %v", err)
+	}
+	defer Free(prev)
+	Materialize(prev)
+	applyOneOut := prev.Floats()
+
+	// DispatchOne path — no cfg ceremony, all C-side.
+	out, err := kernel.DispatchOne(MetalKernelGrid{GridX: a.Size(), GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		a.Shape(), a.Dtype(), a, b)
+	if err != nil {
+		t.Fatalf("DispatchOne failed: %v", err)
+	}
+	defer Free(out)
+	Materialize(out)
+	dispatchOneOut := out.Floats()
+
+	if len(dispatchOneOut) != len(applyOneOut) {
+		t.Fatalf("length mismatch: DispatchOne=%d, ApplyOne=%d", len(dispatchOneOut), len(applyOneOut))
+	}
+	for i := range dispatchOneOut {
+		if dispatchOneOut[i] != applyOneOut[i] {
+			t.Errorf("[%d] DispatchOne=%g ApplyOne=%g (bit-exact mismatch)", i, dispatchOneOut[i], applyOneOut[i])
+		}
+	}
+}
+
+// TestMetalKernel_ApplyOne_MultiOutput_Bad confirms ApplyOne rejects kernels
+// that emit more than one output rather than silently dropping the rest.
+func TestMetalKernel_ApplyOne_MultiOutput_Bad(t *testing.T) {
+	source := `uint elem = thread_position_in_grid.x;
+out1[elem] = inp[elem] + 1.0;
+out2[elem] = inp[elem] + 2.0;`
+
+	kernel := NewMetalKernel("test_apply_one_multi", []string{"inp"}, []string{"out1", "out2"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1, 2, 3, 4}, 4)
+	defer Free(input)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	out, err := kernel.ApplyOne(cfg, input)
+	if err == nil {
+		Free(out)
+		t.Fatalf("expected ApplyOne to reject 2-output kernel, got success")
+	}
+	if out != nil {
+		t.Errorf("expected nil output on rejection, got %v", out)
+	}
+}
+
+// TestMetalKernel_IntBoolTemplates_Good: int and bool template arguments become
+// MSL compile-time constants in the kernel body. A kernel scaling by an int
+// SCALE and conditionally doubling on a bool DOUBLE proves both template setters
+// feed the shader; SetVerbose toggles compile logging without changing output.
+func TestMetalKernel_IntBoolTemplates_Good(t *testing.T) {
+	// SCALE and DOUBLE are template parameters supplied via AddTemplateInt /
+	// AddTemplateBool; the generated kernel sees them as constants.
+	source := `uint elem = thread_position_in_grid.x;
+T tmp = inp[elem];
+out[elem] = tmp * T(SCALE) * (DOUBLE ? T(2) : T(1));`
+
+	kernel := NewMetalKernel("test_int_bool_tmpl",
+		[]string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1, 2, 3, 4}, 4)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.AddTemplateDType("T", DTypeFloat32)
+	cfg.AddTemplateInt("SCALE", 3)
+	cfg.AddTemplateBool("DOUBLE", true)
+	cfg.SetVerbose(false) // exercises the verbose setter; false keeps output quiet
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply with int/bool templates failed: %v", err)
+	}
+	Materialize(results[0])
+	got := results[0].Floats()
+	// tmp * 3 * 2 → 6x.
+	want := []float32{6, 12, 18, 24}
+	if len(got) != len(want) {
+		t.Fatalf("got %d outputs, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if math.Abs(float64(got[i])-float64(want[i])) > 1e-3 {
+			t.Errorf("scaled[%d] = %f, want %f (SCALE=3, DOUBLE=true)", i, got[i], want[i])
+		}
+	}
+	Free(results[0])
+}

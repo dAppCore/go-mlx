@@ -1,0 +1,1135 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"testing"
+)
+
+// makeKV creates a small K/V pair with shape [B=1, H=2, L=seqLen, D=4].
+func makeKV(seqLen int) (*Array, *Array) {
+	size := 1 * 2 * seqLen * 4
+	data := make([]float32, size)
+	for i := range data {
+		data[i] = float32(i) * 0.1
+	}
+	k := FromValues(data, 1, 2, seqLen, 4)
+	v := FromValues(data, 1, 2, seqLen, 4)
+	return k, v
+}
+
+func makeSingleTokenKV(value float32) (*Array, *Array) {
+	data := make([]float32, 1*2*1*4)
+	for i := range data {
+		data[i] = value + float32(i)*0.01
+	}
+	k := FromValues(data, 1, 2, 1, 4)
+	v := FromValues(data, 1, 2, 1, 4)
+	return k, v
+}
+
+// --- KVCache ---
+
+func TestKVCache_New_Good(t *testing.T) {
+	c := NewKVCache()
+	if c.Offset() != 0 {
+		t.Errorf("offset = %d, want 0", c.Offset())
+	}
+	if c.Len() != 0 {
+		t.Errorf("len = %d, want 0", c.Len())
+	}
+	if c.State() != nil {
+		t.Error("state should be nil for empty cache")
+	}
+}
+
+func TestKVCache_SingleUpdate_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(3) // 3 tokens
+
+	outK, outV := c.Update(k, v, 3)
+	Materialize(outK, outV)
+
+	if c.Offset() != 3 {
+		t.Errorf("offset = %d, want 3", c.Offset())
+	}
+	if c.Len() != 3 {
+		t.Errorf("len = %d, want 3", c.Len())
+	}
+
+	// Output K should have shape [1, 2, 3, 4]
+	shape := outK.Shape()
+	if shape[0] != 1 || shape[1] != 2 || shape[2] != 3 || shape[3] != 4 {
+		t.Errorf("outK shape = %v, want [1 2 3 4]", shape)
+	}
+}
+
+func TestKVCache_MultipleUpdates_Good(t *testing.T) {
+	c := NewKVCache()
+
+	// Prompt: 5 tokens
+	k1, v1 := makeKV(5)
+	outK, outV := c.Update(k1, v1, 5)
+	Materialize(outK, outV)
+
+	if c.Offset() != 5 {
+		t.Errorf("offset = %d, want 5", c.Offset())
+	}
+
+	// Generate: 1 token at a time
+	k2, v2 := makeKV(1)
+	outK, outV = c.Update(k2, v2, 1)
+	Materialize(outK, outV)
+
+	if c.Offset() != 6 {
+		t.Errorf("offset = %d, want 6", c.Offset())
+	}
+
+	shape := outK.Shape()
+	if shape[2] != 6 {
+		t.Errorf("outK L dim = %d, want 6", shape[2])
+	}
+}
+
+func TestKVCache_Reset_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(3)
+	c.Update(k, v, 3)
+
+	c.Reset()
+
+	if c.Offset() != 0 {
+		t.Errorf("offset after reset = %d, want 0", c.Offset())
+	}
+	if c.State() != nil {
+		t.Error("state should be nil after reset")
+	}
+}
+
+func TestQuantizedKVCache_StoresInt8AndReadsDequantized_Good(t *testing.T) {
+	c := NewQuantizedKVCache(4, 8, 8)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 2)
+	defer Free(outK, outV)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Eval quantized output: %v", err)
+	}
+	defer c.Reset()
+
+	state := c.State()
+	if len(state) != 4 {
+		t.Fatalf("State len = %d, want q K/V plus scales", len(state))
+	}
+	if state[0].Dtype() != DTypeInt8 || state[1].Dtype() != DTypeInt8 {
+		t.Fatalf("stored dtypes = %v/%v, want int8/int8", state[0].Dtype(), state[1].Dtype())
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Dtype() != DTypeFloat32 || read[1].Dtype() != DTypeFloat32 {
+		t.Fatalf("read state = %+v, want dequantized float K/V", read)
+	}
+	if read[0].Shape()[2] != 2 {
+		t.Fatalf("read K shape = %v, want seq len 2", read[0].Shape())
+	}
+}
+
+func TestQuantizedKVCache_AsymmetricStoresPackedVQ4_Good(t *testing.T) {
+	c := NewQuantizedKVCache(4, 8, 4)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 2)
+	defer Free(outK, outV)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Eval asymmetric quantized output: %v", err)
+	}
+	defer c.Reset()
+
+	state := c.State()
+	if len(state) != 4 {
+		t.Fatalf("State len = %d, want packed K/V plus scales", len(state))
+	}
+	if state[0].Dtype() != DTypeInt8 {
+		t.Fatalf("stored K dtype = %v, want int8", state[0].Dtype())
+	}
+	if state[1].Dtype() != DTypeUint8 {
+		t.Fatalf("stored V dtype = %v, want packed uint8 q4", state[1].Dtype())
+	}
+	if shape := state[1].Shape(); len(shape) != 1 || shape[0] != 8 {
+		t.Fatalf("stored V shape = %v, want 8 packed q4 bytes", shape)
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[1].Shape()[2] != 2 {
+		t.Fatalf("read state = %+v, want dequantized V length 2", read)
+	}
+}
+
+func TestPagedKVCache_TrimsStorageButReturnsFullPrompt_Good(t *testing.T) {
+	c := NewPagedKVCache(2, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 4)
+	defer Free(outK, outV)
+	if outK.Shape()[2] != 4 || outV.Shape()[2] != 4 {
+		t.Fatalf("output shape = %v/%v, want full prompt length 4", outK.Shape(), outV.Shape())
+	}
+	if c.Len() != 2 || c.Offset() != 4 {
+		t.Fatalf("len/offset = %d/%d, want 2/4", c.Len(), c.Offset())
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 2 {
+		t.Fatalf("stored read shape = %+v, want trimmed length 2", read)
+	}
+	c.Reset()
+	if c.State() != nil {
+		t.Fatal("State after Reset = non-nil, want nil")
+	}
+}
+
+func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
+	c := NewPagedKVCache(4, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+
+	state := c.UpdatePages(k, v, 4)
+	defer state.Free()
+
+	if state.Length != 4 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("page state = len %d K pages %d V pages %d, want 4/2/2", state.Length, len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0].Shape()[2] != 2 || state.Keys[1].Shape()[2] != 2 {
+		t.Fatalf("page shapes = %v/%v, want two 2-token pages", state.Keys[0].Shape(), state.Keys[1].Shape())
+	}
+
+	k1, v1 := makeSingleTokenKV(9)
+	defer Free(k1, v1)
+	next := c.UpdatePages(k1, v1, 1)
+	defer next.Free()
+
+	if c.Len() != 4 || c.Offset() != 5 {
+		t.Fatalf("len/offset = %d/%d, want 4/5 after paged trim", c.Len(), c.Offset())
+	}
+	if len(next.Keys) != 3 {
+		t.Fatalf("trimmed page count = %d, want 3 partial/full/new pages without full concat", len(next.Keys))
+	}
+	if next.Keys[0].Shape()[2] != 1 || next.Keys[1].Shape()[2] != 2 || next.Keys[2].Shape()[2] != 1 {
+		t.Fatalf("trimmed page shapes = %v/%v/%v, want [1,2,1]", next.Keys[0].Shape(), next.Keys[1].Shape(), next.Keys[2].Shape())
+	}
+}
+
+func TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good(t *testing.T) {
+	c := NewPagedKVCache(0, 2)
+	k, v := makeSingleTokenKV(1)
+	defer Free(k, v)
+
+	state := c.UpdateBorrowedPages(k, v, 1)
+	state.Free()
+	dirty := c.AppendDirtyState(nil)
+	if len(dirty) != 2 || dirty[0] != c.kPages[0] || dirty[1] != c.vPages[0] {
+		t.Fatalf("dirty state after first append = %+v, want first page K/V only", dirty)
+	}
+
+	nextK, nextV := makeSingleTokenKV(2)
+	defer Free(nextK, nextV)
+	nextState := c.UpdateBorrowedPages(nextK, nextV, 1)
+	nextState.Free()
+	dirty = c.AppendDirtyState(dirty[:0])
+	if len(dirty) != 2 || dirty[0] != c.kPages[0] || dirty[1] != c.vPages[0] {
+		t.Fatalf("dirty state after same-page append = %+v, want updated first page K/V only", dirty)
+	}
+	if len(c.State()) != 2 {
+		t.Fatalf("full state length = %d, want one K/V page pair", len(c.State()))
+	}
+
+	newPageK, newPageV := makeSingleTokenKV(3)
+	defer Free(newPageK, newPageV)
+	newPageState := c.UpdateBorrowedPages(newPageK, newPageV, 1)
+	newPageState.Free()
+	dirty = c.AppendDirtyState(dirty[:0])
+	if len(c.kPages) != 2 || len(dirty) != 2 || dirty[0] != c.kPages[1] || dirty[1] != c.vPages[1] {
+		t.Fatalf("dirty state after new page = %+v, pages=%d, want newest page K/V only", dirty, len(c.kPages))
+	}
+	if len(c.State()) != 4 {
+		t.Fatalf("full state length = %d, want two K/V page pairs", len(c.State()))
+	}
+}
+
+func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
+	c := NewPagedKVCache(4, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdateBorrowedPages(k, v, 4)
+	defer state.Free()
+	cacheState := c.State()
+
+	if state.Length != 4 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("page state = len %d K pages %d V pages %d, want 4/2/2", state.Length, len(state.Keys), len(state.Values))
+	}
+	if len(state.Owned) != 0 {
+		t.Fatalf("borrowed state owned arrays = %d, want zero for full physical pages", len(state.Owned))
+	}
+	if len(cacheState) != 4 || state.Keys[0] != cacheState[0] || state.Keys[1] != cacheState[1] {
+		t.Fatal("borrowed state did not return cache-owned full K pages")
+	}
+	if state.Values[0] != cacheState[2] || state.Values[1] != cacheState[3] {
+		t.Fatal("borrowed state did not return cache-owned full V pages")
+	}
+}
+
+func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing.T) {
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
+	k, v := makeKV(2)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdateBorrowedPages(k, v, 2)
+	defer state.Free()
+	cacheState := c.State()
+
+	if len(cacheState) != 2 || cacheState[0].Shape()[2] != 4 || cacheState[1].Shape()[2] != 4 {
+		t.Fatalf("backing page state = %+v, want full preallocated K/V pages", cacheState)
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 || state.Keys[0].Shape()[2] != 2 || state.Values[0].Shape()[2] != 2 {
+		t.Fatalf("borrowed visible pages = %+v/%+v, want 2-token K/V slices", state.Keys, state.Values)
+	}
+	if len(state.Owned) != 2 {
+		t.Fatalf("borrowed state owned arrays = %d, want K/V visible slices", len(state.Owned))
+	}
+	if state.Keys[0] == cacheState[0] || state.Values[0] == cacheState[1] {
+		t.Fatal("partial preallocated state returned backing pages directly")
+	}
+}
+
+func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	state := c.UpdatePages(k, v, 2)
+	state.Free()
+	k1, v1 := makeSingleTokenKV(9)
+	defer Free(k1, v1)
+	next := c.UpdatePages(k1, v1, 1)
+	defer next.Free()
+	defer c.Reset()
+
+	if len(c.State()) != 2 || c.State()[0].Shape()[2] != 4 {
+		t.Fatalf("backing page shape = %+v, want preallocated page length 4", c.State())
+	}
+	if len(next.Keys) != 1 || next.Keys[0].Shape()[2] != 3 {
+		t.Fatalf("visible page shape = %+v, want one 3-token page", next.Keys)
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 3 || read[1].Shape()[2] != 3 {
+		t.Fatalf("read state = %+v, want visible length 3", read)
+	}
+}
+
+func TestPagedKVCache_PreallocConstructor_Good(t *testing.T) {
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
+	k, v := makeKV(2)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdatePages(k, v, 2)
+	defer state.Free()
+	cacheState := c.State()
+
+	if len(cacheState) != 2 || cacheState[0].Shape()[2] != 4 || cacheState[1].Shape()[2] != 4 {
+		t.Fatalf("preallocated backing page shape = %+v, want full K/V pages", cacheState)
+	}
+	if len(state.Keys) != 1 || state.Keys[0].Shape()[2] != 2 || len(state.Values) != 1 || state.Values[0].Shape()[2] != 2 {
+		t.Fatalf("preallocated visible page shape = %+v/%+v, want visible 2-token K/V pages", state.Keys, state.Values)
+	}
+}
+
+func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) {
+	normal := NewPagedKVCache(32768, 0)
+	retained := NewPagedKVCache(131072, 0)
+	sliding := NewPagedKVCache(512, 0)
+
+	if normal.pageSize != 2048 {
+		t.Fatalf("normal pageSize = %d, want 2048", normal.pageSize)
+	}
+	if retained.pageSize != 2048 {
+		t.Fatalf("retained pageSize = %d, want 2048", retained.pageSize)
+	}
+	if sliding.pageSize != 512 {
+		t.Fatalf("sliding pageSize = %d, want capped max size 512", sliding.pageSize)
+	}
+}
+
+func TestPagedKVCache_SlidingWindowStaysSinglePage_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(4, 4)
+	defer cache.Reset()
+	prefixK, prefixV := makeKV(4)
+	defer Free(prefixK, prefixV)
+	state := cache.UpdateBorrowedPages(prefixK, prefixV, 4)
+	state.Free()
+	nextK, nextV := makeSingleTokenKV(9)
+	defer Free(nextK, nextV)
+
+	state = cache.UpdateBorrowedPages(nextK, nextV, 1)
+	defer state.Free()
+	raw := cache.State()
+
+	if cache.Len() != 4 || cache.Offset() != 5 {
+		t.Fatalf("cache len/offset = %d/%d, want 4/5", cache.Len(), cache.Offset())
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("borrowed pages = %d/%d, want one K/V page", len(state.Keys), len(state.Values))
+	}
+	if len(raw) != 2 || raw[0].Shape()[2] != 4 || raw[1].Shape()[2] != 4 {
+		t.Fatalf("raw page state = %+v, want one 4-token K page and one 4-token V page", raw)
+	}
+	dirty := cache.AppendDirtyState(nil)
+	if len(dirty) != 2 {
+		t.Fatalf("dirty state len = %d, want compacted K/V pages", len(dirty))
+	}
+	if err := Eval(state.Keys[0], state.Values[0], dirty[0], dirty[1]); err != nil {
+		t.Fatalf("Eval compacted sliding state: %v", err)
+	}
+	got := state.Keys[0].Floats()
+	if len(got) < 13 {
+		t.Fatalf("sliding page floats len = %d, want at least 13", len(got))
+	}
+	if got[0] < 0.39 || got[0] > 0.41 {
+		t.Fatalf("sliding page first token = %.3f, want old token 1 after dropping token 0", got[0])
+	}
+	if got[12] < 8.99 || got[12] > 9.01 {
+		t.Fatalf("sliding page last token = %.3f, want appended token", got[12])
+	}
+}
+
+func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCacheWithDType(8, 2, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	state := cache.UpdateBorrowedPages(k, v, 2)
+	defer state.Free()
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("page count = %d/%d, want one K/V page", len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0].Dtype() != DTypeBFloat16 || state.Values[0].Dtype() != DTypeBFloat16 {
+		t.Fatalf("page dtypes = %v/%v, want bfloat16/bfloat16", state.Keys[0].Dtype(), state.Values[0].Dtype())
+	}
+	if err := Eval(state.Keys[0], state.Values[0]); err != nil {
+		t.Fatalf("Eval typed paged state: %v", err)
+	}
+}
+
+func TestFixedKVCache_StoresRequestedDType_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cache := NewFixedKVCacheWithDType(4, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	stateK, stateV := cache.Update(k, v, 2)
+	defer Free(stateK, stateV)
+	if stateK.Dtype() != DTypeBFloat16 || stateV.Dtype() != DTypeBFloat16 {
+		t.Fatalf("fixed state dtypes = %v/%v, want bfloat16/bfloat16", stateK.Dtype(), stateV.Dtype())
+	}
+	if err := Eval(stateK, stateV); err != nil {
+		t.Fatalf("Eval typed fixed state: %v", err)
+	}
+}
+
+func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
+	c := NewPagedKVCache(4, 4)
+	k, v := makeKV(2)
+	state := c.ReplaceSinglePageFromNative(k, v, 2)
+	defer state.Free()
+	defer c.Reset()
+
+	if c.Len() != 2 || c.Offset() != 2 {
+		t.Fatalf("len/offset = %d/%d, want 2/2", c.Len(), c.Offset())
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("page count = %d/%d, want 1/1", len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0] == k || state.Values[0] == v {
+		t.Fatal("page state returned cache-owned arrays directly, want cloned handles")
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 2 || read[1].Shape()[2] != 2 {
+		t.Fatalf("read state = %+v, want single native page with length 2", read)
+	}
+}
+
+func TestFixedKVCache_UpdateKeepsStableStorage_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
+	v := FromValues([]float32{10, 20, 30, 40}, 1, 1, 2, 2)
+	defer Free(k, v)
+
+	gotK, gotV := c.Update(k, v, 2)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 2 || gotV.Dim(2) != 2 {
+		t.Fatalf("valid cache dims = %d/%d, want 2/2", gotK.Dim(2), gotV.Dim(2))
+	}
+	state := c.State()
+	if len(state) != 2 || state[0].Dim(2) != 4 || state[1].Dim(2) != 4 {
+		t.Fatalf("fixed state dims = %v, want full capacity 4", state)
+	}
+
+	k1 := FromValues([]float32{5, 6}, 1, 1, 1, 2)
+	v1 := FromValues([]float32{50, 60}, 1, 1, 1, 2)
+	defer Free(k1, v1)
+	gotK2, gotV2 := c.Update(k1, v1, 1)
+	defer Free(gotK2, gotV2)
+	if gotK2.Dim(2) != 3 || gotV2.Dim(2) != 3 || c.Offset() != 3 || c.Len() != 3 {
+		t.Fatalf("cache len/offset = %d/%d dims %d/%d, want 3/3 dims 3/3", c.Len(), c.Offset(), gotK2.Dim(2), gotV2.Dim(2))
+	}
+	if err := Eval(gotK2, gotV2); err != nil {
+		t.Fatalf("Eval fixed cache: %v", err)
+	}
+	floatSliceApprox(t, gotK2.Floats(), []float32{1, 2, 3, 4, 5, 6})
+	floatSliceApprox(t, gotV2.Floats(), []float32{10, 20, 30, 40, 50, 60})
+}
+
+func TestFixedKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	k := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k, v)
+
+	gotK, gotV := c.Update(k, v, 6)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 6 || gotV.Dim(2) != 6 {
+		t.Fatalf("attention context dims = %d/%d, want full prompt 6/6", gotK.Dim(2), gotV.Dim(2))
+	}
+	if c.Offset() != 6 || c.Len() != 4 {
+		t.Fatalf("cache offset/len = %d/%d, want 6/4", c.Offset(), c.Len())
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval full prompt context: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{1, 2, 3, 4, 5, 6})
+	floatSliceApprox(t, gotV.Floats(), []float32{10, 20, 30, 40, 50, 60})
+
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Dim(2) != 4 || read[1].Dim(2) != 4 {
+		t.Fatalf("stored tail dims = %v, want bounded tail 4/4", read)
+	}
+	if err := Eval(read...); err != nil {
+		t.Fatalf("Eval stored tail: %v", err)
+	}
+	floatSliceApprox(t, read[0].Floats(), []float32{3, 4, 5, 6})
+	floatSliceApprox(t, read[1].Floats(), []float32{30, 40, 50, 60})
+}
+
+func TestFixedKVCache_ChunkedPromptPreservesTailPlusCurrentContext_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k1, v1)
+	firstK, firstV := c.Update(k1, v1, 6)
+	if err := Eval(firstK, firstV); err != nil {
+		t.Fatalf("Eval first chunk: %v", err)
+	}
+	Free(firstK, firstV)
+	c.Detach()
+
+	k2 := FromValues([]float32{7, 8}, 1, 1, 2, 1)
+	v2 := FromValues([]float32{70, 80}, 1, 1, 2, 1)
+	defer Free(k2, v2)
+	gotK, gotV := c.Update(k2, v2, 2)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 6 || gotV.Dim(2) != 6 {
+		t.Fatalf("chunk context dims = %d/%d, want previous tail plus current 6/6", gotK.Dim(2), gotV.Dim(2))
+	}
+	if c.Offset() != 8 || c.Len() != 4 {
+		t.Fatalf("cache offset/len = %d/%d, want 8/4", c.Offset(), c.Len())
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval second chunk context: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{3, 4, 5, 6, 7, 8})
+	floatSliceApprox(t, gotV.Floats(), []float32{30, 40, 50, 60, 70, 80})
+
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if err := Eval(read...); err != nil {
+		t.Fatalf("Eval stored second tail: %v", err)
+	}
+	floatSliceApprox(t, read[0].Floats(), []float32{5, 6, 7, 8})
+	floatSliceApprox(t, read[1].Floats(), []float32{50, 60, 70, 80})
+}
+
+func TestFixedKVCache_DecodeOverflowSurvivesDetach_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k1, v1)
+	firstK, firstV := c.Update(k1, v1, 6)
+	if err := Eval(firstK, firstV); err != nil {
+		t.Fatalf("Eval prompt chunk: %v", err)
+	}
+	Free(firstK, firstV)
+	c.Detach()
+
+	k2 := FromValues([]float32{7}, 1, 1, 1, 1)
+	v2 := FromValues([]float32{70}, 1, 1, 1, 1)
+	defer Free(k2, v2)
+	secondK, secondV := c.Update(k2, v2, 1)
+	if err := Eval(secondK, secondV); err != nil {
+		t.Fatalf("Eval first decode update: %v", err)
+	}
+	Free(secondK, secondV)
+	c.Detach()
+
+	k3 := FromValues([]float32{8}, 1, 1, 1, 1)
+	v3 := FromValues([]float32{80}, 1, 1, 1, 1)
+	defer Free(k3, v3)
+	gotK, gotV := c.Update(k3, v3, 1)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 4 || gotV.Dim(2) != 4 {
+		t.Fatalf("decode context dims = %d/%d, want bounded tail 4/4", gotK.Dim(2), gotV.Dim(2))
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval second decode update: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{5, 6, 7, 8})
+	floatSliceApprox(t, gotV.Floats(), []float32{50, 60, 70, 80})
+}
+
+func TestFixedKVCache_ReplaceFixedFromNative_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+
+	state := c.ReplaceFixedFromNative(keys, values, 1)
+	defer state.Free()
+	if state.Keys == nil || state.Values == nil || state.Length != 1 {
+		t.Fatalf("state = %+v, want cloned full-capacity state with length 1", state)
+	}
+	if c.Offset() != 1 || c.Len() != 1 {
+		t.Fatalf("cache offset/len = %d/%d, want 1/1", c.Offset(), c.Len())
+	}
+	c.Reset()
+}
+
+func TestFixedKVCache_BorrowedFixedState_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	c.keys = keys
+	c.values = values
+	c.length = 2
+	defer c.Reset()
+
+	state := c.BorrowedFixedState()
+	state.Free()
+	if state.Keys != keys || state.Values != values || state.Length != 2 {
+		t.Fatalf("state = %+v, want borrowed cache-owned handles", state)
+	}
+	if c.keys != keys || c.values != values {
+		t.Fatal("BorrowedFixedState().Free released cache-owned handles")
+	}
+}
+
+func TestFixedKVCache_ReplaceFixedFromNativeBorrowed_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+
+	state := c.ReplaceFixedFromNativeBorrowed(keys, values, 1)
+	defer c.Reset()
+	if state.Keys != keys || state.Values != values || state.Length != 1 {
+		t.Fatalf("state = %+v, want borrowed full-capacity state with length 1", state)
+	}
+	state.Free()
+	if c.keys != keys || c.values != values {
+		t.Fatal("borrowed native replacement state freed cache-owned handles")
+	}
+	if c.Offset() != 1 || c.Len() != 1 {
+		t.Fatalf("cache offset/len = %d/%d, want 1/1", c.Offset(), c.Len())
+	}
+}
+
+func TestFixedKVCache_ReplaceFixedFromNativeBorrowedRetiresPrevious_Good(t *testing.T) {
+	c := NewFixedKVCache(4)
+	c.keys = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	c.values = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	defer c.Reset()
+
+	state := c.ReplaceFixedFromNativeBorrowed(keys, values, 1)
+	if state.Keys != keys || state.Values != values {
+		t.Fatalf("state = %+v, want replacement handles", state)
+	}
+	if len(c.retired) != 2 {
+		t.Fatalf("retired handles = %d, want previous K/V retained until next eval boundary", len(c.retired))
+	}
+	c.ensureShape(1, 1, 2, 2, DTypeFloat32, DTypeFloat32, 1)
+	if len(c.retired) != 0 {
+		t.Fatalf("retired handles = %d, want released on next cache entry", len(c.retired))
+	}
+}
+
+func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(2)
+	defer Free(k, v)
+	c.Update(k, v, 2)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
+	}
+}
+
+func TestKVCache_State_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(2)
+	c.Update(k, v, 2)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+	// state[0] = keys, state[1] = values
+	if state[0] == nil || state[1] == nil {
+		t.Error("state arrays should not be nil")
+	}
+}
+
+func TestTurboQuantKVCache_UpdateStoresCompressedPages_Good(t *testing.T) {
+	c := NewTurboQuantKVCache(0, 8)
+	k, v := makeKV(3)
+
+	outK, outV := c.Update(k, v, 3)
+	Materialize(outK, outV)
+
+	if c.Offset() != 3 || c.Len() != 3 {
+		t.Fatalf("offset/len = %d/%d, want 3/3", c.Offset(), c.Len())
+	}
+	if len(c.payloads) != 1 {
+		t.Fatalf("payload pages = %d, want 1 compressed reference page", len(c.payloads))
+	}
+	if got := c.payloads[0].Layout.Codec; got != TurboQuantKVCodecName {
+		t.Fatalf("payload codec = %q, want %q", got, TurboQuantKVCodecName)
+	}
+	if got := c.payloads[0].Layout.Key.EffectiveBitsMilli(c.payloads[0].Layout.Shape.HeadDim); got != 3500 {
+		t.Fatalf("key effective bits milli = %d, want 3500", got)
+	}
+	if got := c.payloads[0].Layout.Value.EffectiveBitsMilli(c.payloads[0].Layout.Shape.HeadDim); got != 3500 {
+		t.Fatalf("value effective bits milli = %d, want 3500", got)
+	}
+	if got := c.payloads[0].Layout.Key.OutlierPolicy; got != TurboQuantKVOutlierPolicyHighHalfHeadDimV1 {
+		t.Fatalf("key outlier policy = %q, want %q", got, TurboQuantKVOutlierPolicyHighHalfHeadDimV1)
+	}
+	if got := c.payloads[0].Layout.Value.OutlierPolicy; got != TurboQuantKVOutlierPolicyHighHalfHeadDimV1 {
+		t.Fatalf("value outlier policy = %q, want %q", got, TurboQuantKVOutlierPolicyHighHalfHeadDimV1)
+	}
+	if shape := outK.Shape(); len(shape) != 4 || shape[0] != 1 || shape[1] != 2 || shape[2] != 3 || shape[3] != 4 {
+		t.Fatalf("outK shape = %v, want [1 2 3 4]", shape)
+	}
+	if got := cosineSimilarity(k.Floats(), outK.Floats()); got < 0.98 {
+		t.Fatalf("key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(v.Floats(), outV.Floats()); got < 0.98 {
+		t.Fatalf("value cosine = %.6f, want >= 0.98", got)
+	}
+}
+
+func TestTurboQuantKVCache_MaxSizeKeepsSlidingTail_Good(t *testing.T) {
+	c := NewTurboQuantKVCache(2, 8)
+	k1, v1 := makeSingleTokenKV(1)
+	c.Update(k1, v1, 1)
+	k2, v2 := makeSingleTokenKV(2)
+	c.Update(k2, v2, 1)
+	k3, v3 := makeSingleTokenKV(3)
+
+	outK, outV := c.Update(k3, v3, 1)
+	Materialize(outK, outV)
+
+	if c.Offset() != 3 || c.Len() != 2 {
+		t.Fatalf("offset/len = %d/%d, want total offset 3 and visible len 2", c.Offset(), c.Len())
+	}
+	if shape := outK.Shape(); len(shape) != 4 || shape[2] != 2 {
+		t.Fatalf("outK shape = %v, want visible seq len 2", shape)
+	}
+	wantK := FromValues(turboQuantKVConcatSeq(k2.Floats(), 1, k3.Floats(), 1, 1, 2, 4), 1, 2, 2, 4)
+	wantV := FromValues(turboQuantKVConcatSeq(v2.Floats(), 1, v3.Floats(), 1, 1, 2, 4), 1, 2, 2, 4)
+	defer Free(wantK, wantV)
+	if got := cosineSimilarity(wantK.Floats(), outK.Floats()); got < 0.98 {
+		t.Fatalf("tail key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(wantV.Floats(), outV.Floats()); got < 0.98 {
+		t.Fatalf("tail value cosine = %.6f, want >= 0.98", got)
+	}
+}
+
+// --- RotatingKVCache ---
+
+func TestRotatingKVCache_New_Good(t *testing.T) {
+	c := NewRotatingKVCache(16)
+	if c.Offset() != 0 {
+		t.Errorf("offset = %d, want 0", c.Offset())
+	}
+	if c.Len() != 0 {
+		t.Errorf("len = %d, want 0", c.Len())
+	}
+}
+
+func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
+	c := NewRotatingKVCache(8)
+	k, v := makeKV(1)
+
+	outK, outV := c.Update(k, v, 1)
+	Materialize(outK, outV)
+
+	if c.Offset() != 1 {
+		t.Errorf("offset = %d, want 1", c.Offset())
+	}
+	if c.Len() != 1 {
+		t.Errorf("len = %d, want 1", c.Len())
+	}
+}
+
+func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
+	c := NewRotatingKVCache(16)
+	k, v := makeKV(5)
+
+	outK, outV := c.Update(k, v, 5)
+	Materialize(outK, outV)
+
+	if c.Offset() != 5 {
+		t.Errorf("offset = %d, want 5", c.Offset())
+	}
+	if c.Len() != 5 {
+		t.Errorf("len = %d, want 5", c.Len())
+	}
+}
+
+func TestRotatingKVCache_Bounded_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+
+	// Fill with 4-token prompt (at max)
+	k, v := makeKV(4)
+	outK, outV := c.Update(k, v, 4)
+	Materialize(outK, outV)
+
+	if c.Len() != 4 {
+		t.Errorf("len = %d, want 4 (at max)", c.Len())
+	}
+
+	// Add one more token — should trim to maxSize
+	k2, v2 := makeKV(1)
+	outK, outV = c.Update(k2, v2, 1)
+	Materialize(outK, outV)
+
+	if c.Offset() != 5 {
+		t.Errorf("offset = %d, want 5", c.Offset())
+	}
+	// Len should be bounded by maxSize
+	if c.Len() != 4 {
+		t.Errorf("len = %d, want 4 (bounded)", c.Len())
+	}
+}
+
+func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+	k, v := makeKV(6)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 6)
+	defer Free(outK, outV)
+	Materialize(outK, outV)
+
+	if c.Offset() != 6 {
+		t.Errorf("offset = %d, want 6", c.Offset())
+	}
+	if c.Len() != 4 {
+		t.Errorf("len = %d, want 4 (bounded cache)", c.Len())
+	}
+
+	if got := outK.Shape()[2]; got != 6 {
+		t.Fatalf("outK L dim = %d, want 6 full prompt tokens", got)
+	}
+	if got := outV.Shape()[2]; got != 6 {
+		t.Fatalf("outV L dim = %d, want 6 full prompt tokens", got)
+	}
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+	defer Free(state...)
+	if got := state[0].Shape()[2]; got != 4 {
+		t.Fatalf("cached key L dim = %d, want 4 bounded tokens", got)
+	}
+	if got := state[1].Shape()[2]; got != 4 {
+		t.Fatalf("cached value L dim = %d, want 4 bounded tokens", got)
+	}
+}
+
+func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+
+	for i := range 6 {
+		k, v := makeSingleTokenKV(float32(i + 1))
+		outK, outV := c.Update(k, v, 1)
+		Materialize(outK, outV)
+
+		if i < 3 {
+			Free(k, v, outK, outV)
+			continue
+		}
+
+		got := outK.Floats()
+		wantValues := []float32{float32(i - 2), float32(i - 1), float32(i), float32(i + 1)}
+		for tokenIdx, want := range wantValues {
+			base := tokenIdx * 4
+			if base >= len(got) {
+				t.Fatalf("token %d base index %d beyond output len %d", tokenIdx, base, len(got))
+			}
+			if got[base] != want {
+				t.Fatalf("token %d first value = %f, want %f (full output %v)", tokenIdx, got[base], want, got)
+			}
+		}
+
+		Free(k, v, outK, outV)
+	}
+}
+
+func TestRotatingKVCache_Reset_Good(t *testing.T) {
+	c := NewRotatingKVCache(8)
+	k, v := makeKV(3)
+	c.Update(k, v, 3)
+
+	c.Reset()
+
+	if c.Offset() != 0 {
+		t.Errorf("offset after reset = %d, want 0", c.Offset())
+	}
+	if c.Len() != 0 {
+		t.Errorf("len after reset = %d, want 0", c.Len())
+	}
+	if c.State() != nil {
+		t.Error("state should be nil after reset")
+	}
+}
+
+func TestRotatingKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewRotatingKVCache(8)
+	k, v := makeKV(3)
+	defer Free(k, v)
+	c.Update(k, v, 3)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
+	}
+}
+
+// TestFixedKVCache_DiffusionTruncateRefillCycle_MemoryProfile is the
+// synthetic probe for the #77 retiree theory: the block-diffusion denoise
+// loop drives every layer cache through a multi-token Update followed by
+// TruncateTo(prefix), once per step — the suspicion was that the
+// b6f1d81-era update path retires replaced K/V arrays faster than the
+// release rotation frees them, accumulating per step x canvas x layer
+// until the serve book OOMs.
+//
+// The probe reproduces the exact cycle on synthetic geometry (no model):
+// prefill the prefix, then N denoise-shaped cycles of Update(canvas) +
+// Eval + TruncateTo(prefix), watching three things per cycle —
+//
+//   - the retiree generations (c.retired / c.retiredPrev), the theory's
+//     direct signal;
+//   - GetActiveMemory: live buffers — a leak shows as monotonic growth;
+//   - GetCacheMemory: the MLX allocator cache — churn parks here, and
+//     the rival theory (allocator-cache growth under per-chapter shape
+//     variance) predicts growth HERE rather than in active memory.
+//
+// Verdicts are asserted, not just logged: retirees must stay bounded by
+// the two-generation rotation, and active memory across the cycles must
+// stay within one band set of the baseline (the cycle is supposed to be
+// steady-state — each functional update frees the previous storage).
+func TestFixedKVCache_DiffusionTruncateRefillCycle_MemoryProfile(t *testing.T) {
+	const (
+		layers = 4
+		batch  = 1
+		heads  = 8
+		dim    = 128
+		prefix = 1024
+		canvas = 64
+		cycles = 32
+	)
+	maxSize := prefix + canvas + 8
+
+	caches := make([]*FixedKVCache, layers)
+	for i := range caches {
+		caches[i] = NewFixedKVCache(maxSize)
+	}
+	defer func() {
+		for _, c := range caches {
+			c.Reset()
+		}
+	}()
+
+	step := func(tokens int) {
+		k := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+		v := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+		for _, c := range caches {
+			sk, sv := c.Update(k, v, tokens)
+			if sk == nil || sv == nil {
+				t.Fatal("Update returned nil state")
+			}
+			if err := Eval(sk, sv); err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			Free(sk, sv)
+		}
+		Free(k, v)
+	}
+
+	retiredCount := func() (retired, prev int) {
+		for _, c := range caches {
+			retired += len(c.retired)
+			prev += len(c.retiredPrev)
+		}
+		return
+	}
+
+	// Prefill — the encoder-role prompt forward.
+	step(prefix)
+	baseActive := GetActiveMemory()
+	baseCache := GetCacheMemory()
+	t.Logf("baseline after prefill: active=%dMiB cache=%dMiB", baseActive>>20, baseCache>>20)
+
+	maxRetired := 0
+	peakActive := baseActive
+	for cycle := 0; cycle < cycles; cycle++ {
+		step(canvas)
+		for i, c := range caches {
+			if !c.TruncateTo(prefix) {
+				t.Fatalf("cycle %d: cache %d declined TruncateTo(%d)", cycle, i, prefix)
+			}
+		}
+		retired, prev := retiredCount()
+		if retired+prev > maxRetired {
+			maxRetired = retired + prev
+		}
+		active := GetActiveMemory()
+		if active > peakActive {
+			peakActive = active
+		}
+		if cycle%8 == 7 {
+			t.Logf("cycle %2d: active=%dMiB cache=%dMiB retired=%d retiredPrev=%d",
+				cycle, active>>20, GetCacheMemory()>>20, retired, prev)
+		}
+	}
+
+	finalActive := GetActiveMemory()
+	finalCache := GetCacheMemory()
+	t.Logf("final: active=%dMiB (base %dMiB, peak %dMiB) cache=%dMiB (base %dMiB) maxRetired=%d",
+		finalActive>>20, baseActive>>20, peakActive>>20, finalCache>>20, baseCache>>20, maxRetired)
+
+	// The retiree theory's verdict: the plain pre-cap Update path frees the
+	// replaced storage inline — retirees come only from the native/compiled
+	// adoption lanes, which this cycle never touches. Anything beyond the
+	// two-generation rotation bound is the leak the theory predicted.
+	if maxRetired > 2*layers*2 {
+		t.Errorf("retirees accumulated: max %d across %d caches — the #77 retiree theory is CONFIRMED on the plain Update path", maxRetired, layers)
+	}
+
+	// Steady-state bound: one band of f16 K+V per cache is the largest
+	// transient the functional update should hold. Growth past baseline +
+	// one full band set means live buffers leak per cycle.
+	bandBytes := uint64(batch) * uint64(heads) * uint64(maxSize) * uint64(dim) * 2
+	allowance := bandBytes * 2 * layers // K+V per cache
+	if finalActive > baseActive+allowance {
+		t.Errorf("active memory grew %dMiB over baseline (allowance %dMiB) — live-buffer leak in the truncate-refill cycle",
+			(finalActive-baseActive)>>20, allowance>>20)
+	}
+}
+
+// TestFixedKVCache_DiffusionCycle_AllocatorCacheVsClear contrasts the same
+// cycle's allocator-cache footprint with and without an interval ClearCache
+// — the rival #77 theory says the serve book's growth lives in the MLX
+// allocator cache (churn parked on freed-buffer buckets), which an interval
+// clear bounds. Diagnostic: it logs the two profiles; the only assertion is
+// that clearing actually shrinks the allocator cache (sanity that the churn
+// goes where the theory says).
+func TestFixedKVCache_DiffusionCycle_AllocatorCacheVsClear(t *testing.T) {
+	const (
+		batch  = 1
+		heads  = 8
+		dim    = 128
+		prefix = 1024
+		canvas = 64
+		cycles = 16
+	)
+	maxSize := prefix + canvas + 8
+
+	run := func(clearEvery int) (peakCache uint64) {
+		c := NewFixedKVCache(maxSize)
+		defer c.Reset()
+		step := func(tokens int) {
+			k := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+			v := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+			sk, sv := c.Update(k, v, tokens)
+			if err := Eval(sk, sv); err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			Free(sk, sv, k, v)
+		}
+		step(prefix)
+		for cycle := 0; cycle < cycles; cycle++ {
+			step(canvas)
+			if !c.TruncateTo(prefix) {
+				t.Fatalf("cycle %d: TruncateTo declined", cycle)
+			}
+			if clearEvery > 0 && cycle%clearEvery == clearEvery-1 {
+				ClearCache()
+			}
+			if cm := GetCacheMemory(); cm > peakCache {
+				peakCache = cm
+			}
+		}
+		return peakCache
+	}
+
+	unbounded := run(0)
+	ClearCache()
+	cleared := run(4)
+	t.Logf("allocator-cache peak over %d cycles: no-clear=%dMiB clear-every-4=%dMiB", cycles, unbounded>>20, cleared>>20)
+	if cleared > unbounded {
+		t.Errorf("interval ClearCache did not bound the allocator cache (%dMiB > %dMiB)", cleared>>20, unbounded>>20)
+	}
+}

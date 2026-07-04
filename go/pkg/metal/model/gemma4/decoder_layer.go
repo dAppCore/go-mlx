@@ -1,0 +1,177 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package gemma4
+
+import (
+	"time"
+
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
+
+func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, perLayerInput *metal.Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *metal.Array, runtimeMasks *gemma4RuntimeMaskCache, materializePagedKVForReuse bool) (*metal.Array, sharedKV) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
+		}
+	}()
+	if hNext, compiledKV, ok := l.compiledDecodeForward(x, c, B, L, mask, perLayerInput, prev, cfg); ok {
+		return hNext, compiledKV
+	}
+	traceEnabled := (metal.NativePhaseMaterializeTraceEnabled() && metal.NativePhaseTraceArmed()) || metal.NativePhaseValueHashEnabled()
+	residual := x
+
+	normed := metal.RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
+	window := int32(0)
+	if l.IsSliding {
+		window = cfg.SlidingWindow
+	}
+	var h *metal.Array
+	var kv sharedKV
+	{
+		mixerCtx := &metal.MixerCtx{
+			Cache: c, Prev: prev, B: B, L: L,
+			Mask: mask, FixedMask: fixedMask, Window: window,
+			Materialize: materializePagedKVForReuse,
+			Extra:       gemma4MixerExtra{cfg: cfg, runtimeMasks: runtimeMasks},
+		}
+		attnOut, nativeKV := l.Attention.Forward(normed, mixerCtx)
+		kv = nativeKV
+		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
+		{
+			attnNormed := metal.RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
+			h = metal.Add(residual, attnNormed)
+			metal.Free(attnNormed)
+			if captureLayerHiddens { // post-attention hidden for the cross-engine attn diff
+				metal.Materialize(h)
+				capturedAttnHiddens = append(capturedAttnHiddens, append([]byte(nil), h.RawBytes()...))
+			}
+		}
+		metal.Free(attnOut)
+		l.traceNativeMaterialize(traceEnabled, "attention_residual", h)
+	}
+	metal.Free(normed)
+
+	residual = h
+	var ffResidual *metal.Array
+	var hNext *metal.Array
+	if l.EnableMoE && l.Router != nil && l.Experts != nil {
+		h1In := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
+		h1 := l.MLP.Forward(h1In)
+		h1 = l.applyFFNMemoryAugmenter(h1, h1In)
+		l.traceNativeMaterialize(traceEnabled, "ffn_local_mlp", h1)
+		metal.Free(h1In)
+
+		h2In := metal.RMSNorm(h, l.PreFFNorm2Scaled, cfg.RMSNormEps)
+		topKIndices, topKWeights := l.Router.forward(h)
+		l.traceNativeMaterialize(traceEnabled, "ffn_router", topKIndices, topKWeights)
+		expertTracePrefix := ""
+		if traceEnabled {
+			expertTracePrefix = l.nativeTraceName("ffn_expert")
+		}
+		h2 := l.Experts.forward(h2In, topKIndices, topKWeights, expertTracePrefix)
+		l.traceNativeMaterialize(traceEnabled, "ffn_experts", h2)
+		metal.Free(h2In, topKIndices, topKWeights)
+
+		{
+			h1Normed := metal.RMSNorm(h1, l.PostFFNorm1Scaled, cfg.RMSNormEps)
+			l.traceNativeMaterialize(traceEnabled, "ffn_local_norm", h1Normed)
+			h2Normed := metal.RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
+			l.traceNativeMaterialize(traceEnabled, "ffn_expert_norm", h2Normed)
+
+			// Gemma 4 MoE layers normalise each branch independently, then apply
+			// the standard post-feedforward norm to the combined branch output
+			// before adding it back to the residual path.
+			combined := metal.Add(h1Normed, h2Normed)
+			metal.Free(h1Normed, h2Normed)
+			ffResidual = metal.RMSNorm(combined, l.PostFFNormScaled, cfg.RMSNormEps)
+			metal.Free(combined)
+		}
+		metal.Free(h1, h2)
+	} else {
+		ffIn := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
+		ff := l.MLP.Forward(ffIn)
+		ff = l.applyFFNMemoryAugmenter(ff, ffIn)
+		metal.Free(ffIn)
+		ffResidual = metal.RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
+		metal.Free(ff)
+	}
+	if ffResidual != nil {
+		l.traceNativeMaterialize(traceEnabled, "ffn", ffResidual)
+	}
+
+	if hNext == nil {
+		hNext = metal.Add(residual, ffResidual)
+		metal.Free(ffResidual)
+	}
+	metal.Free(h)
+
+	if l.PerLayerInputGate != nil && l.PerLayerProjection != nil && l.PostPerLayerInputNormScaled != nil && perLayerInput != nil {
+		gate := l.PerLayerInputGate.Forward(hNext)
+		multiplied := metal.GeluGateMul(gate, perLayerInput)
+		metal.Free(gate)
+		projected := l.PerLayerProjection.Forward(multiplied)
+		metal.Free(multiplied)
+		projectedNormed := metal.RMSNorm(projected, l.PostPerLayerInputNormScaled, cfg.RMSNormEps)
+		metal.Free(projected)
+		gated := metal.Add(hNext, projectedNormed)
+		metal.Free(hNext, projectedNormed)
+		hNext = gated
+	}
+
+	if l.LayerScalar != nil && l.LayerScalar.Valid() {
+		scaled := metal.Mul(hNext, l.LayerScalar)
+		metal.Free(hNext)
+		hNext = scaled
+	}
+	l.traceNativeMaterialize(traceEnabled, "output", hNext)
+
+	return hNext, kv
+}
+
+func (l *Gemma4DecoderLayer) applyFFNMemoryAugmenter(ffnOutput, mlpInput *metal.Array) *metal.Array {
+	out, applied, err := metal.ApplyFFNMemoryAugmenter(l.FFNMemory, l.LayerIdx, ffnOutput, mlpInput)
+	if err != nil {
+		panic(err)
+	}
+	if applied && out != ffnOutput {
+		metal.Free(ffnOutput)
+	}
+	return out
+}
+
+func (l *Gemma4DecoderLayer) traceNativeMaterialize(enabled bool, phase string, arrays ...*metal.Array) {
+	if !enabled {
+		return
+	}
+	metal.TraceNativeMaterialize(l.nativeTraceName(phase), arrays...)
+}
+
+func gemma4AttentionWindowTraceName(window int32) string {
+	if window > 0 {
+		return "local"
+	}
+	return "global"
+}
+
+func tracePagedKVConcat(name string, start time.Time, state metal.PagedKVState) {
+	if !metal.NativePhaseTraceArmed() || name == "" || start.IsZero() {
+		return
+	}
+	duration := time.Since(start)
+	if duration <= 0 {
+		duration = time.Nanosecond
+	}
+	metal.AppendNativePhaseTraceEvent(metal.NativePhaseTrace{
+		Name:     name,
+		Duration: duration,
+		Pages:    len(state.Keys),
+		Tokens:   state.Length,
+	})
+}
+
+func (l *Gemma4DecoderLayer) nativeTraceName(phase string) string {
+	return core.Sprintf("gemma4.layer.%02d.%s", l.LayerIdx, phase)
+}

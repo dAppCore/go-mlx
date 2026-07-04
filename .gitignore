@@ -1,8 +1,14 @@
 # Build artifacts
 build/
+bin/
 *.dylib
 *.so
 *.a
+
+# `go build ./go/cmd/mlx/` without -o lands the binary at repo root.
+# Convention is `go build -o bin/mlx` (bin/ already ignored above);
+# this catches the shortcut form too.
+/mlx
 
 # CMake
 CMakeCache.txt
@@ -10,9 +16,12 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# CMake install output (keep headers for Go module consumers)
-dist/*
-!dist/include/
+# CMake install output
+dist/
+
+# Local Go build/test shortcuts
+/go/mlx
+/*.test
 
 # IDE
 .idea/
@@ -21,6 +30,11 @@ dist/*
 
 # macOS
 .DS_Store
+
+# lthn/desktop frontend dist — copied at build time by
+# scripts/make-app-bundle.sh, embedded in cmd/mlx via go:embed.
+# Single source of truth lives in lthn/desktop/frontend/.
+go/cmd/mlx/frontend/dist/
 
 # Knowledge base
 KB/

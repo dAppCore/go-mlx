@@ -1,0 +1,638 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// Package chaptersmoke runs chapter-sized State KV save/restore/generate
+// smoke benchmarks. Driver-neutral — callers supply a Runner with the
+// model-specific Capture/Generate callbacks.
+//
+//	runner := mlx.NewModelStateKVChapterRunner(model, baseGen)
+//	report, err := chaptersmoke.Run(ctx, runner, chaptersmoke.Config{
+//	    StoreDir: "/tmp/smoke",
+//	    Chapters: []chaptersmoke.Input{{Text: chapter, Question: q}},
+//	})
+package chaptersmoke
+
+import (
+	"context"
+	"strconv"
+	"time"
+
+	core "dappco.re/go"
+	state "dappco.re/go/inference/state"
+	filestore "dappco.re/go/inference/state/filestore"
+	"dappco.re/go/inference/blockcache"
+	"dappco.re/go/inference/kv"
+)
+
+const (
+	// DefaultAnswerMaxTokens caps the answer generation length when the
+	// caller does not provide a higher MaxTokens setting.
+	DefaultAnswerMaxTokens = 32
+
+	// StoreFileLog selects the .mvlog filestore backend.
+	StoreFileLog = "file-log"
+)
+
+// Sentinel errors — lifted to package scope so repeated validation paths do
+// not allocate a fresh *Err on every Run() call. Messages are stable across
+// the package's lifetime; callers compare via errors.Is when discrimination
+// is needed.
+var (
+	errGenerateRequired      = core.NewError("chaptersmoke: runner requires Generate callback")
+	errCaptureRequired       = core.NewError("chaptersmoke: runner requires Capture callback")
+	errNoChapters            = core.NewError("chaptersmoke: requires at least one chapter")
+	errUnsupportedStoreKind  = core.NewError("chaptersmoke: unsupported store kind")
+	errCoreResultFailed      = core.NewError("core result failed")
+	errChapterTextEmpty      = core.NewError("chaptersmoke: chapter text is empty")
+	errChapterQuestionEmpty  = core.NewError("chaptersmoke: chapter question is empty")
+	errChapterNoBlocks       = core.NewError("chaptersmoke: wrote no KV blocks")
+	errChapterEmptyFileStore = core.NewError("chaptersmoke: wrote empty file store")
+)
+
+// captureLabels is the shared label slice passed via kv.StateBlockOptions on
+// every Capture invocation — lifted to package scope so each chapter does
+// not allocate an identical literal. Downstream consumers treat opts.Labels
+// as read-only (the session_agent fold path explicitly clones before
+// appending), so a shared backing array is safe.
+var captureLabels = []string{"chapter-smoke", "state-kv"}
+
+// Runner is the small driver surface the chapter-smoke orchestration needs.
+// Both callbacks close over caller-supplied model state — chaptersmoke does
+// not import mlx and never sees its types directly.
+type Runner struct {
+	// Capture writes a chapter prompt's KV state into store as State blocks.
+	Capture func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error)
+	// Generate restores a State prefix, appends suffix, and decodes an answer.
+	Generate func(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int, suffix string) (Generation, error)
+}
+
+// Generation is one generation step's result inside the chapter-smoke flow.
+type Generation struct {
+	Text                       string        `json:"text,omitempty"`
+	DecodeDuration             time.Duration `json:"decode_duration,omitempty"`
+	TotalDuration              time.Duration `json:"total_duration,omitempty"`
+	PromptCacheRestoreDuration time.Duration `json:"prompt_cache_restore_duration,omitempty"`
+}
+
+// Config configures a small State-backed KV restore smoke over
+// chapter-sized prompts.
+type Config struct {
+	StoreDir        string  `json:"store_dir,omitempty"`
+	StorePath       string  `json:"store_path,omitempty"`
+	StoreKind       string  `json:"store_kind,omitempty"`
+	BlockSize       int     `json:"block_size,omitempty"`
+	AnswerMaxTokens int     `json:"answer_max_tokens,omitempty"`
+	Temperature     float32 `json:"temperature,omitempty"`
+	Chapters        []Input `json:"chapters,omitempty"`
+}
+
+// Input is one chapter-sized prefix and question.
+type Input struct {
+	Name          string   `json:"name,omitempty"`
+	Text          string   `json:"text"`
+	Question      string   `json:"question"`
+	ExpectedTerms []string `json:"expected_terms,omitempty"`
+}
+
+// Report captures the full smoke result.
+type Report struct {
+	StoreDir  string          `json:"store_dir,omitempty"`
+	StorePath string          `json:"store_path,omitempty"`
+	FileCount int             `json:"file_count,omitempty"`
+	BlockSize int             `json:"block_size,omitempty"`
+	Chapters  []ChapterReport `json:"chapters,omitempty"`
+	Error     string          `json:"error,omitempty"`
+}
+
+// ChapterReport reports one save, reopen, restore, and answer cycle from a
+// State store.
+type ChapterReport struct {
+	Name                 string        `json:"name,omitempty"`
+	Question             string        `json:"question,omitempty"`
+	Source               string        `json:"source,omitempty"`
+	StorePath            string        `json:"store_path,omitempty"`
+	BundleURI            string        `json:"bundle_uri,omitempty"`
+	StoreBytes           int64         `json:"store_bytes,omitempty"`
+	BlockSize            int           `json:"block_size,omitempty"`
+	TotalBlocks          int           `json:"total_blocks,omitempty"`
+	BlocksRead           int           `json:"blocks_read,omitempty"`
+	ChunksRead           int           `json:"chunks_read,omitempty"`
+	PrefixTokensRestored int           `json:"prefix_tokens_restored,omitempty"`
+	CaptureDuration      time.Duration `json:"capture_duration,omitempty"`
+	SaveDuration         time.Duration `json:"save_duration,omitempty"`
+	ReopenDuration       time.Duration `json:"reopen_duration,omitempty"`
+	RestoreDuration      time.Duration `json:"restore_duration,omitempty"`
+	AnswerDuration       time.Duration `json:"answer_duration,omitempty"`
+	Answer               string        `json:"answer,omitempty"`
+	Plausible            bool          `json:"plausible"`
+	Error                string        `json:"error,omitempty"`
+}
+
+// Run executes the chapter-smoke harness. The runner's Capture and Generate
+// callbacks supply all model-specific behaviour.
+//
+//	report, err := chaptersmoke.Run(ctx, runner, cfg)
+func Run(ctx context.Context, runner Runner, cfg Config) (*Report, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg = normalizeConfig(cfg)
+	if err := validateStoreKind(cfg.StoreKind); err != nil {
+		return nil, err
+	}
+	if runner.Generate == nil {
+		return nil, errGenerateRequired
+	}
+	if runner.Capture == nil {
+		return nil, errCaptureRequired
+	}
+	if len(cfg.Chapters) == 0 {
+		return nil, errNoChapters
+	}
+	// Defensive clone of the caller's chapter slice — deferred to here so
+	// the validation guards above (which only read scalars + len) bypass it
+	// on every error path. Past this point the loop iterates our private
+	// copy, so a caller mutating their slice mid-run cannot affect us.
+	cfg.Chapters = core.SliceClone(cfg.Chapters)
+	storeDir, storePath, err := storePaths(cfg)
+	if err != nil {
+		return nil, err
+	}
+	report := &Report{
+		StoreDir:  storeDir,
+		StorePath: storePath,
+		BlockSize: cfg.BlockSize,
+		Chapters:  make([]ChapterReport, 0, len(cfg.Chapters)),
+	}
+	defer func() {
+		report.FileCount = fileCount(storeDir)
+	}()
+	for i, chapter := range cfg.Chapters {
+		chapterReport, err := runChapter(ctx, runner, cfg, storePath, i, chapter)
+		report.Chapters = append(report.Chapters, chapterReport)
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string, index int, chapter Input) (ChapterReport, error) {
+	report := ChapterReport{
+		Name:      chapterName(index, chapter.Name),
+		Question:  chapter.Question,
+		Source:    storeSource(cfg),
+		BlockSize: cfg.BlockSize,
+		StorePath: storePath,
+		BundleURI: bundleURI(index, chapter.Name),
+	}
+	if core.Trim(chapter.Text) == "" {
+		return chapterFault(report, errChapterTextEmpty)
+	}
+	if core.Trim(chapter.Question) == "" {
+		return chapterFault(report, errChapterQuestionEmpty)
+	}
+
+	store, err := openWriteStore(ctx, cfg, report.StorePath, index)
+	if err != nil {
+		return chapterError(report, err.Error())
+	}
+	captureStart := time.Now()
+	// report.BundleURI is "<captureURI>/bundle" — strip the suffix instead
+	// of re-running slug() + the same concat. slug() is the costliest part
+	// of bundle URI formation (Lower/Trim + byte-walk + alloc).
+	bundle, err := runner.Capture(ctx, chapter.Text, store.Writer, kv.StateBlockOptions{
+		BlockSize:  cfg.BlockSize,
+		KVEncoding: kv.EncodingNative,
+		URI:        core.TrimSuffix(report.BundleURI, "/bundle"),
+		Labels:     captureLabels,
+	})
+	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
+	if err == nil {
+		_, err = kv.SaveStateBlockBundle(ctx, store.Writer, bundle, report.BundleURI)
+	}
+	closeErr := store.Close()
+	report.SaveDuration = report.CaptureDuration
+	if err != nil {
+		return chapterError(report, err.Error())
+	}
+	if closeErr != nil {
+		return chapterError(report, closeErr.Error())
+	}
+	report.TotalBlocks = len(bundle.Blocks)
+	report.StoreBytes = fileSize(report.StorePath)
+	report.PrefixTokensRestored = bundle.TokenCount
+	if report.TotalBlocks == 0 {
+		return chapterFault(report, errChapterNoBlocks)
+	}
+	if report.StoreBytes <= 0 {
+		return chapterFault(report, errChapterEmptyFileStore)
+	}
+
+	reopenStart := time.Now()
+	reader, err := openReadStore(ctx, cfg, report.StorePath)
+	report.ReopenDuration = nonZeroDuration(time.Since(reopenStart))
+	if err != nil {
+		return chapterError(report, err.Error())
+	}
+	loadedBundle, err := kv.LoadStateBlockBundle(ctx, reader.Store, report.BundleURI)
+	if err != nil {
+		closeErr = reader.Close()
+		if closeErr != nil {
+			return chapterError(report, closeErr.Error())
+		}
+		return chapterError(report, err.Error())
+	}
+	// Pre-size the unique-chunk dedup map to the bundle's block count so
+	// the Generate-time record() path avoids map-grow rehashes; the upper
+	// bound on unique chunks read during prefix restore is the block list
+	// itself.
+	counting := newCountingStoreHint(reader.Store, len(loadedBundle.Blocks))
+	restoreStart := time.Now()
+	generation, err := runner.Generate(ctx, counting, loadedBundle, loadedBundle.TokenCount, questionPrompt(chapter))
+	report.RestoreDuration = nonZeroDuration(time.Since(restoreStart))
+	if generation.PromptCacheRestoreDuration > 0 {
+		report.RestoreDuration = generation.PromptCacheRestoreDuration
+	}
+	report.BlocksRead = counting.UniqueReads()
+	report.ChunksRead = counting.Reads()
+	closeErr = reader.Close()
+	if err != nil {
+		return chapterError(report, err.Error())
+	}
+	if closeErr != nil {
+		return chapterError(report, closeErr.Error())
+	}
+
+	report.AnswerDuration = generation.DecodeDuration
+	if report.AnswerDuration <= 0 {
+		report.AnswerDuration = generation.TotalDuration
+	}
+	report.AnswerDuration = nonZeroDuration(report.AnswerDuration)
+	report.Answer = core.Trim(generation.Text)
+	report.Plausible = answerPlausible(report.Answer, chapter.ExpectedTerms)
+	return report, nil
+}
+
+func normalizeConfig(cfg Config) Config {
+	cfg.StoreKind = normalizeStoreKind(cfg.StoreKind, cfg.StorePath)
+	if cfg.BlockSize <= 0 {
+		cfg.BlockSize = blockcache.DefaultBlockSize
+	}
+	if cfg.AnswerMaxTokens <= 0 {
+		cfg.AnswerMaxTokens = DefaultAnswerMaxTokens
+	}
+	// Chapter-slice clone moved to Run() — see the call site there. Keeping
+	// it out of normalizeConfig lets the bad-path validation guards skip the
+	// copy entirely (BenchmarkRun_Bad_MissingGenerate: 1 alloc -> 0).
+	return cfg
+}
+
+func storePaths(cfg Config) (string, string, error) {
+	if core.Trim(cfg.StorePath) != "" {
+		dir := core.PathDir(cfg.StorePath)
+		if result := core.MkdirAll(dir, 0o755); !result.OK {
+			return "", "", core.E("chaptersmoke.storePaths", "create store path parent", resultError(result))
+		}
+		return dir, cfg.StorePath, nil
+	}
+	if core.Trim(cfg.StoreDir) != "" {
+		if result := core.MkdirAll(cfg.StoreDir, 0o755); !result.OK {
+			return "", "", core.E("chaptersmoke.storePaths", "create store dir", resultError(result))
+		}
+		return cfg.StoreDir, core.PathJoin(cfg.StoreDir, storeFileName(cfg.StoreKind)), nil
+	}
+	result := core.MkdirTemp("", "go-mlx-chapter-smoke-*")
+	if !result.OK {
+		return "", "", core.E("chaptersmoke.storePaths", "create temp store dir", resultError(result))
+	}
+	dir := result.Value.(string)
+	return dir, core.PathJoin(dir, storeFileName(cfg.StoreKind)), nil
+}
+
+type storeHandle struct {
+	Store  state.Store
+	Writer state.Writer
+	close  func() error
+}
+
+func (s storeHandle) Close() error {
+	if s.close == nil {
+		return nil
+	}
+	return s.close()
+}
+
+// openWriteStore and openReadStore are package-level function values rather
+// than plain funcs so tests can substitute a storeHandle whose Close (or
+// Store) fails, exercising the close-error and load-error arms of runChapter
+// that a healthy filestore fd never trips. Same injectable-var seam as
+// loadNativeModel in backend.go; default impls call filestore directly.
+var openWriteStore = func(ctx context.Context, _ Config, path string, index int) (storeHandle, error) {
+	if index == 0 {
+		store, err := filestore.Create(ctx, path)
+		return storeHandle{Store: store, Writer: store, close: store.Close}, err
+	}
+	store, err := filestore.Open(ctx, path)
+	return storeHandle{Store: store, Writer: store, close: store.Close}, err
+}
+
+var openReadStore = func(ctx context.Context, _ Config, path string) (storeHandle, error) {
+	store, err := filestore.Open(ctx, path)
+	return storeHandle{Store: store, Writer: store, close: store.Close}, err
+}
+
+func normalizeStoreKind(kind, _ string) string {
+	kind = core.Lower(core.Trim(kind))
+	switch kind {
+	case "", "file", "file-log", "filestore", "mvlog":
+		return StoreFileLog
+	default:
+		// Unknown kind passes through so validateStoreKind rejects it.
+		return kind
+	}
+}
+
+func validateStoreKind(kind string) error {
+	if kind == StoreFileLog {
+		return nil
+	}
+	return errUnsupportedStoreKind
+}
+
+func storeSource(_ Config) string {
+	return filestore.CodecFile
+}
+
+func questionPrompt(chapter Input) string {
+	return "\n\nQuestion: " + chapter.Question + "\nAnswer:"
+}
+
+func answerPlausible(answer string, expected []string) bool {
+	answer = core.Trim(answer)
+	if answer == "" {
+		return false
+	}
+	if len(expected) == 0 {
+		return true
+	}
+	lower := core.Lower(answer)
+	for _, term := range expected {
+		if core.Trim(term) == "" {
+			continue
+		}
+		if !core.Contains(lower, core.Lower(term)) {
+			return false
+		}
+	}
+	return true
+}
+
+func chapterError(report ChapterReport, message string) (ChapterReport, error) {
+	report.Error = message
+	return report, core.NewError(message)
+}
+
+// chapterFault is the sentinel-friendly sibling of chapterError. Callers
+// pass a pre-built error (typically a lifted package-level sentinel) and
+// chapterFault writes its message into the report without a second *Err
+// allocation.
+func chapterFault(report ChapterReport, err error) (ChapterReport, error) {
+	report.Error = err.Error()
+	return report, err
+}
+
+func chapterName(index int, name string) string {
+	if core.Trim(name) != "" {
+		return name
+	}
+	// Body matches defaultChapterSlug — defer to one source of truth so
+	// the future shape change (e.g. zero-pad) lands once.
+	return defaultChapterSlug(index)
+}
+
+func storeFileName(_ string) string {
+	return "state-kv-chapters.mvlog"
+}
+
+const (
+	bundleURIPrefix = "mlx://state-chapter-smoke/"
+	bundleURISuffix = "/bundle"
+)
+
+func bundleURI(index int, name string) string {
+	// Single allocation — append the slug body straight into a buffer
+	// already carrying the URI prefix, then append the "/bundle" suffix.
+	// Avoids the extra string-concat alloc the prior shape required.
+	name = lowerSlugName(core.Trim(name))
+	bodyMax := slugBodyCapHint(name)
+	buf := make([]byte, 0, len(bundleURIPrefix)+3+bodyMax+len(bundleURISuffix))
+	buf = append(buf, bundleURIPrefix...)
+	buf = appendSlugBody(buf, index, name)
+	buf = append(buf, bundleURISuffix...)
+	return core.AsString(buf)
+}
+
+func slug(index int, name string) string {
+	name = lowerSlugName(core.Trim(name))
+	// Hand-built "NN-body" — avoids Sprintf parsing + interface boxing AND
+	// the two-buffer hop the previous shape used (body slice → final buf).
+	// Walk the name once directly into the final buffer (positioned past
+	// the "NN-" prefix) so the only allocation is the returned string's
+	// backing array. Capacity reserves room for the "NN-chapter-N"
+	// fallback shape when the name walk yields zero kept bytes, so the
+	// empty-name path stays single-alloc.
+	buf := make([]byte, 0, 3+slugBodyCapHint(name))
+	buf = appendSlugBody(buf, index, name)
+	return core.AsString(buf)
+}
+
+// slugBodyCapHint returns the upper-bound body length appendSlugBody can
+// produce — covers both the walked-name path (one byte per name byte at
+// worst) and the "chapter-N" fallback path (≤ 28 bytes).
+func slugBodyCapHint(name string) int {
+	bodyMax := len(name)
+	if fallback := 8 + 20; fallback > bodyMax {
+		bodyMax = fallback
+	}
+	return bodyMax
+}
+
+// lowerSlugName lowercases name only when it carries a byte that the
+// keep-walk's inline ASCII fold cannot handle — i.e. any non-ASCII byte
+// (>= 0x80). For pure-ASCII input it returns name unchanged with zero
+// allocations, because appendSlugBody folds A-Z to a-z inline during its
+// keep-walk; the explicit core.Lower copy is then redundant.
+//
+// Byte-identicality with the prior unconditional core.Lower is preserved
+// by construction: the non-ASCII path still runs core.Lower (so any
+// Unicode rune whose lowercase is ASCII — e.g. U+212A KELVIN SIGN -> 'k'
+// — survives the keep-walk exactly as before), while the ASCII path can
+// only differ by lowercasing A-Z, which the inline fold reproduces.
+func lowerSlugName(name string) string {
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 {
+			return core.Lower(name)
+		}
+	}
+	return name
+}
+
+// appendSlugBody writes the canonical "NN-body" slug fragment into buf and
+// returns the extended slice. Caller is expected to have trimmed name (and
+// lowered it for non-ASCII input — see lowerSlugName) and pre-grown buf's
+// capacity via slugBodyCapHint when single-alloc behaviour matters. ASCII
+// uppercase is folded to lowercase inline so the keep set stays [a-z0-9].
+func appendSlugBody(buf []byte, index int, name string) []byte {
+	idx := index + 1
+	if idx < 10 {
+		buf = append(buf, '0')
+	}
+	buf = strconv.AppendInt(buf, int64(idx), 10)
+	buf = append(buf, '-')
+	prefixEnd := len(buf)
+	// Kept set is ASCII-only ([a-z0-9]); anything else folds to a single
+	// '-' (matches the original rune-loop semantics since UTF-8
+	// continuation bytes are 0x80-0xBF, above 'z'). Track first/last kept
+	// offsets relative to prefixEnd so the dash-trim is a compact-in-place
+	// slice op rather than a second TrimLeft/TrimRight pass.
+	firstKept := -1
+	lastKept := -1
+	lastDash := false
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			buf = append(buf, c)
+			rel := len(buf) - 1 - prefixEnd
+			if firstKept < 0 {
+				firstKept = rel
+			}
+			lastKept = rel
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			buf = append(buf, '-')
+			lastDash = true
+		}
+	}
+	if firstKept < 0 {
+		// No ASCII-kept bytes — emit the canonical "chapter-N" body
+		// straight into the existing buf rather than allocating a
+		// secondary string via defaultChapterSlug.
+		buf = append(buf[:prefixEnd], "chapter-"...)
+		return strconv.AppendInt(buf, int64(idx), 10)
+	}
+	// Compact the kept range back to prefixEnd in place — drops any
+	// leading/trailing dash padding without a second allocation.
+	if firstKept != 0 || prefixEnd+lastKept+1 != len(buf) {
+		copy(buf[prefixEnd:], buf[prefixEnd+firstKept:prefixEnd+lastKept+1])
+		buf = buf[:prefixEnd+(lastKept+1-firstKept)]
+	}
+	return buf
+}
+
+// defaultChapterSlug returns "chapter-N" without Sprintf boxing.
+func defaultChapterSlug(index int) string {
+	buf := make([]byte, 0, 8+20)
+	buf = append(buf, "chapter-"...)
+	buf = strconv.AppendInt(buf, int64(index+1), 10)
+	return core.AsString(buf)
+}
+
+func fileCount(dir string) int {
+	count := 0
+	for _, path := range core.PathGlob(core.PathJoin(dir, "*")) {
+		stat := core.Stat(path)
+		if !stat.OK {
+			continue
+		}
+		info := stat.Value.(core.FsFileInfo)
+		if !info.IsDir() {
+			count++
+		}
+	}
+	return count
+}
+
+func fileSize(path string) int64 {
+	stat := core.Stat(path)
+	if !stat.OK {
+		return 0
+	}
+	return stat.Value.(core.FsFileInfo).Size()
+}
+
+func nonZeroDuration(d time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return 0
+}
+
+func resultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return errCoreResultFailed
+}
+
+type countingStore struct {
+	store  state.Store
+	reads  int
+	unique map[int]struct{}
+}
+
+func newCountingStore(store state.Store) *countingStore {
+	return newCountingStoreHint(store, 0)
+}
+
+// newCountingStoreHint constructs a countingStore with the unique-chunk
+// dedup map pre-sized to expectedUnique. Callers that already know an upper
+// bound (e.g. bundle block count) use this to skip map-grow rehashes.
+func newCountingStoreHint(store state.Store, expectedUnique int) *countingStore {
+	return &countingStore{store: store, unique: make(map[int]struct{}, expectedUnique)}
+}
+
+func (s *countingStore) Get(ctx context.Context, chunkID int) (string, error) {
+	s.record(chunkID)
+	return s.store.Get(ctx, chunkID)
+}
+
+func (s *countingStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
+	s.record(chunkID)
+	return state.Resolve(ctx, s.store, chunkID)
+}
+
+func (s *countingStore) ResolveBytes(ctx context.Context, chunkID int) (state.Chunk, error) {
+	s.record(chunkID)
+	return state.ResolveBytes(ctx, s.store, chunkID)
+}
+
+func (s *countingStore) Reads() int {
+	if s == nil {
+		return 0
+	}
+	return s.reads
+}
+
+func (s *countingStore) UniqueReads() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.unique)
+}
+
+func (s *countingStore) record(chunkID int) {
+	// newCountingStore is the only constructor and it initialises
+	// s.unique, so the nil-guard is dead. Hot inner of every Get /
+	// Resolve / ResolveBytes — strip the branch.
+	s.reads++
+	s.unique[chunkID] = struct{}{}
+}

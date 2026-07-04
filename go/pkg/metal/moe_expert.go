@@ -1,0 +1,292 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import core "dappco.re/go"
+
+// MoESwiGLUExperts is the shared selected-expert SwiGLU dispatch used by
+// Qwen/Mixtral-style sparse MoE layers once routing has chosen expert IDs.
+type MoESwiGLUExperts struct {
+	GateProj *SwitchLinear
+	UpProj   *SwitchLinear
+	DownProj *SwitchLinear
+}
+
+func (e *MoESwiGLUExperts) Forward(input, expertIDs, routeWeights *Array) (*Array, bool) {
+	if !e.available(input, expertIDs, routeWeights) {
+		return nil, false
+	}
+
+	expanded1 := ExpandDims(input, 2)
+	expanded := ExpandDims(expanded1, 2)
+	Free(expanded1)
+
+	gate := e.GateProj.Forward(expanded, expertIDs)
+	up := e.UpProj.Forward(expanded, expertIDs)
+	Free(expanded)
+
+	activated := SiluGateMul(gate, up)
+	Free(gate, up)
+
+	down := e.DownProj.Forward(activated, expertIDs)
+	Free(activated)
+
+	downSqueezed := Squeeze(down, 3)
+	Free(down)
+
+	weightsExpanded := ExpandDims(routeWeights, 3)
+	weighted := Mul(weightsExpanded, downSqueezed)
+	Free(weightsExpanded, downSqueezed)
+
+	result := Sum(weighted, -2, false)
+	Free(weighted)
+	return result, true
+}
+
+// NewMoESwiGLUExpertsFromLinears builds the batched switch-expert layout from
+// per-expert gate/up/down Linears. Exported so models on the metal SDK (e.g.
+// metal/model/mixtral) can assemble sparse experts without reaching into the
+// unexported builder.
+func NewMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts, bool) {
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+}
+
+// FreeMoESwiGLUExperts releases the batched switch-expert arrays. Exported for
+// models on the metal SDK that own a MoESwiGLUExperts.
+func FreeMoESwiGLUExperts(e *MoESwiGLUExperts) { freeMoESwiGLUExperts(e) }
+
+// MoESwiGLUForward runs the selected-expert SwiGLU forward pass for one MoE
+// layer (router top-K → batched experts). Exported for models on the metal SDK.
+func MoESwiGLUForward(input *Array, router *MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
+	return moeSwiGLUForward(input, router, topK, experts)
+}
+
+// MoEDenseLayerTextReady reports whether one decoder layer's dense and (if
+// sparse) expert parts are populated for native text decode. Exported so SDK
+// models can implement MoETextRuntimeReporter without duplicating the walk.
+func MoEDenseLayerTextReady(dense *DenseDecoderLayer, isMoE bool, router *MoERouter, switchExperts *MoESwiGLUExperts) bool {
+	return moeDenseLayerTextReady(dense, isMoE, router, switchExperts)
+}
+
+// MoETextLayerParts describes one model-family layer in neutral sparse-MoE
+// terms for MoETextLayersRuntimeAvailable.
+type MoETextLayerParts struct {
+	Dense         *DenseDecoderLayer
+	IsMoE         bool
+	Router        *MoERouter
+	SwitchExperts *MoESwiGLUExperts
+	OK            bool
+}
+
+// MoETextLayersRuntimeAvailable reports whether every layer exposes the dense
+// and sparse-MoE parts required by native text decode.
+func MoETextLayersRuntimeAvailable[T any](layers []T, parts func(T) MoETextLayerParts) bool {
+	if len(layers) == 0 || parts == nil {
+		return false
+	}
+	for _, layer := range layers {
+		layerParts := parts(layer)
+		if !layerParts.OK {
+			return false
+		}
+		if !moeDenseLayerTextReady(layerParts.Dense, layerParts.IsMoE, layerParts.Router, layerParts.SwitchExperts) {
+			return false
+		}
+	}
+	return true
+}
+
+func newMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts, bool) {
+	gateSwitch, ok := newMoESwitchLinearFromLinears(gate)
+	if !ok {
+		return nil, false
+	}
+	upSwitch, ok := newMoESwitchLinearFromLinears(up)
+	if !ok {
+		FreeSwitchLinear(gateSwitch)
+		return nil, false
+	}
+	downSwitch, ok := newMoESwitchLinearFromLinears(down)
+	if !ok {
+		FreeSwitchLinear(gateSwitch)
+		FreeSwitchLinear(upSwitch)
+		return nil, false
+	}
+	return &MoESwiGLUExperts{
+		GateProj: gateSwitch,
+		UpProj:   upSwitch,
+		DownProj: downSwitch,
+	}, true
+}
+
+func newMoESwitchLinearFromLinears(linears []*Linear) (*SwitchLinear, bool) {
+	if len(linears) == 0 {
+		return nil, false
+	}
+
+	weights := make([]*Array, 0, len(linears))
+	scales := make([]*Array, 0, len(linears))
+	qbiases := make([]*Array, 0, len(linears))
+	biases := make([]*Array, 0, len(linears))
+	first := linears[0]
+	if first == nil || first.Weight == nil || !first.Weight.Valid() {
+		return nil, false
+	}
+	hasQuant := first.Scales != nil && first.Scales.Valid()
+	hasBias := first.Bias != nil && first.Bias.Valid()
+
+	for _, linear := range linears {
+		if !moeLinearStackCompatible(first, linear, hasQuant, hasBias) {
+			return nil, false
+		}
+		weights = append(weights, ExpandDims(linear.Weight, 0))
+		if hasQuant {
+			scales = append(scales, ExpandDims(linear.Scales, 0))
+			qbiases = append(qbiases, ExpandDims(linear.Biases, 0))
+		}
+		if hasBias {
+			biases = append(biases, ExpandDims(linear.Bias, 0))
+		}
+	}
+	defer Free(weights...)
+	defer Free(scales...)
+	defer Free(qbiases...)
+	defer Free(biases...)
+
+	weight := Concatenate(weights, 0)
+	var bias *Array
+	if hasBias {
+		bias = Concatenate(biases, 0)
+	}
+	if !hasQuant {
+		return NewSwitchLinear(weight, bias), true
+	}
+	scale := Concatenate(scales, 0)
+	qbias := Concatenate(qbiases, 0)
+	return NewQuantizedSwitchLinearWithMode(weight, scale, qbias, bias, first.GroupSize, first.Bits, first.QuantizationMode), true
+}
+
+func moeLinearStackCompatible(first, linear *Linear, hasQuant, hasBias bool) bool {
+	if linear == nil || linear.Weight == nil || !linear.Weight.Valid() {
+		return false
+	}
+	if !sameMoEArrayShape(first.Weight, linear.Weight) {
+		return false
+	}
+	if hasBias != (linear.Bias != nil && linear.Bias.Valid()) {
+		return false
+	}
+	if hasBias && !sameMoEArrayShape(first.Bias, linear.Bias) {
+		return false
+	}
+	if hasQuant != (linear.Scales != nil && linear.Scales.Valid()) {
+		return false
+	}
+	if !hasQuant {
+		return true
+	}
+	return linear.Biases != nil && linear.Biases.Valid() &&
+		first.GroupSize == linear.GroupSize &&
+		first.Bits == linear.Bits &&
+		NormalizeQuantizationMode(first.QuantizationMode) == NormalizeQuantizationMode(linear.QuantizationMode) &&
+		sameMoEArrayShape(first.Scales, linear.Scales) &&
+		sameMoEArrayShape(first.Biases, linear.Biases)
+}
+
+func sameMoEArrayShape(a, b *Array) bool {
+	if a == nil || b == nil || !a.Valid() || !b.Valid() {
+		return false
+	}
+	var aBuf, bBuf [MaxTensorRank]int32
+	aShape := a.ShapeInto(aBuf[:0])
+	bShape := b.ShapeInto(bBuf[:0])
+	if len(aShape) != len(bShape) {
+		return false
+	}
+	for i := range aShape {
+		if aShape[i] != bShape[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func freeMoESwiGLUExperts(e *MoESwiGLUExperts) {
+	if e == nil {
+		return
+	}
+	FreeSwitchLinear(e.GateProj)
+	FreeSwitchLinear(e.UpProj)
+	FreeSwitchLinear(e.DownProj)
+}
+
+func moeSwiGLUTopK(topK int) int {
+	if topK <= 0 {
+		return 0
+	}
+	return topK
+}
+
+func (e *MoESwiGLUExperts) available(input, expertIDs, routeWeights *Array) bool {
+	if e == nil || e.GateProj == nil || e.UpProj == nil || e.DownProj == nil {
+		return false
+	}
+	if input == nil || expertIDs == nil || routeWeights == nil {
+		return false
+	}
+	if !input.Valid() || !expertIDs.Valid() || !routeWeights.Valid() {
+		return false
+	}
+	var inputShapeBuf, idsShapeBuf, weightsShapeBuf [MaxTensorRank]int32
+	inputShape := input.ShapeInto(inputShapeBuf[:0])
+	idsShape := expertIDs.ShapeInto(idsShapeBuf[:0])
+	weightsShape := routeWeights.ShapeInto(weightsShapeBuf[:0])
+	if len(inputShape) != 3 || len(idsShape) != 3 || len(weightsShape) != 3 {
+		return false
+	}
+	return inputShape[0] == idsShape[0] &&
+		inputShape[1] == idsShape[1] &&
+		idsShape[0] == weightsShape[0] &&
+		idsShape[1] == weightsShape[1] &&
+		idsShape[2] == weightsShape[2]
+}
+
+func moeSwiGLUForward(input *Array, router *MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
+	expertIDs, routeWeights, ok, err := moeRouterTopK(input, router, moeSwiGLUTopK(topK))
+	if err != nil {
+		core.Error("mlx: MoE router selected-expert dispatch failed; falling back", "error", err)
+		return nil, false
+	}
+	if !ok {
+		return nil, false
+	}
+	defer Free(expertIDs, routeWeights)
+	return experts.Forward(input, expertIDs, routeWeights)
+}
+
+func moeRouterAvailable(router *MoERouter) bool {
+	return router != nil && router.Weight != nil && router.Weight.Valid()
+}
+
+func moeSwitchExpertsAvailable(experts *MoESwiGLUExperts) bool {
+	return experts != nil &&
+		experts.GateProj != nil &&
+		experts.UpProj != nil &&
+		experts.DownProj != nil
+}
+
+// moeDenseLayerTextReady reports whether a single decoder layer's dense and (if
+// applicable) sparse-expert parts are populated such that native text decode can
+// run. Shared by the qwen-family MoE models' MoETextRuntimeAvailable methods so
+// they need not duplicate the per-layer readiness walk.
+func moeDenseLayerTextReady(dense *DenseDecoderLayer, isMoE bool, router *MoERouter, switchExperts *MoESwiGLUExperts) bool {
+	if dense == nil {
+		return false
+	}
+	if isMoE {
+		return moeRouterAvailable(router) && moeSwitchExpertsAvailable(switchExperts)
+	}
+	return dense.MLP != nil
+}
