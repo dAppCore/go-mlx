@@ -7,6 +7,7 @@ package native
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/tokenizer"
 )
 
 // NativeTokenModel binds the no-cgo decode backend + the embed/head bookend
@@ -52,6 +53,12 @@ type NativeTokenModel struct {
 	diffusion *model.LoadedDiffusion
 	bf16      *BF16Model
 	quant     *QuantModel
+	// tok is the optional text tokenizer, mirroring pkg/metal Model's held
+	// tokenizer. It is nil unless attached (AttachTokenizer): the decode model
+	// works in token-id space, so text↔ids is a serve-boundary concern the
+	// caller wires. When set, the model satisfies the string-prompt
+	// inference.KVSnapshotter / KVChunkSnapshotter contracts directly.
+	tok *tokenizer.Tokenizer
 }
 
 type archSessionConfig struct {
@@ -79,6 +86,28 @@ const largeVariantAttentionHeads = 16
 // persistent cache) instead of re-decoding the whole sequence each token.
 func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) {
 	return m.openSession(m.shards, m.headEnc)
+}
+
+// AttachTokenizer binds the text tokenizer the string-prompt KV-capture
+// contracts need (inference.KVSnapshotter / KVChunkSnapshotter). It returns the
+// model so callers can chain it onto a constructor. Passing nil detaches.
+//
+//	tm := native.NewBF16TokenModel(g, arch, maxLen).AttachTokenizer(tok)
+func (m *NativeTokenModel) AttachTokenizer(tok *tokenizer.Tokenizer) *NativeTokenModel {
+	if m == nil {
+		return nil
+	}
+	m.tok = tok
+	return m
+}
+
+// Tokenizer returns the attached text tokenizer, or nil when the model works in
+// token-id space only (the default — the serve boundary owns text↔ids).
+func (m *NativeTokenModel) Tokenizer() *tokenizer.Tokenizer {
+	if m == nil {
+		return nil
+	}
+	return m.tok
 }
 
 func (m *NativeTokenModel) AcceptsImageInput() bool {
