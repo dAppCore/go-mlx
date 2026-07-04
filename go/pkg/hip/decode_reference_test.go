@@ -436,7 +436,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelGenerateUsesNativeAttachedRo
 	))
 
 	core.AssertEqual(t, []string{"ok"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"prompt"}, targetNative.attachedPrompts)
 	core.AssertEqual(t, 0, len(targetNative.generatePrompts))
 	core.AssertEqual(t, 4, targetNative.attachedConfigs[0].MaxTokens)
@@ -482,7 +482,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelOpenAIGreedyDefaultsUseNativ
 	))
 
 	core.AssertEqual(t, []string{"ok"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"prompt"}, targetNative.attachedPrompts)
 	core.AssertEqual(t, 0, len(targetNative.generatePrompts))
 	core.AssertEqual(t, float32(0), targetNative.attachedConfigs[0].Temperature)
@@ -517,7 +517,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelGenerateKeepsNativePairVisib
 	tokens := collectTokenText(model.Generate(context.Background(), "prompt", inference.WithMaxTokens(4)))
 
 	core.AssertEqual(t, []string{"ok"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"prompt"}, targetNative.attachedPrompts)
 	core.AssertEqual(t, 0, len(targetNative.generatePrompts))
 	core.AssertEqual(t, 0, len(draftNative.generatePrompts))
@@ -558,7 +558,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelGenerateUsesNativeAttachedWi
 	))
 
 	core.AssertEqual(t, []string{"ok"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, 0, len(targetNative.attachedStateInputs))
 	core.AssertEqual(t, []string{"new turn only"}, targetNative.attachedPrompts)
 	core.AssertEqual(t, 0, len(targetNative.generatePrompts))
@@ -649,7 +649,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelSeedsStateBeforeNativeAttach
 
 	core.AssertEqual(t, []string{"ok"}, first)
 	core.AssertEqual(t, []string{"ok"}, second)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"user:first turn\n"}, targetNative.attachedRetainedPrompts)
 	core.AssertEqual(t, 4, targetNative.attachedRetainedConfigs[0].MaxTokens)
 	core.AssertEqual(t, 1, len(targetNative.attachedRetainedStates))
@@ -720,7 +720,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelOpenAIGreedyDefaultsUseRetai
 
 	core.AssertEqual(t, []string{"ok"}, first)
 	core.AssertEqual(t, []string{"ok"}, second)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"user:first turn\n"}, targetNative.attachedRetainedPrompts)
 	core.AssertEqual(t, 4, targetNative.attachedRetainedConfigs[0].MaxTokens)
 	core.AssertEqual(t, []string{"user:second turn\n"}, targetNative.attachedStateInputs)
@@ -756,7 +756,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelUsesTargetRetainedStateWhenM
 	))
 
 	core.AssertEqual(t, []string{"target-only"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"new turn only"}, targetNative.generatePrompts)
 	core.AssertEqual(t, 4, targetNative.generateConfigs[0].MaxTokens)
 	core.AssertEqual(t, float32(0.7), targetNative.generateConfigs[0].Temperature)
@@ -787,7 +787,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelUsesTargetRetainedDecodeWhen
 	))
 
 	core.AssertEqual(t, []string{"fresh-target"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, []string{"first turn"}, targetNative.generatePrompts)
 	core.AssertEqual(t, 5, targetNative.generateConfigs[0].MaxTokens)
 	core.AssertEqual(t, float32(0.6), targetNative.generateConfigs[0].Temperature)
@@ -818,7 +818,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelRepeatPenaltyUsesReadyTarget
 	))
 
 	core.AssertEqual(t, []string{"plain"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, 0, len(targetNative.attachedPrompts))
 	core.AssertEqual(t, []string{"prompt"}, targetNative.generatePrompts)
 	core.AssertEqual(t, 4, targetNative.generateConfigs[0].MaxTokens)
@@ -831,7 +831,7 @@ func TestDecodeHelpers_Good_AttachedDrafterTextModelRepeatPenaltyUsesReadyTarget
 	))
 
 	core.AssertEqual(t, []string{"plain"}, tokens)
-	core.RequireNoError(t, model.Err())
+	core.RequireNoError(t, resultError(model.Err()))
 	core.AssertEqual(t, 5, targetNative.generateConfigs[1].MaxTokens)
 	core.AssertEqual(t, float32(0.03), targetNative.generateConfigs[1].MinP)
 	core.AssertEqual(t, float32(1.2), targetNative.generateConfigs[1].RepeatPenalty)
@@ -849,7 +849,7 @@ func TestDecodeHelpers_Bad_AttachedDrafterTextModelRejectsNotReadyNoFallback(t *
 	tokens := collectTokenText(model.Generate(context.Background(), "prompt", inference.WithMaxTokens(4)))
 
 	core.AssertEqual(t, []string{}, tokens)
-	core.AssertError(t, model.Err())
+	core.AssertError(t, resultError(model.Err()))
 	core.AssertContains(t, model.Err().Error(), "native HIP drafter generation is not linked yet")
 	core.AssertEqual(t, false, pair.NativeReady())
 }
@@ -1954,25 +1954,25 @@ func (*minimalDecodeTextModel) Chat(context.Context, []inference.Message, ...inf
 	return func(func(inference.Token) bool) {}
 }
 
-func (*minimalDecodeTextModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (*minimalDecodeTextModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (*minimalDecodeTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (*minimalDecodeTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (*minimalDecodeTextModel) Metrics() inference.GenerateMetrics {
 	return inference.GenerateMetrics{}
 }
 
-func (*minimalDecodeTextModel) Err() error { return nil }
+func (*minimalDecodeTextModel) Err() core.Result { return core.Ok(nil) }
 
 func (*minimalDecodeTextModel) ModelType() string { return "minimal" }
 
 func (*minimalDecodeTextModel) Info() inference.ModelInfo { return inference.ModelInfo{} }
 
-func (*minimalDecodeTextModel) Close() error { return nil }
+func (*minimalDecodeTextModel) Close() core.Result { return core.Ok(nil) }
 
 type decodeIdentityReporterModel struct {
 	minimalDecodeTextModel
@@ -2015,19 +2015,19 @@ func (*benchmarkDecodeTextModel) Chat(context.Context, []inference.Message, ...i
 	return func(func(inference.Token) bool) {}
 }
 
-func (*benchmarkDecodeTextModel) Classify(context.Context, []string, ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, nil
+func (*benchmarkDecodeTextModel) Classify(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.ClassifyResult(nil))
 }
 
-func (*benchmarkDecodeTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, nil
+func (*benchmarkDecodeTextModel) BatchGenerate(context.Context, []string, ...inference.GenerateOption) core.Result {
+	return core.Ok([]inference.BatchResult(nil))
 }
 
 func (*benchmarkDecodeTextModel) Metrics() inference.GenerateMetrics {
 	return inference.GenerateMetrics{}
 }
 
-func (model *benchmarkDecodeTextModel) Err() error { return model.err }
+func (model *benchmarkDecodeTextModel) Err() core.Result { return core.ResultOf(nil, model.err) }
 
 func (model *benchmarkDecodeTextModel) ModelType() string { return model.architecture }
 
@@ -2039,7 +2039,7 @@ func (model *benchmarkDecodeTextModel) Info() inference.ModelInfo {
 	return info
 }
 
-func (*benchmarkDecodeTextModel) Close() error { return nil }
+func (*benchmarkDecodeTextModel) Close() core.Result { return core.Ok(nil) }
 
 func gemma4DecodeE2BQ6Info() inference.ModelInfo {
 	return inference.ModelInfo{

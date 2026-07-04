@@ -167,17 +167,17 @@ func TestParserRegistry_Bad_RocmModelParseToolsRecordsErrAndSuccessClears_Bad(t 
 	_, err := model.ParseTools(nil, `<tool_call>{bad}</tool_call>`)
 
 	core.AssertError(t, err)
-	if model.Err() == nil {
+	if resultError(model.Err()) == nil {
 		t.Fatal("ParseTools failure Err() = nil")
 	}
-	core.AssertContains(t, model.Err().Error(), "parse JSON")
+	core.AssertContains(t, resultError(model.Err()).Error(), "parse JSON")
 
 	result, err := model.ParseTools(nil, `<tool_call>{"name":"search","arguments":{"q":"rocm"}}</tool_call>`)
 
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "search", result.Calls[0].Name)
-	if model.Err() != nil {
-		t.Fatalf("ParseTools success Err() = %v, want nil", model.Err())
+	if resultError(model.Err()) != nil {
+		t.Fatalf("ParseTools success Err() = %v, want nil", resultError(model.Err()))
 	}
 }
 
@@ -189,7 +189,7 @@ func TestParserRegistry_Good_RocmModelParseReasoningClearsStaleErr(t *testing.T)
 
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "y", result.VisibleText)
-	if model.Err() != nil {
-		t.Fatalf("ParseReasoning success Err() = %v, want nil", model.Err())
+	if resultError(model.Err()) != nil {
+		t.Fatalf("ParseReasoning success Err() = %v, want nil", resultError(model.Err()))
 	}
 }

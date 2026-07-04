@@ -1692,16 +1692,16 @@ func TestStateSession_Bad_RocmModelRestoreStateRecordsErr(t *testing.T) {
 	err := model.RestoreState(context.Background(), nil)
 
 	core.AssertError(t, err)
-	if model.Err() == nil {
+	if resultError(model.Err()) == nil {
 		t.Fatal("RestoreState failure Err() = nil")
 	}
-	core.AssertContains(t, model.Err().Error(), "state bundle is nil")
+	core.AssertContains(t, resultError(model.Err()).Error(), "state bundle is nil")
 
 	err = model.RestoreState(context.Background(), &inference.StateBundle{Model: inference.ModelIdentity{Architecture: "qwen3"}})
 
 	core.RequireNoError(t, err)
-	if model.Err() != nil {
-		t.Fatalf("RestoreState success Err() = %v, want nil", model.Err())
+	if resultError(model.Err()) != nil {
+		t.Fatalf("RestoreState success Err() = %v, want nil", resultError(model.Err()))
 	}
 }
 
@@ -1795,7 +1795,7 @@ func TestStateSession_Good_RocmModelWakeStateRemirrorsKVSnapshotToHIPDevice(t *t
 	core.AssertEqual(t, "device_mirror", sleep.Labels["kv_serialize"])
 	core.AssertEqual(t, "hip_device_mirror", sleep.Labels["kv_backing"])
 
-	core.RequireNoError(t, model.Close())
+	core.RequireNoError(t, resultError(model.Close()))
 	core.AssertEqual(t, true, device.closed)
 }
 
@@ -1969,7 +1969,7 @@ func TestStateSession_Good_RocmModelCloseClosesStateWithoutNative(t *testing.T) 
 	core.RequireNoError(t, err)
 	model := &rocmModel{state: newStateSessionWithRuntime(inference.ModelIdentity{}, inference.TokenizerIdentity{}, nil, device)}
 
-	err = model.Close()
+	err = resultError(model.Close())
 
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, true, device.closed)

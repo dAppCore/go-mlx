@@ -374,7 +374,7 @@ func TestHIPGemma4Q4Layer0_Good(t *testing.T) {
 	core.RequireTrue(t, ok)
 	core.AssertEqual(t, false, statefulRuntime.closed)
 	core.AssertEqual(t, len(decodeCfg.Layers), statefulRuntime.LayerCount())
-	core.RequireNoError(t, statefulModel.Close())
+	core.RequireNoError(t, resultError(statefulModel.Close()))
 
 	tokenText := &hipTokenTextDecoder{
 		vocab: map[string]int32{

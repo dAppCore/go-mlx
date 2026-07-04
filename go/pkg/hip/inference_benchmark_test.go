@@ -2302,7 +2302,7 @@ func BenchmarkInferenceGemma4Q4Generate_Ladder(b *testing.B) {
 		b.Fatal(err)
 	}
 	nativeRuntime, kernelCounter := inferenceBenchmarkNativeRuntimeAndKernelCounter()
-	model, err := newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen))
+	model, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen)))
 	if err != nil {
 		b.Fatalf("LoadModel(%q): %v", modelPath, err)
 	}
@@ -2353,7 +2353,7 @@ func BenchmarkInferenceGemma4Q4PromptPrefillUBatchLadder(b *testing.B) {
 		b.Fatal(err)
 	}
 	nativeRuntime, kernelCounter := inferenceBenchmarkNativeRuntimeAndKernelCounter()
-	model, err := newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen))
+	model, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen)))
 	if err != nil {
 		b.Fatalf("LoadModel(%q): %v", modelPath, err)
 	}
@@ -2930,7 +2930,7 @@ func inferenceBenchmarkRunBookReplay(ctx context.Context, model inference.TextMo
 		}
 		turnWall := time.Since(turnStart)
 		allocBytes, allocs := inferenceBenchmarkAllocDelta(allocBefore, inferenceBenchmarkAllocSnapshot())
-		if err := model.Err(); err != nil {
+		if err := resultError(model.Err()); err != nil {
 			cancel()
 			return inferenceBenchmarkFinalizeFailedBookRun(run, time.Since(start), err), err
 		}
@@ -4529,7 +4529,7 @@ func benchmarkInferenceGemma4Q4Generate(b *testing.B) {
 	outputPath := strings.TrimSpace(os.Getenv("GO_ROCM_BENCH_OUTPUT_FILE"))
 
 	nativeRuntime, kernelCounter := inferenceBenchmarkNativeRuntimeAndKernelCounter()
-	model, err := newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen))
+	model, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen)))
 	if err != nil {
 		b.Fatalf("LoadModel(%q): %v", modelPath, err)
 	}
@@ -4578,7 +4578,7 @@ func inferenceBenchmarkRunGemma4Q4GenerateLoaded(b *testing.B, model inference.T
 					generatedText.WriteString(token.Text)
 				}
 			}
-			if err := model.Err(); err != nil {
+			if err := resultError(model.Err()); err != nil {
 				b.Fatalf("Generate: %v", err)
 			}
 		}
@@ -4700,7 +4700,7 @@ func inferenceBenchmarkLoadGemma4Q4ModelWithKernelCounter(b *testing.B, contextL
 		b.Skip("set GO_ROCM_PRODUCTION_MODEL_PATH or GO_ROCM_MODEL_PATH to a local Gemma4 q6/q8/q4 MLX affine model pack")
 	}
 	nativeRuntime, kernelCounter := inferenceBenchmarkNativeRuntimeAndKernelCounter()
-	model, err := newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen))
+	model, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(nativeRuntime).LoadModel(modelPath, inference.WithContextLen(contextLen)))
 	if err != nil {
 		b.Fatalf("LoadModel(%q): %v", modelPath, err)
 	}
@@ -4962,7 +4962,7 @@ func inferenceBenchmarkCloseModel(b *testing.B, model inference.TextModel) {
 	if model == nil || os.Getenv("GO_ROCM_BENCH_SKIP_MODEL_CLOSE") == "1" {
 		return
 	}
-	if err := model.Close(); err != nil {
+	if err := resultError(model.Close()); err != nil {
 		b.Fatalf("close benchmark model: %v", err)
 	}
 }

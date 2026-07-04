@@ -32,14 +32,14 @@ func Example_rocmModelChat() {
 }
 
 func Example_rocmModelClassify() {
-	_, err := exampleModel().Classify(context.Background(), []string{"x"})
-	core.Println(err != nil)
+	r := exampleModel().Classify(context.Background(), []string{"x"})
+	core.Println(!r.OK)
 	// Output: true
 }
 
 func Example_rocmModelBatchGenerate() {
-	_, err := exampleModel().BatchGenerate(context.Background(), []string{"x"})
-	core.Println(err != nil)
+	r := exampleModel().BatchGenerate(context.Background(), []string{"x"})
+	core.Println(!r.OK)
 	// Output: true
 }
 
@@ -48,5 +48,5 @@ func Example_rocmModelInfo()      { core.Println(exampleModel().Info().Architect
 func Example_rocmModelMetrics() {
 	core.Println(exampleModel().Metrics().GeneratedTokens) /* Output: 0 */
 }
-func Example_rocmModelErr()   { core.Println(exampleModel().Err() == nil) /* Output: true */ }
-func Example_rocmModelClose() { core.Println(exampleModel().Close() == nil) /* Output: true */ }
+func Example_rocmModelErr()   { core.Println(exampleModel().Err().OK) /* Output: true */ }
+func Example_rocmModelClose() { core.Println(exampleModel().Close().OK) /* Output: true */ }

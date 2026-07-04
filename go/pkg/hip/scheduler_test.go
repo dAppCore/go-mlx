@@ -382,12 +382,12 @@ func TestScheduler_Good_NonGemmaSamplerKeepsDefaultMaxTokens(t *testing.T) {
 func TestScheduler_Bad_GenerateClosedSchedulerSetsErr(t *testing.T) {
 	model, err := NewScheduledModel(&schedulerFakeTextModel{tokens: []inference.Token{{Text: "ok"}}}, SchedulerConfig{QueueSize: 1})
 	core.RequireNoError(t, err)
-	core.RequireNoError(t, model.Close())
+	core.RequireNoError(t, resultError(model.Close()))
 
 	tokens := collectTokenText(model.Generate(context.Background(), "closed"))
 
 	core.AssertEqual(t, []string{}, tokens)
-	core.AssertError(t, model.Err())
+	core.AssertError(t, resultError(model.Err()))
 	core.AssertContains(t, model.Err().Error(), "scheduler is closed")
 }
 
@@ -403,22 +403,22 @@ func TestScheduler_Good_NonStreamingDelegatesClearSchedulerErr(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	core.AssertEqual(t, []string{}, collectTokenText(model.Generate(ctx, "cancelled")))
-	core.AssertError(t, model.Err())
+	core.AssertError(t, resultError(model.Err()))
 
-	classified, err := model.Classify(context.Background(), []string{"prompt"})
+	classified, err := resultValue[[]inference.ClassifyResult](model.Classify(context.Background(), []string{"prompt"}))
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "yes", classified[0].Token.Text)
-	core.AssertNil(t, model.Err())
+	core.AssertNil(t, resultError(model.Err()))
 
 	ctx, cancel = context.WithCancel(context.Background())
 	cancel()
 	core.AssertEqual(t, []string{}, collectTokenText(model.Generate(ctx, "cancelled-again")))
-	core.AssertError(t, model.Err())
+	core.AssertError(t, resultError(model.Err()))
 
-	batches, err := model.BatchGenerate(context.Background(), []string{"prompt"})
+	batches, err := resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), []string{"prompt"}))
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "batch", batches[0].Tokens[0].Text)
-	core.AssertNil(t, model.Err())
+	core.AssertNil(t, resultError(model.Err()))
 }
 
 func TestScheduler_Good_NonStreamingDelegateResultsCloned(t *testing.T) {
@@ -435,9 +435,9 @@ func TestScheduler_Good_NonStreamingDelegateResultsCloned(t *testing.T) {
 	core.RequireNoError(t, err)
 	defer model.Close()
 
-	classified, err := model.Classify(context.Background(), []string{"prompt"}, inference.WithLogits())
+	classified, err := resultValue[[]inference.ClassifyResult](model.Classify(context.Background(), []string{"prompt"}, inference.WithLogits()))
 	core.RequireNoError(t, err)
-	batches, err := model.BatchGenerate(context.Background(), []string{"prompt"})
+	batches, err := resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), []string{"prompt"}))
 	core.RequireNoError(t, err)
 
 	classified[0].Logits[0] = 99
@@ -458,11 +458,11 @@ func TestScheduler_Good_NonStreamingDelegateInputsCloned(t *testing.T) {
 	defer model.Close()
 	prompts := []string{"prompt"}
 
-	_, err = model.Classify(context.Background(), prompts)
+	_, err = resultValue[[]inference.ClassifyResult](model.Classify(context.Background(), prompts))
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "prompt", prompts[0])
 
-	_, err = model.BatchGenerate(context.Background(), prompts)
+	_, err = resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), prompts))
 	core.RequireNoError(t, err)
 	core.AssertEqual(t, "prompt", prompts[0])
 }
@@ -476,11 +476,11 @@ func TestScheduler_Bad_NonStreamingDelegatesRecordErr(t *testing.T) {
 	core.RequireNoError(t, err)
 	defer model.Close()
 
-	_, err = model.Classify(context.Background(), []string{"prompt"})
+	_, err = resultValue[[]inference.ClassifyResult](model.Classify(context.Background(), []string{"prompt"}))
 	core.AssertError(t, err)
 	core.AssertContains(t, model.Err().Error(), "classify failed")
 
-	_, err = model.BatchGenerate(context.Background(), []string{"prompt"})
+	_, err = resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), []string{"prompt"}))
 	core.AssertError(t, err)
 	core.AssertContains(t, model.Err().Error(), "batch failed")
 }
@@ -496,14 +496,14 @@ func TestScheduler_Bad_NonStreamingDelegatesPreferCancelledContext(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	classify, err := model.Classify(ctx, []string{"prompt"})
+	classify, err := resultValue[[]inference.ClassifyResult](model.Classify(ctx, []string{"prompt"}))
 
 	core.AssertNil(t, classify)
 	core.AssertError(t, err)
 	core.AssertContains(t, err.Error(), "context canceled")
 	core.AssertContains(t, model.Err().Error(), "context canceled")
 
-	batch, err := model.BatchGenerate(ctx, []string{"prompt"})
+	batch, err := resultValue[[]inference.BatchResult](model.BatchGenerate(ctx, []string{"prompt"}))
 
 	core.AssertNil(t, batch)
 	core.AssertError(t, err)
@@ -522,7 +522,7 @@ func TestScheduler_Bad_BatchGenerateRecordsPerPromptErr(t *testing.T) {
 	core.RequireNoError(t, err)
 	defer model.Close()
 
-	results, err := model.BatchGenerate(context.Background(), []string{"ok", "bad"})
+	results, err := resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), []string{"ok", "bad"}))
 
 	core.RequireNoError(t, err)
 	if len(results) != 2 || results[1].Err == nil {
@@ -548,7 +548,7 @@ func TestScheduler_Good_CancelsBeforeStart(t *testing.T) {
 	cancelled, err := model.CancelRequest(context.Background(), "second")
 	core.RequireNoError(t, err)
 	core.AssertTrue(t, cancelled.Cancelled)
-	core.AssertNil(t, model.Err())
+	core.AssertNil(t, resultError(model.Err()))
 	close(release)
 
 	core.AssertEqual(t, []string{"first"}, collectScheduledTokenText(first))
@@ -570,7 +570,7 @@ func TestScheduler_Good_CancelsDuringDecode(t *testing.T) {
 	cancelled, err := model.CancelRequest(context.Background(), "decode")
 	core.RequireNoError(t, err)
 	core.AssertTrue(t, cancelled.Cancelled)
-	core.AssertNil(t, model.Err())
+	core.AssertNil(t, resultError(model.Err()))
 	remaining := collectScheduledTokenText(stream)
 	if len(remaining) >= 2 {
 		t.Fatalf("remaining tokens = %+v, want cancellation before full decode", remaining)
@@ -602,21 +602,21 @@ func TestScheduler_Bad_NilWrappedModelRecordsErr(t *testing.T) {
 	core.AssertEqual(t, []string{}, collectTokenText(model.Chat(context.Background(), nil)))
 	core.AssertContains(t, model.Err().Error(), "scheduled model is nil")
 
-	_, err = model.Classify(context.Background(), []string{"prompt"})
+	_, err = resultValue[[]inference.ClassifyResult](model.Classify(context.Background(), []string{"prompt"}))
 	core.AssertError(t, err)
 	core.AssertContains(t, model.Err().Error(), "scheduled model is nil")
 
-	_, err = model.BatchGenerate(context.Background(), []string{"prompt"})
+	_, err = resultValue[[]inference.BatchResult](model.BatchGenerate(context.Background(), []string{"prompt"}))
 	core.AssertError(t, err)
 	core.AssertContains(t, model.Err().Error(), "scheduled model is nil")
 
-	core.RequireNoError(t, model.Close())
+	core.RequireNoError(t, resultError(model.Close()))
 }
 
 func TestScheduler_Bad_RejectsClosedScheduler(t *testing.T) {
 	model, err := NewScheduledModel(&schedulerFakeTextModel{tokens: []inference.Token{{Text: "ok"}}}, SchedulerConfig{QueueSize: 1})
 	core.RequireNoError(t, err)
-	core.RequireNoError(t, model.Close())
+	core.RequireNoError(t, resultError(model.Close()))
 
 	_, stream, err := model.Schedule(context.Background(), inference.ScheduledRequest{ID: "closed", Prompt: "x"})
 
@@ -633,8 +633,8 @@ func TestScheduler_Good_CloseIsIdempotent(t *testing.T) {
 	model, err := NewScheduledModel(fake, SchedulerConfig{QueueSize: 1})
 	core.RequireNoError(t, err)
 
-	core.RequireNoError(t, model.Close())
-	core.RequireNoError(t, model.Close())
+	core.RequireNoError(t, resultError(model.Close()))
+	core.RequireNoError(t, resultError(model.Close()))
 
 	core.AssertEqual(t, 1, fake.closeCalls)
 }
@@ -730,7 +730,7 @@ func TestScheduler_Good_DelegatesUnknownCancelToBaseModel(t *testing.T) {
 	core.AssertTrue(t, cancelled.Cancelled)
 	core.AssertEqual(t, "external", fake.cancelledID)
 	core.AssertEqual(t, "base_cancelled", cancelled.Reason)
-	core.AssertNil(t, model.Err())
+	core.AssertNil(t, resultError(model.Err()))
 }
 
 func TestScheduler_Bad_CancelRequestRecordsErr(t *testing.T) {
@@ -877,17 +877,17 @@ func (m *schedulerFakeTextModel) stream(ctx context.Context, prompt string, opts
 	}
 }
 
-func (m *schedulerFakeTextModel) Classify(_ context.Context, prompts []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (m *schedulerFakeTextModel) Classify(_ context.Context, prompts []string, _ ...inference.GenerateOption) core.Result {
 	if m.mutatePromptInputs && len(prompts) > 0 {
 		prompts[0] = "mutated"
 	}
-	return m.classifyResults, m.classifyErr
+	return core.ResultOf(m.classifyResults, m.classifyErr)
 }
-func (m *schedulerFakeTextModel) BatchGenerate(_ context.Context, prompts []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (m *schedulerFakeTextModel) BatchGenerate(_ context.Context, prompts []string, _ ...inference.GenerateOption) core.Result {
 	if m.mutatePromptInputs && len(prompts) > 0 {
 		prompts[0] = "mutated"
 	}
-	return m.batchResults, m.batchErr
+	return core.ResultOf(m.batchResults, m.batchErr)
 }
 func (m *schedulerFakeTextModel) Encode(prompt string) []int32 {
 	m.mu.Lock()
@@ -925,16 +925,16 @@ func (m *schedulerFakeTextModel) Metrics() inference.GenerateMetrics {
 	defer m.mu.Unlock()
 	return m.lastMetrics
 }
-func (m *schedulerFakeTextModel) Err() error {
+func (m *schedulerFakeTextModel) Err() core.Result {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.lastError
+	return core.ResultOf(nil, m.lastError)
 }
-func (m *schedulerFakeTextModel) Close() error {
+func (m *schedulerFakeTextModel) Close() core.Result {
 	m.mu.Lock()
 	m.closeCalls++
 	m.mu.Unlock()
-	return nil
+	return core.Ok(nil)
 }
 
 func (m *schedulerFakeTextModel) CancelRequest(_ context.Context, id string) (inference.RequestCancelResult, error) {

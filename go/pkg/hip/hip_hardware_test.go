@@ -52,7 +52,7 @@ func TestNativeDecodeSmokeKernelStatus_Good(t *testing.T) {
 		t.Skip("set GO_ROCM_MODEL_PATH to a local GGUF model or safetensors model pack for ROCm model smoke tests")
 	}
 
-	model, err := newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(modelPath, inference.WithContextLen(128))
+	model, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(modelPath, inference.WithContextLen(128)))
 	if err != nil {
 		t.Fatalf("LoadModel(%q): %v", modelPath, err)
 	}
@@ -67,7 +67,7 @@ func TestNativeDecodeSmokeKernelStatus_Good(t *testing.T) {
 	if !linkedGemma4Generate {
 		for range model.Generate(context.Background(), "hello", inference.WithMaxTokens(1)) {
 		}
-		err = model.Err()
+		err = resultError(model.Err())
 		if err == nil || !core.Contains(err.Error(), "native decode kernels are not linked yet") {
 			t.Fatalf("Generate error = %v, want explicit native decode kernel status", err)
 		}
@@ -187,13 +187,13 @@ func TestNativeAttachedDrafterGenerateSmoke_Good(t *testing.T) {
 	}
 	pairClosed = true
 
-	referenceModel, err := newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(targetPath, inference.WithContextLen(defaultContextLengthCap))
+	referenceModel, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(targetPath, inference.WithContextLen(defaultContextLengthCap)))
 	if err != nil {
 		t.Fatalf("LoadModel reference target %q: %v", targetPath, err)
 	}
 	defer referenceModel.Close()
 	targetText := strings.Join(collectTokenText(referenceModel.Generate(context.Background(), prompt, inference.WithMaxTokens(maxTokens), inference.WithTemperature(0))), "")
-	if err := referenceModel.Err(); err != nil {
+	if err := resultError(referenceModel.Err()); err != nil {
 		t.Fatalf("reference target Generate(%q): %v", prompt, err)
 	}
 	if targetText == "" {
@@ -221,13 +221,13 @@ func assertNativeAttachedDrafterTargetARMatchStable(t *testing.T, targetPath, dr
 
 func loadNativeAttachedDrafterReferenceText(t *testing.T, targetPath, prompt string, maxTokens int) string {
 	t.Helper()
-	referenceModel, err := newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(targetPath, inference.WithContextLen(defaultContextLengthCap))
+	referenceModel, err := resultValue[inference.TextModel](newROCmBackendWithRuntime(newSystemNativeRuntime()).LoadModel(targetPath, inference.WithContextLen(defaultContextLengthCap)))
 	if err != nil {
 		t.Fatalf("LoadModel reference target %q: %v", targetPath, err)
 	}
 	defer referenceModel.Close()
 	targetText := strings.Join(collectTokenText(referenceModel.Generate(context.Background(), prompt, inference.WithMaxTokens(maxTokens), inference.WithTemperature(0))), "")
-	if err := referenceModel.Err(); err != nil {
+	if err := resultError(referenceModel.Err()); err != nil {
 		t.Fatalf("reference target Generate(%q): %v", prompt, err)
 	}
 	if targetText == "" {
@@ -878,7 +878,7 @@ func assertLoadedGemma4Q4PublicGenerateSmoke(t *testing.T, textModel inference.T
 	for token := range textModel.Generate(context.Background(), prompt, inference.WithMaxTokens(tokenCount)) {
 		generated = append(generated, token)
 	}
-	if err := textModel.Err(); err != nil {
+	if err := resultError(textModel.Err()); err != nil {
 		t.Fatalf("Gemma4 q4 public Generate(%q) error = %v", prompt, err)
 	}
 	if len(generated) != tokenCount {
@@ -903,7 +903,7 @@ func assertLoadedGemma4Q4PublicGenerateSmoke(t *testing.T, textModel inference.T
 	if !strings.Contains(prompt, ":") && metrics.PromptTokens != len(promptTokens) {
 		t.Fatalf("Gemma4 q4 public Generate metrics prompt=%d, want tokenizer prompt length %d", metrics.PromptTokens, len(promptTokens))
 	}
-	batch, err := textModel.BatchGenerate(context.Background(), []string{prompt}, inference.WithMaxTokens(1))
+	batch, err := resultValue[[]inference.BatchResult](textModel.BatchGenerate(context.Background(), []string{prompt}, inference.WithMaxTokens(1)))
 	if err != nil {
 		t.Fatalf("Gemma4 q4 public BatchGenerate: %v", err)
 	}
@@ -916,15 +916,15 @@ func assertLoadedGemma4Q4PublicGenerateSmoke(t *testing.T, textModel inference.T
 	if batchMetrics.GeneratedTokens != 1 || batchMetrics.PromptTokens != len(promptTokens) {
 		t.Fatalf("Gemma4 q4 public BatchGenerate metrics = %+v, want one generated token and %d prompt tokens", batchMetrics, len(promptTokens))
 	}
-	badBatch, err := textModel.BatchGenerate(context.Background(), []string{"text:"}, inference.WithMaxTokens(1))
+	badBatch, err := resultValue[[]inference.BatchResult](textModel.BatchGenerate(context.Background(), []string{"text:"}, inference.WithMaxTokens(1)))
 	if err != nil {
 		t.Fatalf("Gemma4 q4 public BatchGenerate invalid text prompt top-level error = %v, want per-prompt error", err)
 	}
 	if len(badBatch) != 1 || badBatch[0].Err == nil || !strings.Contains(badBatch[0].Err.Error(), "text prompt must contain prompt text") {
 		t.Fatalf("Gemma4 q4 public BatchGenerate invalid text prompt = %+v, want per-prompt text prompt error", badBatch)
 	}
-	if textModel.Err() == nil || !strings.Contains(textModel.Err().Error(), "text prompt must contain prompt text") {
-		t.Fatalf("Gemma4 q4 public BatchGenerate Err() = %v, want per-prompt text prompt error", textModel.Err())
+	if resultError(textModel.Err()) == nil || !strings.Contains(resultError(textModel.Err()).Error(), "text prompt must contain prompt text") {
+		t.Fatalf("Gemma4 q4 public BatchGenerate Err() = %v, want per-prompt text prompt error", resultError(textModel.Err()))
 	}
 	chatMessages := []inference.Message{{Role: "user", Content: "Hi"}}
 	chatPrompt, err := loaded.ApplyChatTemplate(chatMessages)
@@ -939,7 +939,7 @@ func assertLoadedGemma4Q4PublicGenerateSmoke(t *testing.T, textModel inference.T
 	for token := range textModel.Chat(context.Background(), chatMessages, inference.WithMaxTokens(1)) {
 		chatTokens = append(chatTokens, token)
 	}
-	if err := textModel.Err(); err != nil {
+	if err := resultError(textModel.Err()); err != nil {
 		t.Fatalf("Gemma4 q4 public Chat: %v", err)
 	}
 	if len(chatTokens) != 1 ||
@@ -958,7 +958,7 @@ func assertLoadedGemma4Q4PublicGenerateSmoke(t *testing.T, textModel inference.T
 			classifyEvents = append(classifyEvents, event)
 		}))
 	}
-	classify, err := textModel.Classify(context.Background(), []string{"Hi"}, inference.WithLogits())
+	classify, err := resultValue[[]inference.ClassifyResult](textModel.Classify(context.Background(), []string{"Hi"}, inference.WithLogits()))
 	if err != nil {
 		t.Fatalf("Gemma4 q4 public Classify: %v", err)
 	}
