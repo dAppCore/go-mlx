@@ -281,18 +281,18 @@ func (b *rocmBackend) LoadAttachedDrafterPair(targetPath, draftPath string, cfg 
 	}
 	draft, err := b.loadAttachedDrafterModel(draftPath, cfg.DraftROCmConfig, cfg.DraftOptions, true)
 	if err != nil {
-		if closeErr := target.Close(); closeErr != nil {
-			err = core.ErrorJoin(err, closeErr)
+		if closeErr := target.Close(); !closeErr.OK {
+			err = core.ErrorJoin(err, closeErr.Value.(error))
 		}
 		return nil, core.E("rocm.LoadAttachedDrafterPair", "load draft", err)
 	}
 	pair, err := NewAttachedDrafterPair(target, draft)
 	if err != nil {
-		if closeErr := target.Close(); closeErr != nil {
-			err = core.ErrorJoin(err, closeErr)
+		if closeErr := target.Close(); !closeErr.OK {
+			err = core.ErrorJoin(err, closeErr.Value.(error))
 		}
-		if closeErr := draft.Close(); closeErr != nil {
-			err = core.ErrorJoin(err, closeErr)
+		if closeErr := draft.Close(); !closeErr.OK {
+			err = core.ErrorJoin(err, closeErr.Value.(error))
 		}
 		return nil, core.E("rocm.LoadAttachedDrafterPair", "validate pair", err)
 	}
@@ -583,8 +583,8 @@ func (generator rocmDecodeGenerator) Generate(ctx context.Context, prompt string
 	for token := range generator.model.Generate(ctx, prompt, opts...) {
 		tokens = append(tokens, rocmDecodeToken(token))
 	}
-	if err := generator.model.Err(); err != nil {
-		return inferdecode.Generation{}, core.E("rocm.Decode.Generate", "model generation failed", err)
+	if r := generator.model.Err(); !r.OK {
+		return inferdecode.Generation{}, core.E("rocm.Decode.Generate", "model generation failed", r.Value.(error))
 	}
 	return inferdecode.Generation{Tokens: tokens, Text: inferdecode.TokensText(tokens)}, nil
 }
