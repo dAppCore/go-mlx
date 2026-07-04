@@ -16,9 +16,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/inference/anthropic"
-	"dappco.re/go/inference/ollama"
-	openaicompat "dappco.re/go/inference/openai"
+	"dappco.re/go/inference/provider/anthropic"
+	"dappco.re/go/inference/provider/ollama"
+	openaicompat "dappco.re/go/inference/provider/openai"
 )
 
 func TestCoverage_NativeFallbackHelpers_Good(t *testing.T) {
