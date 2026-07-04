@@ -21,7 +21,14 @@ func TestMlx_GC_Good(t *testing.T) {
 
 func TestMlx_GC_Bad(t *testing.T) {
 	got := goFilesContaining(t, "run"+"time.GC(")
-	want := []string{"pkg/metal/gc.go"}
+	// pkg/hip is the go-rocm quarantine, preserved verbatim: its benchmark
+	// flushes the heap before writing an allocs pprof profile and must not
+	// couple to pkg/metal's wrapper. Revisit when hip migrates to
+	// go-inference/engine/hip.
+	want := []string{
+		"pkg/hip/inference_benchmark_test.go",
+		"pkg/metal/gc.go",
+	}
 	if core.Join("\n", got...) != core.Join("\n", want...) {
 		t.Fatalf("direct GC callsites = %v, want %v", got, want)
 	}
