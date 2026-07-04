@@ -11,7 +11,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 	mlxbundle "dappco.re/go/inference/bundle"
 	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/inference/kv"

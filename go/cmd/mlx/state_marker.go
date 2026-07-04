@@ -4,7 +4,7 @@ package main
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 )
 
 // The session-state compact-marker helpers below were recovered from the deleted

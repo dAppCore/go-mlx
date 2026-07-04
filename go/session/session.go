@@ -12,7 +12,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/inference/bundle"
 	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/pkg/metal"

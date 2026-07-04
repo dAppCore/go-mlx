@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/mlx/session"
 )
 

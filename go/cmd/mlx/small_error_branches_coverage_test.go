@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 )
 
 // writeAdminToken with a parent that is a regular FILE trips MkdirAll (the

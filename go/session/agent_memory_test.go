@@ -9,7 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/inference/kv"
 	"dappco.re/go/mlx/pkg/metal"

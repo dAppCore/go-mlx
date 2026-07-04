@@ -12,7 +12,7 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/mlx/agent"
+	"dappco.re/go/inference/state/agent"
 )
 
 // Sinks defeat compiler DCE.
