@@ -29,7 +29,7 @@ func (turboQuantCacheScheme) NewCache(p CacheParams) Cache {
 	return NewTurboQuantKVCache(p.MaxSize, p.PageSize)
 }
 
-func init() { scheme.RegisterCache(turboQuantCacheScheme{}) }
+func init() { registerCachePreservingWidth(turboQuantCacheScheme{}) }
 
 // compile-time proof turboQuantCacheScheme is a full metal.CacheCompute.
 var _ CacheCompute = turboQuantCacheScheme{}

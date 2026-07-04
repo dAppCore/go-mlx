@@ -562,8 +562,8 @@ func (compactionFullCacheScheme) NewCache(p CacheParams) Cache {
 }
 
 func init() {
-	scheme.RegisterCache(compactionCacheScheme{})
-	scheme.RegisterCache(compactionFullCacheScheme{})
+	registerCachePreservingWidth(compactionCacheScheme{})
+	registerCachePreservingWidth(compactionFullCacheScheme{})
 }
 
 // compile-time proof both schemes are full metal.CacheCompute, and

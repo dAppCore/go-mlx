@@ -56,8 +56,39 @@ func init() {
 		{"q8", func(p CacheParams) Cache { return NewQuantizedKVCache(p.MaxSize, 8, 8) }},
 		{"k-q8-v-q4", func(p CacheParams) Cache { return NewQuantizedKVCache(p.MaxSize, 8, 4) }},
 	} {
-		scheme.RegisterCache(s)
+		registerCachePreservingWidth(s)
 	}
+}
+
+// widthPreservingCacheScheme carries a driver compute value together with the
+// width the mode's PRIOR registration declared — RegisterCache overwrites by
+// mode, and a compute value without scheme.CacheWidth would strip the
+// per-element byte ratio the memory planner sizes from (the turboquant
+// width-stripping bug class, caught upstream in inference/kv).
+type widthPreservingCacheScheme struct {
+	CacheCompute
+	width scheme.CacheWidth
+}
+
+func (w widthPreservingCacheScheme) KVBytesPerElement() (uint64, uint64, bool) {
+	return w.width.KVBytesPerElement()
+}
+
+// registerCachePreservingWidth registers a driver cache scheme, forwarding
+// the prior registration's scheme.CacheWidth when the driver value lacks its
+// own. Modes with no prior width (compaction, mla-latent) register as-is.
+func registerCachePreservingWidth(c CacheCompute) {
+	if _, hasWidth := c.(scheme.CacheWidth); hasWidth {
+		scheme.RegisterCache(c)
+		return
+	}
+	if prior, ok := scheme.CacheFor(c.Mode()); ok {
+		if width, ok := prior.(scheme.CacheWidth); ok {
+			scheme.RegisterCache(widthPreservingCacheScheme{CacheCompute: c, width: width})
+			return
+		}
+	}
+	scheme.RegisterCache(c)
 }
 
 // compile-time proof kvCacheScheme is a full metal.CacheCompute.

@@ -66,7 +66,7 @@ func (mlaLatentCacheScheme) NewCache(p CacheParams) Cache {
 	return NewLatentKVCache()
 }
 
-func init() { scheme.RegisterCache(mlaLatentCacheScheme{}) }
+func init() { registerCachePreservingWidth(mlaLatentCacheScheme{}) }
 
 // compile-time proof the scheme is a full metal.CacheCompute.
 var _ CacheCompute = mlaLatentCacheScheme{}

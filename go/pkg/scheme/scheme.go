@@ -44,6 +44,11 @@ const (
 type (
 	Mixer       = shared.Mixer
 	CacheScheme = shared.CacheScheme
+	// CacheWidth is the planner's per-element byte-ratio capability: a driver
+	// value re-registering a mode MUST forward the prior registration's width
+	// or the memory planner silently sizes that mode on the ×2 default lane
+	// (see pkg/metal registerCachePreservingWidth).
+	CacheWidth  = shared.CacheWidth
 	QuantScheme = shared.QuantScheme
 	DType       = shared.DType
 )
